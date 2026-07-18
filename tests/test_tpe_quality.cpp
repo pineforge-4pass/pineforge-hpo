@@ -174,12 +174,10 @@ Problem make_rastrigin() {
     problem.space.add(RealDimension("x2", -5.12, 5.12));
     problem.budget = 384;
     problem.optimum = 0.0;
-    // At a coordinate-one local basin the objective is 1.0.  The sampler's
-    // Box-Muller and acquisition calculations pass through the platform libm,
-    // so tiny floating differences can change a later adaptive branch.  Keep a
-    // 10% portability margin around that basin while the paired and aggregate
-    // gates below still require TPE to outperform seeded random search.
-    problem.median_target = 1.10;
+    // At a coordinate-one local basin the objective is 1.0, so this gate
+    // requires a median result at least as good as that first neighboring
+    // basin without pretending every run must land at the exact origin.
+    problem.median_target = 1.0;
     problem.known_optimum.values = {{"x1", 0.0}, {"x2", 0.0}};
     problem.objective = [](const Candidate& candidate) {
         const double x1 = real_value(candidate, "x1");

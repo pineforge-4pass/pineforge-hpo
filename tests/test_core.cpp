@@ -233,6 +233,40 @@ void test_tpe_sampler() {
     CHECK(first.outstanding() == 0);
     CHECK(best > 2.95);
 
+    // gamma_fraction is a double-valued setting.  Values immediately below
+    // 0.10 must produce the same ceil boundary at completed counts 10, 20,
+    // and so on, while the next representable value above 0.10 intentionally
+    // selects a larger good set.  This catches accidental promotion to a
+    // wider long double before multiplication on platforms where that changes
+    // ceil(0.10 * 10) from 1 to 2.
+    TpeSamplerConfig gamma_default = config;
+    gamma_default.startup_trials = 10;
+    gamma_default.gamma_fraction = 0.10;
+    gamma_default.constant_liar = false;
+    TpeSamplerConfig gamma_below = gamma_default;
+    gamma_below.gamma_fraction = std::nextafter(0.10, 0.0);
+    TpeSamplerConfig gamma_above = gamma_default;
+    gamma_above.gamma_fraction = std::nextafter(0.10, 1.0);
+    TpeSampler default_gamma(space, 20260719, ObjectiveDirection::Maximize, 64, gamma_default);
+    TpeSampler below_gamma(space, 20260719, ObjectiveDirection::Maximize, 64, gamma_below);
+    TpeSampler above_gamma(space, 20260719, ObjectiveDirection::Maximize, 64, gamma_above);
+    bool above_gamma_diverged = false;
+    for (std::uint64_t i = 0; i < 64; ++i) {
+        const auto default_candidate = default_gamma.ask();
+        const auto below_candidate = below_gamma.ask();
+        const auto above_candidate = above_gamma.ask();
+        CHECK(default_candidate.has_value());
+        CHECK(below_candidate.has_value());
+        CHECK(above_candidate.has_value());
+        CHECK(default_candidate->values == below_candidate->values);
+        above_gamma_diverged =
+            above_gamma_diverged || default_candidate->values != above_candidate->values;
+        default_gamma.tell(default_candidate->id, tpe_mixed_objective(*default_candidate));
+        below_gamma.tell(below_candidate->id, tpe_mixed_objective(*below_candidate));
+        above_gamma.tell(above_candidate->id, tpe_mixed_objective(*above_candidate));
+    }
+    CHECK(above_gamma_diverged);
+
     first.reset();
     second.reset();
     CHECK(first.generated() == 0);

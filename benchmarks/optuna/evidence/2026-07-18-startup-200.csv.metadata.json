@@ -3,7 +3,7 @@
     "csv": {
       "path": "benchmarks/optuna/evidence/2026-07-18-startup-200.csv",
       "rows": 10,
-      "sha256": "d06348b1af4dd08e725f1c7a957e826c8c6c976b3e21041bcf328824f3c49fd8"
+      "sha256": "479c28e9f3825fb152e1b0193350af98922be6bf528c618c04091eb75c207e9a"
     }
   },
   "configuration": {
@@ -59,9 +59,9 @@
     "python_implementation": "CPython",
     "python_version": "3.14.3",
     "repository_dirty": true,
-    "repository_revision": null,
+    "repository_revision": "297df69294ac9bbfce0d59deae47724165d7ea63",
     "source_snapshot": {
-      "aggregate_sha256": "b4645e5e8bde808df5a44e137cf60d3e2adc71e65e3c6d92ce76e1d1f3d17a8e",
+      "aggregate_sha256": "12abddc13f35933acaebf80772a74e3b9fa0af3d637c05f6afc0713a616fb404",
       "algorithm": "sha256(relative_path\\0sha256\\0size_bytes\\n)",
       "files": [
         {
@@ -156,8 +156,8 @@
         },
         {
           "path": "src/core/tpe_sampler.cpp",
-          "sha256": "1ab00496d265eac5c0a36671b072f62069bf6c42768e7a4dea27a770f58a8b9a",
-          "size_bytes": 59904
+          "sha256": "85a20a3b0d930ccfa390d0979644f517084593cc9267b8f0e3880012a550e47a",
+          "size_bytes": 60247
         },
         {
           "path": "src/core/types.cpp",
@@ -180,9 +180,9 @@
       "--output",
       "benchmarks/optuna/evidence/2026-07-18-startup-200.csv"
     ],
-    "driver_wall_seconds": 39.13938520895317
+    "driver_wall_seconds": 40.14296029205434
   },
-  "generated_at_utc": "2026-07-18T14:36:27.710571+00:00",
+  "generated_at_utc": "2026-07-18T15:09:30.570732+00:00",
   "schema": "pineforge-hpo.optuna-benchmark-metadata.v1",
   "suite": "native_tpe_vs_optuna",
   "validation": {
@@ -200,7 +200,7 @@
       "minimum": 0.0,
       "multiplicity": 1,
       "second_best": 17.0,
-      "wall_seconds": 1.215392999816686
+      "wall_seconds": 1.3219229159876704
     }
   }
 }

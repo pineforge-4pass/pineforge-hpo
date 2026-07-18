@@ -29,7 +29,11 @@ target_link_libraries(pineforge_hpo_test_tpe_stress PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_tpe_stress PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_tpe_stress COMMAND pineforge_hpo_test_tpe_stress)
-set_tests_properties(pineforge_hpo_tpe_stress PROPERTIES TIMEOUT 60)
+# The hard suite intentionally runs 20 optimizer/seed combinations.  Hosted
+# runners can take more than 60 seconds under load even though the suite has no
+# wall-time quality contract, so leave enough headroom without reducing its
+# statistical coverage.
+set_tests_properties(pineforge_hpo_tpe_stress PROPERTIES TIMEOUT 180)
 
 add_executable(pineforge_hpo_test_tpe_concurrency test_tpe_concurrency.cpp)
 target_link_libraries(pineforge_hpo_test_tpe_concurrency PRIVATE PineForgeHPO::core)

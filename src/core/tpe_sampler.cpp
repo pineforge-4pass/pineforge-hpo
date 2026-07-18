@@ -840,10 +840,15 @@ private:
         if (completed == 0) {
             return 0;
         }
-        const long double requested =
-            std::ceil(static_cast<long double>(config.gamma_fraction) * completed);
+        // gamma_fraction is a double-valued public setting, so evaluate the
+        // product in that same domain.  Promoting its already-rounded value to
+        // a wider long double first makes ceil(0.10 * 10) platform-dependent:
+        // it is 1 on targets where long double == double and can become 2 on
+        // targets with extended precision.
+        const double requested =
+            std::ceil(config.gamma_fraction * static_cast<double>(completed));
         const std::uint64_t requested_u64 =
-            requested >= static_cast<long double>(std::numeric_limits<std::uint64_t>::max())
+            requested >= static_cast<double>(std::numeric_limits<std::uint64_t>::max())
                 ? std::numeric_limits<std::uint64_t>::max()
                 : static_cast<std::uint64_t>(requested);
         std::uint64_t count = std::max<std::uint64_t>(1, requested_u64);
