@@ -1,0 +1,565 @@
+#include "pineforge/hpo/search_space.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
+
+namespace pineforge::hpo {
+namespace {
+
+void require_name(const std::string& name) {
+    if (name.empty()) {
+        throw std::invalid_argument("dimension name must not be empty");
+    }
+}
+
+bool same_parameter_value(const ParameterValue& left, const ParameterValue& right) noexcept {
+    if (left.index() != right.index()) {
+        return false;
+    }
+    return left == right;
+}
+
+bool finite_parameter_value(const ParameterValue& value) noexcept {
+    const auto* real = std::get_if<double>(&value);
+    return real == nullptr || std::isfinite(*real);
+}
+
+std::string expected_type_name(DimensionKind kind) {
+    switch (kind) {
+    case DimensionKind::Integer:
+        return "integer";
+    case DimensionKind::Real:
+        return "real";
+    case DimensionKind::Boolean:
+        return "boolean";
+    case DimensionKind::Categorical:
+        return "one of the categorical choices";
+    }
+    return "valid";
+}
+
+std::uint64_t integer_count(const IntegerDimension& dimension) {
+    const std::uint64_t span =
+        static_cast<std::uint64_t>(dimension.high()) - static_cast<std::uint64_t>(dimension.low());
+    const std::uint64_t quotient = span / static_cast<std::uint64_t>(dimension.step());
+    if (quotient == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("integer dimension cardinality exceeds uint64_t: " +
+                                  dimension.name());
+    }
+    return quotient + 1;
+}
+
+std::int64_t integer_at(const IntegerDimension& dimension, std::uint64_t index) {
+    const std::uint64_t offset = index * static_cast<std::uint64_t>(dimension.step());
+    const std::int64_t low = dimension.low();
+    if (low >= 0) {
+        return low + static_cast<std::int64_t>(offset);
+    }
+
+    const std::uint64_t magnitude_to_zero = 0U - static_cast<std::uint64_t>(low);
+    if (offset < magnitude_to_zero) {
+        return low + static_cast<std::int64_t>(offset);
+    }
+    if (offset == magnitude_to_zero) {
+        return 0;
+    }
+    return static_cast<std::int64_t>(offset - magnitude_to_zero);
+}
+
+std::uint64_t real_grid_count(const RealDimension& dimension) {
+    const long double low = static_cast<long double>(dimension.low());
+    const long double high = static_cast<long double>(dimension.high());
+    const long double step = static_cast<long double>(*dimension.step());
+    const long double span = high - low;
+    const long double scaled = std::isfinite(span) ? span / step : high / step - low / step;
+    if (!std::isfinite(scaled) || scaled < 0.0L) {
+        throw std::overflow_error("real dimension cardinality is not representable: " +
+                                  dimension.name());
+    }
+
+    const long double floored = std::floor(scaled);
+    if (floored >= static_cast<long double>(std::numeric_limits<std::uint64_t>::max())) {
+        throw std::overflow_error("real dimension cardinality exceeds uint64_t: " +
+                                  dimension.name());
+    }
+    std::uint64_t last_index = static_cast<std::uint64_t>(floored);
+
+    // JSON decimal values such as 0.3 / 0.1 can land just below an integer
+    // after conversion to double. Include and snap only when the next decoded
+    // grid value is at most one representable double above high. This keeps an
+    // intentionally off-lattice high (for example 1.0 with step 0.3) excluded.
+    const std::uint64_t next_index = last_index + 1;
+    const double decoded_next =
+        std::fma(static_cast<double>(next_index), *dimension.step(), dimension.low());
+    if (std::isfinite(decoded_next) &&
+        decoded_next <= std::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
+        last_index = next_index;
+    }
+    if (last_index == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("real dimension cardinality exceeds uint64_t: " +
+                                  dimension.name());
+    }
+    return last_index + 1;
+}
+
+double real_at(const RealDimension& dimension, std::uint64_t index, std::uint64_t count) {
+    double decoded = std::fma(static_cast<double>(index), *dimension.step(), dimension.low());
+    if (index + 1 == count && decoded > dimension.high() &&
+        decoded <= std::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
+        decoded = dimension.high();
+    }
+    if (!std::isfinite(decoded) || decoded < dimension.low() || decoded > dimension.high()) {
+        throw std::logic_error("real grid decoder escaped dimension bounds: " + dimension.name());
+    }
+    return decoded;
+}
+
+void validate_real_grid_injective(const RealDimension& dimension, std::uint64_t count) {
+    constexpr std::uint64_t kMaxExactlyRepresentableOrdinals = std::uint64_t{1} << 53U;
+    if (count > kMaxExactlyRepresentableOrdinals) {
+        throw std::invalid_argument(
+            "stepped real dimension has more than 2^53 exactly indexable values: " +
+            dimension.name());
+    }
+    if (count <= 1) {
+        return;
+    }
+
+    constexpr std::uint64_t kExactValidationLimit = 1'000'000;
+    if (count <= kExactValidationLimit) {
+        double previous = real_at(dimension, 0, count);
+        for (std::uint64_t index = 1; index < count; ++index) {
+            const double current = real_at(dimension, index, count);
+            // serialize_parameter_value uses max_digits10, so distinct finite
+            // binary64 values necessarily have distinct round-trippable ABI text.
+            if (!(current > previous)) {
+                throw std::invalid_argument(
+                    "stepped real dimension has grid points that collapse to the same ABI value: " +
+                    dimension.name());
+            }
+            previous = current;
+        }
+        return;
+    }
+
+    // For very large one-dimensional grids, avoid an O(count) validation.
+    // A step wider than the largest endpoint ULP proves that rounding remains
+    // strictly increasing throughout the interval, because binary64 spacing
+    // is monotone with absolute magnitude.
+    const double first = real_at(dimension, 0, count);
+    const double last = real_at(dimension, count - 1, count);
+    const double edge = std::abs(first) >= std::abs(last) ? first : last;
+    const double next_up = std::nextafter(edge, std::numeric_limits<double>::infinity());
+    const double next_down = std::nextafter(edge, -std::numeric_limits<double>::infinity());
+    const long double gap_up =
+        std::isfinite(next_up) ? static_cast<long double>(next_up) - static_cast<long double>(edge)
+                               : 0.0L;
+    const long double gap_down = std::isfinite(next_down) ? static_cast<long double>(edge) -
+                                                                static_cast<long double>(next_down)
+                                                          : 0.0L;
+    const long double largest_gap = std::max(std::abs(gap_up), std::abs(gap_down));
+    if (static_cast<long double>(*dimension.step()) <= largest_gap) {
+        throw std::invalid_argument(
+            "stepped real grid is too large to prove unique binary64 ABI values; use integer "
+            "ticks or a larger step: " +
+            dimension.name());
+    }
+}
+
+std::optional<std::uint64_t> dimension_cardinality(const Dimension& dimension) {
+    return std::visit(
+        [](const auto& item) -> std::optional<std::uint64_t> {
+            using T = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<T, IntegerDimension>) {
+                return integer_count(item);
+            } else if constexpr (std::is_same_v<T, RealDimension>) {
+                if (item.low() == item.high()) {
+                    return 1;
+                }
+                if (!item.step().has_value()) {
+                    return std::nullopt;
+                }
+                return real_grid_count(item);
+            } else if constexpr (std::is_same_v<T, BooleanDimension>) {
+                return 2;
+            } else {
+                return static_cast<std::uint64_t>(item.choices().size());
+            }
+        },
+        dimension);
+}
+
+ParameterValue dimension_value_at(const Dimension& dimension,
+                                  std::uint64_t index,
+                                  std::uint64_t count) {
+    return std::visit(
+        [&](const auto& item) -> ParameterValue {
+            using T = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<T, IntegerDimension>) {
+                return integer_at(item, index);
+            } else if constexpr (std::is_same_v<T, RealDimension>) {
+                if (item.low() == item.high()) {
+                    return item.low();
+                }
+                return real_at(item, index, count);
+            } else if constexpr (std::is_same_v<T, BooleanDimension>) {
+                return index != 0;
+            } else {
+                return item.choices().at(static_cast<std::size_t>(index));
+            }
+        },
+        dimension);
+}
+
+std::uint64_t dimension_ordinal(const Dimension& dimension,
+                                const ParameterValue& value,
+                                std::uint64_t count) {
+    return std::visit(
+        [&](const auto& item) -> std::uint64_t {
+            using T = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<T, IntegerDimension>) {
+                const auto integer = std::get<std::int64_t>(value);
+                const std::uint64_t offset =
+                    static_cast<std::uint64_t>(integer) - static_cast<std::uint64_t>(item.low());
+                return offset / static_cast<std::uint64_t>(item.step());
+            } else if constexpr (std::is_same_v<T, RealDimension>) {
+                const double real = std::get<double>(value);
+                if (item.low() == item.high()) {
+                    if (serialize_parameter_value(real) != serialize_parameter_value(item.low())) {
+                        throw std::invalid_argument(
+                            "real parameter is not the canonical fixed "
+                            "value: " +
+                            item.name());
+                    }
+                    return 0;
+                }
+                const long double real_ld = static_cast<long double>(real);
+                const long double low_ld = static_cast<long double>(item.low());
+                const long double step_ld = static_cast<long double>(*item.step());
+                const long double delta = real_ld - low_ld;
+                const long double scaled =
+                    std::isfinite(delta) ? delta / step_ld : real_ld / step_ld - low_ld / step_ld;
+                const long double rounded = std::round(scaled);
+                if (!std::isfinite(rounded) || rounded < 0.0L ||
+                    rounded >= static_cast<long double>(count)) {
+                    throw std::invalid_argument("real parameter is outside its finite grid: " +
+                                                item.name());
+                }
+                const auto ordinal = static_cast<std::uint64_t>(rounded);
+                const double canonical = real_at(item, ordinal, count);
+                if (serialize_parameter_value(real) != serialize_parameter_value(canonical)) {
+                    throw std::invalid_argument("real parameter is not a canonical grid value: " +
+                                                item.name());
+                }
+                return ordinal;
+            } else if constexpr (std::is_same_v<T, BooleanDimension>) {
+                return std::get<bool>(value) ? 1 : 0;
+            } else {
+                const auto found = std::find(item.choices().begin(), item.choices().end(), value);
+                if (found == item.choices().end()) {
+                    throw std::invalid_argument("categorical parameter is not a declared choice: " +
+                                                item.name());
+                }
+                return static_cast<std::uint64_t>(found - item.choices().begin());
+            }
+        },
+        dimension);
+}
+
+}  // namespace
+
+IntegerDimension::IntegerDimension(
+    std::string name, std::int64_t low, std::int64_t high, std::int64_t step, bool log)
+    : name_(std::move(name)), low_(low), high_(high), step_(step), log_(log) {
+    require_name(name_);
+    if (low_ > high_) {
+        throw std::invalid_argument("integer dimension low must not exceed high");
+    }
+    if (step_ <= 0) {
+        throw std::invalid_argument("integer dimension step must be positive");
+    }
+    if (log_ && (low_ <= 0 || high_ <= 0)) {
+        throw std::invalid_argument("log integer dimension bounds must be positive");
+    }
+    if (log_ && step_ != 1) {
+        throw std::invalid_argument("log integer dimension requires step = 1");
+    }
+}
+
+bool IntegerDimension::contains(const ParameterValue& value) const noexcept {
+    const auto* integer = std::get_if<std::int64_t>(&value);
+    if (integer == nullptr || *integer < low_ || *integer > high_) {
+        return false;
+    }
+    const std::uint64_t delta =
+        static_cast<std::uint64_t>(*integer) - static_cast<std::uint64_t>(low_);
+    return delta % static_cast<std::uint64_t>(step_) == 0;
+}
+
+RealDimension::RealDimension(
+    std::string name, double low, double high, std::optional<double> step, bool log)
+    : name_(std::move(name)), low_(low), high_(high), step_(step), log_(log) {
+    require_name(name_);
+    if (!std::isfinite(low_) || !std::isfinite(high_)) {
+        throw std::invalid_argument("real dimension bounds must be finite");
+    }
+    if (low_ > high_) {
+        throw std::invalid_argument("real dimension low must not exceed high");
+    }
+    if (step_.has_value() && (!std::isfinite(*step_) || *step_ <= 0.0)) {
+        throw std::invalid_argument("real dimension step must be finite and positive");
+    }
+    if (step_.has_value() && low_ < high_ && low_ + *step_ == low_) {
+        throw std::invalid_argument(
+            "real dimension step is too small to produce a distinct double value");
+    }
+    if (log_ && (low_ <= 0.0 || high_ <= 0.0)) {
+        throw std::invalid_argument("log real dimension bounds must be positive");
+    }
+    if (log_ && step_.has_value()) {
+        throw std::invalid_argument("log real dimension does not support a step");
+    }
+    if (step_.has_value() && low_ < high_) {
+        validate_real_grid_injective(*this, real_grid_count(*this));
+    }
+}
+
+bool RealDimension::contains(const ParameterValue& value) const noexcept {
+    const auto* real = std::get_if<double>(&value);
+    if (real == nullptr || !std::isfinite(*real)) {
+        return false;
+    }
+
+    const double scale = std::max({1.0, std::abs(low_), std::abs(high_)});
+    const double bounds_tolerance = 16.0 * std::numeric_limits<double>::epsilon() * scale;
+    if (*real < low_ - bounds_tolerance || *real > high_ + bounds_tolerance) {
+        return false;
+    }
+    if (!step_.has_value()) {
+        return true;
+    }
+
+    const long double real_ld = static_cast<long double>(*real);
+    const long double low_ld = static_cast<long double>(low_);
+    const long double step_ld = static_cast<long double>(*step_);
+    const long double delta = real_ld - low_ld;
+    const long double index =
+        std::isfinite(delta) ? delta / step_ld : real_ld / step_ld - low_ld / step_ld;
+    if (!std::isfinite(index)) {
+        return false;
+    }
+    const long double nearest = std::round(index);
+    const long double step_tolerance =
+        64.0L * std::numeric_limits<double>::epsilon() * std::max(1.0L, std::abs(index));
+    return std::abs(index - nearest) <= step_tolerance;
+}
+
+BooleanDimension::BooleanDimension(std::string name) : name_(std::move(name)) {
+    require_name(name_);
+}
+
+bool BooleanDimension::contains(const ParameterValue& value) const noexcept {
+    return std::holds_alternative<bool>(value);
+}
+
+CategoricalDimension::CategoricalDimension(std::string name, std::vector<ParameterValue> choices)
+    : name_(std::move(name)), choices_(std::move(choices)) {
+    require_name(name_);
+    if (choices_.empty()) {
+        throw std::invalid_argument("categorical dimension must have at least one choice");
+    }
+    std::set<std::string> abi_values;
+    for (std::size_t i = 0; i < choices_.size(); ++i) {
+        if (!finite_parameter_value(choices_[i])) {
+            throw std::invalid_argument("categorical choices must be finite");
+        }
+        for (std::size_t j = 0; j < i; ++j) {
+            if (same_parameter_value(choices_[i], choices_[j])) {
+                throw std::invalid_argument("categorical choices must be unique");
+            }
+        }
+        if (!abi_values.insert(serialize_parameter_value(choices_[i])).second) {
+            throw std::invalid_argument(
+                "categorical choices must be unique after strategy-ABI serialization");
+        }
+    }
+}
+
+bool CategoricalDimension::contains(const ParameterValue& value) const noexcept {
+    return std::any_of(choices_.begin(), choices_.end(), [&](const ParameterValue& choice) {
+        return same_parameter_value(choice, value);
+    });
+}
+
+DimensionKind dimension_kind(const Dimension& dimension) noexcept {
+    return std::visit(
+        [](const auto& item) {
+            using T = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<T, IntegerDimension>) {
+                return DimensionKind::Integer;
+            } else if constexpr (std::is_same_v<T, RealDimension>) {
+                return DimensionKind::Real;
+            } else if constexpr (std::is_same_v<T, BooleanDimension>) {
+                return DimensionKind::Boolean;
+            } else {
+                return DimensionKind::Categorical;
+            }
+        },
+        dimension);
+}
+
+std::string_view dimension_name(const Dimension& dimension) noexcept {
+    return std::visit([](const auto& item) -> std::string_view { return item.name(); }, dimension);
+}
+
+bool dimension_contains(const Dimension& dimension, const ParameterValue& value) noexcept {
+    return std::visit([&](const auto& item) { return item.contains(value); }, dimension);
+}
+
+SearchSpace::SearchSpace(std::vector<Dimension> dimensions) {
+    dimensions_.reserve(dimensions.size());
+    for (auto& dimension : dimensions) {
+        add(std::move(dimension));
+    }
+}
+
+void SearchSpace::add(Dimension dimension) {
+    const std::string_view name = dimension_name(dimension);
+    if (find(name) != nullptr) {
+        throw std::invalid_argument("duplicate dimension name: " + std::string(name));
+    }
+    dimensions_.push_back(std::move(dimension));
+}
+
+const Dimension* SearchSpace::find(std::string_view name) const noexcept {
+    for (const auto& dimension : dimensions_) {
+        if (dimension_name(dimension) == name) {
+            return &dimension;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<ValidationIssue> SearchSpace::validate(const Candidate& candidate,
+                                                   bool reject_unknown) const {
+    std::vector<ValidationIssue> issues;
+    for (const auto& dimension : dimensions_) {
+        const std::string name(dimension_name(dimension));
+        const ParameterValue* value = candidate.find(name);
+        if (value == nullptr) {
+            issues.push_back({name, "missing required parameter"});
+            continue;
+        }
+        if (!dimension_contains(dimension, *value)) {
+            std::ostringstream message;
+            message << "expected " << expected_type_name(dimension_kind(dimension)) << ", got "
+                    << parameter_type_name(parameter_type(*value));
+            issues.push_back({name, message.str()});
+        }
+    }
+
+    if (reject_unknown) {
+        for (const auto& [name, value] : candidate.values) {
+            (void)value;
+            if (find(name) == nullptr) {
+                issues.push_back({name, "unknown parameter"});
+            }
+        }
+    }
+    return issues;
+}
+
+bool SearchSpace::is_valid(const Candidate& candidate, bool reject_unknown) const {
+    return validate(candidate, reject_unknown).empty();
+}
+
+std::map<std::string, std::string> SearchSpace::serialize_candidate(const Candidate& candidate,
+                                                                    bool reject_unknown) const {
+    const auto issues = validate(candidate, reject_unknown);
+    if (!issues.empty()) {
+        std::ostringstream message;
+        message << "candidate validation failed";
+        for (const auto& issue : issues) {
+            message << "; " << issue.parameter << ": " << issue.message;
+        }
+        throw std::invalid_argument(message.str());
+    }
+
+    std::map<std::string, std::string> serialized;
+    for (const auto& [name, value] : candidate.values) {
+        serialized.emplace(name, serialize_parameter_value(value));
+    }
+    return serialized;
+}
+
+std::optional<std::uint64_t> SearchSpace::finite_cardinality() const {
+    std::uint64_t total = 1;
+    for (const auto& dimension : dimensions_) {
+        const auto count = dimension_cardinality(dimension);
+        if (!count.has_value()) {
+            return std::nullopt;
+        }
+        if (total > std::numeric_limits<std::uint64_t>::max() / *count) {
+            throw std::overflow_error("finite search-space cardinality exceeds uint64_t");
+        }
+        total *= *count;
+    }
+    return total;
+}
+
+Candidate SearchSpace::candidate_at(std::uint64_t ordinal, std::uint64_t id) const {
+    const auto total = finite_cardinality();
+    if (!total.has_value()) {
+        throw std::invalid_argument(
+            "finite search-space indexing requires a step on every varying real dimension");
+    }
+    if (ordinal >= *total) {
+        throw std::out_of_range("finite search-space ordinal is out of range");
+    }
+
+    Candidate candidate;
+    candidate.id = id;
+    std::uint64_t remaining = ordinal;
+    for (std::size_t position = dimensions_.size(); position > 0; --position) {
+        const auto& dimension = dimensions_[position - 1];
+        const std::uint64_t count = *dimension_cardinality(dimension);
+        const std::uint64_t index = remaining % count;
+        remaining /= count;
+        candidate.values.emplace(std::string(dimension_name(dimension)),
+                                 dimension_value_at(dimension, index, count));
+    }
+    return candidate;
+}
+
+std::uint64_t SearchSpace::candidate_ordinal(const Candidate& candidate) const {
+    const auto total = finite_cardinality();
+    if (!total.has_value()) {
+        throw std::invalid_argument(
+            "finite search-space indexing requires a step on every varying real dimension");
+    }
+
+    const auto issues = validate(candidate);
+    if (!issues.empty()) {
+        throw std::invalid_argument("cannot index an invalid search-space candidate");
+    }
+
+    std::uint64_t ordinal = 0;
+    for (const auto& dimension : dimensions_) {
+        const std::uint64_t count = *dimension_cardinality(dimension);
+        const std::string name(dimension_name(dimension));
+        const std::uint64_t index = dimension_ordinal(dimension, *candidate.find(name), count);
+        ordinal = ordinal * count + index;
+    }
+    if (ordinal >= *total) {
+        throw std::logic_error("finite search-space encoder produced an out-of-range ordinal");
+    }
+    return ordinal;
+}
+
+}  // namespace pineforge::hpo

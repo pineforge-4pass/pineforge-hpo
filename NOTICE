@@ -1,0 +1,8 @@
+PineForge HPO
+Copyright 2026 PineForge
+
+This product is licensed under the Apache License, Version 2.0.
+
+This product uses dlib, Copyright (C) 2003 Davis E. King, under the Boost
+Software License 1.0. See THIRD_PARTY_LICENSES/dlib.txt for the license text
+and LEGAL.md for the dependency and source location.

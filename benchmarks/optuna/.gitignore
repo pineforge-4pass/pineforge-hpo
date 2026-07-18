@@ -1,0 +1,8 @@
+.venv/
+build/
+__pycache__/
+# Ad-hoc output is ignored; reviewed published evidence is explicitly retained.
+*.csv
+*.csv.metadata.json
+!evidence/*.csv
+!evidence/*.csv.metadata.json

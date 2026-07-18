@@ -1,0 +1,96 @@
+/* PineForge HPO documentation theme.
+ * Extends Doxygen's bundled stylesheet without remote fonts or scripts.
+ */
+
+html {
+    --primary-color: #0f766e;
+    --primary-dark-color: #115e59;
+    --primary-light-color: #ccfbf1;
+    --page-background-color: #fbfdfc;
+    --page-foreground-color: #17201f;
+    --page-secondary-foreground-color: #52615f;
+    --separator-color: #d7e1df;
+    --code-background: #eef4f3;
+    --side-nav-background: #f3f8f7;
+}
+
+body,
+table,
+div,
+p,
+dl {
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+}
+
+code,
+pre,
+.fragment,
+.line,
+.params .paramname,
+.memname {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+#titlearea {
+    border-bottom: 1px solid var(--separator-color);
+}
+
+#projectname {
+    font-weight: 700;
+    letter-spacing: -0.025em;
+}
+
+div.header {
+    background: linear-gradient(180deg, #f3f8f7 0%, #fbfdfc 100%);
+    border-bottom-color: var(--separator-color);
+}
+
+.contents {
+    max-width: 1120px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.contents h1,
+.contents h2,
+.contents h3 {
+    letter-spacing: -0.02em;
+}
+
+.contents h2 {
+    margin-top: 2rem;
+}
+
+.contents blockquote {
+    margin-left: 0;
+    padding: 0.85rem 1rem;
+    border-left: 4px solid var(--primary-color);
+    background: var(--primary-light-color);
+    color: var(--page-foreground-color);
+}
+
+.fragment {
+    border: 1px solid var(--separator-color);
+    border-radius: 8px;
+    box-shadow: none;
+}
+
+.memitem {
+    border-color: var(--separator-color);
+    border-radius: 8px;
+    box-shadow: none;
+    overflow: hidden;
+}
+
+a,
+.contents a:visited {
+    color: var(--primary-dark-color);
+}
+
+@media (max-width: 767px) {
+    .contents {
+        padding-left: 0.9rem;
+        padding-right: 0.9rem;
+    }
+}

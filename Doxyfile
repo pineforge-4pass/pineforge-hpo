@@ -1,0 +1,123 @@
+# PineForge HPO API documentation
+#
+# Local build:
+#   rm -rf build/docs
+#   mkdir -p build/docs
+#   PROJECT_NUMBER="$(cat VERSION)" doxygen Doxyfile
+#   open build/docs/html/index.html
+
+PROJECT_NAME           = "PineForge HPO"
+PROJECT_NUMBER         = $(PROJECT_NUMBER)
+PROJECT_BRIEF          = "Native hyperparameter optimization for PineForge strategies"
+OUTPUT_DIRECTORY       = build/docs
+CREATE_SUBDIRS         = NO
+ALLOW_UNICODE_NAMES    = NO
+OUTPUT_LANGUAGE        = English
+
+INPUT                  = README.md \
+                         CONTRIBUTING.md \
+                         LEGAL.md \
+                         SECURITY.md \
+                         docs \
+                         benchmarks \
+                         include/pineforge/hpo \
+                         python/pineforge_hpo
+FILE_PATTERNS          = *.md *.hpp *.py
+RECURSIVE              = YES
+EXCLUDE                = python/pineforge_hpo/cli.py
+EXCLUDE_PATTERNS       = */docs/pages/* \
+                         */benchmarks/*/*.py \
+                         */build/* \
+                         */build-*/* \
+                         */.venv/* \
+                         */__pycache__/*
+EXCLUDE_SYMBOLS        = pineforge::hpo::detail \
+                         pineforge::hpo::detail::*
+USE_MDFILE_AS_MAINPAGE = docs/api.md
+FULL_PATH_NAMES        = NO
+STRIP_FROM_PATH        = $(PWD)
+STRIP_FROM_INC_PATH    = include
+EXAMPLE_PATH           = examples
+INPUT_ENCODING         = UTF-8
+FILTER_PATTERNS        = *.py="python3 docs/pages/filter_public_python.py"
+FILTER_SOURCE_FILES    = YES
+
+OPTIMIZE_OUTPUT_FOR_C  = NO
+OPTIMIZE_OUTPUT_JAVA   = NO
+BUILTIN_STL_SUPPORT    = YES
+CPP_CLI_SUPPORT        = NO
+PYTHON_DOCSTRING       = YES
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+JAVADOC_AUTOBRIEF      = YES
+
+# Public headers and Python dataclasses do not all carry per-member comments.
+# EXTRACT_ALL keeps their signatures discoverable; private Python names are
+# removed by the source filter above.
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_PACKAGE        = NO
+EXTRACT_STATIC         = NO
+HIDE_UNDOC_MEMBERS     = YES
+HIDE_UNDOC_CLASSES     = NO
+HIDE_FRIEND_COMPOUNDS  = YES
+HIDE_IN_BODY_DOCS      = NO
+INTERNAL_DOCS          = NO
+CASE_SENSE_NAMES       = YES
+IGNORE_PREFIX          = __ _
+
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+REFERENCES_LINK_SOURCE = YES
+VERBATIM_HEADERS       = YES
+
+QUIET                  = NO
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_IF_INCOMPLETE_DOC = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = FAIL_ON_WARNINGS
+WARN_LOGFILE           = build/docs/doxygen-warnings.log
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+HTML_FILE_EXTENSION    = .html
+HTML_HEADER            =
+HTML_FOOTER            =
+HTML_STYLESHEET        =
+HTML_EXTRA_STYLESHEET  = docs/pages/pineforge.css
+HTML_COLORSTYLE        = LIGHT
+HTML_DYNAMIC_MENUS     = YES
+HTML_DYNAMIC_SECTIONS  = YES
+HTML_INDEX_NUM_ENTRIES = 100
+GENERATE_DOCSET        = NO
+GENERATE_HTMLHELP      = NO
+GENERATE_CHI           = NO
+GENERATE_QHP           = NO
+GENERATE_ECLIPSEHELP   = NO
+DISABLE_INDEX          = NO
+GENERATE_TREEVIEW      = YES
+ENUM_VALUES_PER_LINE   = 4
+TREEVIEW_WIDTH         = 280
+EXT_LINKS_IN_WINDOW    = NO
+OBFUSCATE_EMAILS       = YES
+HTML_FORMULA_FORMAT    = svg
+FORMULA_FONTSIZE       = 10
+SEARCHENGINE           = YES
+SERVER_BASED_SEARCH    = NO
+EXTERNAL_SEARCH        = NO
+
+GENERATE_LATEX         = NO
+GENERATE_RTF           = NO
+GENERATE_MAN           = NO
+GENERATE_XML           = NO
+GENERATE_DOCBOOK       = NO
+GENERATE_AUTOGEN_DEF   = NO
+GENERATE_PERLMOD       = NO
+
+# Keep the Pages build dependency-light. No call or inheritance graphs require
+# Graphviz; ordinary relationships and source links remain available.
+HAVE_DOT               = NO

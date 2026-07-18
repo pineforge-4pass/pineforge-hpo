@@ -1,0 +1,60 @@
+name: Bug report
+description: Report reproducible incorrect behavior in PineForge HPO.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not report security vulnerabilities here. Use the private security
+        advisory form linked by SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: PineForge HPO version
+      description: Tag, VERSION value, or commit SHA.
+      placeholder: v0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, compiler, CMake, Python, engine, and codegen versions.
+      placeholder: macOS 15 arm64, AppleClang 17, CMake 4.2, Python 3.13...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest StudySpec, command, and input needed to reproduce it.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and complete output
+    validations:
+      required: true
+  - type: textarea
+    id: provenance
+    attributes:
+      label: Result provenance
+      description: Attach or paste non-sensitive artifact/study provenance and sampler fields.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed secrets, private strategy code, and proprietary market data.
+          required: true
+        - label: I searched existing issues for the same behavior.
+          required: true

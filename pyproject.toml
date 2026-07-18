@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pineforge-hpo"
+dynamic = ["version"]
+description = "Native hyperparameter optimization for PineForge strategies"
+readme = "PYPI_README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "PineForge contributors" }]
+keywords = ["pinescript", "backtesting", "hyperparameter-optimization", "portfolio"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = []
+
+[project.optional-dependencies]
+transpile = ["pineforge-codegen>=0.9.0,<1"]
+dev = ["ruff==0.15.20"]
+
+[project.scripts]
+pineforge-hpo = "pineforge_hpo.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/pineforge-4pass/pineforge-hpo"
+Documentation = "https://pineforge-4pass.github.io/pineforge-hpo/"
+Issues = "https://github.com/pineforge-4pass/pineforge-hpo/issues"
+Source = "https://github.com/pineforge-4pass/pineforge-hpo"
+
+[tool.hatch.version]
+source = "regex"
+path = "VERSION"
+pattern = "^(?P<version>\\S+)"
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/pineforge_hpo"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/external"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+extend-exclude = ["build", "build-*", "benchmarks/optuna/.venv"]

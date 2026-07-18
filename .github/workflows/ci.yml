@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          submodules: true
+
+      - name: Install native dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeigen3-dev ninja-build
+
+      - name: Install native dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install eigen ninja
+
+      - name: Configure PineForge Engine headers
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
+
+      - name: Configure PineForge HPO
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine
+          -DPINEFORGE_HPO_BUILD_TESTS=ON
+          -DPINEFORGE_HPO_BUILD_EXAMPLES=ON
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Run public C++ API example
+        run: ./build/bin/pineforge_hpo_example_ask_tell
+
+      - name: Set up Python for end-to-end test
+        if: runner.os == 'Linux'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+
+      - name: Build PineForge Engine runtime
+        if: runner.os == 'Linux'
+        run: cmake --build external/pineforge-engine/build --target pineforge -j4
+
+      - name: Install end-to-end Python packages
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install -e external/pineforge-codegen-oss
+          python -m pip install -e . --no-deps
+
+      - name: Run README Quick Start study
+        if: runner.os == 'Linux'
+        run: |
+          pineforge-hpo run examples/single_strategy/study.json \
+            --engine-root "${{ github.workspace }}/external/pineforge-engine" \
+            --native "${{ github.workspace }}/build/bin/pineforge-hpo-native" \
+            --output build/quick-start-result.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          result = json.loads(Path("build/quick-start-result.json").read_text())
+          assert result["ok"] is True
+          assert result["trials_completed"] == 9
+          assert result["full_parameter_coverage"] is True
+          PY
+
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.14']
+
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          submodules: true
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e external/pineforge-codegen-oss
+          python -m pip install -e .
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests/python -v
+
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps --wheel-dir dist
+
+      - name: Lint and format check
+        if: matrix.python == '3.14'
+        run: |
+          python -m pip install ruff==0.15.20
+          ruff check python tests/python benchmarks
+          ruff format --check python tests/python benchmarks

@@ -1,0 +1,59 @@
+# Build output
+build/
+build-*/
+cmake-build-*/
+out/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# Compiled artifacts
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+*.pdb
+
+# Local HPO artifacts and study state
+.pineforge-hpo/
+artifacts/
+study-runs/
+
+# Python bridge state
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+dist/
+*.egg-info/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+*.token
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

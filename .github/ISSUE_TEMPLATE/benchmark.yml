@@ -1,0 +1,36 @@
+name: Benchmark result or methodology issue
+description: Report a reproducibility problem or propose a fair comparison.
+title: "[Benchmark]: "
+labels: [benchmark]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request type
+      options:
+        - Existing result is not reproducible
+        - Methodology concern
+        - New benchmark proposal
+        - Performance regression
+    validations:
+      required: true
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis or concern
+    validations:
+      required: true
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Exact protocol
+      description: Problems, search spaces, budgets, seeds, startup policy, workers, and comparison metric.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and raw artifacts
+      description: Versions, hardware, commands, raw CSV/JSON location, and summary calculation.
+    validations:
+      required: true

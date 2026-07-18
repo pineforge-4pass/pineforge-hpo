@@ -1,0 +1,67 @@
+name: Benchmark smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/benchmark-smoke.yml"
+      - "CMakeLists.txt"
+      - "benchmarks/**"
+      - "include/pineforge/hpo/**"
+      - "src/core/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  optuna:
+    name: Native TPE vs Optuna
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: benchmarks/optuna/requirements.txt
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Install benchmark environment
+        run: python -m pip install -r benchmarks/optuna/requirements.txt
+
+      - name: Build native benchmark
+        run: |
+          cmake -S benchmarks/optuna -B build/benchmarks/optuna -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/benchmarks/optuna \
+            --target pineforge_hpo_optuna_native -j4
+
+      - name: Run paired smoke profile
+        run: |
+          python benchmarks/optuna/run_benchmark.py \
+            --native build/benchmarks/optuna/pineforge_hpo_optuna_native \
+            --smoke \
+            --output build/benchmarks/optuna/smoke.csv
+
+      - name: Upload raw benchmark evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: optuna-smoke-${{ github.run_id }}
+          path: |
+            build/benchmarks/optuna/smoke.csv
+            build/benchmarks/optuna/smoke.csv.metadata.json
+          if-no-files-found: error
+          retention-days: 14
