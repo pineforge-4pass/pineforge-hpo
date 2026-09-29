@@ -85,7 +85,8 @@ configure downloads the pinned dlib 20.0.1 archive and verifies its SHA-256; pas
 `-DPINEFORGE_HPO_USE_SYSTEM_DLIB=ON` only when an exact 20.0.1 CMake package is already
 installed. If `pineforge-hpo` reports that the Eigen include directory was not found (for
 example, the engine configure reused an Eigen fetched by another build tree), pass
-`--eigen-include <dir>` or set `EIGEN3_INCLUDE_DIR`.
+`--eigen-include <dir>` or set `EIGEN3_INCLUDE_DIR`, where `<dir>` is the directory that
+contains `Eigen/Core`.
 
 From the `pineforge-hpo` repository root, the following block builds the engine and HPO
 runner, installs both local Python packages, runs the test suite, and executes the bundled
