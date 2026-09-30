@@ -338,8 +338,10 @@ fields, and both spellings are accepted:
 | `metrics.equity.sharpe_monthly` | `metrics.equity.sharpe_tv` | Sharpe ratio of month-end equity returns (chart timezone), 2%/yr risk-free rate, sample standard deviation, annualized by √12 |
 | `metrics.equity.sortino_monthly` | `metrics.equity.sortino_tv` | Sortino ratio of the same monthly returns, population downside deviation against the same risk-free rate, annualized by √12 |
 
-Both are NaN with fewer than two monthly returns or zero deviation, so a short
-dataset fails these objectives under the default `nan_policy`.
+Both are NaN with fewer than two monthly returns or zero deviation. For Sortino,
+zero downside deviation means no monthly return fell below the risk-free rate, so
+the strongest trials can be NaN. Under the default `nan_policy` (`fail_trial`) a NaN
+metric fails the trial.
 
 Use the 1.0 names in new studies. An alias resolves to the same value, so a
 StudySpec written for an earlier engine runs unchanged; the aliases are also the

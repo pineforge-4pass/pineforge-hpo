@@ -72,13 +72,17 @@ The gitlinks pin the releases this HPO revision is tested with: engine v1.0.0 (`
 C ABI 4) and codegen v1.0.0 (`5bf595b`). With them, all eight `ctest` suites and the
 nine-trial example below pass (checked on Linux arm64 and macOS arm64, 2026-09-30).
 From 1.0.0 on, codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may
-still compile, but equal `PF_ABI_VERSION` values do not guarantee the same generated C++ or
-behavior. The optional `transpile` extra admits any `pineforge-codegen` 1.x, so install the
-release that matches your engine (`pineforge-codegen==1.0.0` for the gitlinks). The native
-adapter reads the equity statistics by their engine 1.0 names, so it needs engine 1.x
-headers. Strategy plugins built against an earlier engine are refused with an ABI mismatch
-and must be rebuilt; C++ code that reads `ReportSnapshot::metrics.equity.sharpe_tv` or
-`sortino_tv` must use `sharpe_monthly` or `sortino_monthly`.
+still compile, but equal `PF_ABI_VERSION` values do not guarantee a compatible C++ source
+layout or the same behavior. The optional `transpile` extra admits any `pineforge-codegen`
+1.x, so install the release that matches your engine (`pineforge-codegen==1.0.0` for the
+gitlinks). The native adapter reads the equity statistics by their engine 1.0 names, so it
+needs engine 1.x headers. Regenerate a precompiled plugin referenced from a StudySpec with
+codegen 1.0.0 and rebuild it against engine v1.0.0: plugins from engine v0.13.x or earlier
+(ABI 3 or lower) are refused with an ABI mismatch, while plugins from 1.0 prereleases or
+development builds also report ABI 4 and load without an error although they do not pair
+with v1.0.0. C++ code that reads
+`ReportSnapshot::metrics.equity.sharpe_tv` or `sortino_tv` must use `sharpe_monthly` or
+`sortino_monthly`.
 
 Compared with the previous gitlinks (engine `7bff706`, codegen `cefeec8`), 3 of the 9
 example trials report different metrics: since v0.13.0 the engine reports a position still
@@ -329,10 +333,9 @@ For a reproducible study, keep all of the following fixed:
 Generated strategies are compiled with the parity-critical
 `-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags; with Clang, the builder also passes
 `-fbracket-depth=1024`, which engine 1.0 requires for deeply nested generated C++. Result
-JSON includes the HPO
-version, sampler implementation identity, artifact key, complete trials, cardinality, and
-coverage diagnostics. Preserve the result and artifact provenance together when reporting
-a benchmark or bug.
+JSON includes the HPO version, sampler implementation identity, artifact key, complete
+trials, cardinality, and coverage diagnostics. Preserve the result and artifact provenance
+together when reporting a benchmark or bug.
 
 ## Current scope
 
