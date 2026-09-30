@@ -71,15 +71,19 @@ The Python distribution exported by `pineforge-codegen-oss` is named
 The gitlinks pin the releases this HPO revision is tested with: engine v1.0.0 (`5718c5d`,
 C ABI 4) and codegen v1.0.0 (`5bf595b`). With them, all eight `ctest` suites and the
 nine-trial example below pass (checked on Linux arm64 and macOS arm64, 2026-09-30).
-Engine and codegen 1.x are released in pairs: generated C++ builds only against the engine
-release of the same version, so use `pineforge-codegen` X.Y.Z with engine vX.Y.Z. The
-optional `transpile` extra therefore requires `pineforge-codegen` 1.x, and the native
+From 1.0.0 on, codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may
+still compile, but equal `PF_ABI_VERSION` values do not guarantee the same generated C++ or
+behavior. The optional `transpile` extra admits any `pineforge-codegen` 1.x, so install the
+release that matches your engine (`pineforge-codegen==1.0.0` for the gitlinks). The native
 adapter reads the equity statistics by their engine 1.0 names, so it needs engine 1.x
-headers.
+headers. Strategy plugins built against an earlier engine are refused with an ABI mismatch
+and must be rebuilt; C++ code that reads `ReportSnapshot::metrics.equity.sharpe_tv` or
+`sortino_tv` must use `sharpe_monthly` or `sortino_monthly`.
 
 Compared with the previous gitlinks (engine `7bff706`, codegen `cefeec8`), 3 of the 9
-example trials report different metrics: engine 1.0 counts the range-end close of a
-position still open after the final bar as a closed trade. The best trial is unchanged.
+example trials report different metrics: since v0.13.0 the engine reports a position still
+open after the final bar as a range-end close, which counts as a trade. The best trial is
+unchanged.
 
 Do not replace the gitlinks with
 each dependency's moving `main` branch in a release build. Updating a gitlink requires the
@@ -323,7 +327,9 @@ For a reproducible study, keep all of the following fixed:
 - sampler implementation/configuration, seed, worker count, and trial budget.
 
 Generated strategies are compiled with the parity-critical
-`-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags. Result JSON includes the HPO
+`-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags; with Clang, the builder also passes
+`-fbracket-depth=1024`, which engine 1.0 requires for deeply nested generated C++. Result
+JSON includes the HPO
 version, sampler implementation identity, artifact key, complete trials, cardinality, and
 coverage diagnostics. Preserve the result and artifact provenance together when reporting
 a benchmark or bug.
