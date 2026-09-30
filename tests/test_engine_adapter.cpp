@@ -139,6 +139,7 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     report->metrics.shorts.num_trades = 1;
     report->metrics.shorts.net_profit = 10.0;
     report->metrics.equity.sharpe_monthly = score / 10.0;
+    report->metrics.equity.sortino_monthly = score / 20.0;
     report->metrics.equity.max_equity_drawdown = 12.5;
     report->metrics.equity.open_pl = 3.5;
     allocate_curve(report, 2, initial_capital);
@@ -222,6 +223,15 @@ void require_near(double actual, double expected, const std::string& message) {
         throw std::runtime_error(message + ": expected " + std::to_string(expected) + ", got " +
                                  std::to_string(actual));
     }
+}
+
+void require_metric(const pineforge::hpo::ReportSnapshot& report,
+                    const std::string& path,
+                    double expected,
+                    const std::string& message) {
+    const auto value = report.metric(path);
+    require(value.has_value(), "missing metric path: " + path);
+    require_near(*value, expected, message);
 }
 
 template <typename Function>
@@ -401,8 +411,8 @@ void require_all_metric_paths(const pineforge::hpo::ReportSnapshot& report) {
         "max_equity_runup_pct",
         "buy_hold_return",
         "buy_hold_return_pct",
-        "sharpe_tv",
-        "sortino_tv",
+        "sharpe_monthly",
+        "sortino_monthly",
         "sharpe_bar",
         "sortino_bar",
         "cagr",
@@ -430,7 +440,11 @@ void test_trial_executor(const std::filesystem::path& plugin_path) {
                  "all net-profit path is wrong");
     require_near(*first.report.metric("metrics.all.num_trades"), 14.0,
                  "all trade-count path is wrong");
-    require_near(*first.report.metric("metrics.equity.sharpe_tv"), 121.4, "Sharpe path is wrong");
+    require_metric(first.report, "metrics.equity.sharpe_monthly", 121.4, "Sharpe path is wrong");
+    require_metric(first.report, "metrics.equity.sortino_monthly", 60.7, "Sortino path is wrong");
+    // The pre-1.0 spellings stay accepted aliases of the renamed engine fields.
+    require_metric(first.report, "metrics.equity.sharpe_tv", 121.4, "Sharpe alias is wrong");
+    require_metric(first.report, "metrics.equity.sortino_tv", 60.7, "Sortino alias is wrong");
     require_near(*first.report.metric("metrics.equity.max_equity_drawdown"), 12.5,
                  "drawdown path is wrong");
     require(!first.report.metric("metrics.equity.not_a_metric").has_value(),

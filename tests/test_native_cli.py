@@ -88,6 +88,50 @@ def main() -> int:
             "unknown metric diagnostic was not preserved",
         )
 
+        renamed = invoke(
+            native,
+            plugin,
+            csv,
+            "--objective",
+            "metrics.equity.sharpe_monthly",
+            "--constraint",
+            "metrics.equity.sharpe_tv == metrics.equity.sharpe_monthly",
+            "--constraint",
+            "metrics.equity.sortino_tv == metrics.equity.sortino_monthly",
+            "--constraint",
+            "metrics.equity.sortino_monthly != metrics.equity.sharpe_monthly",
+        )
+        require(
+            renamed.returncode == 0,
+            f"engine 1.0 metric names were rejected: {renamed.stderr}",
+        )
+        renamed_trial = json.loads(renamed.stdout)["trials"][0]
+        require(
+            renamed_trial["status"] == "ok" and renamed_trial["feasible"],
+            "pre-1.0 metric aliases disagreed with the engine 1.0 names",
+        )
+
+        legacy = invoke(
+            native,
+            plugin,
+            csv,
+            "--objective",
+            "metrics.equity.sharpe_tv",
+        )
+        require(
+            legacy.returncode == 0,
+            f"pre-1.0 metric alias was rejected: {legacy.stderr}",
+        )
+        legacy_trial = json.loads(legacy.stdout)["trials"][0]
+        require(
+            legacy_trial["objective"] == renamed_trial["objective"],
+            "pre-1.0 metric alias changed the objective value",
+        )
+        require(
+            list(legacy_trial["metrics"]) == ["metrics.equity.sharpe_tv"],
+            "result did not keep the metric name the objective used",
+        )
+
         constraint = invoke(
             native,
             plugin,
