@@ -110,6 +110,13 @@ def main() -> int:
             renamed_trial["status"] == "ok" and renamed_trial["feasible"],
             "pre-1.0 metric aliases disagreed with the engine 1.0 names",
         )
+        # The fake plugin reports score / 10 and score / 20 with score 1114.
+        renamed_metrics = renamed_trial["metrics"]
+        require(
+            abs(renamed_metrics["metrics.equity.sharpe_monthly"] - 111.4) < 1e-9
+            and abs(renamed_metrics["metrics.equity.sortino_monthly"] - 55.7) < 1e-9,
+            "engine 1.0 metric names resolved to the wrong report fields",
+        )
 
         legacy = invoke(
             native,
