@@ -70,11 +70,20 @@ The Python distribution exported by `pineforge-codegen-oss` is named
 
 The gitlinks are the compatibility baseline tested for the current HPO revision: engine
 `7bff706` (v0.12.0 plus 25 commits, ABI 2) and codegen `cefeec8` (v0.10.0 plus 19
-commits). Neither is a release, and both predate the latest releases, engine v0.13.1 and
-codegen v0.10.4. Configured against engine v0.13.1 (ABI 3) with codegen v0.10.4, this
-revision also passes `ctest` and the nine-trial example, although 3 of the 9 trials
-report different metrics than with the pinned engine; engine `main` (ABI 4) does not
-compile with it (checked on macOS arm64, 2026-09-29). Do not replace the gitlinks with
+commits). Neither is a release. The same revision works with engine v0.13.1 (ABI 3) and
+codegen v0.10.4: it passes `ctest` and the nine-trial example, although 3 of the 9 trials
+report different metrics than with the pinned engine (checked on macOS arm64,
+2026-09-29).
+
+**Engine 1.0 support is pending.** Against engine v1.0.0 (ABI 4), the latest release,
+with codegen 1.0.0, the HPO engine adapter does not compile, so the native runner is not
+built: v1.0.0 renamed the `sharpe_tv` and `sortino_tv` equity statistics to
+`sharpe_monthly` and `sortino_monthly`. The six core test suites, which do not use the
+engine, still pass when the build continues past those errors (`make -k`), and
+`pineforge-hpo compile` builds a strategy plugin (checked on Linux arm64, 2026-09-30).
+The optional `transpile` extra also requires `pineforge-codegen` below 1.0.
+
+Do not replace the gitlinks with
 each dependency's moving `main` branch in a release build. Updating a gitlink requires the
 same native tests and nine-trial end-to-end study used by CI. The submodules remain
 separate projects under their own licenses; nested engine corpus and benchmark-asset
