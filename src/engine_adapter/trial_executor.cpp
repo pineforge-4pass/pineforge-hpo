@@ -92,9 +92,10 @@ std::optional<double> equity_metric(const pf_equity_stats_t& metrics,
         return metrics.buy_hold_return;
     if (name == "buy_hold_return_pct")
         return metrics.buy_hold_return_pct;
-    if (name == "sharpe_tv")
+    // Engine 1.0 renamed sharpe_tv/sortino_tv; the pre-1.0 names stay accepted aliases.
+    if (name == "sharpe_monthly" || name == "sharpe_tv")
         return metrics.sharpe_monthly;
-    if (name == "sortino_tv")
+    if (name == "sortino_monthly" || name == "sortino_tv")
         return metrics.sortino_monthly;
     if (name == "sharpe_bar")
         return metrics.sharpe_bar;
