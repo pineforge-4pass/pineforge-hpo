@@ -20,7 +20,8 @@ metadata sidecars, and verified hashes.
 ## Quick smoke run
 
 Run these commands from the repository root. All generated files stay under the
-ignored `build/` tree.
+ignored `build/` tree. `python3` must be Python 3.12 or newer: the pinned
+`numpy==2.5.1` does not install on Python 3.11.
 
 ```bash
 python3 -m venv build/benchmarks/venv

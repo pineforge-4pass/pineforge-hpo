@@ -50,7 +50,8 @@ subclass, and it does not move transpiler or optimizer behavior into
 ### Prerequisites
 
 - Python 3.11 or newer;
-- CMake 3.17 or newer and a C++17 compiler;
+- CMake 3.20 or newer (the projects require 3.17; `ctest --test-dir` needs 3.20) and a
+  C++17 compiler;
 - Linux or macOS;
 - Git and network access for the first dependency build.
 
@@ -67,16 +68,34 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-The gitlinks are the compatibility baseline tested for the current HPO revision. Do not
-replace them with each dependency's moving `main` branch in a release build. Updating a
-gitlink requires the same native tests and nine-trial end-to-end study used by CI. The
-submodules remain separate projects under their own licenses; nested engine corpus and
-benchmark-asset submodules are not required by this quick start.
+The gitlinks are the compatibility baseline tested for the current HPO revision: engine
+`7bff706` (v0.12.0 plus 25 commits, ABI 2) and codegen `cefeec8` (v0.10.0 plus 19
+commits). Neither is a release. The same revision works with engine v0.13.1 (ABI 3) and
+codegen v0.10.4: it passes `ctest` and the nine-trial example, although 3 of the 9 trials
+report different metrics than with the pinned engine (checked on macOS arm64,
+2026-09-29).
+
+**Engine 1.0 support is pending.** Against engine v1.0.0 (ABI 4), the latest release,
+with codegen 1.0.0, the HPO engine adapter does not compile, so the native runner is not
+built: v1.0.0 renamed the `sharpe_tv` and `sortino_tv` equity statistics to
+`sharpe_monthly` and `sortino_monthly`. The six core test suites, which do not use the
+engine, still pass when the build continues past those errors (`make -k`), and
+`pineforge-hpo compile` builds a strategy plugin (checked on Linux arm64, 2026-09-30).
+The optional `transpile` extra also requires `pineforge-codegen` below 1.0.
+
+Do not replace the gitlinks with
+each dependency's moving `main` branch in a release build. Updating a gitlink requires the
+same native tests and nine-trial end-to-end study used by CI. The submodules remain
+separate projects under their own licenses; nested engine corpus and benchmark-asset
+submodules are not required by this quick start.
 
 The first engine configure downloads Eigen when it is not installed. The first HPO
 configure downloads the pinned dlib 20.0.1 archive and verifies its SHA-256; pass
 `-DPINEFORGE_HPO_USE_SYSTEM_DLIB=ON` only when an exact 20.0.1 CMake package is already
-installed.
+installed. If `pineforge-hpo` reports that the Eigen include directory was not found (for
+example, the engine configure reused an Eigen fetched by another build tree), pass
+`--eigen-include <dir>` or set `EIGEN3_INCLUDE_DIR`, where `<dir>` is the directory that
+contains `Eigen/Core`.
 
 From the `pineforge-hpo` repository root, the following block builds the engine and HPO
 runner, installs both local Python packages, runs the test suite, and executes the bundled
@@ -251,10 +270,10 @@ build-tree targets; an installed CMake package is not published yet. Both adapte
 default to off when PineForge HPO is included with `add_subdirectory()`. Core-only users
 may leave both `external/` submodules uninitialized.
 
-After GitHub Pages is enabled, the workflow publishes the
-[C++ and Python API reference](https://pineforge-4pass.github.io/pineforge-hpo/). Until
-then, [build the same site locally](docs/api.md). The reference is generated from the
-public headers and Python facade on the repository's default branch.
+The `API documentation` workflow publishes the
+[C++ and Python API reference](https://pineforge-4pass.github.io/pineforge-hpo/) to GitHub
+Pages; [build the same site locally](docs/api.md) to preview changes. The reference is
+generated from the public headers and Python facade on the repository's default branch.
 
 ## Architecture
 
@@ -333,8 +352,8 @@ Independent strategy reports must not be described as a shared-account simulatio
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete native/Python checks,
 architecture boundaries, benchmark contribution rules, and pull-request checklist.
-Repository administrators should also complete the one-time
-[GitHub setup checklist](docs/repository-setup.md) after the initial public push.
+Repository settings that cannot be committed as files are listed in the
+[GitHub setup checklist](docs/repository-setup.md).
 
 Run the required local checks from the repository root:
 

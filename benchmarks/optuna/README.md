@@ -16,7 +16,8 @@ Read [`METHODOLOGY.md`](METHODOLOGY.md) before interpreting results.
 
 ## Quick smoke run
 
-From the repository root:
+From the repository root, with Python 3.12 or newer as `python3` (the pinned
+`numpy==2.5.1` requires it):
 
 ```bash
 python3 -m venv build/benchmarks/venv

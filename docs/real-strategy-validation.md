@@ -14,7 +14,8 @@ scraped strategy or corpus market data into this Apache-2.0 repository.
 ## Inputs
 
 - Date: 2026-07-18
-- Strategy: `pinescript-scrapper/data/standard/shiroi-supertrend-strategy-long-short/strategy.pine`
+- Strategy: a third-party long/short Supertrend strategy from a private test set
+  (not redistributed)
 - Strategy SHA-256: `1d703474287b79be82c18f90451129c912536287b32d7a9051fd53ea51a83072`
 - OHLCV: `pineforge-engine/corpus/data/ohlcv_ETH-USDT-USDT_1m.csv`
 - OHLCV SHA-256: `db8c1332da093008cfbd063e05db0b33fe8f7fd35d78cf058a366519eb9f6cc5`

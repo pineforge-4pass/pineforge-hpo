@@ -2,14 +2,14 @@
 
 This source tree contains the workflows and policy files needed for a public
 repository, but GitHub-owned settings cannot be committed as files. A repository
-administrator performs these one-time steps after the initial push:
+administrator applies and keeps these settings:
 
-1. Create `pineforge-4pass/pineforge-hpo` as a **public** repository with
-   `main` as its default branch.
+1. Keep `pineforge-4pass/pineforge-hpo` **public** with `main` as its default
+   branch.
 2. Under **Settings → Actions → General**, allow the official `actions/*`
    workflows used in `.github/workflows/`.
 3. Under **Settings → Pages → Build and deployment**, select **GitHub Actions**
-   as the source. The next successful `API documentation` workflow publishes
+   as the source. Each successful `API documentation` run on `main` publishes
    `https://pineforge-4pass.github.io/pineforge-hpo/`.
 4. Under **Settings → Security → Code security**, enable private vulnerability
    reporting so the link in `SECURITY.md` accepts reports.
