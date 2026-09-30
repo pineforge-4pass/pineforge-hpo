@@ -34,6 +34,9 @@ CANONICAL_COMPILE_FLAGS = (
     "-fPIC",
     "-shared",
 )
+# Engine 1.0 requires Clang builds outside CMake to lift Clang's 256-level bracket
+# limit: generated C++ for long Pine chains nests deeper. GCC has no such flag.
+_CLANG_COMPILE_FLAGS = ("-fbracket-depth=1024",)
 _COMPILER_ENV_KEYS = (
     "CPATH",
     "CPLUS_INCLUDE_PATH",
@@ -122,6 +125,12 @@ class _CompilerIdentity:
     path: Path
     version_output: str
     target: str
+
+    @property
+    def compile_flags(self) -> tuple[str, ...]:
+        if "clang" in self.version_output.lower():
+            return (*CANONICAL_COMPILE_FLAGS, *_CLANG_COMPILE_FLAGS)
+        return CANONICAL_COMPILE_FLAGS
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -310,7 +319,7 @@ class ArtifactBuilder:
             ) from error
         output_extension, link_mode = self._platform_link_mode()
         compile_spec = {
-            "flags": list(CANONICAL_COMPILE_FLAGS),
+            "flags": list(compiler.compile_flags),
             "include_dirs": [
                 str(path) for path in (*engine.include_dirs, eigen.include_dir)
             ],
@@ -878,7 +887,7 @@ class ArtifactBuilder:
         generated_path: Path,
         plugin_path: Path,
     ) -> list[str]:
-        command = [str(compiler.path), *CANONICAL_COMPILE_FLAGS]
+        command = [str(compiler.path), *compiler.compile_flags]
         for include_dir in (*engine.include_dirs, eigen.include_dir):
             command.extend(("-I", str(include_dir)))
         command.append(str(generated_path))

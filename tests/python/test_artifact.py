@@ -67,14 +67,14 @@ def make_eigen(root: Path) -> Path:
     return eigen
 
 
-def make_compiler(root: Path) -> tuple[Path, Path]:
+def make_compiler(root: Path, version: str = "fake-cxx 1.2.3") -> tuple[Path, Path]:
     compiler = root / "fake-cxx"
     log = root / "compiler-log.jsonl"
     compiler.write_text(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys\n"
         "if '--version' in sys.argv:\n"
-        "    print('fake-cxx 1.2.3'); raise SystemExit(0)\n"
+        f"    print({version!r}); raise SystemExit(0)\n"
         "if '-dumpmachine' in sys.argv:\n"
         "    print('fake-target'); raise SystemExit(0)\n"
         "log = pathlib.Path(os.environ['FAKE_COMPILER_LOG'])\n"
@@ -149,6 +149,7 @@ class ArtifactBuilderTest(unittest.TestCase):
         command = json.loads(compile_commands[0])
         for flag in CANONICAL_COMPILE_FLAGS:
             self.assertIn(flag, command)
+        self.assertNotIn("-fbracket-depth=1024", command)
         if sys.platform == "darwin":
             self.assertTrue(
                 any(item.startswith("-Wl,-force_load,") for item in command)
@@ -166,6 +167,34 @@ class ArtifactBuilderTest(unittest.TestCase):
         self.assertEqual(provenance["request_identity"]["engine"]["version"], "0.11.0")
         self.assertEqual(
             provenance["request_identity"]["compiler"]["target"], "fake-target"
+        )
+
+    def test_clang_compile_lifts_the_bracket_depth_limit(self) -> None:
+        clang_root = self.root / "clang"
+        clang_root.mkdir()
+        clang, _log = make_compiler(
+            clang_root, version="Apple clang version 17.0.0 (clang-1700.6.4.2)"
+        )
+        builder = ArtifactBuilder(
+            engine_root=self.engine,
+            cache_dir=self.cache,
+            compiler=clang,
+            eigen_include=self.eigen,
+            plugin_validator=validator,
+        )
+        with (
+            patch("pineforge_hpo.artifact.codegen_identity", return_value=self.codegen),
+            patch(
+                "pineforge_hpo.artifact.transpile_source", return_value=self.transpiled
+            ),
+        ):
+            artifact = builder.build("pine bytes")
+
+        command = json.loads(self.log.read_text(encoding="utf-8").splitlines()[0])
+        self.assertIn("-fbracket-depth=1024", command)
+        provenance = json.loads(artifact.provenance_path.read_text(encoding="utf-8"))
+        self.assertIn(
+            "-fbracket-depth=1024", provenance["request_identity"]["compile"]["flags"]
         )
 
     def test_source_change_produces_new_artifact(self) -> None:
