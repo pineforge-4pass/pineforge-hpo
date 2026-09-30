@@ -68,20 +68,26 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-The gitlinks are the compatibility baseline tested for the current HPO revision: engine
-`7bff706` (v0.12.0 plus 25 commits, ABI 2) and codegen `cefeec8` (v0.10.0 plus 19
-commits). Neither is a release. The same revision works with engine v0.13.1 (ABI 3) and
-codegen v0.10.4: it passes `ctest` and the nine-trial example, although 3 of the 9 trials
-report different metrics than with the pinned engine (checked on macOS arm64,
-2026-09-29).
+The gitlinks pin the releases this HPO revision is tested with: engine v1.0.0 (`5718c5d`,
+C ABI 4) and codegen v1.0.0 (`5bf595b`). With them, all eight `ctest` suites and the
+nine-trial example below pass (checked on Linux arm64 and macOS arm64, 2026-09-30).
+From 1.0.0 on, codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may
+still compile, but equal `PF_ABI_VERSION` values do not guarantee a compatible C++ source
+layout or the same behavior. The optional `transpile` extra admits any `pineforge-codegen`
+1.x, so install the release that matches your engine (`pineforge-codegen==1.0.0` for the
+gitlinks). The native adapter reads the equity statistics by their engine 1.0 names, so it
+needs engine 1.x headers. Regenerate a precompiled plugin referenced from a StudySpec with
+codegen 1.0.0 and rebuild it against engine v1.0.0: plugins from engine v0.13.x or earlier
+(ABI 3 or lower) are refused with an ABI mismatch, while plugins from 1.0 prereleases or
+development builds also report ABI 4 and load without an error although they do not pair
+with v1.0.0. C++ code that reads
+`ReportSnapshot::metrics.equity.sharpe_tv` or `sortino_tv` must use `sharpe_monthly` or
+`sortino_monthly`.
 
-**Engine 1.0 support is pending.** Against engine v1.0.0 (ABI 4), the latest release,
-with codegen 1.0.0, the HPO engine adapter does not compile, so the native runner is not
-built: v1.0.0 renamed the `sharpe_tv` and `sortino_tv` equity statistics to
-`sharpe_monthly` and `sortino_monthly`. The six core test suites, which do not use the
-engine, still pass when the build continues past those errors (`make -k`), and
-`pineforge-hpo compile` builds a strategy plugin (checked on Linux arm64, 2026-09-30).
-The optional `transpile` extra also requires `pineforge-codegen` below 1.0.
+Compared with the previous gitlinks (engine `7bff706`, codegen `cefeec8`), 3 of the 9
+example trials report different metrics: since v0.13.0 the engine reports a position still
+open after the final bar as a range-end close, which counts as a trade. The best trial is
+unchanged.
 
 Do not replace the gitlinks with
 each dependency's moving `main` branch in a release build. Updating a gitlink requires the
@@ -246,6 +252,11 @@ Expression objectives can read `metrics.all.*`, `metrics.longs.*`,
 paths, non-finite final values, and configured division-by-zero failures cannot silently
 become a winning trial.
 
+Metric names follow the engine's report structs. Engine 1.0 renamed the monthly Sharpe
+and Sortino ratios, so they are `metrics.equity.sharpe_monthly` and
+`metrics.equity.sortino_monthly`; the pre-1.0 names `metrics.equity.sharpe_tv` and
+`metrics.equity.sortino_tv` remain accepted aliases, so existing StudySpecs keep working.
+
 Applications embedding the C++ library can instead implement
 `ObjectiveFn<Observation>`. The generic objective contract is independent of a PineForge
 report; the executable CLI currently resolves expression objectives only.
@@ -320,10 +331,11 @@ For a reproducible study, keep all of the following fixed:
 - sampler implementation/configuration, seed, worker count, and trial budget.
 
 Generated strategies are compiled with the parity-critical
-`-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags. Result JSON includes the HPO
-version, sampler implementation identity, artifact key, complete trials, cardinality, and
-coverage diagnostics. Preserve the result and artifact provenance together when reporting
-a benchmark or bug.
+`-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags; with Clang, the builder also passes
+`-fbracket-depth=1024`, which engine 1.0 requires for deeply nested generated C++. Result
+JSON includes the HPO version, sampler implementation identity, artifact key, complete
+trials, cardinality, and coverage diagnostics. Preserve the result and artifact provenance
+together when reporting a benchmark or bug.
 
 ## Current scope
 

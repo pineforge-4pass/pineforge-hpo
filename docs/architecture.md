@@ -101,6 +101,11 @@ The compile contract is:
 -std=c++17 -O2 -ffp-contract=off -fPIC -shared
 ```
 
+When the compiler identifies as Clang, the builder adds `-fbracket-depth=1024`: engine
+1.0 requires it of Clang builds outside CMake, because generated C++ for long Pine
+expression chains nests deeper than Clang's default limit of 256. GCC has no such limit.
+The flags used are part of the cache identity.
+
 The engine static library is linked with GNU whole-archive on Linux or
 `force_load` on macOS. Before publication, the builder loads the plugin,
 requires `pf_abi_version`, `strategy_create`, `strategy_free`,

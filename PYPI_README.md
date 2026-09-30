@@ -18,6 +18,8 @@ execution is not implemented yet.
 - [Apache-2.0 license and dependency boundary](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LEGAL.md)
 
 The optional direct-PineScript bridge uses the separately distributed
-`pineforge-codegen` package from the `pineforge-codegen-oss` repository. A
-precompiled PineForge strategy plugin can be optimized without installing that
+`pineforge-codegen` package from the `pineforge-codegen-oss` repository. The
+`transpile` extra admits any 1.x release; install the one whose version matches
+your PineForge engine (for example `pineforge-codegen==1.0.0` with engine v1.0.0).
+A precompiled PineForge strategy plugin can be optimized without installing that
 transpiler.
