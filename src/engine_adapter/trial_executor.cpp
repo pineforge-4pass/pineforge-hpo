@@ -93,9 +93,9 @@ std::optional<double> equity_metric(const pf_equity_stats_t& metrics,
     if (name == "buy_hold_return_pct")
         return metrics.buy_hold_return_pct;
     if (name == "sharpe_tv")
-        return metrics.sharpe_tv;
+        return metrics.sharpe_monthly;
     if (name == "sortino_tv")
-        return metrics.sortino_tv;
+        return metrics.sortino_monthly;
     if (name == "sharpe_bar")
         return metrics.sharpe_bar;
     if (name == "sortino_bar")

@@ -138,7 +138,7 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     report->metrics.longs.net_profit = score - 10.0;
     report->metrics.shorts.num_trades = 1;
     report->metrics.shorts.net_profit = 10.0;
-    report->metrics.equity.sharpe_tv = score / 10.0;
+    report->metrics.equity.sharpe_monthly = score / 10.0;
     report->metrics.equity.max_equity_drawdown = 12.5;
     report->metrics.equity.open_pl = 3.5;
     allocate_curve(report, 2, initial_capital);
