@@ -68,20 +68,18 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-The gitlinks are the compatibility baseline tested for the current HPO revision: engine
-`7bff706` (v0.12.0 plus 25 commits, ABI 2) and codegen `cefeec8` (v0.10.0 plus 19
-commits). Neither is a release. The same revision works with engine v0.13.1 (ABI 3) and
-codegen v0.10.4: it passes `ctest` and the nine-trial example, although 3 of the 9 trials
-report different metrics than with the pinned engine (checked on macOS arm64,
-2026-09-29).
+The gitlinks pin the releases this HPO revision is tested with: engine v1.0.0 (`5718c5d`,
+C ABI 4) and codegen v1.0.0 (`5bf595b`). With them, all eight `ctest` suites and the
+nine-trial example below pass (checked on Linux arm64 and macOS arm64, 2026-09-30).
+Engine and codegen 1.x are released in pairs: generated C++ builds only against the engine
+release of the same version, so use `pineforge-codegen` X.Y.Z with engine vX.Y.Z. The
+optional `transpile` extra therefore requires `pineforge-codegen` 1.x, and the native
+adapter reads the equity statistics by their engine 1.0 names, so it needs engine 1.x
+headers.
 
-**Engine 1.0 support is pending.** Against engine v1.0.0 (ABI 4), the latest release,
-with codegen 1.0.0, the HPO engine adapter does not compile, so the native runner is not
-built: v1.0.0 renamed the `sharpe_tv` and `sortino_tv` equity statistics to
-`sharpe_monthly` and `sortino_monthly`. The six core test suites, which do not use the
-engine, still pass when the build continues past those errors (`make -k`), and
-`pineforge-hpo compile` builds a strategy plugin (checked on Linux arm64, 2026-09-30).
-The optional `transpile` extra also requires `pineforge-codegen` below 1.0.
+Compared with the previous gitlinks (engine `7bff706`, codegen `cefeec8`), 3 of the 9
+example trials report different metrics: engine 1.0 counts the range-end close of a
+position still open after the final bar as a closed trade. The best trial is unchanged.
 
 Do not replace the gitlinks with
 each dependency's moving `main` branch in a release build. Updating a gitlink requires the
@@ -245,6 +243,11 @@ Expression objectives can read `metrics.all.*`, `metrics.longs.*`,
 `report.total_trades`. Expressions are parsed once before trials begin. Unknown metric
 paths, non-finite final values, and configured division-by-zero failures cannot silently
 become a winning trial.
+
+Metric names follow the engine's report structs. Engine 1.0 renamed the monthly Sharpe
+and Sortino ratios, so they are `metrics.equity.sharpe_monthly` and
+`metrics.equity.sortino_monthly`; the pre-1.0 names `metrics.equity.sharpe_tv` and
+`metrics.equity.sortino_tv` remain accepted aliases, so existing StudySpecs keep working.
 
 Applications embedding the C++ library can instead implement
 `ObjectiveFn<Observation>`. The generic objective contract is independent of a PineForge

@@ -88,7 +88,8 @@ struct ReportSnapshot {
     /// Public fields under `metrics.all`, `metrics.longs`, `metrics.shorts`, and
     /// `metrics.equity` are supported, along with selected `report.*` counters. Integer metrics
     /// are converted losslessly to double for objective arithmetic. Unknown paths return
-    /// `std::nullopt`.
+    /// `std::nullopt`. `metrics.equity.sharpe_tv` and `metrics.equity.sortino_tv`, the
+    /// pre-1.0 engine names of `sharpe_monthly` and `sortino_monthly`, resolve as aliases.
     std::optional<double> metric(std::string_view path) const noexcept;
 };
 

@@ -329,6 +329,20 @@ Metric lookup supports:
 - `report.total_trades`, `report.net_profit`, selected processed-bar counters,
   and their short aliases.
 
+`<trade-stat>` and `<equity-stat>` are the field names of the engine's
+`pf_trade_stats_t` and `pf_equity_stats_t`. Engine 1.0 renamed two equity
+fields, and both spellings are accepted:
+
+| Name | Pre-1.0 alias | Value |
+| --- | --- | --- |
+| `metrics.equity.sharpe_monthly` | `metrics.equity.sharpe_tv` | Sharpe ratio of month-end equity returns, annualized |
+| `metrics.equity.sortino_monthly` | `metrics.equity.sortino_tv` | Sortino ratio over the same monthly returns |
+
+Use the 1.0 names in new studies. An alias resolves to the same value, so a
+StudySpec written for an earlier engine runs unchanged; the aliases are also the
+keys of these two ratios in the engine's JSON report. A result lists each metric
+under the name the expression used.
+
 Missing/non-finite metrics and division by zero follow the configured reject
 policy and leave the trial auditable as an objective or constraint error. An
 unknown metric fails before the first backtest. Constraints always reject
