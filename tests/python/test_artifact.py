@@ -168,6 +168,10 @@ class ArtifactBuilderTest(unittest.TestCase):
         self.assertEqual(
             provenance["request_identity"]["compiler"]["target"], "fake-target"
         )
+        self.assertEqual(
+            provenance["request_identity"]["compile"]["flags"],
+            list(CANONICAL_COMPILE_FLAGS),
+        )
 
     def test_clang_compile_lifts_the_bracket_depth_limit(self) -> None:
         clang_root = self.root / "clang"
