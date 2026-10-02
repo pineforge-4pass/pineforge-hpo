@@ -96,6 +96,23 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_native_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        foreach(contract syminfo progress cancel deadline metrics magnifier timeout)
+            add_test(NAME pineforge_hpo_runner_${contract}
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/test_runner_contract.py"
+                    $<TARGET_FILE:pineforge-hpo-native>
+                    $<TARGET_FILE:pineforge_hpo_fake_strategy> ${contract})
+            set_tests_properties(pineforge_hpo_runner_${contract} PROPERTIES TIMEOUT 60)
+        endforeach()
+        if(PINEFORGE_HPO_TEST_ENGINE_BUILD)
+            add_test(NAME pineforge_hpo_installed_prefix
+                COMMAND "${CMAKE_COMMAND}"
+                    -DENGINE_BUILD=${PINEFORGE_HPO_TEST_ENGINE_BUILD}
+                    -DHPO_SOURCE=${PROJECT_SOURCE_DIR}
+                    -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/installed-prefix
+                    -DDLIB_SOURCE=${dlib_SOURCE_DIR}
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/test_installed_prefix.cmake")
+        endif()
     else()
         message(STATUS "Skipping native CLI regression test: Python 3 not found")
     endif()
