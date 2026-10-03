@@ -212,6 +212,9 @@ std::optional<double> ReportSnapshot::metric(std::string_view path) const noexce
     if (path == "script_bars_processed" || path == "report.script_bars_processed") {
         return static_cast<double>(script_bars_processed);
     }
+    if (path == "magnifier_sample_ticks_total" || path == "report.magnifier_sample_ticks_total") {
+        return static_cast<double>(magnifier_sample_ticks_total);
+    }
 
     std::string_view leaf = path;
     if (strip_prefix(&leaf, "metrics.all."))

@@ -402,7 +402,7 @@ objective, and constraint inputs.
 - CMA-ES, evolutionary, or other additional Optuna-style samplers;
 - conditional/hierarchical spaces and multi-objective Pareto studies;
 - walk-forward and multi-dataset executable studies;
-- per-study timeout and fail-fast cancellation.
+- StudySpec timeout/fail-fast settings and process-worker recovery.
 
 ## Licensing boundary
 

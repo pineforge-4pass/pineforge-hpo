@@ -544,6 +544,53 @@ they cannot appear to take effect without real cancellation semantics.
 For `dlib_global` and `tpe`, `workers` is also the deterministic ask/tell batch
 size. Changing it can change later proposals even when the seed stays the same.
 
+### Native-only execution controls (0.2.0)
+
+The native executable accepts additional flags without extending StudySpec v1:
+
+- `--syminfo FILE`: optional positive finite `mintick` and `pointvalue`, plus
+  NUL-free string `timezone` and `session`, in flat JSON or `{"syminfo": {...}}`.
+  Apply after inputs/overrides, in mintick/pointvalue/timezone/session order.
+  Missing fields and empty strings keep engine defaults; other catalog keys are
+  ignored. Symbol and chart timezones are distinct.
+- `--progress-fd N`: inherited writable descriptor for one flushed terminal-trial
+  JSON object per line. One writer prevents interleaving. Each object equals its
+  final `trials[]` entry; drain pipes concurrently and do not assume completion
+  order matches trial-ID order.
+- `--max-wall-seconds S`: positive finite wall seconds, including native
+  initialization. Workers check before claiming a candidate and adaptive samplers
+  check before a batch. SIGTERM/SIGINT likewise stop new work. Existing in-flight
+  trials can finish, and unstarted candidates never become terminal records.
+- `--record-metric PATH`: repeatable extra report metric, validated before
+  execution and recorded under the exact path spelling in every trial's `metrics`.
+  Unavailable values are `null`; extra metrics do not affect scoring or feasibility.
+- `--trial-timeout-seconds T`: positive finite per-trial wall seconds from worker
+  claim. A watchdog emits one `trial_timeout` record, writes final JSON from
+  already-terminal trials plus that record, then `_exit(3)` without worker joins.
+  The entire study aborts; other still-running/unstarted trials are excluded.
+
+All terminal trials expose `backtest.magnifier_sample_ticks_total` (zero when
+unavailable). The status set is `ok`, `constraint_violation`, `objective_error`,
+`constraint_error`, `engine_error`, `trial_error`, and `trial_timeout`. Stop reasons
+are `trial_budget_reached`, `search_space_exhausted`, `sampler_stopped`,
+`cancelled`, `deadline`, and `trial_timeout`; cooperative stops override the usual
+budget/coverage reason without fabricating pending records.
+
+Exit codes are 0 if a feasible best trial exists, 1 for initialization/I/O failure,
+2 if no feasible trial exists, and 3 on a trial timeout even if an earlier trial
+was feasible. Cooperative stops can write an empty trial table and exit 2.
+Final JSON is emitted to stdout and to native `--output FILE`, including stop
+paths. `trials_completed` includes the timeout terminal record; coverage and best
+selection use only the terminal table. Timeout records cannot be feasible and
+make `exhaustive_equivalent` false.
+
+These controls are not forwarded by the Python CLI. The public Python preparation
+API `prepare_run(study_path, engine_root, cache_dir)` returns native argv and
+artifact JSON without launching, so callers may append the controls and execute
+the native process directly. Optional `native`, `compiler`, and `eigen_include`
+keywords preserve CLI overrides. `timeout_seconds` remains a rejected reserved
+StudySpec field; it is not an alias for either native wall cap.
+
 ## Coverage and result provenance
 
 Candidate-policy and coverage fields are part of replay provenance alongside

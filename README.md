@@ -171,6 +171,58 @@ An existing validated plugin can also be referenced from a StudySpec, allowing t
 runner to be used without installing the transpiler. See the
 [complete StudySpec reference](docs/study-spec.md).
 
+## Native runner 0.2.0
+
+The native executable adds optional app-integration controls without changing
+candidate ordering or scoring for runs that omit them:
+
+| Flag | Contract |
+| --- | --- |
+| `--syminfo FILE` | Apply instrument `mintick`, `pointvalue`, `timezone`, and `session` after inputs and overrides, in that order. Accept a flat JSON object or `{"syminfo": {...}}`; omitted values keep engine defaults. |
+| `--progress-fd N` | Write and flush one JSONL object per terminal trial to an inherited writable descriptor. A single writer emits exactly the objects in the final `trials[]`, in completion order. Drain pipes while the process runs. |
+| `--max-wall-seconds S` | Positive, finite study wall limit in seconds, including native initialization. Stop taking candidates cooperatively, including inside grid/random batches. |
+| `--record-metric PATH` | Repeatable additional report-metric path. Validate before execution and preserve the path spelling in each trial's `metrics`; unavailable values are JSON `null`. |
+| `--trial-timeout-seconds T` | Positive, finite per-trial wall cap. The first timeout records one `trial_timeout`, publishes the completed/timeout trials, and exits immediately without joining workers. |
+
+For example, append these controls to a native `run` command:
+
+```bash
+--syminfo symbol.json --progress-fd 3 --max-wall-seconds 600 \
+--trial-timeout-seconds 20 --record-metric metrics.all.profit_factor \
+--output result.json 3>trials.jsonl
+```
+
+Numeric symbol values must be finite and positive; timezone/session values must
+be strings without embedded NULs. Empty strings and omitted fields are no-ops;
+other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
+The four setters mirror the pinned engine 1.0.0 release harness.
+
+SIGTERM and SIGINT produce cooperative `cancelled` stops; a wall limit produces
+`deadline`. In-flight trials may finish, but unstarted candidates are not reported.
+Use the per-trial cap to bound a non-returning engine call. All trials now include
+`backtest.magnifier_sample_ticks_total`, including zero when no report is available.
+
+The existing statuses `ok`, `constraint_violation`, `objective_error`,
+`constraint_error`, `engine_error`, and `trial_error` remain unchanged;
+`trial_timeout` is added. The `stop_reason` set is `trial_budget_reached`,
+`search_space_exhausted`, `sampler_stopped`, `cancelled`, `deadline`, and
+`trial_timeout`. Exit codes are **0** when a best feasible trial exists, **1** for
+initialization/I/O errors, **2** when no trial is feasible, and **3** for a trial
+timeout even if an earlier trial was feasible. Stopped runs still write final JSON
+to stdout and `--output`; timeout output includes exactly one timed-out trial and
+excludes other still-running trials.
+
+These controls are native-only. StudySpec's reserved `timeout_seconds` remains
+rejected, and the Python CLI does not relay signals or progress descriptors.
+Launchers can use public `pineforge_hpo.prepare_run(study_path, engine_root,
+cache_dir)` to obtain `(native_argv, artifact_json)` without starting the native
+process, then append native flags and execute directly. Optional keyword arguments
+`native`, `compiler`, and `eigen_include` preserve existing CLI overrides.
+
+CMake accepts either an engine source/build tree or an installed release prefix,
+for example `-DPINEFORGE_ENGINE_ROOT=/opt/pineforge`. Generated `version.h` is
+found in either `include/` or `build/include/`.
+
 ## Define a study
 
 Studies are strict JSON documents. Paths are resolved relative to the StudySpec file, not
@@ -376,6 +428,19 @@ cmake -S . -B build \
 cmake --build build -j4
 ctest --test-dir build --output-on-failure
 ```
+
+CMake 3.21+ also supports the `release`, `asan` (ASan/UBSan), and `tsan`
+(ThreadSanitizer) presets. Use separate sanitizer builds:
+
+```bash
+cmake --preset asan && cmake --build --preset asan -j4 && ctest --preset asan
+cmake --preset tsan && cmake --build --preset tsan -j4 && ctest --preset tsan
+```
+
+To include the installed-prefix gate, configure with
+`-DPINEFORGE_HPO_TEST_ENGINE_BUILD="$PWD/external/pineforge-engine/build"`
+after building the pinned engine. The test performs `cmake --install` into a
+temporary prefix and configures/builds HPO against that prefix.
 
 Please report bugs and propose features in the
 [GitHub issue tracker](https://github.com/pineforge-4pass/pineforge-hpo/issues). Include a

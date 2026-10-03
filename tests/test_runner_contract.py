@@ -111,7 +111,7 @@ def main() -> int:
         elif case == "progress":
             with (directory / "progress.jsonl").open("w+") as progress:
                 child = process(native, plugin, csv, progress.fileno(),
-                                "--fixed-input", "long_metadata", "x" * 8192, workers=12)
+                                "--categorical-choice", "long_metadata", "x" * 8192, workers=12)
                 stdout, stderr = child.communicate(timeout=12)
                 require(child.returncode == 0, f"progress run failed: {stderr}")
                 progress.seek(0)

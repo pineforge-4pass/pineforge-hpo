@@ -11,7 +11,7 @@
       "inherits": "release",
       "binaryDir": "${sourceDir}/build-asan",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "PINEFORGE_HPO_ENABLE_SANITIZERS": "ON"
       }
     },
@@ -20,7 +20,7 @@
       "inherits": "release",
       "binaryDir": "${sourceDir}/build-tsan",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "PINEFORGE_HPO_ENABLE_THREAD_SANITIZER": "ON"
       }
     }
