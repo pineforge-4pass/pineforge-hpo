@@ -179,7 +179,7 @@ candidate ordering or scoring for runs that omit them:
 | Flag | Contract |
 | --- | --- |
 | `--syminfo FILE` | Apply instrument `mintick`, `pointvalue`, `timezone`, and `session` after inputs and overrides, in that order. Accept a flat JSON object or `{"syminfo": {...}}`; omitted values keep engine defaults. |
-| `--progress-fd N` | Write and flush one JSONL object per terminal trial to an inherited writable descriptor. A single writer emits exactly the objects in the final `trials[]`, in completion order. Drain pipes while the process runs. |
+| `--progress-fd N` | Write and flush one JSONL object per terminal trial to an inherited writable descriptor. A single writer emits exactly the objects in the final `trials[]`, in completion order. Blocking and non-blocking descriptors are supported; drain pipes while the process runs. |
 | `--max-wall-seconds S` | Positive, finite study wall limit in seconds, including native initialization. Stop taking candidates cooperatively, including inside grid/random batches. |
 | `--record-metric PATH` | Repeatable additional report-metric path. Validate before execution and preserve the path spelling in each trial's `metrics`; unavailable values are JSON `null`. |
 | `--trial-timeout-seconds T` | Positive, finite per-trial wall cap. The first timeout records one `trial_timeout`, publishes the completed/timeout trials, and exits immediately without joining workers. |
@@ -208,9 +208,11 @@ The existing statuses `ok`, `constraint_violation`, `objective_error`,
 `search_space_exhausted`, `sampler_stopped`, `cancelled`, `deadline`, and
 `trial_timeout`. Exit codes are **0** when a best feasible trial exists, **1** for
 initialization/I/O errors, **2** when no trial is feasible, and **3** for a trial
-timeout even if an earlier trial was feasible. Stopped runs still write final JSON
-to stdout and `--output`; timeout output includes exactly one timed-out trial and
-excludes other still-running trials.
+timeout even if an earlier trial was feasible. Cooperative stops, timeouts, and
+permanent progress I/O failures write final JSON to stdout and `--output` when
+those destinations remain writable; a progress I/O failure then exits 1. Timeout
+output includes exactly one timed-out trial and excludes other still-running
+trials. Initialization or result-output failures can prevent final publication.
 
 These controls are native-only. StudySpec's reserved `timeout_seconds` remains
 rejected, and the Python CLI does not relay signals or progress descriptors.

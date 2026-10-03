@@ -83,9 +83,15 @@ are `trial_budget_reached`, `search_space_exhausted`, `sampler_stopped`,
 Exit codes remain 0 (a feasible best trial), 1 (initialization/I/O failure), and
 2 (no feasible trial); 3 denotes a trial timeout regardless of earlier feasible
 results. A timeout may therefore have `ok: true` and a best trial while exiting
-3. All stop paths publish final JSON to stdout and `--output` when configured.
+3. Cooperative stops and timeouts publish final JSON to stdout and `--output`
+when configured, provided those result destinations remain writable.
 `trials_completed` counts terminal records, including the timeout record.
 Cancellation/deadline can validly return an empty table and exit 2.
+Non-blocking progress descriptors are supported: temporary backpressure waits
+for writability and retries instead of cancelling the study. A permanent progress
+I/O failure stops new claims, publishes the completed trials to the writable result
+destinations, then exits 1 with the I/O diagnostic on stderr. Initialization or
+result-destination failures can prevent final JSON publication.
 Progress I/O errors do not disable timeout protection: if an in-flight trial hangs,
 the watchdog still emits final JSON and exits 3, with the I/O diagnostic on stderr.
 

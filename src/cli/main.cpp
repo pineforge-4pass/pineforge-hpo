@@ -37,6 +37,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -714,6 +715,16 @@ private:
                                        line.size() - written);
             if (count < 0 && errno == EINTR)
                 continue;
+            if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                struct pollfd descriptor {options_.progress_fd, POLLOUT, 0};
+                int ready;
+                do {
+                    ready = ::poll(&descriptor, 1, -1);
+                } while (ready < 0 && errno == EINTR);
+                if (ready > 0 && (descriptor.revents & POLLOUT))
+                    continue;
+                throw std::runtime_error("failed waiting for writable --progress-fd");
+            }
             if (count <= 0)
                 throw std::runtime_error("failed writing terminal trial to --progress-fd");
             written += static_cast<std::size_t>(count);
@@ -1268,7 +1279,6 @@ int run(const Options& options) {
     }
 
     state.shutdown();
-    state.check_error();
     if (trials.empty() && !state.stopped())
         throw std::runtime_error("sampler produced no candidates");
 
@@ -1277,6 +1287,7 @@ int run(const Options& options) {
     const auto json = render_results(options, space, finite_cardinality, trials, best_index,
                                      duplicate_proposals_skipped.load(), state.stop_reason());
     write_results(options, json);
+    state.check_error();
     return best_index ? 0 : 2;
 }
 
@@ -1286,6 +1297,7 @@ int main(int argc, char** argv) {
     try {
         struct sigaction action {};
         action.sa_handler = request_stop;
+        action.sa_flags = SA_RESTART;
         sigemptyset(&action.sa_mask);
         if (::sigaction(SIGTERM, &action, nullptr) != 0 ||
             ::sigaction(SIGINT, &action, nullptr) != 0)

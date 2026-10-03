@@ -7,10 +7,12 @@
   Flat and wrapped JSON are accepted; instrument numbers must be finite and
   positive, strings must be NUL-free, and omitted/empty string values keep defaults.
 - U2: native `--progress-fd N` emits one flushed terminal-trial JSONL object through
-  one writer, matching final `trials[]` entries. Consumers must drain pipes.
+  one writer, matching final `trials[]` entries. Non-blocking descriptors wait for
+  writability on temporary backpressure. Consumers must drain pipes.
 - U3: SIGTERM/SIGINT and native `--max-wall-seconds S` stop worker claims and
   adaptive batches cooperatively, including grid/random mid-batch. Final JSON
   includes completed trials and `stop_reason: cancelled` or `deadline`.
+  Signal handlers restart interrupted blocking I/O, including final result writes.
 - U4: repeatable native `--record-metric PATH` validates and retains additional
   report metrics under their expression names; unavailable values are `null`.
 - U5: every trial `backtest` now includes `magnifier_sample_ticks_total`.
@@ -27,7 +29,10 @@
   `trial_budget_reached`, `search_space_exhausted`, and `sampler_stopped`.
 - Exit codes 0 (best feasible), 1 (initialization/I/O error), and 2 (no feasible
   trial) are unchanged; 3 denotes a trial timeout even with an earlier best trial.
-  Stop paths publish final JSON, including empty tables for cooperative stops.
+  Cooperative stops and timeouts publish final JSON when result destinations remain
+  writable, including empty tables for cooperative stops. Permanent progress I/O
+  failures publish completed trials before exit 1; initialization or result-output
+  failures may prevent publication.
 - Add separate ASan/UBSan and TSan CMake presets and native-process contract tests.
   With no new flags, existing result fields and scoring/proposals remain unchanged
   except for the product version and the additive magnifier counter. No Python
