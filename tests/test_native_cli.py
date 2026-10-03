@@ -330,6 +330,7 @@ def main() -> int:
                 "startup_trials": 3,
                 "ei_candidates": 16,
                 "scale_ei_candidates": 8,
+                "bad_reservoir_size": 448,
                 "gamma_fraction": 0.25,
                 "gamma_cap": 4,
                 "prior_weight": 1.5,

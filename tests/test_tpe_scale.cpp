@@ -35,7 +35,7 @@ int main() {
                 objective += value * value;
             }
             sampler.tell(candidate->id, objective);
-            if (trial >= 1000 && sampler.retained_observations() > 89)
+            if (trial >= 1000 && sampler.retained_observations() > 537)
                 throw std::runtime_error("TPE retained unbounded history");
             if (trial == 2000) {
                 struct rusage usage {};

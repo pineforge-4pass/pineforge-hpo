@@ -40,6 +40,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <poll.h>
 #include <signal.h>
 #include <unistd.h>
@@ -256,6 +257,7 @@ void print_help() {
               << "  --tpe-startup-trials N      random observations before model fitting\n"
               << "  --tpe-ei-candidates N       candidates scored by log l(x)/g(x)\n"
               << "  --tpe-scale-ei-candidates N acquisition draws after bounded warm-up\n"
+              << "  --tpe-bad-reservoir-size N  older non-elite reservoir (default 448)\n"
               << "  --tpe-gamma-fraction X      good-observation fraction in (0, 1]\n"
               << "  --tpe-gamma-cap N           maximum good observations\n"
               << "  --tpe-prior-weight X        positive Parzen prior weight\n"
@@ -406,6 +408,9 @@ Options parse_options(int argc, char** argv) {
         } else if (option == "--tpe-scale-ei-candidates") {
             out.tpe_config.scale_ei_candidates =
                 parse_u64(require_value(argc, argv, i, option), option);
+        } else if (option == "--tpe-bad-reservoir-size") {
+            out.tpe_config.bad_reservoir_size =
+                parse_u64(require_value(argc, argv, i, option), option);
         } else if (option == "--tpe-gamma-fraction") {
             out.tpe_config.gamma_fraction =
                 parse_double(require_value(argc, argv, i, option), option);
@@ -541,6 +546,8 @@ Options parse_options(int argc, char** argv) {
     if (out.tpe_config.scale_ei_candidates == 0 ||
         out.tpe_config.scale_ei_candidates > 1'000'000)
         usage_error("--tpe-scale-ei-candidates must be between 1 and 1000000");
+    if (out.tpe_config.bad_reservoir_size > 65536)
+        usage_error("--tpe-bad-reservoir-size must be between 0 and 65536");
     if (!(out.tpe_config.gamma_fraction > 0.0 && out.tpe_config.gamma_fraction <= 1.0))
         usage_error("--tpe-gamma-fraction must be in (0, 1]");
     if (out.tpe_config.gamma_cap == 0)
@@ -758,7 +765,8 @@ enum class StopReason : std::uint8_t { kNone, kCancelled, kDeadline, kTrialTimeo
 class TrialArchive final {
 public:
     TrialArchive(const Options& options, const pfh::SearchSpace& space, bool finite)
-        : options_(options), space_(space), finite_(finite) {}
+        : options_(options), space_(space), finite_(finite),
+          ordinals_(finite ? space.finite_cardinality().value_or(0) : 0) {}
 
     void add(const TrialRecord& record) {
         ++completed;
@@ -824,18 +832,34 @@ public:
     RunState(const Options& options, Clock::time_point started, TrialArchive& archive,
              std::function<void(const std::vector<TrialRecord>&)> timeout_result)
         : options_(options), started_(started), archive_(archive),
-          timeout_result_(std::move(timeout_result)) {
+          timeout_result_(std::move(timeout_result)),
+          has_trials_file_(!options_.trials_file.empty()) {
         if (!options_.trials_file.empty()) {
             trials_file_.open(options_.trials_file, std::ios::binary | std::ios::trunc);
             if (!trials_file_)
                 throw std::runtime_error("cannot open --trials-file");
         }
-        if (options_.progress_fd >= 0 || trials_file_.is_open() ||
+        if (options_.progress_fd >= 0) {
+            struct stat descriptor {};
+            if (::fstat(options_.progress_fd, &descriptor) != 0)
+                throw std::runtime_error("cannot inspect --progress-fd");
+            if (S_ISFIFO(descriptor.st_mode))
+                progress_atomic_limit_ = ::fpathconf(options_.progress_fd, _PC_PIPE_BUF);
+            progress_flags_ = ::fcntl(options_.progress_fd, F_GETFL);
+            if (progress_flags_ < 0 ||
+                ::fcntl(options_.progress_fd, F_SETFL, progress_flags_ | O_NONBLOCK) != 0)
+                throw std::runtime_error("cannot make --progress-fd nonblocking");
+        }
+        if (options_.progress_fd >= 0 || has_trials_file_ ||
             options_.trial_timeout_seconds > 0.0)
             writer_ = std::thread([this] { watch(); });
     }
 
-    ~RunState() { shutdown(); }
+    ~RunState() {
+        shutdown();
+        if (progress_flags_ >= 0)
+            ::fcntl(options_.progress_fd, F_SETFL, progress_flags_);
+    }
 
     bool stopped() {
         StopReason expected = StopReason::kNone;
@@ -864,25 +888,28 @@ public:
         if (timed_out_)
             return;
         active_.erase(record.trial_id);
-        archive_.add(record);
-        if ((options_.progress_fd >= 0 || trials_file_.is_open()) && !progress_failed_) {
+        const bool streaming = options_.progress_fd >= 0 || has_trials_file_;
+        if (streaming && !progress_failed_) {
             const auto limit = 2 * (options_.batch_size ? options_.batch_size : options_.workers);
             changed_.wait(lock, [&] {
                 return pending_.size() < limit || progress_failed_ || timed_out_ ||
                        record.trial_id == next_progress_id_;
             });
-            if (!progress_failed_ && !timed_out_) {
-                const auto begin = Clock::now();
-                pending_.emplace(record.trial_id, render_trial(record) + "\n");
-                serialization_seconds_ += seconds_since(begin);
-            }
+        }
+        if (timed_out_)
+            return;
+        archive_.add(record);
+        if (streaming && !progress_failed_) {
+            const auto begin = Clock::now();
+            pending_.emplace(record.trial_id, render_trial(record) + "\n");
+            serialization_seconds_ += seconds_since(begin);
         }
         changed_.notify_all();
     }
 
     void skip(std::uint64_t trial_id) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (options_.progress_fd >= 0 || trials_file_.is_open())
+        if (options_.progress_fd >= 0 || has_trials_file_)
             pending_.emplace(trial_id, "");
         changed_.notify_all();
     }
@@ -928,16 +955,12 @@ private:
     void write_progress(const std::string& line) {
         if (line.empty())
             return;
-        if (trials_file_.is_open()) {
-            trials_file_ << line;
-            trials_file_.flush();
-            if (!trials_file_)
-                throw std::runtime_error("failed writing terminal trial to --trials-file");
-        }
-        if (options_.progress_fd < 0)
-            return;
+        if (progress_atomic_limit_ > 0 &&
+            line.size() > static_cast<std::size_t>(progress_atomic_limit_))
+            throw std::runtime_error("terminal trial exceeds atomic --progress-fd pipe limit");
         std::size_t written = 0;
-        while (written < line.size()) {
+        std::optional<Clock::time_point> stopped_at;
+        while (options_.progress_fd >= 0 && written < line.size()) {
             const auto count = ::write(options_.progress_fd, line.data() + written,
                                        line.size() - written);
             if (count < 0 && errno == EINTR)
@@ -946,15 +969,53 @@ private:
                 struct pollfd descriptor {options_.progress_fd, POLLOUT, 0};
                 int ready;
                 do {
-                    ready = ::poll(&descriptor, 1, -1);
+                    ready = ::poll(&descriptor, 1, 50);
                 } while (ready < 0 && errno == EINTR);
                 if (ready > 0 && (descriptor.revents & POLLOUT))
                     continue;
+                if (ready == 0) {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        check_timeouts();
+                    }
+                    if (stopped()) {
+                        if (!stopped_at)
+                            stopped_at = Clock::now();
+                        if (seconds_since(*stopped_at) >= 2.0)
+                            throw std::runtime_error("--progress-fd reader stalled after stop");
+                    }
+                    continue;
+                }
                 throw std::runtime_error("failed waiting for writable --progress-fd");
             }
             if (count <= 0)
                 throw std::runtime_error("failed writing terminal trial to --progress-fd");
             written += static_cast<std::size_t>(count);
+        }
+        if (has_trials_file_) {
+            trials_file_ << line;
+            trials_file_.flush();
+            if (!trials_file_)
+                throw std::runtime_error("failed writing terminal trial to --trials-file");
+        }
+    }
+
+    void check_timeouts() {
+        if (timed_out_ || options_.trial_timeout_seconds == 0.0)
+            return;
+        for (const auto& [trial_id, trial] : active_) {
+            if (seconds_since(trial.started) < options_.trial_timeout_seconds)
+                continue;
+            timed_out_ = true;
+            reason_.store(StopReason::kTrialTimeout);
+            auto record = make_trial_record(trial.candidate, options_);
+            record.status = "trial_timeout";
+            record.error = "trial exceeded --trial-timeout-seconds";
+            archive_.add(record);
+            if ((options_.progress_fd >= 0 || has_trials_file_) && !progress_failed_)
+                pending_.emplace(trial_id, render_trial(record) + "\n");
+            changed_.notify_all();
+            break;
         }
     }
 
@@ -964,23 +1025,7 @@ private:
                 std::unique_lock<std::mutex> lock(mutex_);
                 changed_.wait_for(lock, std::chrono::milliseconds(5),
                                   [&] { return done_ || pending_.count(next_progress_id_) != 0; });
-                if (!timed_out_ && options_.trial_timeout_seconds > 0.0) {
-                    for (const auto& [trial_id, trial] : active_) {
-                        if (seconds_since(trial.started) < options_.trial_timeout_seconds)
-                            continue;
-                        timed_out_ = true;
-                        reason_.store(StopReason::kTrialTimeout);
-                        auto record = make_trial_record(trial.candidate, options_);
-                        record.status = "trial_timeout";
-                        record.error = "trial exceeded --trial-timeout-seconds";
-                        archive_.add(record);
-                        if ((options_.progress_fd >= 0 || trials_file_.is_open()) &&
-                            !progress_failed_)
-                            pending_.emplace(trial_id, render_trial(record) + "\n");
-                        changed_.notify_all();
-                        break;
-                    }
-                }
+                check_timeouts();
                 auto next = pending_.find(next_progress_id_);
                 if (next == pending_.end() && (timed_out_ || done_))
                     next = pending_.begin();
@@ -1044,6 +1089,9 @@ private:
     std::map<std::uint64_t, std::string> pending_;
     std::uint64_t next_progress_id_ = 0;
     std::ofstream trials_file_;
+    const bool has_trials_file_;
+    int progress_flags_ = -1;
+    long progress_atomic_limit_ = 0;
     std::string error_;
     bool progress_failed_ = false;
     bool timed_out_ = false;
@@ -1261,6 +1309,7 @@ std::string render_results(const Options& options,
     if (options.sampler == "tpe") {
         out << "{\"startup_trials\": " << options.tpe_config.startup_trials
             << ", \"scale_ei_candidates\": " << options.tpe_config.scale_ei_candidates
+            << ", \"bad_reservoir_size\": " << options.tpe_config.bad_reservoir_size
             << ", \"ei_candidates\": " << options.tpe_config.ei_candidates
             << ", \"gamma_fraction\": " << json_number(options.tpe_config.gamma_fraction)
             << ", \"gamma_cap\": " << options.tpe_config.gamma_cap
@@ -1534,6 +1583,9 @@ int run(const Options& options) {
             completed.reserve(batch.size());
             for (auto& result : batch) {
                 const auto wait_start = RunState::Clock::now();
+                while (result.wait_for(std::chrono::milliseconds(50)) !=
+                       std::future_status::ready)
+                    state.stopped();
                 completed.push_back(result.get());
                 barrier_seconds += std::chrono::duration<double>(
                     RunState::Clock::now() - wait_start).count();

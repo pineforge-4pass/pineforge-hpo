@@ -7,17 +7,37 @@
 #include <memory>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 #include <unistd.h>
 
 namespace pineforge::hpo::detail {
 
 class OrdinalSet final {
 public:
+    explicit OrdinalSet(std::uint64_t cardinality = 0)
+        : dense_limit_(cardinality <= 100000000 ? cardinality : 0) {}
+
     bool contains(std::uint64_t value) const {
+        if (dense_limit_ != 0)
+            return value < dense_limit_ && !dense_.empty() &&
+                   (dense_[value / 64] & (std::uint64_t{1} << (value % 64))) != 0;
         return file_ && locate(file_.get(), capacity_, value).second;
     }
 
     bool insert(std::uint64_t value) {
+        if (dense_limit_ != 0) {
+            if (value >= dense_limit_)
+                throw std::out_of_range("finite coverage ordinal exceeds cardinality");
+            if (dense_.empty())
+                dense_.resize((dense_limit_ + 63) / 64);
+            auto& word = dense_[value / 64];
+            const auto bit = std::uint64_t{1} << (value % 64);
+            if ((word & bit) != 0)
+                return false;
+            word |= bit;
+            ++size_;
+            return true;
+        }
         if (!file_)
             file_ = create(capacity_);
         if (contains(value))
@@ -32,6 +52,7 @@ public:
 
     void clear() {
         file_.reset();
+        dense_.clear();
         capacity_ = 1024;
         size_ = 0;
     }
@@ -102,6 +123,8 @@ private:
     }
 
     File file_;
+    std::uint64_t dense_limit_ = 0;
+    std::vector<std::uint64_t> dense_;
     std::uint64_t capacity_ = 1024;
     std::uint64_t size_ = 0;
 };

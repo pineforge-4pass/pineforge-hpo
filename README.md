@@ -410,7 +410,9 @@ With an explicit batch size, changing only workers leaves `trials[]` byte-identi
 completed studies on the same deterministic artifact, data, runtime, and native build.
 Wall-deadline, cancellation, and timeout truncation are intentionally outside this guarantee.
 See [batching and pruning measurements](docs/batching.md) for the replay proof, metering
-contract, quality tradeoffs, and opt-in flags.
+contract, quality tradeoffs, and opt-in flags. The first 1,000 proposals intentionally
+preserve the old estimator: their zero regret delta is only a warm-up identity check,
+not long-budget quality evidence. Long-budget review measurements are reported separately.
 
 Generated strategies are compiled with the parity-critical
 `-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags; with Clang, the builder also passes

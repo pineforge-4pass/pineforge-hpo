@@ -1,5 +1,10 @@
 # Native scaling in 0.4.0
 
+**Release gate blocked:** the [review-fix measurements](review-2026-10-03.md)
+supersede the estimator, acquisition, and quality claims below. The tables below
+describe the original PR implementation, not the reservoir implementation. Its
+100/300/1,000-trial comparison is an identity check, not a quality gate.
+
 Measurements use one dedicated AWS 8-vCPU, 16-GiB Linux machine, Release C++17,
 and baseline `6ccb6d4` (0.3.0). Engine and codegen gitlinks remain pinned.
 No local workstation or other compute host is used for these gates.

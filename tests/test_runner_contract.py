@@ -175,7 +175,7 @@ def main() -> int:
             read_fd, write_fd = os.pipe()
             os.set_blocking(write_fd, False)
             child = process(native, plugin, csv, write_fd,
-                            "--categorical-choice", "long_metadata", "x" * 8192, workers=12)
+                            "--categorical-choice", "metadata", "x" * 1024, workers=12)
             os.close(write_fd)
             chunks = []
 

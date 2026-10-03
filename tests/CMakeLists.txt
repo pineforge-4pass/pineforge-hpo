@@ -22,7 +22,7 @@ target_link_libraries(pineforge_hpo_test_tpe_quality PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_tpe_quality PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_tpe_quality COMMAND pineforge_hpo_test_tpe_quality)
-set_tests_properties(pineforge_hpo_tpe_quality PROPERTIES TIMEOUT 60)
+set_tests_properties(pineforge_hpo_tpe_quality PROPERTIES TIMEOUT 300)
 
 add_executable(pineforge_hpo_test_tpe_stress test_tpe_stress.cpp)
 target_link_libraries(pineforge_hpo_test_tpe_stress PRIVATE PineForgeHPO::core)

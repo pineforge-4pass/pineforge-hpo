@@ -139,12 +139,20 @@ plus the existing optional pruning object. The `backtest` counters remain
 `magnifier_sample_ticks_total`, with unchanged names and types. No terminal-line
 field is removed, renamed, or added. IDs are unique and increasing; unstarted
 proposals can leave gaps. SIGTERM/deadline drains terminal lines before final
-output. A broken destination is an I/O error; no durable delivery is promised
-after a consumer closes its pipe.
+output. Progress pipes are nonblocking, with 50-ms readiness checks and a two-second
+grace for a stalled reader after SIGTERM, deadline, or trial timeout. Expiring that
+grace is an explicit I/O error, not successful delivery; trial timeouts still exit 3.
+To preserve complete lines even on that error path, pipe records must fit the
+descriptor's `PIPE_BUF` atomic-write bound (4,096 bytes on the measured Linux host).
+Oversized records are rejected before any bytes of that record are written. Regular
+progress files and `--trials-file` have no such line-size limit. A broken destination
+is also an I/O error. After either failure, final counts may exceed delivered lines;
+only the successfully received progress lines are the billing record.
 
 `schema_version` stays 1. Additive result fields are `trials_out`, `best_k`,
 `search_space_cardinality_overflow`, the conditional `summary` block, and
-`sampler_config.scale_ei_candidates`. All prior result fields retain their types.
+`sampler_config.scale_ei_candidates` and `sampler_config.bad_reservoir_size`.
+All prior result fields retain their types.
 Top-level counts, best trial, and coverage describe the entire study. When the
 Cartesian product exceeds uint64, default adaptive sampling accepts it and
 reports finite=true/cardinality=null/overflow=true without claiming exact unique
@@ -152,17 +160,32 @@ coverage; grid and exact finite policies reject it.
 
 TPE's identity changes to `pineforge_product_tpe_v3_bounded` (`_finite` for exact
 finite policies). Its default first 1,000 proposals keep full-history estimation.
-Thereafter 25 elites plus 64 recent non-elites, 513-point numeric density tables,
-32-completion refit epochs, and eight EI draws bound history-dependent work.
+Thereafter 25 elites plus 64 recent non-elites and a seeded reservoir of 448 older
+non-elites, 513-point numeric density tables,
+good-model refits when elite IDs change, 32-completion bad-model refit epochs, and eight EI
+draws bound history-dependent work. Unchanged elites and cached bad epochs skip rebuilding
+the split as well as the models.
 `--tpe-scale-ei-candidates N` changes the post-warm-up draws, capped by
 `--tpe-ei-candidates`; record it for replay. Seed, explicit batch size, lag, and
 pruning remain deterministic across worker counts. Enabled pruners now retain
 the latest 1,024 values per rung.
 
+Use `--batch-lag 1` to overlap sampling and execution. The original recent-only
+64D profile used about 65% of the W=8, 3-ms trial budget (245/375 microseconds).
+That is not a guarantee for the reservoir estimator: its loaded review profile
+uses about 669 microseconds/ask, exceeding that budget. History cost is flat,
+but 64D sampling can still be the bottleneck; see the scaling review report.
+
+`--tpe-bad-reservoir-size N` selects the older non-elite bound (default 448,
+range 0–65,536). Its independent seeded RNG does not consume proposal RNG draws.
+Zero recreates the recent-only bad-model retention, not the recommended refinement
+configuration. Reservoir sampling happens as non-elites leave the recent window.
+
 Bounded modes retain fixed warm-up/model history, outstanding logical batches,
 a bounded writer queue, and best-k, independent of total trials. Exact finite
-coverage may use a temporary disk index growing with unique attempts; a
-small-space bitset is capped at 12.5 MB. Dataset/engine state still depends on
+coverage uses a dense bitset for cardinalities up to 100,000,000 (at most 12.5 MB
+per index); larger spaces use a temporary disk index growing with unique attempts.
+Dataset/engine state still depends on
 bars and workers. `all` and dlib's optimizer history are not covered by the
 bounded-memory TPE guarantee.
 

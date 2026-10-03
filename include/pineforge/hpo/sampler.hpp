@@ -121,6 +121,9 @@ struct TpeSamplerConfig {
 
     /// Acquisition draws after the bounded-history warm-up; never exceeds ei_candidates.
     std::uint64_t scale_ei_candidates = 8;
+
+    /// Uniform older non-elite reservoir size, in addition to 64 recent observations.
+    std::uint64_t bad_reservoir_size = 448;
 };
 
 /// @brief Independent, single-objective Tree-structured Parzen Estimator sampler.
@@ -136,8 +139,10 @@ struct TpeSamplerConfig {
 ///
 /// With the default configuration, the first 1,000 proposals use the full-history estimator.
 /// Thereafter the sampler retains at most gamma_cap elite observations and 64 recent non-elite
-/// observations. Larger gamma_cap values extend warm-up to gamma_cap + 64 proposals. Numeric
-/// density tables and 32-completion refit epochs bound work independently of study length.
+/// observations plus bad_reservoir_size older non-elites from a separate seeded reservoir.
+/// Larger gamma_cap values extend warm-up to gamma_cap + 64 proposals. Numeric
+/// density tables, elite-change good-model refits, and 32-completion bad-model epochs bound
+/// work independently of study length.
 class TpeSampler final : public Sampler {
 public:
     /// Constructs a native TPE sampler; `max_candidates == 0` means unbounded generation.

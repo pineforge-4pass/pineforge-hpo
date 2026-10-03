@@ -210,11 +210,15 @@ order. The two orders need not have the same intermediate best-so-far sequence.
 
 Version 0.4.0 bounds TPE history after the default 1,000-proposal warm-up. The
 retained set is the global best `gamma_cap` observations plus 64 recent
-non-elites; larger gamma caps extend warm-up to at least `gamma_cap + 64`.
+non-elites plus a separately seeded reservoir of older non-elites (default 448).
+Each observation enters the older pool once when it leaves the recent window;
+uniform reservoir replacement preserves global bad-model coverage without growing
+history. Larger gamma caps extend warm-up to at least `gamma_cap + 64`.
 Fitted numeric density tables use 513 points with Gaussian recurrence and an
 eight-sigma cutoff, interpolating densities and using midpoint mass for tiny
-discrete bins. Models refit in deterministic 32-completion epochs, with pending
-constant-liar overlays updated on every ask. Eight acquisition draws replace
+discrete bins. Good models refit whenever elite IDs change; bad models refit every
+32 completions, with unchanged elites and cached epochs bypassing split construction.
+Pending constant-liar overlays update on every ask. Eight acquisition draws replace
 24 after warm-up (configurable). Failed/pruned requests also count toward the
 proposal warm-up, preventing failure-heavy runs from growing history.
 The warm-up keeps the legacy full-history estimator and proposal sequence.
@@ -223,7 +227,7 @@ No SIMD or candidate-scoring threads are required: bounding observations, model
 refits, and acquisition draws makes history cost flat while leaving execution
 cores available for backtests. See [scaling measurements](../benchmarks/scaling/README.md).
 Exact sparse finite reservation/coverage sets use temporary disk indexes with
-bounded resident workspace; small finite TPE spaces use a capped bitset.
+bounded resident workspace; finite spaces up to 100,000,000 use capped bitsets.
 
 Log dimensions share one transform contract across adaptive samplers. TPE
 encodes observations as `z = ln(value)` and fits numeric kernels in normalized

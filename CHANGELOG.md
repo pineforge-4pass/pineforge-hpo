@@ -2,11 +2,21 @@
 
 ## 0.4.0
 
-- Bound native TPE history after the default 1,000-proposal warm-up to 25 global elites
-  and 64 recent non-elites. Cache numeric density tables in deterministic 32-completion
-  epochs, retain live constant-liar overlays, and use eight acquisition draws after warm-up.
+- Bound native TPE history after the default 1,000-proposal warm-up to 25 global elites,
+  64 recent non-elites, and a seeded reservoir of 448 older non-elites. Cache numeric
+  density tables, refit good models on elite changes and bad models every 32 completions,
+  skip split construction on cache hits, retain live constant-liar overlays, and use eight
+  draws after warm-up.
   Preserve full-history acquisition through 1,000 proposals; record the new
   `pineforge_product_tpe_v3_bounded` identity and `scale_ei_candidates` setting.
+- Add `--tpe-bad-reservoir-size` (default 448, maximum 65,536) and the additive
+  `sampler_config.bad_reservoir_size` result field. The unchanged first 1,000 proposals
+  are a warm-up identity check, not evidence of long-budget quality equivalence.
+- Record the long-budget review gate as blocked: across eight problems and ten seeds at
+  3,000 trials, median-regret ratios have geomean 1.015738 versus 0.3.0 (required <= 1.01),
+  with worst problem 1.099926. At 10,000 trials, four problems and five seeds versus the
+  benchmark-only full-history variant have geomean 1.020763 and worst ratio 1.091497.
+  See the scaling review report for all rows, alternatives, and performance limitations.
 - Generate grid/random candidates lazily, use all workers for deadline-only adaptive studies,
   and accept `--max-trials 0 --max-wall-seconds S` without imposing a trial cap.
 - Add native `--trials-out all|best-k|none`, `--best-k N` (default 10), and optional
@@ -21,12 +31,20 @@
   feasible winners. Existing best/coverage/count fields describe the entire study.
 - Permit default adaptive sampling when a finite Cartesian product exceeds uint64;
   cardinality is then null and the additive overflow flag is true. Exact finite policies
-  still require representable cardinality. Disk-backed exact ordinal indexes avoid growing
-  resident uniqueness sets. Disabled pruning retains no history; enabled pruning keeps
+  still require representable cardinality. Exact ordinal coverage uses a dense bitset up to
+  cardinality 100,000,000, with a disk-backed fallback above that bound. Disabled pruning
+  retains no history; enabled pruning keeps
   the latest 1,024 observations per rung.
 - Add timing-sidecar proposal/barrier, progress serialization/write/byte, and final JSON
   render/write/byte diagnostics; publish scaling and paired-quality evidence, a 100,000-trial
   native memory/time regression, worker replay, output parity, and stop-flush tests.
+- Keep timeout archive insertion and progress enqueue atomic under backpressure. Bound
+  progress readiness waits to 50 ms and fail explicitly after a two-second stopped-reader
+  grace. Pipe records must fit `PIPE_BUF` and are rejected before writing otherwise;
+  regular progress files and trials files remain unrestricted. Billing still uses received
+  complete progress lines, never final-result counts following an I/O failure.
+- Extend worker replay past the sampler switch to 3,000 trials and give the native
+  quality suite a 300-second timeout to avoid spurious failures under benchmark load.
 - Native `prepare` is reserved for a separately gated 0.4.x follow-up; the existing Python
   `prepare_run()` API remains available and unchanged.
 

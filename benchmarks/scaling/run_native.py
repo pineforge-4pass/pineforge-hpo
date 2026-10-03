@@ -24,6 +24,7 @@ def write_bars(path, count, minutes):
 
 
 def profile(binary, command, label, output, billing=False):
+    binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
     stats = output / f"{label}.stats.json"
     results = output / f"{label}.results.json"
     timing = output / f"{label}.time.json"
@@ -64,7 +65,7 @@ def profile(binary, command, label, output, billing=False):
         raise RuntimeError(f"{label}: {process.returncode}: {errors}")
     result = json.loads(results.read_text())
     row = {"label": label, "elapsed_seconds": time.monotonic() - started,
-           "native_binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+           "native_binary_sha256": binary_hash,
            **json.loads(timing.read_text()), **json.loads(stats.read_text()),
            "trials_completed": result["trials_completed"],
            "final_json_bytes": results.stat().st_size,
@@ -91,6 +92,10 @@ def main():
     parser.add_argument("--lag", type=int, default=1)
     parser.add_argument("--modes", nargs="+", default=["none"])
     parser.add_argument("--sampler", choices=("random", "tpe"), default="tpe")
+    parser.add_argument("--finite", action="store_true",
+                        help="use integer dimensions of cardinality 100 each")
+    parser.add_argument("--baseline-trials-out", choices=("all", "best-k", "none"),
+                        help="output mode for a baseline that supports --trials-out")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -107,10 +112,15 @@ def main():
                    "--bar-magnifier", "true", "--magnifier-samples", "6",
                    "--magnifier-distribution", "triangle", "--fixed-input", "Length", "37",
                    "--fixed-input", "DelayMs", str(args.delay_ms)]
-        command.extend(value for index in range(args.dims)
-                       for value in ("--real-dim", f"x{index}", "-5", "5", "continuous"))
+        for index in range(args.dims):
+            command.extend(("--int-dim", f"x{index}", "1", "100", "1") if args.finite else
+                           ("--real-dim", f"x{index}", "-5", "5", "continuous"))
         if args.baseline:
-            profile(args.baseline, command, f"output-n{args.trials}-d{args.dims}-before", output)
+            baseline_command = command + (["--trials-out", args.baseline_trials_out]
+                                          if args.baseline_trials_out else [])
+            profile(args.baseline, baseline_command,
+                    f"output-n{args.trials}-d{args.dims}-before", output,
+                    billing=args.baseline_trials_out in ("best-k", "none"))
         for mode in args.modes:
             profile(args.native, command + ["--trials-out", mode, "--best-k", "10"],
                     f"million-d{args.dims}-{mode}-delay{args.delay_ms}-lag{args.lag}", output,

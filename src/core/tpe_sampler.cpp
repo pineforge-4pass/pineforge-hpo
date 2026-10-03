@@ -456,6 +456,7 @@ private:
 
     std::vector<Component> components_;
     std::array<double, 513> density_{};
+    // Shared model scratch is accessed only while the owning sampler holds Impl::mutex_.
     mutable std::vector<double> terms_;
     bool fast_density_;
     double total_weight_ = 0.0;
@@ -541,6 +542,8 @@ void validate_config(const TpeSamplerConfig& config) {
     }
     if (config.scale_ei_candidates == 0 || config.scale_ei_candidates > kMaxEiCandidates)
         throw std::invalid_argument("TPE scale_ei_candidates must be in [1, 1000000]");
+    if (config.bad_reservoir_size > 65536)
+        throw std::invalid_argument("TPE bad_reservoir_size must be in [0, 65536]");
     if (!std::isfinite(config.gamma_fraction) || config.gamma_fraction <= 0.0 ||
         config.gamma_fraction > 1.0) {
         throw std::invalid_argument("TPE gamma_fraction must be finite and in (0, 1]");
@@ -666,7 +669,8 @@ public:
     Impl(const SearchSpace& space,
          std::uint64_t seed,
          std::optional<std::uint64_t> finite_cardinality)
-        : engine_(seed), finite_cardinality_(finite_cardinality) {
+        : engine_(seed), reservoir_engine_(seed ^ 0xd1b54a32d192ed03ULL),
+          finite_cardinality_(finite_cardinality) {
         if (finite_cardinality_.has_value()) {
             reservations_.emplace(*finite_cardinality_);
         }
@@ -687,7 +691,10 @@ public:
             throw std::logic_error("TPE cannot reset while candidates are outstanding");
         }
         engine_.seed(seed);
+        reservoir_engine_.seed(seed ^ 0xd1b54a32d192ed03ULL);
         history_.clear();
+        older_bad_.clear();
+        older_bad_seen_ = 0;
         compact_history_ = false;
         cached_models_.clear();
         good_ids_.clear();
@@ -748,14 +755,14 @@ public:
         return candidate;
     }
 
-    std::optional<Candidate> tpe_candidate(const SearchSpace& space,
-                                           std::uint64_t id,
-                                           const TpeSamplerConfig& config) {
+    void refresh_models(const SearchSpace& space, const TpeSamplerConfig& config) {
         std::vector<const CompletedObservation*> ranked;
-        ranked.reserve(history_.size());
+        ranked.reserve(history_.size() + older_bad_.size());
         for (const auto& observation : history_) {
             ranked.push_back(&observation);
         }
+        for (const auto& observation : older_bad_)
+            ranked.push_back(&observation);
         std::sort(ranked.begin(), ranked.end(), [](const auto* left, const auto* right) {
             if (left->score != right->score) {
                 return left->score > right->score;
@@ -797,8 +804,7 @@ public:
         for (const auto* candidate : bad)
             bad_ids.push_back(candidate->id);
         const auto model_epoch = completed_.load(std::memory_order_relaxed) / 32;
-        const bool reuse_good = (compact_history_ ? model_epoch == cached_epoch_
-                                                 : good_ids == good_ids_) &&
+        const bool reuse_good = good_ids == good_ids_ &&
                                 !cached_models_.empty() &&
                                 compact_history_ == cached_compact_;
         const bool reuse_bad = (compact_history_ ? model_epoch == cached_epoch_
@@ -820,6 +826,26 @@ public:
             cached_compact_ = compact_history_;
             cached_epoch_ = model_epoch;
         }
+    }
+
+    std::optional<Candidate> tpe_candidate(const SearchSpace& space,
+                                         std::uint64_t id,
+                                         const TpeSamplerConfig& config) {
+        const auto model_epoch = completed_.load(std::memory_order_relaxed) / 32;
+        bool good_changed = false;
+        if (compact_history_ && cached_compact_ && !cached_models_.empty()) {
+            const auto good_count = std::min(history_.size() - 1,
+                gamma_count(completed_.load(std::memory_order_relaxed), config));
+            std::vector<std::uint64_t> current_ids;
+            current_ids.reserve(good_count);
+            for (std::size_t index = 0; index < good_count; ++index)
+                current_ids.push_back(history_[index].candidate.id);
+            std::sort(current_ids.begin(), current_ids.end());
+            good_changed = current_ids != good_ids_;
+        }
+        if (!compact_history_ || !cached_compact_ || cached_models_.empty() ||
+            model_epoch != cached_epoch_ || good_changed)
+            refresh_models(space, config);
         const auto& models = cached_models_;
 
         std::vector<std::vector<double>> pending_values(models.size());
@@ -964,7 +990,18 @@ public:
                   [](const auto& left, const auto& right) {
                       return left.candidate.id > right.candidate.id;
                   });
-        history_.resize(elite_count + recent_count);
+        const auto retained = elite_count + recent_count;
+        for (auto index = history_.size(); index > retained; --index) {
+            ++older_bad_seen_;
+            if (older_bad_.size() < config.bad_reservoir_size) {
+                older_bad_.push_back(std::move(history_[index - 1]));
+            } else if (config.bad_reservoir_size != 0) {
+                const auto selected = bounded_random(reservoir_engine_, older_bad_seen_);
+                if (selected < older_bad_.size())
+                    older_bad_[selected] = std::move(history_[index - 1]);
+            }
+        }
+        history_.resize(retained);
     }
 
     bool register_pending(const SearchSpace& space, const Candidate& candidate) {
@@ -997,8 +1034,11 @@ public:
 
     std::mutex mutex_;
     std::mt19937_64 engine_;
+    std::mt19937_64 reservoir_engine_;
     std::vector<Encoding> encodings_;
     std::vector<CompletedObservation> history_;
+    std::vector<CompletedObservation> older_bad_;
+    std::uint64_t older_bad_seen_ = 0;
     bool compact_history_ = false;
     bool cached_compact_ = false;
     std::uint64_t cached_epoch_ = 0;
@@ -1628,7 +1668,7 @@ std::uint64_t TpeSampler::outstanding() const noexcept {
 
 std::size_t TpeSampler::retained_observations() const {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
-    return impl_->history_.size();
+    return impl_->history_.size() + impl_->older_bad_.size();
 }
 
 std::uint64_t TpeSampler::duplicate_proposals_skipped() const noexcept {

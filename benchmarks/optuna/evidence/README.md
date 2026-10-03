@@ -46,9 +46,9 @@ publish three compact CSVs with adjacent `.csv.metadata.json` sidecars:
 
 | Profile | CSV | Verified CSV SHA-256 |
 |---|---|---|
-| Acquisition versus history | [`2026-10-03-scale-ask.csv`](2026-10-03-scale-ask.csv) | `47f9d9c85add8c06ae9fd0e26edb481e8d02bae4a4ccb717fca52e1d331e05be` |
-| Native throughput, retention, billing | [`2026-10-03-scale-native.csv`](2026-10-03-scale-native.csv) | `7aa11607484bce378946ce7d66faac68797a8f290be63393e0c4bfc464a763d5` |
-| Paired normalized-regret quality | [`2026-10-03-scale-quality.csv`](2026-10-03-scale-quality.csv) | `c37edecfcae2881c19c63ee6e3f753978ec739117f442ed929d37df96b427574` |
+| Acquisition versus history | [`2026-10-03-scale-ask.csv`](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/benchmarks/optuna/evidence/2026-10-03-scale-ask.csv) | `47f9d9c85add8c06ae9fd0e26edb481e8d02bae4a4ccb717fca52e1d331e05be` |
+| Native throughput, retention, billing | [`2026-10-03-scale-native.csv`](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/benchmarks/optuna/evidence/2026-10-03-scale-native.csv) | `7aa11607484bce378946ce7d66faac68797a8f290be63393e0c4bfc464a763d5` |
+| Paired normalized-regret quality | [`2026-10-03-scale-quality.csv`](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/benchmarks/optuna/evidence/2026-10-03-scale-quality.csv) | `c37edecfcae2881c19c63ee6e3f753978ec739117f442ed929d37df96b427574` |
 
 The sidecars include exact source and measured binary hashes, compiler/platform,
 engine/codegen/COCO pins, row counts, and verified CSV hashes. Acquisition rows
@@ -57,3 +57,14 @@ distinguish the light million-trial gate, output-only matrix, hourly real-strate
 shapes, and the slow magnifier shape. Quality includes the pinned hard-suite
 replica and 32D extension, with 144 paired studies and zero maximum paired delta
 at 100/300/1,000 trials. No long-budget quality-equivalence claim is made.
+
+## Review-fix evidence (release blocked)
+
+The [review-fix report](../../scaling/review-2026-10-03.md) supersedes the original
+sampler measurements. `2026-10-03-review-quality.csv` contains 500 per-seed
+comparisons across five complete configurations at 3k/10k, with trace hashes,
+binary hashes, frozen-reference description, normalizer and source provenance.
+Adjacent `review-ask`, `review-native`, and `review-ordinal` CSVs record flat
+history probes, finite before/after plus the final million-trial run, and dense
+versus disk insertion. Every CSV has a verified `.csv.metadata.json` sidecar.
+The selected 3k geomean is 1.015738: **the required <=1.01 gate fails**.
