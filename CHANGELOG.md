@@ -14,6 +14,10 @@
   symbol-info, recorded metrics, magnifier metering, and trial-timeout contracts.
 - Add worker-count replay, lag, pruning, default-compatibility, and prefix API regressions;
   publish paired real-strategy measurements and replay methodology.
+- Clear stale prefix report values on pruning-path engine/objective failures while keeping
+  cumulative compute counters; discard queued trials when the coordinator unwinds.
+- Reject lagged TPE without constant liar during StudySpec validation, document the
+  whole-trial watchdog budget, and qualify unexplained default timing gaps as noise.
 
 ## 0.2.0 — unreleased
 

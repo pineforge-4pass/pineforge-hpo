@@ -644,6 +644,24 @@ TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& op
     return record;
 }
 
+void reset_pruning_report(TrialRecord& record) {
+    if (!record.pruning_enabled)
+        return;
+    record.feasible = false;
+    record.objective.reset();
+    record.total_trades = 0;
+    record.net_profit = std::numeric_limits<double>::quiet_NaN();
+    record.input_bars_processed = 0;
+    record.script_bars_processed = 0;
+    record.magnifier_sample_ticks_total = 0;
+    record.input_tf_seconds = 0;
+    record.script_tf_seconds = 0;
+    record.script_tf_ratio = 0;
+    record.needs_aggregation = false;
+    for (auto& [name, value] : record.metrics)
+        value = std::numeric_limits<double>::quiet_NaN();
+}
+
 std::string render_trial(const TrialRecord& trial) {
     std::ostringstream out;
     out << "{\"trial_id\": " << trial.trial_id << ", \"status\": \""
@@ -970,6 +988,7 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
             if (!execution.succeeded()) {
                 record.status = "engine_error";
                 record.error = execution.error;
+                reset_pruning_report(record);
                 return record;
             }
             record.total_trades = execution.report.total_trades;
@@ -986,11 +1005,13 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
             if (!score.valid) {
                 record.status = "objective_error";
                 record.error = score.diagnostic;
+                reset_pruning_report(record);
                 return record;
             }
             if (!std::isfinite(score.value)) {
                 record.status = "objective_error";
                 record.error = "objective result is non-finite and cannot be ranked";
+                reset_pruning_report(record);
                 return record;
             }
             record.objective = score.value;

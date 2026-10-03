@@ -100,7 +100,11 @@ policy. The progress line contains the same complete object as the final row.
 Stop checks remain before each logical batch/proposal and before each worker
 claim. A stopped queued trial does not run or emit a terminal row. The existing
 0.2.0 progress writer and timeout watchdog are retained, including exit code 3
-and no join after a hung trial. `strategy_request_abort` is available in ABI 4,
+and no join after a hung trial. `--trial-timeout-seconds` spans the entire trial,
+including every prefix rerun; it does not restart at each rung. A surviving
+trial with the default rungs processes roughly 1.75 times the full-window bar
+work, so raise the trial timeout when enabling pruning if needed.
+`strategy_request_abort` is available in ABI 4,
 but prefix pruning makes decisions between completed exact runs, not halfway
 through a report; this release does not replace the runner watchdog contract.
 
@@ -153,6 +157,12 @@ These are a bounded paired-seed measurement, not a claim of universal optimum
 preservation or speedup. Host scheduling changes absolute wall times between
 measurement passes; the bar totals and objective/replay checks are exact.
 Millisecond example times are mostly startup noise.
+
+In particular, the BB/RSI baseline-to-default wall gap (1.407 s versus 0.980 s)
+is treated as scheduling noise, not an explained speedup. That default path
+only replaces per-batch thread creation; the volatility default shows virtually
+no wall-time gain. Do not attribute the BB/RSI baseline/default difference to
+the persistent pool or use it as a general performance claim.
 
 ### Why lag one ships, but stays opt-in
 

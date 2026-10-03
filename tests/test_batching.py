@@ -118,6 +118,50 @@ class BatchReplayTests(unittest.TestCase):
         self.assertTrue(all(trial["status"] in ("ok", "pruned")
                             for trial in result["trials"]))
 
+    def test_later_rung_errors_clear_report_fields(self) -> None:
+        cases = [
+            (("--fixed-input", "FailAfterBars", "16"), "engine_error", 16, 72),
+            (("--fixed-input", "FailAfterBars", "32"), "engine_error", 48, 144),
+            (("--objective", "metrics.all.net_profit / (64 - input_bars_processed)"),
+             "objective_error", 112, 216),
+            (("--objective", "metrics.all.net_profit / (64 - input_bars_processed)",
+              "--division-by-zero", "ieee"), "objective_error", 112, 216),
+        ]
+        for flags, status, bars, ticks in cases:
+            with self.subTest(status=status, flags=flags):
+                completed = self.invoke(
+                    "--pruner", "median", "--batch-size", "4", "--max-trials", "4",
+                    "--record-metric", "metrics.all.profit_factor", *flags,
+                )
+                self.assertEqual(completed.returncode, 2, completed.stderr)
+                result = json.loads(completed.stdout)
+                self.assertEqual(len(result["trials"]), 4)
+                for trial in result["trials"]:
+                    self.assertEqual(trial["status"], status)
+                    self.assertIsNone(trial["objective"])
+                    self.assertFalse(trial["feasible"])
+                    self.assertEqual(trial["total_trades"], 0)
+                    self.assertIsNone(trial["net_profit"])
+                    self.assertTrue(all(value == 0 for value in trial["backtest"].values()))
+                    self.assertTrue(all(value is None for value in trial["metrics"].values()))
+                    self.assertIn("metrics.all.profit_factor", trial["metrics"])
+                    self.assertEqual(trial["pruning"]["bars_processed_total"], bars)
+                    self.assertEqual(trial["pruning"]["script_bars_processed_total"], ticks // 72)
+                    self.assertEqual(trial["pruning"]["magnifier_sample_ticks_total"], ticks)
+
+    def test_unpruned_objective_errors_keep_legacy_report(self) -> None:
+        completed = self.invoke(
+            "--pruner", "none", "--max-trials", "4",
+            "--objective", "metrics.all.net_profit / (64 - input_bars_processed)",
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        for trial in json.loads(completed.stdout)["trials"]:
+            self.assertEqual(trial["status"], "objective_error")
+            self.assertIsNone(trial["objective"])
+            self.assertGreater(trial["total_trades"], 0)
+            self.assertIsNotNone(trial["net_profit"])
+            self.assertEqual(trial["backtest"]["input_bars_processed"], 64)
+
     def test_pruned_progress_matches_terminal_records(self) -> None:
         path = Path(self.directory.name) / "progress.jsonl"
         with path.open("w") as progress:

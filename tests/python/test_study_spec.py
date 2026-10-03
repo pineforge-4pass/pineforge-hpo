@@ -54,6 +54,26 @@ def valid_document() -> dict:
 
 
 class StudySpecTest(unittest.TestCase):
+    def test_lagged_tpe_requires_constant_liar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            document = valid_document()
+            document["sampler"] = {
+                "kind": "tpe", "seed": 1234, "trials": 100,
+                "config": {"constant_liar": False},
+            }
+            document["execution"]["batch_lag"] = 1
+            path = Path(temporary) / "study.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(StudySpecError, "batch_lag.*constant_liar"):
+                load_study_spec(path)
+            document["execution"]["batch_lag"] = 0
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertFalse(load_study_spec(path).sampler.config.constant_liar)
+            document["execution"]["batch_lag"] = 1
+            document["sampler"]["config"]["constant_liar"] = True
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertTrue(load_study_spec(path).sampler.config.constant_liar)
+
     def test_batching_and_pruning_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             document = valid_document()

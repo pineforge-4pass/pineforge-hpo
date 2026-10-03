@@ -590,6 +590,11 @@ Use the cumulative totals for compute metering, including on surviving trials.
 Pruned trials remain billable trials unless the consuming application explicitly
 chooses another policy. Progress lines use exactly the same terminal object.
 
+The native `--trial-timeout-seconds` watchdog spans all prefix reruns in a trial,
+not each rung separately. Surviving the default quarter/half/full schedule
+requires roughly 1.75 times the full-window bar work; account for that when
+choosing a timeout for a pruning-enabled study.
+
 Pruning and pipelining stay opt-in: changing feedback or cutting prefixes can
 change the best found result. See [measurements and limitations](batching.md).
 

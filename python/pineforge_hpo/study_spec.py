@@ -1048,6 +1048,12 @@ def load_study_spec(path: str | Path, *, require_files: bool = False) -> StudySp
     _validate_candidate_policy(strategy, sampler, issues)
     execution = _parse_execution(root.get("execution"), issues)
 
+    if (sampler.kind == "tpe" and execution.batch_lag == 1
+            and sampler.config is not None and not sampler.config.constant_liar):
+        issues.append(ValidationIssue(
+            "$.execution.batch_lag", "lag-one TPE requires sampler.config.constant_liar=true"
+        ))
+
     if require_files:
         strategy_path = strategy.source or strategy.artifact
         if strategy_path is not None and not strategy_path.is_file():

@@ -69,6 +69,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             closing_ = true;
+            queue_.clear();
         }
         ready_.notify_all();
         for (auto& worker : workers_) {

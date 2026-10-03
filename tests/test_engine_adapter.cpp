@@ -154,6 +154,10 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     if (prefix_test) {
         std::this_thread::sleep_for(std::chrono::milliseconds((length % 7) + 1));
     }
+    if (bar_count > parse_or(state->inputs, "FailAfterBars", 1e9)) {
+        state->error = "deliberate later-rung engine failure";
+        return;
+    }
     if (state->syminfo_order_error) {
         state->error = "symbol setters did not follow inputs/overrides and harness order";
         return;
