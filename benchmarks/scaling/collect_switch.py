@@ -34,9 +34,11 @@ def main():
                "include/pineforge/hpo/sampler.hpp", "python/pineforge_hpo/study_spec.py",
                "python/pineforge_hpo/cli.py"]
     sources.extend(str(path.relative_to(root)) for path in
-                   sorted((root / "benchmarks/scaling").glob("*.py")))
+                   sorted((root / "benchmarks/scaling").glob("*.py"))
+                   if path.is_file() and not path.name.startswith("._"))
     sources.extend(str(path.relative_to(root)) for path in
-                   sorted((root / "benchmarks/scaling").glob("*.cpp")))
+                   sorted((root / "benchmarks/scaling").glob("*.cpp"))
+                   if path.is_file() and not path.name.startswith("._"))
     common = {"schema": "pineforge-hpo.scaling-evidence.v1", "version": "0.4.0",
               "baseline_revision": "6ccb6d4", "rebased_main_revision": "13885b9",
               "release_gate": "blocked", "history_switch": 8,
