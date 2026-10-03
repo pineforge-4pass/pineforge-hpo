@@ -80,6 +80,8 @@ StrategyPlugin::StrategyPlugin(std::filesystem::path path) : path_(std::move(pat
             library_handle_, "strategy_set_syminfo_mintick");
         strategy_set_syminfo_pointvalue_ = load_optional_symbol<StrategySetSymbolDoubleFn>(
             library_handle_, "strategy_set_syminfo_pointvalue");
+        strategy_set_syminfo_metadata_ = load_optional_symbol<StrategySetSymbolMetadataFn>(
+            library_handle_, "strategy_set_syminfo_metadata");
         strategy_set_syminfo_timezone_ = load_optional_symbol<StrategySetSymbolStringFn>(
             library_handle_, "strategy_set_syminfo_timezone");
         strategy_set_syminfo_session_ = load_optional_symbol<StrategySetSymbolStringFn>(
@@ -124,6 +126,7 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
       strategy_set_chart_timezone_(other.strategy_set_chart_timezone_),
       strategy_set_syminfo_mintick_(other.strategy_set_syminfo_mintick_),
       strategy_set_syminfo_pointvalue_(other.strategy_set_syminfo_pointvalue_),
+      strategy_set_syminfo_metadata_(other.strategy_set_syminfo_metadata_),
       strategy_set_syminfo_timezone_(other.strategy_set_syminfo_timezone_),
       strategy_set_syminfo_session_(other.strategy_set_syminfo_session_),
       run_backtest_full_(other.run_backtest_full_),
@@ -139,6 +142,7 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
     other.strategy_set_chart_timezone_ = nullptr;
     other.strategy_set_syminfo_mintick_ = nullptr;
     other.strategy_set_syminfo_pointvalue_ = nullptr;
+    other.strategy_set_syminfo_metadata_ = nullptr;
     other.strategy_set_syminfo_timezone_ = nullptr;
     other.strategy_set_syminfo_session_ = nullptr;
     other.run_backtest_full_ = nullptr;
@@ -162,6 +166,7 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     strategy_set_chart_timezone_ = other.strategy_set_chart_timezone_;
     strategy_set_syminfo_mintick_ = other.strategy_set_syminfo_mintick_;
     strategy_set_syminfo_pointvalue_ = other.strategy_set_syminfo_pointvalue_;
+    strategy_set_syminfo_metadata_ = other.strategy_set_syminfo_metadata_;
     strategy_set_syminfo_timezone_ = other.strategy_set_syminfo_timezone_;
     strategy_set_syminfo_session_ = other.strategy_set_syminfo_session_;
     run_backtest_full_ = other.run_backtest_full_;
@@ -178,6 +183,7 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     other.strategy_set_chart_timezone_ = nullptr;
     other.strategy_set_syminfo_mintick_ = nullptr;
     other.strategy_set_syminfo_pointvalue_ = nullptr;
+    other.strategy_set_syminfo_metadata_ = nullptr;
     other.strategy_set_syminfo_timezone_ = nullptr;
     other.strategy_set_syminfo_session_ = nullptr;
     other.run_backtest_full_ = nullptr;
@@ -242,17 +248,26 @@ void StrategyPlugin::set_chart_timezone(pf_strategy_t strategy, const std::strin
 void StrategyPlugin::set_symbol_info(pf_strategy_t strategy, const SymbolInfo& info) const {
     if (strategy == nullptr)
         throw std::invalid_argument("cannot set symbol info on a null strategy handle");
-    for (const auto& value : {info.mintick, info.pointvalue}) {
+    for (const auto& value : {info.mintick, info.pointvalue, info.mincontract}) {
         if (value && (!std::isfinite(*value) || *value <= 0.0))
             throw std::invalid_argument("symbol numbers must be finite and positive");
     }
     reject_embedded_null(info.timezone, "symbol timezone");
     reject_embedded_null(info.session, "symbol session");
+    if (info.mincontract && !strategy_set_syminfo_metadata_) {
+        throw std::runtime_error(
+            "strategy plugin does not support requested symbol info: syminfo.mincontract "
+            "needs strategy_set_syminfo_metadata (lot-size grid key qty_step)");
+    }
     if ((info.mintick && !strategy_set_syminfo_mintick_) ||
         (info.pointvalue && !strategy_set_syminfo_pointvalue_) ||
         (!info.timezone.empty() && !strategy_set_syminfo_timezone_) ||
         (!info.session.empty() && !strategy_set_syminfo_session_)) {
         throw std::runtime_error("strategy plugin does not support requested symbol info");
+    }
+    if (info.mincontract) {
+        strategy_set_syminfo_metadata_(strategy, "qty_step", *info.mincontract);
+        strategy_set_syminfo_metadata_(strategy, "mincontract", *info.mincontract);
     }
     if (info.mintick)
         strategy_set_syminfo_mintick_(strategy, *info.mintick);

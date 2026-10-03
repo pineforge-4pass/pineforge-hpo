@@ -4,11 +4,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -24,7 +27,12 @@ struct FakeStrategy {
     double pointvalue = 1.0;
     std::string symbol_timezone;
     std::string symbol_session;
+    std::map<std::string, double> metadata;
 };
+
+// Every syminfo metadata call of every handle, "key=value" in call order, for the adapter test.
+std::mutex metadata_mutex;
+std::vector<std::string> metadata_log;
 
 std::atomic<int> active_handles{0};
 std::atomic<int> outstanding_reports{0};
@@ -74,18 +82,33 @@ PF_API void strategy_free(pf_strategy_t strategy) {
 }
 
 PF_API void strategy_set_input(pf_strategy_t strategy, const char* key, const char* value) {
-    fake(strategy)->syminfo_order_error |= fake(strategy)->syminfo_stage != 0;
+    fake(strategy)->syminfo_order_error |=
+        fake(strategy)->syminfo_stage != 0 || !fake(strategy)->metadata.empty();
     fake(strategy)->inputs[key != nullptr ? key : ""] = value != nullptr ? value : "";
 }
 
 PF_API void strategy_set_override(pf_strategy_t strategy, const char* key, const char* value) {
-    fake(strategy)->syminfo_order_error |= fake(strategy)->syminfo_stage != 0;
+    fake(strategy)->syminfo_order_error |=
+        fake(strategy)->syminfo_stage != 0 || !fake(strategy)->metadata.empty();
     fake(strategy)->overrides[key != nullptr ? key : ""] = value != nullptr ? value : "";
 }
 
 #if !defined(PINEFORGE_HPO_FAKE_PLUGIN_NO_TIMEZONE)
 PF_API void strategy_set_chart_timezone(pf_strategy_t strategy, const char* timezone) {
     fake(strategy)->chart_timezone = timezone != nullptr ? timezone : "";
+}
+#endif
+
+#if !defined(PINEFORGE_HPO_FAKE_PLUGIN_NO_METADATA)
+// Lot-grid metadata comes after inputs/overrides and before mintick and the other setters.
+PF_API void strategy_set_syminfo_metadata(pf_strategy_t strategy, const char* key, double value) {
+    auto* state = fake(strategy);
+    state->syminfo_order_error |= state->syminfo_stage != 0;
+    state->metadata[key != nullptr ? key : ""] = value;
+    char text[40];
+    std::snprintf(text, sizeof(text), "=%.17g", value);
+    const std::lock_guard<std::mutex> lock(metadata_mutex);
+    metadata_log.push_back(std::string(key != nullptr ? key : "") + text);
 }
 #endif
 
@@ -175,8 +198,13 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
         state->mintick * 100.0 + state->pointvalue +
         (state->symbol_timezone == "UTC" ? 10.0 : 0.0) +
         (state->symbol_session == "24x7" ? 20.0 : 0.0);
+    const auto qty_step = state->metadata.find("qty_step");
+    const auto mincontract = state->metadata.find("mincontract");
+    const double metadata_bonus =
+        (qty_step == state->metadata.end() ? 0.0 : qty_step->second * 1'000.0) +
+        (mincontract == state->metadata.end() ? 0.0 : mincontract->second * 10.0);
     const double score = static_cast<double>(length) + initial_capital / 1'000.0 + timezone_bonus +
-        symbol_bonus;
+        symbol_bonus + metadata_bonus;
 
     report->total_trades = length;
     report->net_profit = score;
@@ -236,6 +264,21 @@ PF_API int fake_lifetime_violations(void) {
 }
 PF_API int fake_reused_handle_runs(void) {
     return reused_handle_runs.load();
+}
+PF_API int fake_metadata_count(void) {
+    const std::lock_guard<std::mutex> lock(metadata_mutex);
+    return static_cast<int>(metadata_log.size());
+}
+// Valid until the next metadata call or reset: the vector can reallocate.
+PF_API const char* fake_metadata_entry(int index) {
+    const std::lock_guard<std::mutex> lock(metadata_mutex);
+    return index >= 0 && static_cast<std::size_t>(index) < metadata_log.size()
+               ? metadata_log[static_cast<std::size_t>(index)].c_str()
+               : "";
+}
+PF_API void fake_metadata_reset(void) {
+    const std::lock_guard<std::mutex> lock(metadata_mutex);
+    metadata_log.clear();
 }
 
 }  // extern "C"
@@ -350,6 +393,10 @@ public:
         outstanding_reports_ = load("fake_outstanding_reports");
         lifetime_violations_ = load("fake_lifetime_violations");
         reused_handle_runs_ = load("fake_reused_handle_runs");
+        metadata_count_ = load("fake_metadata_count");
+        metadata_reset_ = reinterpret_cast<void (*)()>(load_symbol("fake_metadata_reset"));
+        metadata_entry_ =
+            reinterpret_cast<const char* (*)(int)>(load_symbol("fake_metadata_entry"));
 #else
         (void)path;
         throw std::runtime_error("fake plugin counters require dlopen");
@@ -368,23 +415,37 @@ public:
     int outstanding_reports() const { return outstanding_reports_(); }
     int lifetime_violations() const { return lifetime_violations_(); }
     int reused_handle_runs() const { return reused_handle_runs_(); }
+    /// The syminfo metadata calls the fake saw, "key=value" in call order.
+    std::vector<std::string> metadata() const {
+        std::vector<std::string> calls;
+        for (int index = 0; index < metadata_count_(); ++index) {
+            calls.emplace_back(metadata_entry_(index));
+        }
+        return calls;
+    }
+    void reset_metadata() const { metadata_reset_(); }
 
 private:
     using Counter = int (*)();
 
-    Counter load(const char* name) {
+    void* load_symbol(const char* name) {
         void* const symbol = ::dlsym(handle_, name);
         if (symbol == nullptr) {
             throw std::runtime_error(std::string("fake plugin is missing counter ") + name);
         }
-        return reinterpret_cast<Counter>(symbol);
+        return symbol;
     }
+
+    Counter load(const char* name) { return reinterpret_cast<Counter>(load_symbol(name)); }
 
     void* handle_ = nullptr;
     Counter active_handles_ = nullptr;
     Counter outstanding_reports_ = nullptr;
     Counter lifetime_violations_ = nullptr;
     Counter reused_handle_runs_ = nullptr;
+    Counter metadata_count_ = nullptr;
+    void (*metadata_reset_)() = nullptr;
+    const char* (*metadata_entry_)(int) = nullptr;
 };
 
 void test_dataset_loader() {
@@ -578,16 +639,117 @@ void test_missing_timezone_symbol(const std::filesystem::path& plugin_path) {
             "missing-timezone failure broke teardown ordering");
 }
 
+BacktestConfiguration lot_grid_configuration(const pineforge::hpo::SymbolInfo& info) {
+    BacktestConfiguration configuration = test_configuration();
+    configuration.chart_timezone.clear();
+    configuration.symbol_info = info;
+    return configuration;
+}
+
+void test_lot_grid_metadata(const std::filesystem::path& plugin_path) {
+    auto plugin = std::make_shared<const StrategyPlugin>(plugin_path);
+    FakeCounters counters(plugin_path);
+
+    // Inputs and overrides first; then qty_step, mincontract (same value), then mintick and the
+    // rest. The fake flags any other order, which fails the trial.
+    pineforge::hpo::SymbolInfo full;
+    full.mintick = 0.5;
+    full.pointvalue = 2.0;
+    full.mincontract = 0.25;
+    full.timezone = "UTC";
+    full.session = "24x7";
+    counters.reset_metadata();
+    TrialExecutor with_grid(plugin, test_dataset(), lot_grid_configuration(full));
+    const auto gridded = with_grid.execute({{"Length", "14"}}, {{"initial_capital", "100000"}});
+    require(gridded.succeeded(), "lot-grid trial failed: " + gridded.error);
+    const std::vector<std::string> expected = {"qty_step=0.25", "mincontract=0.25"};
+    require(counters.metadata() == expected,
+            "mincontract was not applied as qty_step then mincontract, once each");
+    // 14 + 100 + (0.5 * 100 + 2 + 10 + 20) + 0.25 * 1000 + 0.25 * 10 = 448.5
+    require_near(gridded.report.net_profit, 448.5, "lot-grid trial result is wrong");
+
+    // Only the grid: metadata is applied and no other symbol setter is called.
+    pineforge::hpo::SymbolInfo only_grid;
+    only_grid.mincontract = 0.125;
+    counters.reset_metadata();
+    TrialExecutor grid_only(plugin, test_dataset(), lot_grid_configuration(only_grid));
+    const auto lone = grid_only.execute({{"Length", "14"}}, {{"initial_capital", "100000"}});
+    require(lone.succeeded(), "grid-only trial failed: " + lone.error);
+    const std::vector<std::string> grid_only_calls = {"qty_step=0.125", "mincontract=0.125"};
+    require(counters.metadata() == grid_only_calls,
+            "grid-only symbol info applied the wrong metadata");
+    require_near(lone.report.net_profit, 14.0 + 100.0 + 125.0 + 1.25, "grid-only result is wrong");
+
+    // No mincontract: no metadata call at all, the other setters unchanged.
+    pineforge::hpo::SymbolInfo no_grid = full;
+    no_grid.mincontract.reset();
+    counters.reset_metadata();
+    TrialExecutor without_grid(plugin, test_dataset(), lot_grid_configuration(no_grid));
+    const auto plain = without_grid.execute({{"Length", "14"}}, {{"initial_capital", "100000"}});
+    require(plain.succeeded(), "gridless trial failed: " + plain.error);
+    require(counters.metadata().empty(), "a metadata call was made without mincontract");
+    require_near(plain.report.net_profit, 14.0 + 100.0 + 82.0, "gridless result is wrong");
+
+    // Invalid grids never reach the plugin.
+    for (const double bad : {0.0, -0.25, std::nan(""), HUGE_VAL, -HUGE_VAL}) {
+        pineforge::hpo::SymbolInfo invalid = full;
+        invalid.mincontract = bad;
+        counters.reset_metadata();
+        TrialExecutor rejected(plugin, test_dataset(), lot_grid_configuration(invalid));
+        require_throws_containing([&] { (void)rejected.execute({{"Length", "14"}}); },
+                                  "finite and positive", "invalid mincontract was accepted");
+        require(counters.metadata().empty(), "an invalid mincontract reached the plugin");
+    }
+    require(counters.active_handles() == 0, "strategy handle leaked after lot-grid trials");
+    require(counters.lifetime_violations() == 0, "lot-grid failure broke teardown ordering");
+}
+
+void test_missing_metadata_symbol(const std::filesystem::path& plugin_path) {
+    auto plugin = std::make_shared<const StrategyPlugin>(plugin_path);
+    FakeCounters counters(plugin_path);
+
+    // Without a mincontract the plugin keeps working with every other symbol field.
+    pineforge::hpo::SymbolInfo info;
+    info.mintick = 0.5;
+    info.pointvalue = 2.0;
+    info.timezone = "UTC";
+    info.session = "24x7";
+    TrialExecutor legacy(plugin, test_dataset(), lot_grid_configuration(info));
+    const auto result = legacy.execute({{"Length", "14"}}, {{"initial_capital", "100000"}});
+    require(result.succeeded(),
+            "plugin without metadata failed without a mincontract: " + result.error);
+    require_near(result.report.net_profit, 14.0 + 100.0 + 82.0,
+                 "plugin without metadata returned the wrong result");
+
+    // With a mincontract it fails loudly instead of running without the grid.
+    info.mincontract = 0.25;
+    TrialExecutor gridded(plugin, test_dataset(), lot_grid_configuration(info));
+    require_throws_containing([&] { (void)gridded.execute({{"Length", "14"}}); },
+                              "strategy_set_syminfo_metadata",
+                              "mincontract ran silently without a plugin lot-size setter");
+    require_throws_containing([&] { (void)gridded.execute({{"Length", "14"}}); }, "mincontract",
+                              "the missing-setter error does not name syminfo.mincontract");
+    require(counters.active_handles() == 0,
+            "strategy handle leaked after missing-metadata failure");
+    require(counters.lifetime_violations() == 0,
+            "missing-metadata failure broke teardown ordering");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
-        require(argc == 2 || argc == 3,
-                "usage: test_engine_adapter <fake-plugin> [fake-plugin-without-timezone]");
+        require(argc >= 2 && argc <= 4,
+                "usage: test_engine_adapter <fake-plugin> [fake-plugin-without-timezone "
+                "[fake-plugin-without-metadata]]");
         test_dataset_loader();
         test_trial_executor(argv[1]);
-        if (argc == 3) {
+        test_lot_grid_metadata(argv[1]);
+        if (argc >= 3) {
             test_missing_timezone_symbol(argv[2]);
+        }
+        if (argc == 4) {
+            test_missing_metadata_symbol(argv[3]);
         }
         std::cout << "engine adapter tests passed\n";
         return 0;

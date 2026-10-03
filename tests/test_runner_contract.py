@@ -93,22 +93,45 @@ def main() -> int:
                                 "strategy_set_syminfo_timezone", "strategy_set_syminfo_session"],
                     "pinned harness changed the four-setter order")
             baseline = json.loads(invoke(native, plugin, csv).stdout)["trials"][0]
+            # The fake adds 1000 * qty_step + 10 * mincontract when it sees the lot-grid metadata.
+            lots = (("absent", {}, 0.0), ("null", {"mincontract": None}, 0.0),
+                    ("grid", {"mincontract": 0.25}, 252.5))
             for wrapped in (False, True):
-                syminfo = {"mintick": 0.00001, "pointvalue": 2, "timezone": "UTC",
-                           "session": "24x7", "extra": [None, {"ignored": True}]}
-                symbol_file = directory / "syminfo.json"
-                symbol_file.write_text(json.dumps({"syminfo": syminfo} if wrapped else syminfo))
-                completed = invoke(native, plugin, csv, "--syminfo", str(symbol_file),
-                                   "--strategy-override", "initial_capital", "100000")
-                require(completed.returncode == 0, f"syminfo failed: {completed.stderr}")
-                trial = json.loads(completed.stdout)["trials"][0]
-                require(abs(trial["net_profit"] - baseline["net_profit"] - 32.001) < 1e-9,
-                        "symbol ABI values or order were not forwarded")
+                for label, extra, bonus in lots:
+                    syminfo = {"mintick": 0.00001, "pointvalue": 2, "timezone": "UTC",
+                               "session": "24x7", "extra": [None, {"ignored": True}], **extra}
+                    symbol_file = directory / "syminfo.json"
+                    symbol_file.write_text(json.dumps({"syminfo": syminfo} if wrapped else syminfo))
+                    completed = invoke(native, plugin, csv, "--syminfo", str(symbol_file),
+                                       "--strategy-override", "initial_capital", "100000")
+                    require(completed.returncode == 0, f"syminfo failed: {completed.stderr}")
+                    trial = json.loads(completed.stdout)["trials"][0]
+                    expected = baseline["net_profit"] + 32.001 + bonus
+                    require(abs(trial["net_profit"] - expected) < 1e-9,
+                            f"symbol ABI values or order were not forwarded (mincontract {label})")
+            symbol_file.write_text('{"mincontract": 0.25}')
+            completed = invoke(native, plugin, csv, "--syminfo", str(symbol_file))
+            require(completed.returncode == 0, f"grid-only syminfo failed: {completed.stderr}")
+            require(abs(json.loads(completed.stdout)["trials"][0]["net_profit"]
+                        - baseline["net_profit"] - 252.5) < 1e-9,
+                    "mincontract alone did not reach the engine as qty_step and mincontract")
             for content in ('{"mintick": true}', '{"mintick": -1}', '{"timezone": 5}',
                             '{"session": "bad\\u0000value"}', '{"mintick": 1,}', '[]'):
                 symbol_file.write_text(content)
                 require(invoke(native, plugin, csv, "--syminfo", str(symbol_file)).returncode == 1,
                         f"invalid syminfo accepted: {content}")
+            for content in ('{"mincontract": 0}', '{"mincontract": -0.25}',
+                            '{"mincontract": "0.25"}', '{"mincontract": true}',
+                            '{"mincontract": false}', '{"mincontract": [0.25]}',
+                            '{"mincontract": {}}', '{"mincontract": 1e999}',
+                            '{"mincontract": -1e999}', '{"mincontract": 1e-400}',
+                            '{"syminfo": {"mincontract": 0}}'):
+                symbol_file.write_text(content)
+                completed = invoke(native, plugin, csv, "--syminfo", str(symbol_file))
+                require(completed.returncode == 1 and completed.stdout == "" and
+                        "syminfo.mincontract must be a positive finite number" in completed.stderr,
+                        f"invalid mincontract was not rejected visibly: {content}: "
+                        f"{completed.stderr}")
         elif case == "progress":
             with (directory / "progress.jsonl").open("w+") as progress:
                 child = process(native, plugin, csv, progress.fileno(),

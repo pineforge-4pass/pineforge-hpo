@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.1 — unreleased
+
+- Native `--syminfo FILE` applies the instrument lot-size grid: an optional `mincontract`
+  (TradingView `syminfo.mincontract`, flat or wrapped) reaches the engine as the metadata
+  keys `qty_step` and `mincontract`, after inputs and overrides and before mintick,
+  pointvalue, timezone, and session. Percent-of-equity strategies no longer book sub-lot
+  trades, so trial results match runs that apply the grid.
+- `mincontract` absent or `null` changes nothing (no grid, no call). In the object that is
+  read, any other value that is not a positive finite JSON number (zero, negative, string,
+  boolean, array, object, or a number out of double range such as `1e999`) fails
+  initialization (exit 1, `syminfo.mincontract must be a positive finite number`). Bare
+  `NaN` and `Infinity` are not JSON and are rejected earlier by the parser (exit 1,
+  `invalid JSON at byte N`).
+- A plugin that lacks `strategy_set_syminfo_metadata` keeps working for every syminfo without
+  `mincontract`; with one, each trial fails with a `trial_error` naming the key (exit 2, no
+  feasible trial) instead of running without the grid.
+- Add fake-plugin tests for the metadata keys, their order, the absent/null and invalid
+  cases, and a plugin without the setter.
+
 ## 0.3.0 — unreleased
 
 - Decouple logical proposal batches from workers with `--batch-size`; defaults preserve

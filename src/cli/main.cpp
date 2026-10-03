@@ -618,6 +618,26 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
             throw std::invalid_argument(std::string("syminfo.") + name + " must be positive");
         return parsed;
     };
+    // The catalog carries `"mincontract": null` when the lot size is unknown: absent, no grid.
+    // Anything else in the object that is read must be a positive finite JSON number, or the
+    // parse fails.
+    const auto lot_grid = [&]() -> std::optional<double> {
+        const auto* value = symbol.find("mincontract");
+        if (!value || value->kind == pfh::detail::Json::Kind::Null)
+            return std::nullopt;
+        const char* const message = "syminfo.mincontract must be a positive finite number";
+        if (value->kind != pfh::detail::Json::Kind::Number)
+            throw std::invalid_argument(message);
+        double parsed = 0.0;
+        try {
+            parsed = value->real();
+        } catch (const std::exception&) {
+            throw std::invalid_argument(message);
+        }
+        if (!(parsed > 0.0))
+            throw std::invalid_argument(message);
+        return parsed;
+    };
     const auto text = [&](const char* name) -> std::string {
         const auto* value = symbol.find(name);
         if (!value)
@@ -629,6 +649,7 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
     };
     info.mintick = number("mintick");
     info.pointvalue = number("pointvalue");
+    info.mincontract = lot_grid();
     info.timezone = text("timezone");
     info.session = text("session");
     return info;
