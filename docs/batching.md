@@ -106,7 +106,7 @@ through a report; this release does not replace the runner watchdog contract.
 
 ## Measurements (2026-10-03)
 
-Paired baseline `fd9ba82` and 0.3.0 candidate runs used the same artifact, data,
+Paired baseline `fd9ba82` and 0.3.0 candidate `1b2922a` used the same artifact, data,
 seed 20260718, four workers, and trial budget on an 8-core Ubuntu machine with
 GCC 13. Native-process wall time is the median of three runs, including plugin
 and CSV loading, excluding the one-time shared artifact compilation. Each
@@ -124,39 +124,41 @@ was never proposed. Shadow work is excluded from measured wall time/bars.
 
 | Study | Mode | Wall s | Input bars | Best objective | Baseline-best rank/status | Pruned |
 | --- | --- | ---: | ---: | ---: | --- | ---: |
-| Example | 0.1.x | 0.002411 | 306 | -22.5 | 1 / ok | 0 |
-| Example | default | 0.002818 | 306 | -22.5 | 1 / ok | 0 |
-| Example | k8 | 0.002728 | 306 | -22.5 | 1 / ok | 0 |
-| Example | lag1 | 0.002448 | 306 | -22.5 | 1 / ok | 0 |
-| Example | median | 0.003046 | 353 | -22.5 | 1 / ok | 4 |
-| Example | halving3 | 0.003037 | 353 | -22.5 | 1 / ok | 4 |
-| Example | lag1+halving3 | 0.003006 | 506 | -22.5 | 1 / ok | 1 |
-| BB/RSI | 0.1.x | 0.897340 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
-| BB/RSI | default | 0.906564 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
-| BB/RSI | k8 | 0.880424 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
-| BB/RSI | lag1 | 0.832207 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
-| BB/RSI | median | 0.827673 | 1,968,467 | 1.3750000000020464 | 1 / ok | 54 |
-| BB/RSI | halving3 | 0.800947 | 1,860,608 | 1.3750000000020464 | 1 / ok | 55 |
-| BB/RSI | lag1+halving3 | 0.785375 | 2,561,689 | 1.3750000000020464 | 1 / ok | 46 |
-| Volatility | 0.1.x | 1.481162 | 3,451,456 | 6530.4349999999795 | 1 / ok | 0 |
-| Volatility | default | 1.471613 | 3,451,456 | 6530.4349999999795 | 1 / ok | 0 |
-| Volatility | k8 | 1.558968 | 3,451,456 | 5922.33750000004 | 1 / absent | 0 |
-| Volatility | lag1 | 1.460384 | 3,451,456 | 5922.33750000004 | 1 / absent | 0 |
-| Volatility | median | 2.317233 | 4,098,675 | 5922.33750000004 | 1 / absent | 27 |
-| Volatility | halving3 | 1.937087 | 2,750,440 | 6551.819999999991 | 2 / absent | 42 |
-| Volatility | lag1+halving3 | 1.397184 | 3,127,946 | 5937.942500000003 | 1 / absent | 38 |
+| Example | 0.1.x | 0.002599 | 306 | -22.5 | 1 / ok | 0 |
+| Example | default | 0.002898 | 306 | -22.5 | 1 / ok | 0 |
+| Example | k8 | 0.002819 | 306 | -22.5 | 1 / ok | 0 |
+| Example | lag1 | 0.002606 | 306 | -22.5 | 1 / ok | 0 |
+| Example | median | 0.003363 | 353 | -22.5 | 1 / ok | 4 |
+| Example | halving3 | 0.003270 | 353 | -22.5 | 1 / ok | 4 |
+| Example | lag1+halving3 | 0.003235 | 506 | -22.5 | 1 / ok | 1 |
+| BB/RSI | 0.1.x | 1.406505 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
+| BB/RSI | default | 0.979822 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
+| BB/RSI | k8 | 0.919068 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
+| BB/RSI | lag1 | 0.844415 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
+| BB/RSI | median | 0.877268 | 1,968,467 | 1.3750000000020464 | 1 / ok | 54 |
+| BB/RSI | halving3 | 0.839100 | 1,860,608 | 1.3750000000020464 | 1 / ok | 55 |
+| BB/RSI | lag1+halving3 | 0.796408 | 2,561,689 | 1.3750000000020464 | 1 / ok | 46 |
+| Volatility | 0.1.x | 1.524019 | 3,451,456 | 6530.4349999999795 | 1 / ok | 0 |
+| Volatility | default | 1.520600 | 3,451,456 | 6530.4349999999795 | 1 / ok | 0 |
+| Volatility | k8 | 1.598407 | 3,451,456 | 5922.33750000004 | 1 / absent | 0 |
+| Volatility | lag1 | 1.506824 | 3,451,456 | 5922.33750000004 | 1 / absent | 0 |
+| Volatility | median | 2.366980 | 4,098,675 | 5922.33750000004 | 1 / absent | 27 |
+| Volatility | halving3 | 2.008658 | 2,750,440 | 6551.819999999991 | 2 / absent | 42 |
+| Volatility | lag1+halving3 | 1.433000 | 3,127,946 | 5937.942500000003 | 1 / absent | 38 |
 
 The public real-strategy sources are
 `068-ta-bb-rsi-mean-reversion-01` and
 `085-ta-stdev-sma-expansion-break-01` in the pinned engine's benchmark assets.
 These are a bounded paired-seed measurement, not a claim of universal optimum
-preservation or speedup. Millisecond example times are mostly startup noise.
+preservation or speedup. Host scheduling changes absolute wall times between
+measurement passes; the bar totals and objective/replay checks are exact.
+Millisecond example times are mostly startup noise.
 
 ### Why lag one ships, but stays opt-in
 
 Scheduler idle capacity (worker-seconds minus measured task busy-seconds)
 includes barrier stragglers, proposal/feedback, and startup, not exclusively
-engine time. It drops from 15.67% to 2.75% on BB/RSI and 16.84% to 2.17% on
+engine time. It drops from 16.65% to 1.91% on BB/RSI and 17.02% to 2.17% on
 volatility with lag one. BB/RSI wall time improves; volatility's improvement
 is small and its best objective is worse. Fixed lag is useful explicit control,
 not a silent replacement for the compatible feedback schedule.
@@ -171,12 +173,12 @@ general batch execution without study-specific equivalence evidence.
 
 | Study/candidate | A seconds | B seconds | A input bars | B input bars | Trade parity | Objective parity |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
-| Example / first | 0.000518 | 0.000226 | 60 | 34 | all rungs | all rungs |
-| Example / best | 0.000535 | 0.000225 | 60 | 34 | all rungs | all rungs |
-| BB/RSI / first | 0.060736 | 0.131253 | 94,377 | 53,929 | all rungs | all rungs |
-| BB/RSI / best | 0.057433 | 0.096656 | 94,377 | 53,929 | all rungs | quarter differs |
-| Volatility / first | 0.084669 | 2.228788 | 94,377 | 53,929 | all rungs | all rungs |
-| Volatility / best | 0.128185 | 2.841356 | 94,377 | 53,929 | all rungs | all rungs |
+| Example / first | 0.000566 | 0.000231 | 60 | 34 | all rungs | all rungs |
+| Example / best | 0.000539 | 0.000229 | 60 | 34 | all rungs | all rungs |
+| BB/RSI / first | 0.062337 | 0.133054 | 94,377 | 53,929 | all rungs | all rungs |
+| BB/RSI / best | 0.058977 | 0.098205 | 94,377 | 53,929 | all rungs | quarter differs |
+| Volatility / first | 0.085878 | 2.229453 | 94,377 | 53,929 | all rungs | all rungs |
+| Volatility / best | 0.132044 | 2.852632 | 94,377 | 53,929 | all rungs | all rungs |
 
 Trade parity alone is insufficient: the BB/RSI quarter-window objective is
 42.51999999999998 in A versus 42.51749999999765 in B.

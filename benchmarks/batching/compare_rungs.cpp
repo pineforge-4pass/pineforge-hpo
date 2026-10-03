@@ -83,7 +83,8 @@ int main(int argc, char** argv) {
         if (!library)
             throw std::runtime_error("cannot open streaming plugin");
         const auto begin = symbol<int (*)(pf_strategy_t, const pf_bar_t*, int,
-                                         const char*, const char*)>(library, "strategy_stream_begin");
+                                         const char*, const char*)>(
+            library, "strategy_stream_begin");
         const auto push = symbol<int (*)(pf_strategy_t, const pf_bar_t*)>(
             library, "strategy_stream_push_bar");
         const auto fill = symbol<int (*)(pf_strategy_t, pf_report_t*)>(
