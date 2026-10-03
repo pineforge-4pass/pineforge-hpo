@@ -134,6 +134,9 @@ def main() -> int:
                     time.sleep(0.05)
                     require(child.poll() is None, "large final output did not block on stdout")
                     child.send_signal(signal.SIGTERM)
+                    time.sleep(0.05)
+                    if child.poll() is None:
+                        child.send_signal(signal.SIGTERM)
                     stdout, stderr = child.communicate(timeout=8)
                 finally:
                     if child.poll() is None:
