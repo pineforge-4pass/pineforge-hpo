@@ -142,7 +142,8 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
         return;
     }
 
-    if (bar_count != 2 || std::strcmp(input_timeframe, "1") != 0 ||
+    const bool prefix_test = parse_or(state->inputs, "BatchPrefixTest", 0.0) == 1.0;
+    if ((!prefix_test && bar_count != 2) || std::strcmp(input_timeframe, "1") != 0 ||
         std::strcmp(script_timeframe, "5") != 0 || bar_magnifier != 1 || magnifier_samples != 6 ||
         magnifier_distribution != PF_MAGNIFIER_TRIANGLE) {
         state->error = "backtest configuration was not forwarded";
@@ -150,6 +151,13 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     }
 
     const int length = static_cast<int>(parse_or(state->inputs, "Length", 0.0));
+    if (prefix_test) {
+        std::this_thread::sleep_for(std::chrono::milliseconds((length % 7) + 1));
+    }
+    if (bar_count > parse_or(state->inputs, "FailAfterBars", 1e9)) {
+        state->error = "deliberate later-rung engine failure";
+        return;
+    }
     if (state->syminfo_order_error) {
         state->error = "symbol setters did not follow inputs/overrides and harness order";
         return;
@@ -509,6 +517,25 @@ void test_trial_executor(const std::filesystem::path& plugin_path) {
     const auto second = executor.execute({{"Length", "20"}}, {{"initial_capital", "100000"}});
     require(second.succeeded(), "second trial did not use a fresh strategy handle");
     require_near(second.report.net_profit, 1'120.0, "second trial result is wrong");
+
+    const auto full_prefix = executor.execute_prefix(
+        {{"Length", "14"}}, {{"initial_capital", "200000"}}, executor.dataset().size());
+    require(full_prefix.succeeded(), "full-size prefix failed");
+    require(full_prefix.report.net_profit == first.report.net_profit,
+            "full-size prefix changed the objective");
+    require(full_prefix.report.total_trades == first.report.total_trades,
+            "full-size prefix changed trades");
+    const auto partial = executor.execute_prefix(
+        {{"Length", "14"}, {"BatchPrefixTest", "1"}}, {{"initial_capital", "200000"}}, 1);
+    require(partial.succeeded(), "partial prefix failed");
+    require(partial.report.input_bars_processed == 1, "prefix did not limit input bars");
+    require(partial.report.net_profit == first.report.net_profit,
+            "prefix did not apply runtime settings");
+    require_throws_containing([&] { (void)executor.execute_prefix({}, {}, 0); },
+                              "prefix size", "empty prefix was accepted");
+    require_throws_containing([&] {
+        (void)executor.execute_prefix({}, {}, executor.dataset().size() + 1);
+    }, "prefix size", "oversized prefix was accepted");
 
     auto scalar_configuration = test_configuration();
     scalar_configuration.capture_equity_curve = false;

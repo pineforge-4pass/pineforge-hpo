@@ -35,6 +35,11 @@ add_test(NAME pineforge_hpo_tpe_stress COMMAND pineforge_hpo_test_tpe_stress)
 # statistical coverage.
 set_tests_properties(pineforge_hpo_tpe_stress PROPERTIES TIMEOUT 180)
 
+if(PINEFORGE_HPO_ENABLE_SANITIZERS OR PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+    set_tests_properties(pineforge_hpo_tpe_quality PROPERTIES TIMEOUT 300)
+    set_tests_properties(pineforge_hpo_tpe_stress PROPERTIES TIMEOUT 900)
+endif()
+
 add_executable(pineforge_hpo_test_tpe_concurrency test_tpe_concurrency.cpp)
 target_link_libraries(pineforge_hpo_test_tpe_concurrency PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_tpe_concurrency PRIVATE -Wall -Wextra -Wpedantic)
@@ -112,6 +117,11 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_native_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_batching
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_batching.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         foreach(contract syminfo progress final_write_signal progress_nonblocking progress_error
                          cancel deadline metrics magnifier timeout timeout_progress_error)
             add_test(NAME pineforge_hpo_runner_${contract}
@@ -137,3 +147,15 @@ else()
     message(STATUS
         "Skipping engine-adapter dynamic-plugin tests: adapter/CLI disabled or dlopen unavailable")
 endif()
+add_executable(pineforge_hpo_test_pruner test_pruner.cpp)
+target_link_libraries(pineforge_hpo_test_pruner PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_pruner PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_pruner COMMAND pineforge_hpo_test_pruner)
+
+find_package(Threads REQUIRED)
+add_executable(pineforge_hpo_test_batch_executor test_batch_executor.cpp)
+target_include_directories(pineforge_hpo_test_batch_executor PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
+target_link_libraries(pineforge_hpo_test_batch_executor PRIVATE PineForgeHPO::core Threads::Threads)
+target_compile_options(pineforge_hpo_test_batch_executor PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_batch_executor COMMAND pineforge_hpo_test_batch_executor)
+set_tests_properties(pineforge_hpo_batch_executor PROPERTIES TIMEOUT 15)

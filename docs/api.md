@@ -13,6 +13,7 @@ samplers.
 - [README and quick start](../README.md)
 - [StudySpec v1](study-spec.md)
 - [Architecture](architecture.md)
+- [Deterministic batching and prefix pruning](batching.md)
 - [Finite candidate policies](adr/0003-finite-candidate-policies.md)
 - [Benchmark suite and reproducibility protocol](../benchmarks/README.md)
 
@@ -22,7 +23,8 @@ The reusable C++ surface is in the \ref pineforge::hpo namespace and is split
 into two conceptual libraries:
 
 - **Core:** \ref pineforge::hpo::SearchSpace, samplers, candidate types,
-  objective expressions, constraints, and generic objective functions.
+  objective expressions, constraints, generic objective functions, and
+  coordinator-owned \ref pineforge::hpo::Pruner cut snapshots.
 - **Engine adapter:** \ref pineforge::hpo::Dataset,
   \ref pineforge::hpo::StrategyPlugin, \ref pineforge::hpo::TrialExecutor, and
   detached report snapshots.

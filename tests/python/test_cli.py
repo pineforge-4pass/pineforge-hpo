@@ -147,9 +147,35 @@ class CliTests(unittest.TestCase):
         self.assertEqual(command[command.index("--workers") + 1], "2")
         self.assertEqual(command[command.index("--seed") + 1], "7")
         self.assertEqual(
-            command[command.index("--candidate-policy") + 1],
-            "sampler_default",
+            command[command.index("--candidate-policy") + 1], "sampler_default"
         )
+
+    def test_native_command_forwards_batching_and_pruning(self) -> None:
+        self._write_study(
+            execution={
+                "workers": 2,
+                "isolation": "threads",
+                "batch_size": 8,
+                "batch_lag": 1,
+                "pruner": "halving",
+                "pruner_eta": 3,
+                "pruner_rungs": [0.125, 0.5],
+            }
+        )
+        command = _native_command(
+            load_study_spec(self.study_path),
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        for name, value in (
+            ("--batch-size", "8"),
+            ("--batch-lag", "1"),
+            ("--pruner", "halving"),
+            ("--pruner-eta", "3"),
+            ("--pruner-rungs", "0.125,0.5"),
+        ):
+            self.assertEqual(command[command.index(name) + 1], value)
 
     def test_candidate_policy_maps_to_native(self) -> None:
         document = json.loads(self.study_path.read_text(encoding="utf-8"))

@@ -54,6 +54,61 @@ def valid_document() -> dict:
 
 
 class StudySpecTest(unittest.TestCase):
+    def test_lagged_tpe_requires_constant_liar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            document = valid_document()
+            document["sampler"] = {
+                "kind": "tpe",
+                "seed": 1234,
+                "trials": 100,
+                "config": {"constant_liar": False},
+            }
+            document["execution"]["batch_lag"] = 1
+            path = Path(temporary) / "study.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(StudySpecError, "batch_lag.*constant_liar"):
+                load_study_spec(path)
+            document["execution"]["batch_lag"] = 0
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertFalse(load_study_spec(path).sampler.config.constant_liar)
+            document["execution"]["batch_lag"] = 1
+            document["sampler"]["config"]["constant_liar"] = True
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertTrue(load_study_spec(path).sampler.config.constant_liar)
+
+    def test_batching_and_pruning_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            document = valid_document()
+            document["execution"].update(
+                batch_size=16,
+                batch_lag=1,
+                pruner="halving",
+                pruner_rungs=[0.25, 0.5],
+                pruner_eta=3,
+            )
+            path = Path(temporary) / "study.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            spec = load_study_spec(path)
+            self.assertEqual(spec.execution.batch_size, 16)
+            self.assertEqual(spec.execution.batch_lag, 1)
+            self.assertEqual(spec.execution.pruner, "halving")
+            self.assertEqual(spec.execution.pruner_rungs, (0.25, 0.5))
+            self.assertEqual(spec.execution.pruner_eta, 3)
+            for field, value in (
+                ("batch_size", 0),
+                ("batch_size", True),
+                ("batch_lag", 2),
+                ("pruner", "bad"),
+                ("pruner_rungs", [0.5, 0.25]),
+                ("pruner_eta", 1),
+            ):
+                with self.subTest(field=field):
+                    broken = valid_document()
+                    broken["execution"][field] = value
+                    path.write_text(json.dumps(broken), encoding="utf-8")
+                    with self.assertRaises(StudySpecError):
+                        load_study_spec(path)
+
     def test_valid_single_strategy_resolves_relative_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -272,8 +272,10 @@ objects are shown in the [schema documentation](docs/study-spec.md).
 | `dlib_global` | Model-based search over mixed numeric spaces | Native batched ask/tell through dlib global function search. |
 | `tpe` | Adaptive refinement over mixed spaces | Native Parzen marginals, categorical probabilities, and constant-liar batches. |
 
-TPE and dlib are adaptive: proposal order depends on both the seed and worker-sized batch
-schedule. Compare optimizers under the same objective-evaluation budget and across
+TPE and dlib are adaptive: proposal order depends on the seed, logical batch size, and
+fixed feedback lag, not worker timing. Set `execution.batch_size` explicitly to replay
+across worker counts; its default remains the worker count for compatibility. Compare
+optimizers under the same objective-evaluation budget and across
 multiple seeds. For large `10^6`-`10^8` candidate domains, do not ask one TPE study to
 enumerate the domain. Use an external coordinator to shard a finite grid or broad search,
 then reserve TPE for bounded refinement. This runner does not currently provide distributed
@@ -350,8 +352,9 @@ Initialization and execution are deliberately separated:
 3. `StrategyPlugin` and immutable OHLCV data are loaded once for the study.
 4. Each trial creates a fresh strategy handle, applies inputs and overrides, runs the
    backtest, snapshots the required report fields, then frees report and handle in order.
-5. The native scheduler evaluates worker-sized batches and feeds results back to adaptive
-   samplers in deterministic trial-ID order.
+5. A persistent thread pool executes logical batches. The coordinator proposes and feeds
+   back results in deterministic trial-ID order, with optional fixed-lag pipelining and
+   deterministic prefix pruning.
 
 The component boundaries, plugin lifecycle, objective abstraction, finite-space codec, and
 future account-level execution model are documented in
@@ -382,7 +385,14 @@ For a reproducible study, keep all of the following fixed:
 - engine ABI/runtime, `pineforge-codegen-oss`, compiler target, and exact compile flags;
 - OHLCV bytes, timeframes, timezone, fixed inputs, and strategy overrides;
 - objective, constraints, search-space declaration, and candidate policy;
-- sampler implementation/configuration, seed, worker count, and trial budget.
+- sampler implementation/configuration, seed, batch size/lag, pruning policy, and trial budget.
+
+With the default batch size, the worker count still selects the logical batch size.
+With an explicit batch size, changing only workers leaves `trials[]` byte-identical for
+completed studies on the same deterministic artifact, data, runtime, and native build.
+Wall-deadline, cancellation, and timeout truncation are intentionally outside this guarantee.
+See [batching and pruning measurements](docs/batching.md) for the replay proof, metering
+contract, quality tradeoffs, and opt-in flags.
 
 Generated strategies are compiled with the parity-critical
 `-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags; with Clang, the builder also passes
@@ -399,6 +409,7 @@ Implemented today:
 - integer, real, Boolean, categorical, stepped, and supported log dimensions;
 - grid, seeded random, dlib global, and native TPE samplers;
 - parallel thread execution over independent strategy handles;
+- worker-independent logical batches, optional fixed-lag pipelining, and prefix pruning;
 - expression objectives, comparison constraints, runtime inputs, and runtime strategy
   overrides;
 - content-addressed artifact compilation and provenance.
@@ -406,7 +417,7 @@ Implemented today:
 Not implemented yet:
 
 - multiple-strategy shared cash/margin/order sequencing and portfolio CLI execution;
-- durable study storage, resume/checkpointing, pruning, or distributed workers;
+- durable study storage, resume/checkpointing, or distributed workers;
 - conditional/hierarchical spaces, multi-objective Pareto optimization, and walk-forward
   orchestration;
 - executable resolution of registered custom C++ objectives.

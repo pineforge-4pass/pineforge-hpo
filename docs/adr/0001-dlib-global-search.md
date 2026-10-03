@@ -49,7 +49,10 @@ disabled because HPO does not use them.
 ## Consequences
 
 - Later proposals depend on earlier objective feedback, unlike grid/random.
-- Seed plus worker count defines the deterministic batch proposal sequence.
+- Initially, seed plus worker count defines the deterministic batch proposal
+  sequence. Since 0.3.0, explicit logical batch size and fixed feedback lag
+  replace worker count in that replay contract; the compatible default still
+  uses workers as batch size. See [batching](../batching.md).
 - dlib's Boost Software License 1.0 notice is retained alongside the
   Apache-2.0 project notice.
 - This is not feature parity with Optuna. Native product-TPE is a separate

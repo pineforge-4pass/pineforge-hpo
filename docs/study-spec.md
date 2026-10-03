@@ -425,10 +425,9 @@ implementation-specific standard distributions. It supports only
 
 `dlib_global` wraps dlib's `global_function_search` through an adaptive ask/tell
 interface. The seed must be between `0` and `2147483647`, inclusive. A fixed
-worker-sized batch is proposed, evaluated concurrently, and reported in trial-id
-order before the next batch is requested. The exact deterministic sequence is
-therefore scoped to the same seed, worker count, dlib version, and native
-toolchain.
+logical batch is proposed and reported in trial-id order with the selected fixed
+feedback lag. The exact deterministic sequence is scoped to the same seed,
+batch size/lag, dlib version, and native toolchain, independently of worker count.
 
 `dlib_global` supports only `candidate_policy="sampler_default"`.
 
@@ -512,13 +511,13 @@ When `constant_liar=true`, parameters from outstanding requests are inserted
 only into the bad estimator. This discourages duplicate concurrent proposals
 without fabricating an objective value. The scheduler still reports completed
 results in trial-id order, so reproducibility is scoped to the same seed,
-worker count, sampler config, and native build.
+batch size/lag, pruning policy, sampler config, and native build.
 
 TPE retains and refits the complete usable history. It is intended for bounded
 adaptive refinement, not `10^6`-`10^8` trial enumeration; use an external partitioned
 stateless search to reduce a mega-scale domain before starting a TPE study.
 
-CMA-ES, evolutionary sampling, pruning-aware search, durable study storage,
+CMA-ES, evolutionary sampling, durable study storage,
 and multi-objective Pareto optimization are not currently available.
 
 ## Execution
@@ -542,8 +541,62 @@ execution; the current single-strategy CLI does not launch process workers.
 `timeout_seconds` and `fail_fast` are also reserved and currently rejected so
 they cannot appear to take effect without real cancellation semantics.
 
-For `dlib_global` and `tpe`, `workers` is also the deterministic ask/tell batch
-size. Changing it can change later proposals even when the seed stays the same.
+### Logical batches and prefix pruning
+
+```json
+{
+  "workers": 8,
+  "isolation": "threads",
+  "batch_size": 4,
+  "batch_lag": 1,
+  "pruner": "halving",
+  "pruner_rungs": [0.25, 0.5],
+  "pruner_eta": 3
+}
+```
+
+| Execution field | Default | Contract |
+| --- | --- | --- |
+| `batch_size` | `workers` | Positive integer, at most 1,000,000. Proposal size, not thread count. |
+| `batch_lag` | `0` | `0` commits b before proposing b+1; `1` proposes b+1 from history through b-1. |
+| `pruner` | `"none"` | `none`, `median`, or `halving`. |
+| `pruner_rungs` | `[0.25, 0.5]` | Strictly increasing fractions in (0, 1); the full window is implicit. |
+| `pruner_eta` | `2` | Integer >= 2; minimum finite history at each rung. Halving retains the best ceil(n/eta); eta=2 uses the median. |
+
+The native equivalents are `--batch-size`, `--batch-lag`, `--pruner`,
+`--pruner-rungs 0.25,0.5`, and `--pruner-eta`. Median always uses the median;
+its eta only selects history warmup. `--scheduler-stats FILE` writes timing
+diagnostics outside the fingerprinted result and has no StudySpec equivalent.
+
+For fixed provenance and explicit batch size, completed `trials[]` reproduce
+byte-for-byte with 1, 2, 4, or 8 workers. Without an explicit size, changing
+workers intentionally changes the default logical size, as in 0.1.x. Lag-one
+TPE requires constant liar enabled. Cancellation/deadline/timeout truncation and
+progress-line arrival order are not deterministic replay inputs.
+
+Pruning reruns the exact engine batch path on ceil(fraction * input bars),
+deduplicating prefixes that round to the same count. Cuts are frozen from
+committed earlier batches at that rung; ties survive. Rung scoring uses the
+study objective, and constraints apply only on the full window. A `pruned`
+trial keeps partial metrics and objective, is not feasible or a best-trial
+candidate, and consumes one trial from the requested budget. It is abandoned
+rather than used to train the adaptive sampler.
+
+Pruning adds a `pruning` trial object with `method="prefix_rerun"`,
+`rungs_completed` (prefix rungs only), `cut`, `bars_processed_total`,
+`script_bars_processed_total`, and `magnifier_sample_ticks_total`. These totals
+include all reruns, whereas `backtest` describes only the last executed window.
+Use the cumulative totals for compute metering, including on surviving trials.
+Pruned trials remain billable trials unless the consuming application explicitly
+chooses another policy. Progress lines use exactly the same terminal object.
+
+The native `--trial-timeout-seconds` watchdog spans all prefix reruns in a trial,
+not each rung separately. Surviving the default quarter/half/full schedule
+requires roughly 1.75 times the full-window bar work; account for that when
+choosing a timeout for a pruning-enabled study.
+
+Pruning and pipelining stay opt-in: changing feedback or cutting prefixes can
+change the best found result. See [measurements and limitations](batching.md).
 
 ### Native-only execution controls (0.2.0)
 
@@ -595,7 +648,7 @@ StudySpec field; it is not an alias for either native wall cap.
 ## Coverage and result provenance
 
 Candidate-policy and coverage fields are part of replay provenance alongside
-sampler implementation, sampler configuration, seed, worker count, artifact
+sampler implementation, sampler configuration, seed, batch size/lag, pruning policy, artifact
 key, and search-space definition:
 
 | Field | Contract |
@@ -621,7 +674,7 @@ full parameter coverage, but a failure supplies no comparable objective.
 
 Consequently, `candidate_policy="exhaustive"` does not alone certify equality
 with the best result of a successful grid run. `exhaustive_equivalent` remains
-false after any engine, objective, constraint-evaluation, serialization, or
+false after any pruning, engine, objective, constraint-evaluation, serialization, or
 other trial error. When it is true, grid-best equivalence additionally assumes
 the same deterministic artifact, dataset, runtime settings, objective, and
 constraint policy. Adaptive TPE and grid may visit the same set in different
@@ -650,7 +703,7 @@ best result does.
 - portfolio mode and multiple strategies/datasets;
 - account-equity aggregation and allocation optimization;
 - registered custom-objective lookup from JSON;
-- persistence, resume, pruning, and worker recovery;
+- persistence, resume, and worker recovery;
 - conditional/hierarchical spaces;
 - multi-objective directions and Pareto output;
 - walk-forward folds;

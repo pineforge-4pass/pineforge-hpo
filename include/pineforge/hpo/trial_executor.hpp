@@ -136,6 +136,12 @@ public:
     TrialExecutionResult execute(const ParameterValues& inputs,
                                  const ParameterValues& strategy_overrides = {}) const;
 
+    /// Runs the exact full-backtest engine path on an immutable bar prefix.
+    /// The prefix must contain between one and dataset().size() bars.
+    TrialExecutionResult execute_prefix(const ParameterValues& inputs,
+                                        const ParameterValues& strategy_overrides,
+                                        std::size_t bar_count) const;
+
     /// Returns the immutable per-execution configuration.
     const BacktestConfiguration& configuration() const noexcept { return configuration_; }
     /// Returns the shared immutable dataset.

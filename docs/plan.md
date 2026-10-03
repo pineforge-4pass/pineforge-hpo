@@ -10,8 +10,13 @@ best trial plus a complete trial table. TPE and grid also support explicit
 finite `without_replacement` and `exhaustive` candidate policies.
 
 Portfolio-facing data types and the generic custom C++ objective contract are
-present. Account aggregation, portfolio studies, persistence, pruning, and
+present. Account aggregation, portfolio studies, persistence, and
 multi-objective search are not implemented.
+
+Release 0.3.0 adds worker-independent logical batches, fixed-lag pipelining,
+and deterministic prefix pruning. Release 0.2.0 supplies terminal progress,
+cooperative cancellation/deadlines, and watchdog timeouts. Both new scheduling
+modes remain opt-in; see [batching measurements](batching.md).
 
 ## Principles
 
@@ -159,7 +164,7 @@ Still planned:
 
 - crash-safe checkpoint/resume;
 - immutable study, artifact, and dataset provenance in persisted state;
-- pruning/cancellation hooks at safe trial boundaries;
+- resumable pruning/cancellation state across process restarts;
 - additional CMA-ES/evolutionary evaluation only when study requirements justify
   another optimizer;
 - result/query tools for long-running studies.
@@ -174,8 +179,9 @@ External optimizer evaluation criteria:
 - license, release activity, binary size, and integration complexity.
 
 dlib global search and single-objective TPE are the current adaptive native
-optimizers. They do not provide pruning, durable storage, distributed
-coordination, or Pareto study features.
+optimizers. The runner now provides prefix pruning independently of their
+estimators; durable storage, distributed coordination, and Pareto study
+features remain future work.
 
 ## Milestone 5 — multiple-strategy portfolio MVP: planned
 

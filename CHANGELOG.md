@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — unreleased
+
+- Decouple logical proposal batches from workers with `--batch-size`; defaults preserve
+  the 0.1.x adaptive sequence and existing trial values.
+- Add opt-in deterministic fixed-lag pipelining with `--batch-lag 1`, plus timing-only
+  `--scheduler-stats` diagnostics.
+- Add opt-in median and successive-halving prefix pruning with frozen earlier-batch cuts,
+  partial `pruned` trial metrics, and cumulative compute counters.
+- Share the existing compiled artifact, plugin, dataset, and compiled expressions for the
+  entire study; reuse worker threads and serialize inputs once per trial across rungs.
+- Forward batching/pruning settings from StudySpec and retain 0.2.0 progress, stop,
+  symbol-info, recorded metrics, magnifier metering, and trial-timeout contracts.
+- Add worker-count replay, lag, pruning, default-compatibility, and prefix API regressions;
+  publish paired real-strategy measurements and replay methodology.
+- Clear stale prefix report values on pruning-path engine/objective failures while keeping
+  cumulative compute counters; discard queued trials when the coordinator unwinds.
+- Reject lagged TPE without constant liar during StudySpec validation, document the
+  whole-trial watchdog budget, and qualify unexplained default timing gaps as noise.
+
 ## 0.2.0 — unreleased
 
 - U1: native `--syminfo FILE` applies optional mintick, pointvalue, exchange

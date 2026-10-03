@@ -113,6 +113,11 @@ class ExecutionSpec:
     isolation: str
     timeout_seconds: float | None = None
     fail_fast: bool = False
+    batch_size: int | None = None
+    batch_lag: int = 0
+    pruner: str = "none"
+    pruner_rungs: tuple[float, ...] = (0.25, 0.5)
+    pruner_eta: int = 2
 
 
 @dataclass(frozen=True)
@@ -892,7 +897,20 @@ def _parse_execution(value: Any, issues: list[ValidationIssue]) -> ExecutionSpec
     path = "$.execution"
     raw = _object(value, path, issues)
     _check_unknown(
-        raw, {"workers", "isolation", "timeout_seconds", "fail_fast"}, path, issues
+        raw,
+        {
+            "workers",
+            "isolation",
+            "timeout_seconds",
+            "fail_fast",
+            "batch_size",
+            "batch_lag",
+            "pruner",
+            "pruner_rungs",
+            "pruner_eta",
+        },
+        path,
+        issues,
     )
     workers = raw.get("workers")
     if not _is_int(workers) or workers <= 0:
@@ -915,11 +933,53 @@ def _parse_execution(value: Any, issues: list[ValidationIssue]) -> ExecutionSpec
     if not isinstance(fail_fast, bool):
         issues.append(ValidationIssue(f"{path}.fail_fast", "must be a boolean"))
         fail_fast = False
+    batch_size = raw.get("batch_size")
+    if batch_size is not None and (
+        not _is_int(batch_size) or not 1 <= batch_size <= 1000000
+    ):
+        issues.append(
+            ValidationIssue(f"{path}.batch_size", "must be an integer in [1, 1000000]")
+        )
+        batch_size = None
+    batch_lag = raw.get("batch_lag", 0)
+    if not _is_int(batch_lag) or batch_lag not in (0, 1):
+        issues.append(ValidationIssue(f"{path}.batch_lag", "must be 0 or 1"))
+        batch_lag = 0
+    pruner = raw.get("pruner", "none")
+    if pruner not in ("none", "median", "halving"):
+        issues.append(
+            ValidationIssue(f"{path}.pruner", "must be none, median, or halving")
+        )
+        pruner = "none"
+    rungs = raw.get("pruner_rungs", [0.25, 0.5])
+    if (
+        not isinstance(rungs, list)
+        or not rungs
+        or any(not _is_number(rung) or not 0 < rung < 1 for rung in rungs)
+        or any(left >= right for left, right in zip(rungs, rungs[1:]))
+    ):
+        issues.append(
+            ValidationIssue(f"{path}.pruner_rungs", "must increase strictly in (0, 1)")
+        )
+        rungs = [0.25, 0.5]
+    eta = raw.get("pruner_eta", 2)
+    if not _is_int(eta) or not 2 <= eta <= 4294967295:
+        issues.append(
+            ValidationIssue(
+                f"{path}.pruner_eta", "must be an integer in [2, 4294967295]"
+            )
+        )
+        eta = 2
     return ExecutionSpec(
         workers=workers,
         isolation=isolation,
         timeout_seconds=float(timeout) if timeout is not None else None,
         fail_fast=fail_fast,
+        batch_size=batch_size,
+        batch_lag=batch_lag,
+        pruner=pruner,
+        pruner_rungs=tuple(float(rung) for rung in rungs),
+        pruner_eta=eta,
     )
 
 
@@ -1014,6 +1074,19 @@ def load_study_spec(path: str | Path, *, require_files: bool = False) -> StudySp
     sampler = _parse_sampler(root.get("sampler"), issues)
     _validate_candidate_policy(strategy, sampler, issues)
     execution = _parse_execution(root.get("execution"), issues)
+
+    if (
+        sampler.kind == "tpe"
+        and execution.batch_lag == 1
+        and sampler.config is not None
+        and not sampler.config.constant_liar
+    ):
+        issues.append(
+            ValidationIssue(
+                "$.execution.batch_lag",
+                "lag-one TPE requires sampler.config.constant_liar=true",
+            )
+        )
 
     if require_files:
         strategy_path = strategy.source or strategy.artifact

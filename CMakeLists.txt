@@ -46,6 +46,7 @@ option(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER "Build with ThreadSanitizer" OFF)
 if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
 endif()
+option(PINEFORGE_HPO_BUILD_BATCH_BENCHMARK "Build prefix/stream parity benchmark" OFF)
 option(PINEFORGE_HPO_USE_SYSTEM_DLIB
     "Use an installed dlib 20.0.1 package instead of the pinned source archive" OFF)
 
@@ -107,6 +108,7 @@ endif()
 add_library(pineforge_hpo_core STATIC
     src/core/dlib_sampler.cpp
     src/core/objective.cpp
+    src/core/pruner.cpp
     src/core/sampler.cpp
     src/core/search_space.cpp
     src/core/tpe_sampler.cpp
@@ -179,6 +181,12 @@ if(PINEFORGE_HPO_BUILD_TESTS)
     include(CTest)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(PINEFORGE_HPO_BUILD_BATCH_BENCHMARK)
+    add_executable(pineforge_hpo_compare_rungs benchmarks/batching/compare_rungs.cpp)
+    target_link_libraries(pineforge_hpo_compare_rungs PRIVATE PineForgeHPO::engine_adapter)
+    target_compile_options(pineforge_hpo_compare_rungs PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(PINEFORGE_HPO_BUILD_EXAMPLES)
