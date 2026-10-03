@@ -32,6 +32,37 @@ freed before handles. Objective/constraint/recorded-metric expressions still
 compile once per study, and scalar-only report capture avoids unused equity
 curve snapshots. The pool only closes the thread-creation gap.
 
+## Choosing batch size, lag and pruning
+
+For expensive objectives, start with `--batch-size` equal to the worker count
+(8 in the study below), `--batch-lag 0`, and `--pruner none`. Choose batch size 1
+when search quality comes first or objective evaluations are cheap. Larger
+batches, lag and pruning are opt-in trade-offs, not free speed.
+
+A separate pure-math benchmark compared 36 hard problems over 30 paired seeds
+at 100 and 300 trials with 8 workers. With pruning disabled, the table shows
+relative residual-regret increases against sequential TPE (batch 1); higher
+regret means worse search quality.
+
+| Mode | Regret increase at 100 trials | Regret increase at 300 trials |
+| --- | ---: | ---: |
+| Batch 8, lag 0 | +5.4% | +0.8% |
+| Batch 16, lag 0 | +16.1% | +4.3% |
+| Batch 32, lag 0 | +27.7% | +23.0% |
+| Batch 8, lag 1 | +20.1% | +9.2% |
+
+Batch 8, lag 0 used about 6.9 times fewer 8-worker evaluation rounds at matched
+quality, targeting sequential TPE's median final regret at 100 trials.
+Separately, a partial-sum Rastrigin20 check with batch 8, lag 0 at 300 trials
+compared each pruner with no pruning: median used 12.7% less work but increased
+regret by 21.4%; halving used 40.7% less work but increased regret by 28.1%.
+Those pruning results use synthetic partial-sum fidelities, not backtest
+prefixes; validate the learning curve for your own objective before enabling
+pruning.
+
+Rounds are an equal-duration evaluation-wave proxy, not measured backtest wall time.
+The confidence intervals do not prove equivalence or rule out meaningful quality losses.
+
 ## Replay contract: ordered_batches_v1
 
 Replay provenance includes seed, logical batch size, feedback lag, pruning

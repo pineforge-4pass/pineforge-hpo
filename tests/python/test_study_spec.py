@@ -58,7 +58,9 @@ class StudySpecTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             document = valid_document()
             document["sampler"] = {
-                "kind": "tpe", "seed": 1234, "trials": 100,
+                "kind": "tpe",
+                "seed": 1234,
+                "trials": 100,
                 "config": {"constant_liar": False},
             }
             document["execution"]["batch_lag"] = 1
@@ -78,8 +80,11 @@ class StudySpecTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             document = valid_document()
             document["execution"].update(
-                batch_size=16, batch_lag=1, pruner="halving",
-                pruner_rungs=[0.25, 0.5], pruner_eta=3,
+                batch_size=16,
+                batch_lag=1,
+                pruner="halving",
+                pruner_rungs=[0.25, 0.5],
+                pruner_eta=3,
             )
             path = Path(temporary) / "study.json"
             path.write_text(json.dumps(document), encoding="utf-8")
@@ -89,9 +94,14 @@ class StudySpecTest(unittest.TestCase):
             self.assertEqual(spec.execution.pruner, "halving")
             self.assertEqual(spec.execution.pruner_rungs, (0.25, 0.5))
             self.assertEqual(spec.execution.pruner_eta, 3)
-            for field, value in (("batch_size", 0), ("batch_size", True),
-                                 ("batch_lag", 2), ("pruner", "bad"),
-                                 ("pruner_rungs", [0.5, 0.25]), ("pruner_eta", 1)):
+            for field, value in (
+                ("batch_size", 0),
+                ("batch_size", True),
+                ("batch_lag", 2),
+                ("pruner", "bad"),
+                ("pruner_rungs", [0.5, 0.25]),
+                ("pruner_eta", 1),
+            ):
                 with self.subTest(field=field):
                     broken = valid_document()
                     broken["execution"][field] = value
