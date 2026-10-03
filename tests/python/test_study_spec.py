@@ -206,6 +206,7 @@ class StudySpecTest(unittest.TestCase):
                 "config": {
                     "startup_trials": 20,
                     "ei_candidates": 48,
+                    "history_switch": 4096,
                     "gamma_fraction": 0.2,
                     "gamma_cap": 40,
                     "prior_weight": 1.5,
@@ -220,6 +221,7 @@ class StudySpecTest(unittest.TestCase):
             assert config is not None
             self.assertEqual(config.startup_trials, 20)
             self.assertEqual(config.ei_candidates, 48)
+            self.assertEqual(config.history_switch, 4096)
             self.assertEqual(config.gamma_fraction, 0.2)
             self.assertEqual(config.gamma_cap, 40)
             self.assertEqual(config.prior_weight, 1.5)
@@ -232,6 +234,7 @@ class StudySpecTest(unittest.TestCase):
             assert defaults is not None
             self.assertEqual(defaults.startup_trials, 10)
             self.assertEqual(defaults.ei_candidates, 24)
+            self.assertEqual(defaults.history_switch, 8)
             self.assertEqual(defaults.gamma_fraction, 0.10)
             self.assertEqual(defaults.gamma_cap, 25)
             self.assertEqual(defaults.prior_weight, 1.0)
@@ -239,6 +242,9 @@ class StudySpecTest(unittest.TestCase):
 
     def test_tpe_config_rejects_unknown_fields_and_invalid_ranges(self) -> None:
         invalid = (
+            ({"history_switch": 0}, "history_switch: must be a positive uint64"),
+            ({"history_switch": True}, "history_switch: must be a positive uint64"),
+            ({"history_switch": 2**64}, "history_switch: must be a positive uint64"),
             ({"unknown": 1}, "config.unknown: unknown field"),
             ({"startup_trials": 0}, "startup_trials: must be a positive integer"),
             (

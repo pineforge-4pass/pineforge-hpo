@@ -272,6 +272,8 @@ def main() -> int:
         )
 
         tpe_args = (
+            "--tpe-history-switch",
+            "128",
             "--tpe-startup-trials",
             "3",
             "--tpe-ei-candidates",
@@ -330,6 +332,7 @@ def main() -> int:
                 "startup_trials": 3,
                 "ei_candidates": 16,
                 "scale_ei_candidates": 8,
+                "history_switch": 128,
                 "bad_reservoir_size": 448,
                 "gamma_fraction": 0.25,
                 "gamma_cap": 4,
@@ -339,6 +342,9 @@ def main() -> int:
             "TPE configuration was not preserved in result provenance",
         )
         tpe_trials = tpe_json["trials"]
+        require(tpe_json["tpe_history_switch"] == 128 and
+                all(trial["tpe_history_switch"] == 128 for trial in tpe_trials),
+                "TPE history switch is missing from the result or trial archive")
         unique_tpe_parameters = {
             tuple(sorted(trial["parameters"].items())) for trial in tpe_trials
         }

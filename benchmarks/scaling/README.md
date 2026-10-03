@@ -1,5 +1,11 @@
 # Native scaling in 0.4.0
 
+**Current history-switch retry: BLOCKED.** The
+[history-switch report](switch-2026-10-03.md) supersedes the review-fix sampler
+measurements. The startup-only default N_s=8 has exact-prefix diff count 0, but
+3k/10k quality geomeans 1.164189/1.118446 fail the required gates. The 64D ask limit
+and million-trial billing/memory measurements are reported there.
+
 **Release gate blocked:** the [review-fix measurements](review-2026-10-03.md)
 supersede the estimator, acquisition, and quality claims below. The tables below
 describe the original PR implementation, not the reservoir implementation. Its

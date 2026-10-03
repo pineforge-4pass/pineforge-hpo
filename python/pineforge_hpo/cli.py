@@ -492,6 +492,8 @@ def _native_command(
                 str(config.startup_trials),
                 "--tpe-ei-candidates",
                 str(config.ei_candidates),
+                "--tpe-history-switch",
+                str(config.history_switch),
                 "--tpe-gamma-fraction",
                 str(config.gamma_fraction),
                 "--tpe-gamma-cap",

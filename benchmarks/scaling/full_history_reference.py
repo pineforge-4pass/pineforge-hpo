@@ -22,9 +22,7 @@ def main():
     start = source.index("    void compact_observations(const TpeSamplerConfig& config) {")
     end = source.index("    bool register_pending(", start)
     replacement = """    void compact_observations(const TpeSamplerConfig& config) {
-        const auto warmup_limit = std::max<std::uint64_t>(1000, config.gamma_cap + 64);
-        if (history_.size() >= warmup_limit ||
-            generated_.load(std::memory_order_relaxed) >= warmup_limit)
+        if (completed_.load(std::memory_order_relaxed) >= config.history_switch)
             compact_history_ = true;
     }
 

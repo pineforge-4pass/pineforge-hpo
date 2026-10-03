@@ -324,6 +324,7 @@ class CliTests(unittest.TestCase):
             "config": {
                 "startup_trials": 12,
                 "ei_candidates": 48,
+                "history_switch": 4096,
                 "gamma_fraction": 0.2,
                 "gamma_cap": 30,
                 "prior_weight": 2.5,
@@ -345,6 +346,7 @@ class CliTests(unittest.TestCase):
         expected = {
             "--tpe-startup-trials": "12",
             "--tpe-ei-candidates": "48",
+            "--tpe-history-switch": "4096",
             "--tpe-gamma-fraction": "0.2",
             "--tpe-gamma-cap": "30",
             "--tpe-prior-weight": "2.5",
@@ -371,6 +373,7 @@ class CliTests(unittest.TestCase):
         expected = {
             "--tpe-startup-trials": "10",
             "--tpe-ei-candidates": "24",
+            "--tpe-history-switch": "8",
             "--tpe-gamma-fraction": "0.1",
             "--tpe-gamma-cap": "25",
             "--tpe-prior-weight": "1.0",

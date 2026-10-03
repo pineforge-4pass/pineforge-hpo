@@ -119,7 +119,10 @@ struct TpeSamplerConfig {
     /// the same region.
     bool constant_liar = true;
 
-    /// Acquisition draws after the bounded-history warm-up; never exceeds ei_candidates.
+    /// Completed observations at which full-history acquisition switches to bounded models.
+    std::uint64_t history_switch = 8;
+
+    /// Acquisition draws after the history switch; never exceeds ei_candidates.
     std::uint64_t scale_ei_candidates = 8;
 
     /// Uniform older non-elite reservoir size, in addition to 64 recent observations.
@@ -137,11 +140,11 @@ struct TpeSamplerConfig {
 /// abandon() receives its ID. Public methods are thread-safe, although deterministic replay
 /// requires the same ordering of ask/tell/abandon calls.
 ///
-/// With the default configuration, the first 1,000 proposals use the full-history estimator.
+/// Below history_switch completed observations, proposals use the exact full-history estimator.
 /// Thereafter the sampler retains at most gamma_cap elite observations and 64 recent non-elite
 /// observations plus bad_reservoir_size older non-elites from a separate seeded reservoir.
-/// Larger gamma_cap values extend warm-up to gamma_cap + 64 proposals. Numeric
-/// density tables, elite-change good-model refits, and 32-completion bad-model epochs bound
+/// Outstanding or abandoned proposals never advance the switch. Numeric density tables,
+/// elite-change good-model refits, and 32-completion bad-model epochs bound
 /// work independently of study length.
 class TpeSampler final : public Sampler {
 public:

@@ -159,16 +159,31 @@ reports finite=true/cardinality=null/overflow=true without claiming exact unique
 coverage; grid and exact finite policies reject it.
 
 TPE's identity changes to `pineforge_product_tpe_v3_bounded` (`_finite` for exact
-finite policies). Its default first 1,000 proposals keep full-history estimation.
-Thereafter 25 elites plus 64 recent non-elites and a seeded reservoir of 448 older
+finite policies). `--tpe-history-switch N` (default 8) keeps exact 0.3.0 full-history
+estimation below N completed usable observations. At N, 25 elites plus 64 recent
+non-elites and a seeded reservoir of 448 older
 non-elites, 513-point numeric density tables,
 good-model refits when elite IDs change, 32-completion bad-model refit epochs, and eight EI
 draws bound history-dependent work. Unchanged elites and cached bad epochs skip rebuilding
 the split as well as the models.
-`--tpe-scale-ei-candidates N` changes the post-warm-up draws, capped by
+`--tpe-scale-ei-candidates N` changes the post-switch draws, capped by
 `--tpe-ei-candidates`; record it for replay. Seed, explicit batch size, lag, and
 pruning remain deterministic across worker counts. Enabled pruners now retain
 the latest 1,024 values per rung.
+
+The switch uses only successful finite `tell()` calls, not generated/pending/abandoned
+candidates, wall time, or workers. Results add `tpe_history_switch` (integer for TPE,
+null otherwise) and `sampler_config.history_switch`; each TPE terminal record also
+adds integer `tpe_history_switch`, including in `--trials-file` and on the progress
+stream. All existing schema-version-1 fields/types remain unchanged. Strict consumers
+must allow this documented additive scalar; no metadata-only billing line is emitted.
+StudySpec forwards `sampler.config.history_switch`. A larger override increases
+full-history memory and ask cost before the switch.
+
+The selection budget is 5.859375 microseconds per dimension: 375 at 64D and 93.75
+at 16D. No fitted legacy model met that budget, even at one observation. N=8 is
+the largest qualifying power of two with the default ten-observation random startup;
+it is not a claim that a fitted full-history model costs only a few microseconds.
 
 Use `--batch-lag 1` to overlap sampling and execution. The original recent-only
 64D profile used about 65% of the W=8, 3-ms trial budget (245/375 microseconds).
@@ -176,12 +191,18 @@ That is not a guarantee for the reservoir estimator: its loaded review profile
 uses about 669 microseconds/ask, exceeding that budget. History cost is flat,
 but 64D sampling can still be the bottleneck; see the scaling review report.
 
+The history-switch retry measures 612.889/625.503 microseconds per 64D ask at
+100k/1M history. It remains a known throughput limit. Its quality release gate is
+blocked: 3k geomean 1.164189/worst 3.222143 versus 0.3.0; 10k geomean 1.118446/worst
+1.410329 versus the full-history benchmark variant. See the
+[current switch measurements](../benchmarks/scaling/switch-2026-10-03.md).
+
 `--tpe-bad-reservoir-size N` selects the older non-elite bound (default 448,
 range 0–65,536). Its independent seeded RNG does not consume proposal RNG draws.
 Zero recreates the recent-only bad-model retention, not the recommended refinement
 configuration. Reservoir sampling happens as non-elites leave the recent window.
 
-Bounded modes retain fixed warm-up/model history, outstanding logical batches,
+Bounded modes retain fixed exact-prefix/model history, outstanding logical batches,
 a bounded writer queue, and best-k, independent of total trials. Exact finite
 coverage uses a dense bitset for cardinalities up to 100,000,000 (at most 12.5 MB
 per index); larger spaces use a temporary disk index growing with unique attempts.

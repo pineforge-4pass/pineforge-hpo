@@ -16,11 +16,13 @@ int main(int argc, char** argv) {
     const auto history = std::stoull(argv[2]);
     const auto repetitions = std::stoull(argv[3]);
     const bool updating = argc == 5 && std::string(argv[4]) == "update";
+    const bool default_startup = argc == 5 && std::string(argv[4]) == "default-startup";
     std::vector<pfh::Dimension> descriptors;
     for (unsigned dimension = 0; dimension < dimensions; ++dimension)
         descriptors.emplace_back(pfh::RealDimension("x" + std::to_string(dimension), -5, 5));
     pfh::TpeSamplerConfig config;
-    config.startup_trials = history;
+    if (!default_startup)
+        config.startup_trials = history;
     pfh::TpeSampler sampler(pfh::SearchSpace(std::move(descriptors)), 17,
                             pfh::ObjectiveDirection::Minimize, 0, config);
     const auto started = std::chrono::steady_clock::now();
@@ -68,6 +70,7 @@ int main(int argc, char** argv) {
               << ask_seconds * 1e6 / repetitions << ",\"populate_s\":"
               << std::chrono::duration<double>(loaded - started).count()
               << ",\"mode\":\"" << (updating ? "batch8_updates" : "snapshot") << "\""
+              << ",\"startup_trials\":" << config.startup_trials
               << ",\"tell_us\":" << tell_seconds * 1e6 / repetitions
               << ",\"retained_observations\":"
 #if defined(PINEFORGE_HPO_LEGACY_TPE)

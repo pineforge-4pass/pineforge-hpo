@@ -481,6 +481,16 @@ Before `startup_trials` usable observations, proposals use the seeded random
 path. Failed and constraint-violating trials are abandoned and train neither
 estimator.
 
+`sampler.config.history_switch` maps to native `--tpe-history-switch N`. Below that
+completed usable observation count, TPE uses the exact 0.3.0 full-history estimator.
+At the count, it switches to bounded density tables with 25 elites, 64 recent
+non-elites, and 448 seeded older non-elites by default. This count is independent of
+worker count, issued/abandoned candidates, and wall time. The default is 8, chosen
+from the legacy ask-cost measurements; only the seeded random startup path meets
+the scaled 16D budget. A larger override retains more history and has higher memory
+and acquisition cost before the switch. Results and TPE terminal records persist
+the configured value as `tpe_history_switch`; it is not a trial or wall-time cap.
+
 Under `sampler_default`, TPE may propose the same complete vector more than
 once. Under either finite policy, every vector is atomically reserved before it
 is returned by `ask()`. Pending, completed, infeasible, and failed vectors stay
@@ -499,6 +509,7 @@ TPE config fields are strict; unknown fields are rejected:
 | --- | ---: | --- |
 | `startup_trials` | `10` | Positive integer. |
 | `ei_candidates` | `24` | Integer in `[1, 1000000]`; the upper bound prevents an accidental near-infinite `ask()`. |
+| `history_switch` | `8` | Positive uint64 completed-observation threshold; native `--tpe-history-switch N`. |
 | `gamma_fraction` | `0.1` | Finite number in `(0, 1]`. |
 | `gamma_cap` | `25` | Positive integer. |
 | `prior_weight` | `1.0` | Finite number greater than zero. |

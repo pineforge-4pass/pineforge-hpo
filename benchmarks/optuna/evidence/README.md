@@ -68,3 +68,15 @@ Adjacent `review-ask`, `review-native`, and `review-ordinal` CSVs record flat
 history probes, finite before/after plus the final million-trial run, and dense
 versus disk insertion. Every CSV has a verified `.csv.metadata.json` sidecar.
 The selected 3k geomean is 1.015738: **the required <=1.01 gate fails**.
+
+## History-switch retry evidence (release blocked)
+
+The [history-switch report](../../scaling/switch-2026-10-03.md) supersedes the
+review-fix estimator measurements. `2026-10-03-switch-quality.csv` contains 100
+per-seed comparisons (80 at 3k, 20 at 10k). Adjacent `switch-ask`, `switch-native`,
+`switch-ordinal`, and `switch-identity` CSVs record the default-selection and flat
+history probes, 100k/1M billing runs, dense/disk insertion, and 96 prefix identity
+studies. Each CSV has a verified metadata sidecar with source/binary/trace hashes,
+pins and protocol limitations. The current 3k/10k geomeans are 1.164189/1.118446:
+**both quality gates fail**. Identity has zero differing proposal/value records;
+it is not a long-budget quality-equivalence claim.

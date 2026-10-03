@@ -208,20 +208,21 @@ vectors. `without_replacement` validates `trials <= cardinality`;
 `exhaustive` validates equality. Grid covers the same declared set in its stable
 order. The two orders need not have the same intermediate best-so-far sequence.
 
-Version 0.4.0 bounds TPE history after the default 1,000-proposal warm-up. The
+Version 0.4.0 bounds TPE history at `history_switch` completed usable observations
+(default 8). Below that count, it uses the exact 0.3.0 full-history estimator. The
 retained set is the global best `gamma_cap` observations plus 64 recent
 non-elites plus a separately seeded reservoir of older non-elites (default 448).
 Each observation enters the older pool once when it leaves the recent window;
 uniform reservoir replacement preserves global bad-model coverage without growing
-history. Larger gamma caps extend warm-up to at least `gamma_cap + 64`.
+history. An explicit larger switch increases the full-history prefix, not the bounded window.
 Fitted numeric density tables use 513 points with Gaussian recurrence and an
 eight-sigma cutoff, interpolating densities and using midpoint mass for tiny
 discrete bins. Good models refit whenever elite IDs change; bad models refit every
 32 completions, with unchanged elites and cached epochs bypassing split construction.
 Pending constant-liar overlays update on every ask. Eight acquisition draws replace
-24 after warm-up (configurable). Failed/pruned requests also count toward the
-proposal warm-up, preventing failure-heavy runs from growing history.
-The warm-up keeps the legacy full-history estimator and proposal sequence.
+24 after the switch (configurable). Failed/pruned requests, outstanding proposals,
+worker count, and wall time do not advance the switch. Only successful finite `tell()`
+calls increment the completed observation count; `reset()` restores exact-prefix mode.
 
 No SIMD or candidate-scoring threads are required: bounding observations, model
 refits, and acquisition draws makes history cost flat while leaving execution

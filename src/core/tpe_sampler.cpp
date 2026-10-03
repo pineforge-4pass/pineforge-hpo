@@ -534,6 +534,8 @@ private:
 };
 
 void validate_config(const TpeSamplerConfig& config) {
+    if (config.history_switch == 0)
+        throw std::invalid_argument("TPE history_switch must be positive");
     if (config.startup_trials == 0) {
         throw std::invalid_argument("TPE startup_trials must be positive");
     }
@@ -967,17 +969,15 @@ public:
         return candidate;
     }
 
-    void retain_observation(Candidate candidate, double score, const TpeSamplerConfig& config) {
+    void retain_observation(Candidate candidate, double score) {
         history_.push_back({std::move(candidate), score});
-        compact_observations(config);
     }
 
     void compact_observations(const TpeSamplerConfig& config) {
         const std::size_t elite_count = static_cast<std::size_t>(config.gamma_cap);
         const std::size_t recent_count = 64;
-        const std::size_t warmup_limit = std::max<std::size_t>(1000, elite_count + recent_count);
-        if (!compact_history_ && history_.size() < warmup_limit &&
-            generated_.load(std::memory_order_relaxed) < warmup_limit)
+        if (!compact_history_ &&
+            completed_.load(std::memory_order_relaxed) < config.history_switch)
             return;
         compact_history_ = true;
         if (history_.size() <= elite_count + recent_count)
@@ -1631,11 +1631,12 @@ void TpeSampler::tell(std::uint64_t candidate_id, double objective_value) {
     }
     const double score =
         direction_ == ObjectiveDirection::Maximize ? objective_value : -objective_value;
-    impl_->retain_observation(found->second, score, config_);
+    impl_->retain_observation(found->second, score);
     impl_->pending_.erase(found);
     impl_->pending_encodings_.erase(candidate_id);
     impl_->outstanding_.fetch_sub(1, std::memory_order_relaxed);
     impl_->completed_.fetch_add(1, std::memory_order_relaxed);
+    impl_->compact_observations(config_);
 }
 
 void TpeSampler::abandon(std::uint64_t candidate_id) {

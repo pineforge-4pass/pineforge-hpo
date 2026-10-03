@@ -18,6 +18,26 @@ int main() {
             dimensions.emplace_back(pfh::RealDimension("x" + std::to_string(index), -5, 5));
         pfh::TpeSampler sampler(pfh::SearchSpace(dimensions), 17,
                                 pfh::ObjectiveDirection::Minimize);
+        pfh::TpeSamplerConfig switch_config;
+        switch_config.history_switch = 128;
+        switch_config.startup_trials = 200;
+        switch_config.bad_reservoir_size = 0;
+        pfh::TpeSampler completed_switch(pfh::SearchSpace(dimensions), 17,
+                                         pfh::ObjectiveDirection::Minimize, 0, switch_config);
+        for (std::uint64_t trial = 0; trial < 256; ++trial) {
+            auto candidate = completed_switch.ask();
+            completed_switch.abandon(candidate->id);
+        }
+        for (std::uint64_t trial = 0; trial < 127; ++trial) {
+            auto candidate = completed_switch.ask();
+            completed_switch.tell(candidate->id, static_cast<double>(trial));
+        }
+        if (completed_switch.retained_observations() != 127)
+            throw std::runtime_error("TPE switched on issued rather than completed trials");
+        auto candidate_at_switch = completed_switch.ask();
+        completed_switch.tell(candidate_at_switch->id, 128.0);
+        if (completed_switch.retained_observations() != 89)
+            throw std::runtime_error("TPE did not compact at the completed-history switch");
         double early_seconds = 0.0;
         double late_seconds = 0.0;
         long initial_rss = 0;

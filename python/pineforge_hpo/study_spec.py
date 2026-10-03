@@ -92,6 +92,7 @@ class TpeSamplerConfig:
     gamma_cap: int = 25
     prior_weight: float = 1.0
     constant_liar: bool = True
+    history_switch: int = 8
 
 
 @dataclass(frozen=True)
@@ -636,6 +637,7 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
                 "gamma_cap",
                 "prior_weight",
                 "constant_liar",
+                "history_switch",
             },
             config_path,
             issues,
@@ -700,6 +702,13 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
             )
             constant_liar = True
 
+        history_switch = raw_config.get("history_switch", 8)
+        if not _is_int(history_switch) or not 0 < history_switch <= 2**64 - 1:
+            issues.append(
+                ValidationIssue(f"{config_path}.history_switch", "must be a positive uint64")
+            )
+            history_switch = 8
+
         config = TpeSamplerConfig(
             startup_trials=startup_trials,
             ei_candidates=ei_candidates,
@@ -707,6 +716,7 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
             gamma_cap=gamma_cap,
             prior_weight=float(prior_weight),
             constant_liar=constant_liar,
+            history_switch=history_switch,
         )
     elif raw_config:
         issues.append(

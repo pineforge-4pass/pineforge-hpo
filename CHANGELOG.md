@@ -2,21 +2,34 @@
 
 ## 0.4.0
 
-- Bound native TPE history after the default 1,000-proposal warm-up to 25 global elites,
+- Use exact 0.3.0 full-history TPE below a completed-observation switch (default 8),
+  then bound native TPE history to 25 global elites,
   64 recent non-elites, and a seeded reservoir of 448 older non-elites. Cache numeric
   density tables, refit good models on elite changes and bad models every 32 completions,
   skip split construction on cache hits, retain live constant-liar overlays, and use eight
-  draws after warm-up.
-  Preserve full-history acquisition through 1,000 proposals; record the new
+  draws after the switch. Outstanding and abandoned proposals, workers, and elapsed time
+  never advance the switch. Add `--tpe-history-switch N` and StudySpec
+  `sampler.config.history_switch`; record additive `tpe_history_switch` in results and
+  TPE terminal records, plus `sampler_config.history_switch`. Schema version remains 1,
+  and all existing terminal fields/types and billing counters remain unchanged.
+  Record the
   `pineforge_product_tpe_v3_bounded` identity and `scale_ei_candidates` setting.
 - Add `--tpe-bad-reservoir-size` (default 448, maximum 65,536) and the additive
-  `sampler_config.bad_reservoir_size` result field. The unchanged first 1,000 proposals
-  are a warm-up identity check, not evidence of long-budget quality equivalence.
-- Record the long-budget review gate as blocked: across eight problems and ten seeds at
+  `sampler_config.bad_reservoir_size` result field. Exact proposals below the switch
+  are an identity check, not evidence of long-budget quality equivalence.
+- The superseded round-one long-budget review gate was blocked: eight problems and ten seeds at
   3,000 trials, median-regret ratios have geomean 1.015738 versus 0.3.0 (required <= 1.01),
   with worst problem 1.099926. At 10,000 trials, four problems and five seeds versus the
   benchmark-only full-history variant have geomean 1.020763 and worst ratio 1.091497.
-  See the scaling review report for all rows, alternatives, and performance limitations.
+  See the round-two scaling report for current quality gates and performance limitations.
+- The history-switch retry also remains blocked: default N_s=8 is startup-only, because
+  no fitted legacy model meets the 93.75-us 16D selection budget. At 3k, eight problems
+  and ten seeds yield regret geomean 1.164189 and worst ratio 3.222143 versus 0.3.0.
+  At 10k, four problems and five seeds yield 1.118446 and worst ratio 1.410329 versus
+  the full-history benchmark variant. Prefix replay has zero differences across 4,736
+  proposal/value records; it is not a 3k identity claim. Flat 64D asks at 100k/1M cost
+  612.889/625.503 us, exceeding the unchanged 375-us budget. The native core and
+  Rastrigin quality assertions also fail; thresholds are not weakened.
 - Generate grid/random candidates lazily, use all workers for deadline-only adaptive studies,
   and accept `--max-trials 0 --max-wall-seconds S` without imposing a trial cap.
 - Add native `--trials-out all|best-k|none`, `--best-k N` (default 10), and optional

@@ -410,9 +410,30 @@ With an explicit batch size, changing only workers leaves `trials[]` byte-identi
 completed studies on the same deterministic artifact, data, runtime, and native build.
 Wall-deadline, cancellation, and timeout truncation are intentionally outside this guarantee.
 See [batching and pruning measurements](docs/batching.md) for the replay proof, metering
-contract, quality tradeoffs, and opt-in flags. The first 1,000 proposals intentionally
-preserve the old estimator: their zero regret delta is only a warm-up identity check,
-not long-budget quality evidence. Long-budget review measurements are reported separately.
+contract, quality tradeoffs, and opt-in flags. `--tpe-history-switch N` (default `8`)
+uses the exact 0.3.0 full-history estimator below `N` completed usable observations,
+then switches to 25 elites, 64 recent non-elites, and 448 seeded older non-elites.
+The switch never depends on elapsed time, worker count, pending or abandoned proposals.
+StudySpec forwards `sampler.config.history_switch`; results and TPE terminal records
+persist `tpe_history_switch`. An override can preserve a longer exact prefix, at the
+cost of full-history startup memory and quadratic study work before the switch.
+
+The default is the largest measured power of two meeting a linearly scaled budget:
+375 microseconds at 64 dimensions, or 5.859375 microseconds per dimension
+(93.75 microseconds at 16D). Only the random startup path qualifies: even a forced
+one-observation fitted 0.3.0 model costs 228 microseconds at 16D; at 16 observations
+it costs 897 microseconds. The default is therefore below 4,096 and does **not**
+promise identity over a 3,000-trial study. See the round-two scaling report for
+the required long-budget quality gates and the 64D performance limit. Identity
+below the switch is a replay guarantee, not evidence of long-budget quality parity.
+
+**The 0.4.0 release gate is blocked.** At 3,000 trials (eight problems, ten seeds),
+the switch has median-regret geomean 1.164189 versus 0.3.0, with worst ratio 3.222143;
+at 10,000 (four problems, five seeds), it has geomean 1.118446 versus the full-history
+benchmark variant, with worst ratio 1.410329. Both exceed the accepted envelope.
+The flat 64D ask probe measures 612.889/625.503 microseconds at 100k/1M history,
+above the 375-microsecond budget; 64D sampling remains a known bottleneck.
+See the [history-switch evidence and all gates](benchmarks/scaling/switch-2026-10-03.md).
 
 Generated strategies are compiled with the parity-critical
 `-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags; with Clang, the builder also passes

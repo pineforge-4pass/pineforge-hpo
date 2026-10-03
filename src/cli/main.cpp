@@ -99,6 +99,7 @@ struct Options {
 };
 
 struct TrialRecord {
+    std::optional<std::uint64_t> tpe_history_switch;
     std::uint64_t trial_id = 0;
     pfh::Candidate candidate;
     std::string status = "pending";
@@ -256,7 +257,8 @@ void print_help() {
               << "TPE options:\n"
               << "  --tpe-startup-trials N      random observations before model fitting\n"
               << "  --tpe-ei-candidates N       candidates scored by log l(x)/g(x)\n"
-              << "  --tpe-scale-ei-candidates N acquisition draws after bounded warm-up\n"
+              << "  --tpe-history-switch N     completed observations before bounded TPE (default 8)\n"
+              << "  --tpe-scale-ei-candidates N acquisition draws after the history switch\n"
               << "  --tpe-bad-reservoir-size N  older non-elite reservoir (default 448)\n"
               << "  --tpe-gamma-fraction X      good-observation fraction in (0, 1]\n"
               << "  --tpe-gamma-cap N           maximum good observations\n"
@@ -405,6 +407,9 @@ Options parse_options(int argc, char** argv) {
             out.tpe_config.startup_trials = parse_u64(require_value(argc, argv, i, option), option);
         } else if (option == "--tpe-ei-candidates") {
             out.tpe_config.ei_candidates = parse_u64(require_value(argc, argv, i, option), option);
+        } else if (option == "--tpe-history-switch") {
+            out.tpe_config.history_switch =
+                parse_u64(require_value(argc, argv, i, option), option);
         } else if (option == "--tpe-scale-ei-candidates") {
             out.tpe_config.scale_ei_candidates =
                 parse_u64(require_value(argc, argv, i, option), option);
@@ -546,6 +551,8 @@ Options parse_options(int argc, char** argv) {
     if (out.tpe_config.scale_ei_candidates == 0 ||
         out.tpe_config.scale_ei_candidates > 1'000'000)
         usage_error("--tpe-scale-ei-candidates must be between 1 and 1000000");
+    if (out.tpe_config.history_switch == 0)
+        usage_error("--tpe-history-switch must be positive");
     if (out.tpe_config.bad_reservoir_size > 65536)
         usage_error("--tpe-bad-reservoir-size must be between 0 and 65536");
     if (!(out.tpe_config.gamma_fraction > 0.0 && out.tpe_config.gamma_fraction <= 1.0))
@@ -688,6 +695,8 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
 
 TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& options) {
     TrialRecord record;
+    if (options.sampler == "tpe")
+        record.tpe_history_switch = options.tpe_config.history_switch;
     record.trial_id = candidate.id;
     record.candidate = candidate;
     record.pruning_enabled = options.pruner != pfh::PrunerKind::None;
@@ -716,7 +725,11 @@ void reset_pruning_report(TrialRecord& record) {
 
 std::string render_trial(const TrialRecord& trial) {
     std::ostringstream out;
-    out << "{\"trial_id\": " << trial.trial_id << ", \"status\": \""
+    if (trial.tpe_history_switch)
+        out << "{\"tpe_history_switch\": " << *trial.tpe_history_switch << ", ";
+    else
+        out << "{";
+    out << "\"trial_id\": " << trial.trial_id << ", \"status\": \""
         << json_escape(trial.status)
         << "\", \"feasible\": " << (trial.feasible ? "true" : "false") << ", \"objective\": ";
     if (trial.objective)
@@ -1305,9 +1318,13 @@ std::string render_results(const Options& options,
                 : "pineforge_finite_space_v1")
         << "\",\n"
         << "  \"seed\": " << options.seed << ",\n"
+        << "  \"tpe_history_switch\": "
+        << (options.sampler == "tpe" ? std::to_string(options.tpe_config.history_switch) : "null")
+        << ",\n"
         << "  \"sampler_config\": ";
     if (options.sampler == "tpe") {
         out << "{\"startup_trials\": " << options.tpe_config.startup_trials
+            << ", \"history_switch\": " << options.tpe_config.history_switch
             << ", \"scale_ei_candidates\": " << options.tpe_config.scale_ei_candidates
             << ", \"bad_reservoir_size\": " << options.tpe_config.bad_reservoir_size
             << ", \"ei_candidates\": " << options.tpe_config.ei_candidates
