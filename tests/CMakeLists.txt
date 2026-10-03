@@ -35,6 +35,11 @@ add_test(NAME pineforge_hpo_tpe_stress COMMAND pineforge_hpo_test_tpe_stress)
 # statistical coverage.
 set_tests_properties(pineforge_hpo_tpe_stress PROPERTIES TIMEOUT 180)
 
+if(PINEFORGE_HPO_ENABLE_SANITIZERS OR PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+    set_tests_properties(pineforge_hpo_tpe_quality PROPERTIES TIMEOUT 300)
+    set_tests_properties(pineforge_hpo_tpe_stress PROPERTIES TIMEOUT 900)
+endif()
+
 add_executable(pineforge_hpo_test_tpe_concurrency test_tpe_concurrency.cpp)
 target_link_libraries(pineforge_hpo_test_tpe_concurrency PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_tpe_concurrency PRIVATE -Wall -Wextra -Wpedantic)
