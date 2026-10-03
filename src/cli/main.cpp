@@ -1286,7 +1286,7 @@ int main(int argc, char** argv) {
     try {
         struct sigaction action {};
         action.sa_handler = request_stop;
-        ::sigemptyset(&action.sa_mask);
+        sigemptyset(&action.sa_mask);
         if (::sigaction(SIGTERM, &action, nullptr) != 0 ||
             ::sigaction(SIGINT, &action, nullptr) != 0)
             throw std::runtime_error("cannot install cooperative stop handlers");
