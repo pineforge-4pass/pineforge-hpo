@@ -124,27 +124,27 @@ was never proposed. Shadow work is excluded from measured wall time/bars.
 
 | Study | Mode | Wall s | Input bars | Best objective | Baseline-best rank/status | Pruned |
 | --- | --- | ---: | ---: | ---: | --- | ---: |
-| Example | 0.1.x | 0.002578 | 306 | -22.5 | 1 / ok | 0 |
-| Example | default | 0.002824 | 306 | -22.5 | 1 / ok | 0 |
-| Example | k8 | 0.002697 | 306 | -22.5 | 1 / ok | 0 |
-| Example | lag1 | 0.002516 | 306 | -22.5 | 1 / ok | 0 |
-| Example | median | 0.003129 | 353 | -22.5 | 1 / ok | 4 |
-| Example | halving3 | 0.003103 | 353 | -22.5 | 1 / ok | 4 |
-| Example | lag1+halving3 | 0.003062 | 506 | -22.5 | 1 / ok | 1 |
-| BB/RSI | 0.1.x | 1.375682 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
-| BB/RSI | default | 1.400021 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
-| BB/RSI | k8 | 1.173019 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
-| BB/RSI | lag1 | 1.041801 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
-| BB/RSI | median | 1.006681 | 1,968,467 | 1.3750000000020464 | 1 / ok | 54 |
-| BB/RSI | halving3 | 0.988991 | 1,860,608 | 1.3750000000020464 | 1 / ok | 55 |
-| BB/RSI | lag1+halving3 | 0.953727 | 2,561,689 | 1.3750000000020464 | 1 / ok | 46 |
-| Volatility | 0.1.x | 2.085340 | 3,451,456 | 6530.4349999999795 | 1 / ok | 0 |
-| Volatility | default | 2.061032 | 3,451,456 | 6530.4349999999795 | 1 / ok | 0 |
-| Volatility | k8 | 1.998716 | 3,451,456 | 5922.33750000004 | 1 / absent | 0 |
-| Volatility | lag1 | 2.167438 | 3,451,456 | 5922.33750000004 | 1 / absent | 0 |
-| Volatility | median | 3.059702 | 4,098,675 | 5922.33750000004 | 1 / absent | 27 |
-| Volatility | halving3 | 2.169981 | 2,750,440 | 6551.819999999991 | 2 / absent | 42 |
-| Volatility | lag1+halving3 | 2.221599 | 3,127,946 | 5937.942500000003 | 1 / absent | 38 |
+| Example | 0.1.x | 0.002411 | 306 | -22.5 | 1 / ok | 0 |
+| Example | default | 0.002818 | 306 | -22.5 | 1 / ok | 0 |
+| Example | k8 | 0.002728 | 306 | -22.5 | 1 / ok | 0 |
+| Example | lag1 | 0.002448 | 306 | -22.5 | 1 / ok | 0 |
+| Example | median | 0.003046 | 353 | -22.5 | 1 / ok | 4 |
+| Example | halving3 | 0.003037 | 353 | -22.5 | 1 / ok | 4 |
+| Example | lag1+halving3 | 0.003006 | 506 | -22.5 | 1 / ok | 1 |
+| BB/RSI | 0.1.x | 0.897340 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
+| BB/RSI | default | 0.906564 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
+| BB/RSI | k8 | 0.880424 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
+| BB/RSI | lag1 | 0.832207 | 3,451,456 | 1.3750000000020464 | 1 / ok | 0 |
+| BB/RSI | median | 0.827673 | 1,968,467 | 1.3750000000020464 | 1 / ok | 54 |
+| BB/RSI | halving3 | 0.800947 | 1,860,608 | 1.3750000000020464 | 1 / ok | 55 |
+| BB/RSI | lag1+halving3 | 0.785375 | 2,561,689 | 1.3750000000020464 | 1 / ok | 46 |
+| Volatility | 0.1.x | 1.481162 | 3,451,456 | 6530.4349999999795 | 1 / ok | 0 |
+| Volatility | default | 1.471613 | 3,451,456 | 6530.4349999999795 | 1 / ok | 0 |
+| Volatility | k8 | 1.558968 | 3,451,456 | 5922.33750000004 | 1 / absent | 0 |
+| Volatility | lag1 | 1.460384 | 3,451,456 | 5922.33750000004 | 1 / absent | 0 |
+| Volatility | median | 2.317233 | 4,098,675 | 5922.33750000004 | 1 / absent | 27 |
+| Volatility | halving3 | 1.937087 | 2,750,440 | 6551.819999999991 | 2 / absent | 42 |
+| Volatility | lag1+halving3 | 1.397184 | 3,127,946 | 5937.942500000003 | 1 / absent | 38 |
 
 The public real-strategy sources are
 `068-ta-bb-rsi-mean-reversion-01` and
@@ -156,10 +156,10 @@ preservation or speedup. Millisecond example times are mostly startup noise.
 
 Scheduler idle capacity (worker-seconds minus measured task busy-seconds)
 includes barrier stragglers, proposal/feedback, and startup, not exclusively
-engine time. It drops from 26.33% to 3.32% on BB/RSI and 25.94% to 2.62% on
-volatility with lag one. BB/RSI wall time improves, but volatility's optimum
-and wall time do not. Fixed lag is useful explicit control, not a silent
-replacement for the compatible feedback schedule.
+engine time. It drops from 15.67% to 2.75% on BB/RSI and 16.84% to 2.17% on
+volatility with lag one. BB/RSI wall time improves; volatility's improvement
+is small and its best objective is worse. Fixed lag is useful explicit control,
+not a silent replacement for the compatible feedback schedule.
 
 ### Why prefix reruns (A), not streaming (B)
 
@@ -171,14 +171,15 @@ general batch execution without study-specific equivalence evidence.
 
 | Study/candidate | A seconds | B seconds | A input bars | B input bars | Trade parity | Objective parity |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
-| Example / first | 0.000549 | 0.000226 | 60 | 34 | all rungs | all rungs |
-| Example / best | 0.000520 | 0.000221 | 60 | 34 | all rungs | all rungs |
-| BB/RSI / first | 0.061169 | 0.131446 | 94,377 | 53,929 | all rungs | all rungs |
-| BB/RSI / best | 0.057649 | 0.096324 | 94,377 | 53,929 | all rungs | quarter differs |
-| Volatility / first | 0.085103 | 2.222366 | 94,377 | 53,929 | all rungs | all rungs |
-| Volatility / best | 0.129263 | 2.848029 | 94,377 | 53,929 | all rungs | all rungs |
+| Example / first | 0.000518 | 0.000226 | 60 | 34 | all rungs | all rungs |
+| Example / best | 0.000535 | 0.000225 | 60 | 34 | all rungs | all rungs |
+| BB/RSI / first | 0.060736 | 0.131253 | 94,377 | 53,929 | all rungs | all rungs |
+| BB/RSI / best | 0.057433 | 0.096656 | 94,377 | 53,929 | all rungs | quarter differs |
+| Volatility / first | 0.084669 | 2.228788 | 94,377 | 53,929 | all rungs | all rungs |
+| Volatility / best | 0.128185 | 2.841356 | 94,377 | 53,929 | all rungs | all rungs |
 
-Trade parity alone is insufficient: the BB/RSI quarter-window objective differs.
+Trade parity alone is insufficient: the BB/RSI quarter-window objective is
+42.51999999999998 in A versus 42.51749999999765 in B.
 Streaming is also slower on both real strategies despite fewer bars. Therefore
 this release always uses A. No unverified B fast path ships, so no production
 startup sampling/fallback heuristic is needed. A remains valid with magnifiers

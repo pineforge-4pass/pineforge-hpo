@@ -51,14 +51,17 @@ class BatchReplayTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         return json.loads(completed.stdout)
 
+    def trial_bytes(self, completed) -> bytes:
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        start = completed.stdout.index('  "trials": [') + len('  "trials": ')
+        return completed.stdout[start:completed.stdout.rfind("\n}")].encode()
+
     def replay(self, *extra: str, sampler: str = "tpe") -> None:
         reference = None
         for workers in (1, 2, 4, 8):
             completed = self.invoke("--batch-size", "4", *extra,
                                     workers=workers, sampler=sampler)
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            start = completed.stdout.index('  "trials": [') + len('  "trials": ')
-            encoded = completed.stdout[start:completed.stdout.rfind("\n}")].encode()
+            encoded = self.trial_bytes(completed)
             if reference is None:
                 reference = encoded
             self.assertEqual(encoded, reference, f"replay changed at workers={workers}")
@@ -82,10 +85,10 @@ class BatchReplayTests(unittest.TestCase):
 
     def test_default_compatibility(self) -> None:
         for sampler in ("tpe", "dlib_global", "random", "grid"):
-            before = self.result(sampler=sampler)
-            explicit = self.result("--batch-size", "4", "--batch-lag", "0",
+            before = self.invoke(sampler=sampler)
+            explicit = self.invoke("--batch-size", "4", "--batch-lag", "0",
                                    "--pruner", "none", sampler=sampler)
-            self.assertEqual(before["trials"], explicit["trials"])
+            self.assertEqual(self.trial_bytes(before), self.trial_bytes(explicit))
 
     def test_pruning_replay_and_partial_metrics(self) -> None:
         for kind in ("median", "halving"):

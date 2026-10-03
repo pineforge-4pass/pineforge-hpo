@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import hashlib
 import json
 import os
 import platform
+import re
 from pathlib import Path
 import statistics
 import subprocess
@@ -41,11 +41,8 @@ def trial_bytes(raw: str) -> bytes:
     return raw[start:raw.rfind("\n}")].encode()
 
 
-def old_projection(result: dict):
-    trials = copy.deepcopy(result["trials"])
-    for trial in trials:
-        trial["backtest"].pop("magnifier_sample_ticks_total", None)
-    return trials
+def legacy_trial_bytes(raw: str) -> bytes:
+    return re.sub(rb', "magnifier_sample_ticks_total": [0-9]+', b'', trial_bytes(raw))
 
 
 def canonical_parity(study, artifact, candidate, probe: dict) -> dict:
@@ -146,6 +143,7 @@ def main() -> None:
                               "objective": document["objective"]["expression"],
                               "seed": study.sampler.seed, "trials": study.sampler.trials}
         baseline_result = None
+        baseline_bytes = None
         baseline_best = None
         full_cache = {}
         for mode, flags in modes.items():
@@ -173,9 +171,10 @@ def main() -> None:
                 reference = encoded
             if mode == "0.1.x":
                 baseline_result = result
+                baseline_bytes = legacy_trial_bytes(raw)
                 baseline_best = next(trial for trial in result["trials"]
                                      if trial["trial_id"] == result["best_trial_id"])
-            if mode == "default" and old_projection(result) != old_projection(baseline_result):
+            if mode == "default" and legacy_trial_bytes(raw) != baseline_bytes:
                 raise RuntimeError(f"default compatibility mismatch: {study_name}")
             for trial in result["trials"]:
                 key = json.dumps(trial["parameters"], sort_keys=True)
