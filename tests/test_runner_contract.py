@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from test_native_cli import invoke, require
@@ -116,6 +117,80 @@ def main() -> int:
                 require(child.returncode == 0, f"progress run failed: {stderr}")
                 progress.seek(0)
                 check_progress(json.loads(stdout), [json.loads(line) for line in progress])
+        elif case == "final_write_signal":
+            progress_path = directory / "progress.jsonl"
+            final = directory / "final.json"
+            with progress_path.open("w+") as progress:
+                child = process(native, plugin, csv, progress.fileno(),
+                                "--categorical-choice", "long_metadata", "x" * 8192,
+                                "--output", str(final), workers=12)
+                try:
+                    deadline = time.monotonic() + 8
+                    while progress_path.read_text().count("\n") < 120:
+                        require(time.monotonic() < deadline, "terminal progress did not finish")
+                        time.sleep(0.01)
+                    require(bool(select.select([child.stdout], [], [], 8)[0]),
+                            "final stdout write did not start")
+                    time.sleep(0.05)
+                    require(child.poll() is None, "large final output did not block on stdout")
+                    child.send_signal(signal.SIGTERM)
+                    stdout, stderr = child.communicate(timeout=8)
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait()
+                require(child.returncode == 0, f"signal interrupted final output: {stderr}")
+                require(len(stdout) > 65536, "final result did not exercise pipe backpressure")
+                result = json.loads(stdout)
+                require(result == json.loads(final.read_text()), "interrupted output file differs")
+                progress.seek(0)
+                check_progress(result, [json.loads(line) for line in progress])
+        elif case == "progress_nonblocking":
+            read_fd, write_fd = os.pipe()
+            os.set_blocking(write_fd, False)
+            child = process(native, plugin, csv, write_fd,
+                            "--categorical-choice", "long_metadata", "x" * 8192, workers=12)
+            os.close(write_fd)
+            chunks = []
+
+            def drain_progress() -> None:
+                with os.fdopen(read_fd) as progress:
+                    chunks.append(progress.read())
+
+            time.sleep(0.1)
+            reader = threading.Thread(target=drain_progress)
+            reader.start()
+            try:
+                stdout, stderr = child.communicate(timeout=8)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait()
+                reader.join(timeout=8)
+            require(not reader.is_alive(), "non-blocking progress did not close")
+            require(child.returncode == 0, f"non-blocking progress cancelled the run: {stderr}")
+            result = json.loads(stdout)
+            require(result["trials_completed"] == 120, "non-blocking progress stopped candidates")
+            check_progress(result, [json.loads(line) for line in "".join(chunks).splitlines()])
+        elif case == "progress_error":
+            read_fd, write_fd = os.pipe()
+            os.close(read_fd)
+            final = directory / "progress-error.json"
+            child = process(native, plugin, csv, write_fd, "--fixed-input", "DelayMs", "20",
+                            "--output", str(final), workers=2)
+            os.close(write_fd)
+            try:
+                stdout, stderr = child.communicate(timeout=8)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait()
+            require(child.returncode == 1, f"progress I/O failure has wrong exit: {stderr}")
+            require("--progress-fd" in stderr, "progress I/O diagnostic missing")
+            result = json.loads(stdout)
+            require(result["stop_reason"] == "cancelled", "progress I/O final JSON missing")
+            require(result["trials_completed"] > 0, "progress I/O discarded completed trials")
+            require(result == json.loads(final.read_text()), "progress I/O output file differs")
         elif case == "cancel":
             for sampler in ("grid", "random", "tpe", "dlib_global"):
                 for signum in (signal.SIGTERM, signal.SIGINT):
