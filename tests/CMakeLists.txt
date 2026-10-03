@@ -91,6 +91,11 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         ${CMAKE_DL_LIBS})
     target_compile_options(pineforge_hpo_test_engine_adapter PRIVATE
         -Wall -Wextra -Wpedantic)
+    add_library(pineforge_hpo_test_signal_macro OBJECT EXCLUDE_FROM_ALL test_signal_macro.cpp)
+    target_link_libraries(pineforge_hpo_test_signal_macro PRIVATE PineForgeHPO::engine_adapter)
+    add_test(NAME pineforge_hpo_signal_macro
+        COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
+            --target pineforge_hpo_test_signal_macro)
     add_dependencies(pineforge_hpo_test_engine_adapter
         pineforge_hpo_fake_strategy
         pineforge_hpo_fake_strategy_no_timezone)
