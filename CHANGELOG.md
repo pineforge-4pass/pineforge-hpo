@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.1 — unreleased
+## 0.3.1 — 2026-10-04
 
 - Native `--syminfo FILE` applies the instrument lot-size grid: an optional `mincontract`
   (TradingView `syminfo.mincontract`, flat or wrapped) reaches the engine as the metadata
@@ -19,7 +19,7 @@
 - Add fake-plugin tests for the metadata keys, their order, the absent/null and invalid
   cases, and a plugin without the setter.
 
-## 0.3.0 — unreleased
+## 0.3.0 — 2026-10-03
 
 - Decouple logical proposal batches from workers with `--batch-size`; defaults preserve
   the 0.1.x adaptive sequence and existing trial values.

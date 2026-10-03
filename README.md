@@ -197,7 +197,7 @@ be strings without embedded NULs. Empty strings and omitted fields are no-ops;
 other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
 The four setters mirror the pinned engine 1.0.0 release harness.
 
-`mincontract` (since 0.4.1) is the instrument's lot-size grid (TradingView
+`mincontract` (since 0.3.1) is the instrument's lot-size grid (TradingView
 `syminfo.mincontract`). Pass the catalog object as is: a number is applied to the
 engine as the metadata keys `qty_step` (the engine floors order quantities to this
 grid, so a percent-of-equity strategy no longer books sub-lot trades) and

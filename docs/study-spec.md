@@ -602,7 +602,7 @@ change the best found result. See [measurements and limitations](batching.md).
 
 The native executable accepts additional flags without extending StudySpec v1:
 
-- `--syminfo FILE`: optional positive finite `mincontract` (since 0.4.1), `mintick`
+- `--syminfo FILE`: optional positive finite `mincontract` (since 0.3.1), `mintick`
   and `pointvalue`, plus NUL-free string `timezone` and `session`, in flat JSON or
   `{"syminfo": {...}}`. Apply after inputs/overrides, in
   mincontract/mintick/pointvalue/timezone/session order. `mincontract` is the

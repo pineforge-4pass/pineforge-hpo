@@ -71,7 +71,7 @@ or Python CLI pass-throughs:
 | `--record-metric PATH` | Repeatable extra metric path, validated before the first trial. Keys preserve expression spelling, including aliases, and unavailable values are `null`. |
 | `--trial-timeout-seconds T` | Positive finite per-trial wall cap, starting at worker claim. On the first expiry, record one `trial_timeout`, flush progress and final JSON from terminal trials, and `_exit(3)` without joining any hung worker. Other in-flight/unstarted trials are excluded. |
 
-Since 0.4.1, `--syminfo FILE` also reads an optional `mincontract`, the instrument lot-size
+Since 0.3.1, `--syminfo FILE` also reads an optional `mincontract`, the instrument lot-size
 grid (TradingView `syminfo.mincontract`). A finite number above zero is applied before
 `mintick` as the engine metadata keys `qty_step` (order quantities are floored to the grid)
 and `mincontract`; `null` or absent means no grid and no call. In the object that is read,
