@@ -15,6 +15,9 @@ struct SymbolInfo {
     std::optional<double> mintick;
     /// Positive money-per-price-point multiplier.
     std::optional<double> pointvalue;
+    /// Instrument lot-size grid (TradingView `syminfo.mincontract`); unset means no grid.
+    /// Applied to the engine as the metadata key `qty_step`, and as `mincontract`.
+    std::optional<double> mincontract;
     /// Exchange timezone, distinct from the chart timezone; empty means unchanged.
     std::string timezone;
     /// Trading session; empty means unchanged.
@@ -69,8 +72,10 @@ public:
     /// @throws std::runtime_error when the loaded plugin lacks timezone support.
     void set_chart_timezone(pf_strategy_t strategy, const std::string& timezone) const;
 
-    /// Applies mintick, pointvalue, exchange timezone, and session in harness order.
-    /// @throws std::runtime_error when a requested optional setter is unavailable.
+    /// Applies the lot grid (metadata keys `qty_step`, then `mincontract`) first, then mintick,
+    /// pointvalue, exchange timezone, and session in their existing order.
+    /// @throws std::runtime_error when a requested optional setter is unavailable; a
+    ///         `mincontract` is never applied silently as no grid.
     /// @throws std::invalid_argument for a null handle, non-positive numbers, or embedded NUL.
     void set_symbol_info(pf_strategy_t strategy, const SymbolInfo& info) const;
 
@@ -101,6 +106,7 @@ private:
     using StrategySetOverrideFn = void (*)(pf_strategy_t, const char*, const char*);
     using StrategySetChartTimezoneFn = void (*)(pf_strategy_t, const char*);
     using StrategySetSymbolDoubleFn = void (*)(pf_strategy_t, double);
+    using StrategySetSymbolMetadataFn = void (*)(pf_strategy_t, const char*, double);
     using StrategySetSymbolStringFn = void (*)(pf_strategy_t, const char*);
     using RunBacktestFullFn = void (*)(pf_strategy_t,
                                        pf_bar_t*,
@@ -127,6 +133,7 @@ private:
     StrategySetChartTimezoneFn strategy_set_chart_timezone_ = nullptr;
     StrategySetSymbolDoubleFn strategy_set_syminfo_mintick_ = nullptr;
     StrategySetSymbolDoubleFn strategy_set_syminfo_pointvalue_ = nullptr;
+    StrategySetSymbolMetadataFn strategy_set_syminfo_metadata_ = nullptr;
     StrategySetSymbolStringFn strategy_set_syminfo_timezone_ = nullptr;
     StrategySetSymbolStringFn strategy_set_syminfo_session_ = nullptr;
     RunBacktestFullFn run_backtest_full_ = nullptr;

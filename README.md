@@ -178,7 +178,7 @@ candidate ordering or scoring for runs that omit them:
 
 | Flag | Contract |
 | --- | --- |
-| `--syminfo FILE` | Apply instrument `mintick`, `pointvalue`, `timezone`, and `session` after inputs and overrides, in that order. Accept a flat JSON object or `{"syminfo": {...}}`; omitted values keep engine defaults. |
+| `--syminfo FILE` | Apply the instrument lot grid (`mincontract`), then `mintick`, `pointvalue`, `timezone`, and `session`, after inputs and overrides, in that order. Accept a flat JSON object or `{"syminfo": {...}}`; omitted values keep engine defaults. |
 | `--progress-fd N` | Write and flush one JSONL object per terminal trial to an inherited writable descriptor. A single writer emits exactly the objects in the final `trials[]`, in completion order. Blocking and non-blocking descriptors are supported; drain pipes while the process runs. |
 | `--max-wall-seconds S` | Positive, finite study wall limit in seconds, including native initialization. Stop taking candidates cooperatively, including inside grid/random batches. |
 | `--record-metric PATH` | Repeatable additional report-metric path. Validate before execution and preserve the path spelling in each trial's `metrics`; unavailable values are JSON `null`. |
@@ -196,6 +196,24 @@ Numeric symbol values must be finite and positive; timezone/session values must
 be strings without embedded NULs. Empty strings and omitted fields are no-ops;
 other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
 The four setters mirror the pinned engine 1.0.0 release harness.
+
+`mincontract` (since 0.3.1) is the instrument's lot-size grid (TradingView
+`syminfo.mincontract`). Pass the catalog object as is: a number is applied to the
+engine as the metadata keys `qty_step` (the engine floors order quantities to this
+grid, so a percent-of-equity strategy no longer books sub-lot trades) and
+`mincontract` (what `syminfo.mincontract` reads in the script), before `mintick`;
+absent or `null` means no grid and no call. In the object that is read, any other
+value (zero, negative, string, boolean, array, object, or a number outside the double
+range such as `1e999` or `1e-400`) is an initialization error with the message
+`syminfo.mincontract must be a positive finite number` (exit 1, no trial runs). Bare
+`NaN` and `Infinity` are not JSON: the parser rejects them first (exit 1,
+`invalid JSON at byte N`, which does not name the key).
+
+Applying the grid needs the plugin to export `strategy_set_syminfo_metadata`, which the
+pinned engine v1.0.0 and v1.0.1 both do (declared in `pineforge.h`; the engine honours the
+`qty_step` key). A plugin without it keeps working for every syminfo that has no
+`mincontract`; with one, each trial fails with a `trial_error` that names the key and the
+run exits 2 because no trial is feasible, instead of running without the grid.
 
 SIGTERM and SIGINT produce cooperative `cancelled` stops; a wall limit produces
 `deadline`. In-flight trials may finish, but unstarted candidates are not reported.

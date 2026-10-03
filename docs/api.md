@@ -71,6 +71,17 @@ or Python CLI pass-throughs:
 | `--record-metric PATH` | Repeatable extra metric path, validated before the first trial. Keys preserve expression spelling, including aliases, and unavailable values are `null`. |
 | `--trial-timeout-seconds T` | Positive finite per-trial wall cap, starting at worker claim. On the first expiry, record one `trial_timeout`, flush progress and final JSON from terminal trials, and `_exit(3)` without joining any hung worker. Other in-flight/unstarted trials are excluded. |
 
+Since 0.3.1, `--syminfo FILE` also reads an optional `mincontract`, the instrument lot-size
+grid (TradingView `syminfo.mincontract`). A finite number above zero is applied before
+`mintick` as the engine metadata keys `qty_step` (order quantities are floored to the grid)
+and `mincontract`; `null` or absent means no grid and no call. In the object that is read,
+any other value (zero, negative, string, boolean, array, object, or a number outside the
+double range such as `1e999`) fails initialization with
+`syminfo.mincontract must be a positive finite number` (exit 1). A plugin without the
+optional `strategy_set_syminfo_metadata` export keeps working for every syminfo that has no
+`mincontract`; with one, each trial fails with a `trial_error` that names the key and the
+run exits 2 because no trial is feasible.
+
 Each trial's `backtest` object additionally contains
 `magnifier_sample_ticks_total`, copied from the detached report or zero when
 unavailable. Symbol info is also available to C++ consumers through

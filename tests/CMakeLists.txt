@@ -48,10 +48,11 @@ add_test(NAME pineforge_hpo_tpe_concurrency COMMAND pineforge_hpo_test_tpe_concu
 set_tests_properties(pineforge_hpo_tpe_concurrency PROPERTIES TIMEOUT 30)
 
 if(UNIX AND TARGET PineForgeHPO::engine_adapter)
-    # The engine-adapter fixture is compiled three ways from one source:
+    # The engine-adapter fixture is compiled four ways from one source:
     #   1. a test executable;
     #   2. a complete strategy plugin;
-    #   3. a legacy plugin without the optional chart-timezone export.
+    #   3. a legacy plugin without the optional chart-timezone export;
+    #   4. a legacy plugin without the optional syminfo-metadata export.
     # $<TARGET_FILE:...> keeps the test independent of .dylib/.so naming.
     add_library(pineforge_hpo_fake_strategy SHARED test_engine_adapter.cpp)
     target_compile_definitions(pineforge_hpo_fake_strategy PRIVATE
@@ -79,7 +80,22 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         PREFIX ""
         OUTPUT_NAME "fake_strategy_no_timezone")
 
-    foreach(plugin pineforge_hpo_fake_strategy pineforge_hpo_fake_strategy_no_timezone)
+    add_library(pineforge_hpo_fake_strategy_no_metadata SHARED
+        test_engine_adapter.cpp)
+    target_compile_definitions(pineforge_hpo_fake_strategy_no_metadata PRIVATE
+        PINEFORGE_HPO_FAKE_PLUGIN=1
+        PINEFORGE_HPO_FAKE_PLUGIN_NO_METADATA=1)
+    target_include_directories(pineforge_hpo_fake_strategy_no_metadata PRIVATE
+        "${PINEFORGE_ENGINE_SOURCE_INCLUDE}"
+        "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+    target_compile_options(pineforge_hpo_fake_strategy_no_metadata PRIVATE
+        -Wall -Wextra -Wpedantic)
+    set_target_properties(pineforge_hpo_fake_strategy_no_metadata PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "fake_strategy_no_metadata")
+
+    foreach(plugin pineforge_hpo_fake_strategy pineforge_hpo_fake_strategy_no_timezone
+                   pineforge_hpo_fake_strategy_no_metadata)
         if(PINEFORGE_HPO_ENABLE_SANITIZERS)
             target_compile_options(${plugin} PRIVATE
                 -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -103,12 +119,14 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             --target pineforge_hpo_test_signal_macro)
     add_dependencies(pineforge_hpo_test_engine_adapter
         pineforge_hpo_fake_strategy
-        pineforge_hpo_fake_strategy_no_timezone)
+        pineforge_hpo_fake_strategy_no_timezone
+        pineforge_hpo_fake_strategy_no_metadata)
 
     add_test(NAME pineforge_hpo_engine_adapter
         COMMAND pineforge_hpo_test_engine_adapter
             $<TARGET_FILE:pineforge_hpo_fake_strategy>
-            $<TARGET_FILE:pineforge_hpo_fake_strategy_no_timezone>)
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_no_timezone>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_no_metadata>)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)

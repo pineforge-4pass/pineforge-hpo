@@ -602,11 +602,21 @@ change the best found result. See [measurements and limitations](batching.md).
 
 The native executable accepts additional flags without extending StudySpec v1:
 
-- `--syminfo FILE`: optional positive finite `mintick` and `pointvalue`, plus
-  NUL-free string `timezone` and `session`, in flat JSON or `{"syminfo": {...}}`.
-  Apply after inputs/overrides, in mintick/pointvalue/timezone/session order.
-  Missing fields and empty strings keep engine defaults; other catalog keys are
-  ignored. Symbol and chart timezones are distinct.
+- `--syminfo FILE`: optional positive finite `mincontract` (since 0.3.1), `mintick`
+  and `pointvalue`, plus NUL-free string `timezone` and `session`, in flat JSON or
+  `{"syminfo": {...}}`. Apply after inputs/overrides, in
+  mincontract/mintick/pointvalue/timezone/session order. `mincontract` is the
+  instrument lot-size grid (TradingView `syminfo.mincontract`): a number reaches
+  the engine as the metadata keys `qty_step` (order quantities are floored to the
+  grid) and `mincontract`; `null` or absent means no grid. In the object that is
+  read, any other value (zero, negative, string, boolean, array, object, or a number
+  outside the double range such as `1e999`) is an initialization error (exit 1,
+  `syminfo.mincontract must be a positive finite number`); bare `NaN` and `Infinity`
+  are not JSON and fail earlier (exit 1, `invalid JSON at byte N`, which does not name
+  the key). A plugin without `strategy_set_syminfo_metadata` never runs gridless: with
+  a `mincontract` each trial fails with a `trial_error` that names the key, and the run
+  exits 2 because no trial is feasible. Missing fields and empty strings keep engine
+  defaults; other catalog keys are ignored. Symbol and chart timezones are distinct.
 - `--progress-fd N`: inherited writable descriptor for one flushed terminal-trial
   JSON object per line. One writer prevents interleaving. Each object equals its
   final `trials[]` entry; drain pipes concurrently and do not assume completion
