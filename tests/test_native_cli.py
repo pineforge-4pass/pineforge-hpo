@@ -228,6 +228,7 @@ def main() -> int:
                 "script_tf_seconds": 300,
                 "script_tf_ratio": 5,
                 "needs_aggregation": True,
+                "magnifier_sample_ticks_total": 72,
             },
             "native result omitted the engine timeframe aggregation evidence",
         )

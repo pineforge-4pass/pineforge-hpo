@@ -42,6 +42,10 @@ option(PINEFORGE_HPO_BUILD_ENGINE_ADAPTER
 option(PINEFORGE_HPO_BUILD_NATIVE_CLI
     "Build the native study runner" ${PINEFORGE_HPO_IS_TOP_LEVEL})
 option(PINEFORGE_HPO_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" OFF)
+option(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER "Build with ThreadSanitizer" OFF)
+if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+    message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
+endif()
 option(PINEFORGE_HPO_USE_SYSTEM_DLIB
     "Use an installed dlib 20.0.1 package instead of the pinned source archive" OFF)
 
@@ -61,7 +65,7 @@ if(PINEFORGE_HPO_BUILD_ENGINE_ADAPTER)
         NO_DEFAULT_PATH)
     find_path(PINEFORGE_ENGINE_BUILD_INCLUDE
         NAMES pineforge/version.h
-        HINTS "${PINEFORGE_ENGINE_ROOT}/build/include"
+        HINTS "${PINEFORGE_ENGINE_ROOT}/include" "${PINEFORGE_ENGINE_ROOT}/build/include"
         NO_DEFAULT_PATH)
 
     if(NOT PINEFORGE_ENGINE_SOURCE_INCLUDE OR NOT PINEFORGE_ENGINE_BUILD_INCLUDE)
@@ -158,6 +162,15 @@ if(PINEFORGE_HPO_ENABLE_SANITIZERS)
             target_compile_options(${target} PUBLIC
                 -fsanitize=address,undefined -fno-omit-frame-pointer)
             target_link_options(${target} PUBLIC -fsanitize=address,undefined)
+        endif()
+    endforeach()
+endif()
+
+if(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+    foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native)
+        if(TARGET ${target})
+            target_compile_options(${target} PUBLIC -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(${target} PUBLIC -fsanitize=thread)
         endif()
     endforeach()
 endif()

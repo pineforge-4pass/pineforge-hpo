@@ -74,12 +74,28 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         PREFIX ""
         OUTPUT_NAME "fake_strategy_no_timezone")
 
+    foreach(plugin pineforge_hpo_fake_strategy pineforge_hpo_fake_strategy_no_timezone)
+        if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+            target_compile_options(${plugin} PRIVATE
+                -fsanitize=address,undefined -fno-omit-frame-pointer)
+            target_link_options(${plugin} PRIVATE -fsanitize=address,undefined)
+        elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+            target_compile_options(${plugin} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(${plugin} PRIVATE -fsanitize=thread)
+        endif()
+    endforeach()
+
     add_executable(pineforge_hpo_test_engine_adapter test_engine_adapter.cpp)
     target_link_libraries(pineforge_hpo_test_engine_adapter PRIVATE
         PineForgeHPO::engine_adapter
         ${CMAKE_DL_LIBS})
     target_compile_options(pineforge_hpo_test_engine_adapter PRIVATE
         -Wall -Wextra -Wpedantic)
+    add_library(pineforge_hpo_test_signal_macro OBJECT EXCLUDE_FROM_ALL test_signal_macro.cpp)
+    target_link_libraries(pineforge_hpo_test_signal_macro PRIVATE PineForgeHPO::engine_adapter)
+    add_test(NAME pineforge_hpo_signal_macro
+        COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
+            --target pineforge_hpo_test_signal_macro)
     add_dependencies(pineforge_hpo_test_engine_adapter
         pineforge_hpo_fake_strategy
         pineforge_hpo_fake_strategy_no_timezone)
@@ -96,6 +112,24 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_native_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        foreach(contract syminfo progress final_write_signal progress_nonblocking progress_error
+                         cancel deadline metrics magnifier timeout timeout_progress_error)
+            add_test(NAME pineforge_hpo_runner_${contract}
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/test_runner_contract.py"
+                    $<TARGET_FILE:pineforge-hpo-native>
+                    $<TARGET_FILE:pineforge_hpo_fake_strategy> ${contract})
+            set_tests_properties(pineforge_hpo_runner_${contract} PROPERTIES TIMEOUT 60)
+        endforeach()
+        if(PINEFORGE_HPO_TEST_ENGINE_BUILD)
+            add_test(NAME pineforge_hpo_installed_prefix
+                COMMAND "${CMAKE_COMMAND}"
+                    -DENGINE_BUILD=${PINEFORGE_HPO_TEST_ENGINE_BUILD}
+                    -DHPO_SOURCE=${PROJECT_SOURCE_DIR}
+                    -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/installed-prefix
+                    -DDLIB_SOURCE=${dlib_SOURCE_DIR}
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/test_installed_prefix.cmake")
+        endif()
     else()
         message(STATUS "Skipping native CLI regression test: Python 3 not found")
     endif()

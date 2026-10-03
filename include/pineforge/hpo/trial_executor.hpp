@@ -39,6 +39,8 @@ struct BacktestConfiguration {
     /// Scalar-only HPO can disable this copy. The default retains it for portfolio and custom
     /// objective consumers.
     bool capture_equity_curve = true;
+    /// Optional instrument metadata, applied after inputs and overrides.
+    std::optional<SymbolInfo> symbol_info;
 };
 
 /// @brief Owning report snapshot detached from strategy and C-ABI report lifetimes.

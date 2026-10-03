@@ -3,10 +3,12 @@
 #if defined(PINEFORGE_HPO_FAKE_PLUGIN)
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -16,6 +18,12 @@ struct FakeStrategy {
     std::string chart_timezone;
     std::string error;
     int runs = 0;
+    int syminfo_stage = 0;
+    bool syminfo_order_error = false;
+    double mintick = 0.01;
+    double pointvalue = 1.0;
+    std::string symbol_timezone;
+    std::string symbol_session;
 };
 
 std::atomic<int> active_handles{0};
@@ -66,10 +74,12 @@ PF_API void strategy_free(pf_strategy_t strategy) {
 }
 
 PF_API void strategy_set_input(pf_strategy_t strategy, const char* key, const char* value) {
+    fake(strategy)->syminfo_order_error |= fake(strategy)->syminfo_stage != 0;
     fake(strategy)->inputs[key != nullptr ? key : ""] = value != nullptr ? value : "";
 }
 
 PF_API void strategy_set_override(pf_strategy_t strategy, const char* key, const char* value) {
+    fake(strategy)->syminfo_order_error |= fake(strategy)->syminfo_stage != 0;
     fake(strategy)->overrides[key != nullptr ? key : ""] = value != nullptr ? value : "";
 }
 
@@ -78,6 +88,34 @@ PF_API void strategy_set_chart_timezone(pf_strategy_t strategy, const char* time
     fake(strategy)->chart_timezone = timezone != nullptr ? timezone : "";
 }
 #endif
+
+PF_API void strategy_set_syminfo_mintick(pf_strategy_t strategy, double value) {
+    auto* state = fake(strategy);
+    state->syminfo_order_error |= state->syminfo_stage != 0;
+    state->syminfo_stage = 1;
+    state->mintick = value;
+}
+
+PF_API void strategy_set_syminfo_pointvalue(pf_strategy_t strategy, double value) {
+    auto* state = fake(strategy);
+    state->syminfo_order_error |= state->syminfo_stage > 1;
+    state->syminfo_stage = 2;
+    state->pointvalue = value;
+}
+
+PF_API void strategy_set_syminfo_timezone(pf_strategy_t strategy, const char* value) {
+    auto* state = fake(strategy);
+    state->syminfo_order_error |= state->syminfo_stage > 2;
+    state->syminfo_stage = 3;
+    state->symbol_timezone = value;
+}
+
+PF_API void strategy_set_syminfo_session(pf_strategy_t strategy, const char* value) {
+    auto* state = fake(strategy);
+    state->syminfo_order_error |= state->syminfo_stage > 3;
+    state->syminfo_stage = 4;
+    state->symbol_session = value;
+}
 
 PF_API void run_backtest_full(pf_strategy_t strategy,
                               pf_bar_t*,
@@ -112,9 +150,25 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     }
 
     const int length = static_cast<int>(parse_or(state->inputs, "Length", 0.0));
+    if (state->syminfo_order_error) {
+        state->error = "symbol setters did not follow inputs/overrides and harness order";
+        return;
+    }
+    if (length == parse_or(state->inputs, "HangAtLength", -1.0)) {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<int>(parse_or(state->inputs, "DelayMs", 0.0))));
     const double initial_capital = parse_or(state->overrides, "initial_capital", 100'000.0);
     const double timezone_bonus = state->chart_timezone == "Asia/Taipei" ? 1'000.0 : 0.0;
-    const double score = static_cast<double>(length) + initial_capital / 1'000.0 + timezone_bonus;
+    const double symbol_bonus = state->syminfo_stage == 0 ? 0.0 :
+        state->mintick * 100.0 + state->pointvalue +
+        (state->symbol_timezone == "UTC" ? 10.0 : 0.0) +
+        (state->symbol_session == "24x7" ? 20.0 : 0.0);
+    const double score = static_cast<double>(length) + initial_capital / 1'000.0 + timezone_bonus +
+        symbol_bonus;
 
     report->total_trades = length;
     report->net_profit = score;

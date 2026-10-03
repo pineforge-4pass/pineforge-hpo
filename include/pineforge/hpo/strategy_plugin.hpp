@@ -3,10 +3,23 @@
 #include <pineforge/pineforge.h>
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace pineforge {
 namespace hpo {
+
+/// Optional instrument metadata applied after trial inputs and runtime overrides.
+struct SymbolInfo {
+    /// Positive instrument price tick size.
+    std::optional<double> mintick;
+    /// Positive money-per-price-point multiplier.
+    std::optional<double> pointvalue;
+    /// Exchange timezone, distinct from the chart timezone; empty means unchanged.
+    std::string timezone;
+    /// Trading session; empty means unchanged.
+    std::string session;
+};
 
 /// @brief RAII wrapper around one compiled PineForge strategy plugin.
 ///
@@ -56,6 +69,11 @@ public:
     /// @throws std::runtime_error when the loaded plugin lacks timezone support.
     void set_chart_timezone(pf_strategy_t strategy, const std::string& timezone) const;
 
+    /// Applies mintick, pointvalue, exchange timezone, and session in harness order.
+    /// @throws std::runtime_error when a requested optional setter is unavailable.
+    /// @throws std::invalid_argument for a null handle, non-positive numbers, or embedded NUL.
+    void set_symbol_info(pf_strategy_t strategy, const SymbolInfo& info) const;
+
     /// Invokes the plugin's full backtest entry point using immutable OHLCV input.
     ///
     /// The report remains caller-owned and must later be released with free_report().
@@ -82,6 +100,8 @@ private:
     using StrategySetInputFn = void (*)(pf_strategy_t, const char*, const char*);
     using StrategySetOverrideFn = void (*)(pf_strategy_t, const char*, const char*);
     using StrategySetChartTimezoneFn = void (*)(pf_strategy_t, const char*);
+    using StrategySetSymbolDoubleFn = void (*)(pf_strategy_t, double);
+    using StrategySetSymbolStringFn = void (*)(pf_strategy_t, const char*);
     using RunBacktestFullFn = void (*)(pf_strategy_t,
                                        pf_bar_t*,
                                        int,
@@ -105,6 +125,10 @@ private:
     StrategySetInputFn strategy_set_input_ = nullptr;
     StrategySetOverrideFn strategy_set_override_ = nullptr;
     StrategySetChartTimezoneFn strategy_set_chart_timezone_ = nullptr;
+    StrategySetSymbolDoubleFn strategy_set_syminfo_mintick_ = nullptr;
+    StrategySetSymbolDoubleFn strategy_set_syminfo_pointvalue_ = nullptr;
+    StrategySetSymbolStringFn strategy_set_syminfo_timezone_ = nullptr;
+    StrategySetSymbolStringFn strategy_set_syminfo_session_ = nullptr;
     RunBacktestFullFn run_backtest_full_ = nullptr;
     StrategyGetLastErrorFn strategy_get_last_error_ = nullptr;
     ReportFreeFn report_free_ = nullptr;

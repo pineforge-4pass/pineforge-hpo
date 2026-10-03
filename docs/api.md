@@ -46,11 +46,60 @@ The `pineforge_hpo` package provides the control-plane API:
   artifact once and publish it into a content-addressed cache.
 - \ref pineforge_hpo::transpile::transpile_source "transpile_source()" exposes
   the one-pass `pineforge-codegen-oss` bridge with structured diagnostics.
+- `pineforge_hpo.prepare_run(study_path, engine_root, cache_dir)` returns
+  `(native_argv, artifact_json)` after the same artifact and manifest validation
+  used by the CLI, without starting a native child. Optional keyword-only
+  `native`, `compiler`, and `eigen_include` select existing CLI overrides.
 
 The supported Python exports are defined by
 [`pineforge_hpo.__all__`](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/python/pineforge_hpo/__init__.py).
 Names beginning with an underscore are implementation details and are omitted
 from this site.
+
+## Native runner controls
+
+Version 0.2.0 adds the following native `run` flags; they are not StudySpec fields
+or Python CLI pass-throughs:
+
+| Flag | Semantics |
+| --- | --- |
+| `--syminfo FILE` | Flat or wrapped instrument JSON. Optional positive finite `mintick`/`pointvalue` and NUL-free `timezone`/`session` strings are applied after inputs and overrides, in harness order. Empty strings keep defaults; unrelated catalog keys are ignored. |
+| `--progress-fd N` | An inherited writable descriptor receives one flushed JSONL object per terminal trial, serialized by one writer. Objects equal final `trials[]` entries; completion order may differ from final trial-ID order. Consumers must drain a pipe concurrently. |
+| `--max-wall-seconds S` | Positive finite study wall cap, measured from native initialization. SIGTERM/SIGINT and the cap stop new worker claims and adaptive batches; in-flight trials can finish. |
+| `--record-metric PATH` | Repeatable extra metric path, validated before the first trial. Keys preserve expression spelling, including aliases, and unavailable values are `null`. |
+| `--trial-timeout-seconds T` | Positive finite per-trial wall cap, starting at worker claim. On the first expiry, record one `trial_timeout`, flush progress and final JSON from terminal trials, and `_exit(3)` without joining any hung worker. Other in-flight/unstarted trials are excluded. |
+
+Each trial's `backtest` object additionally contains
+`magnifier_sample_ticks_total`, copied from the detached report or zero when
+unavailable. Symbol info is also available to C++ consumers through
+`BacktestConfiguration::symbol_info`, `SymbolInfo`, and
+`StrategyPlugin::set_symbol_info()`; unrequested optional setters are not called.
+
+Trial statuses are `ok`, `constraint_violation`, `objective_error`,
+`constraint_error`, `engine_error`, `trial_error`, and `trial_timeout`. Stop reasons
+are `trial_budget_reached`, `search_space_exhausted`, `sampler_stopped`,
+`cancelled` (SIGTERM/SIGINT), `deadline` (study cap), and `trial_timeout`.
+
+Exit codes remain 0 (a feasible best trial), 1 (initialization/I/O failure), and
+2 (no feasible trial); 3 denotes a trial timeout regardless of earlier feasible
+results. A timeout may therefore have `ok: true` and a best trial while exiting
+3. Cooperative stops and timeouts publish final JSON to stdout and `--output`
+when configured, provided those result destinations remain writable.
+`trials_completed` counts terminal records, including the timeout record.
+Cancellation/deadline can validly return an empty table and exit 2.
+Non-blocking progress descriptors are supported: temporary backpressure waits
+for writability and retries instead of cancelling the study. A permanent progress
+I/O failure stops new claims, publishes the completed trials to the writable result
+destinations, then exits 1 with the I/O diagnostic on stderr. Initialization or
+result-destination failures can prevent final JSON publication.
+Progress I/O errors do not disable timeout protection: if an in-flight trial hangs,
+the watchdog still emits final JSON and exits 3, with the I/O diagnostic on stderr.
+
+The native schema remains version 1. Without the new flags, all existing result
+fields and proposal/scoring behavior are preserved, apart from the product
+version and the additive magnifier counter. CMake accepts an installed engine
+prefix as well as a source/build tree, finding `pineforge/version.h` under either
+`include/` or `build/include/`.
 
 ## Compatibility boundaries
 

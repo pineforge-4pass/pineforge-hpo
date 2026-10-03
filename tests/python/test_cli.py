@@ -213,6 +213,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(document["artifact"]["artifact_key"], "a" * 64)
         self.assertFalse(document["artifact"]["cache_hit"])
 
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_public_prepare_run_does_not_launch_native(
+        self, builder_type: mock.Mock, run: mock.Mock
+    ) -> None:
+        import pineforge_hpo
+
+        builder_type.return_value.build.return_value = self._artifact()
+        with mock.patch.dict(os.environ, {"PINEFORGE_HPO_NATIVE": str(self.native)}):
+            command, artifact = pineforge_hpo.prepare_run(
+                self.study_path, self.root, self.root / "cache"
+            )
+        expected = _native_command(
+            load_study_spec(self.study_path, require_files=True),
+            native=self.native,
+            plugin=self._artifact().plugin_path,
+            artifact_key="a" * 64,
+        )
+        self.assertEqual(command, expected)
+        self.assertEqual(artifact["artifact_key"], "a" * 64)
+        builder_type.return_value.build.assert_called_once()
+        run.assert_not_called()
+
     def test_grid_continuous_real_is_rejected_before_native_execution(self) -> None:
         study = load_study_spec(self.study_path)
         parameter = study.strategy.search_space["Threshold"]
