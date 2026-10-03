@@ -18,7 +18,7 @@ struct Snapshot {
     std::string trades;
 };
 
-Snapshot snapshot(const pf_report_t& report) {
+Snapshot snapshot(const pf_report_t& report, double drawdown_weight) {
     std::ostringstream trades;
     trades << std::hexfloat;
     for (int index = 0; index < report.trades_len; ++index) {
@@ -29,7 +29,8 @@ Snapshot snapshot(const pf_report_t& report) {
                << trade.qty << ':' << trade.commission << ':' << trade.entry_bar_index << ':'
                << trade.exit_bar_index << ':' << trade.open_at_end << ';';
     }
-    return {report.net_profit - 0.25 * report.metrics.equity.max_equity_drawdown, trades.str()};
+    return {report.metrics.all.net_profit -
+                drawdown_weight * report.metrics.equity.max_equity_drawdown, trades.str()};
 }
 
 template <typename Function>
@@ -44,15 +45,16 @@ Function symbol(void* library, const char* name) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 5)
+    if (argc < 6)
         return 1;
     try {
         pfh::StrategyPlugin plugin(argv[1]);
         const auto dataset = pfh::Dataset::load_csv(argv[2]);
+        const double drawdown_weight = std::stod(argv[5]);
         const std::vector<std::size_t> counts{
             (dataset.size() + 3) / 4, (dataset.size() + 1) / 2, dataset.size()};
         const auto configure = [&](pf_strategy_t strategy) {
-            for (int index = 5; index < argc; ++index) {
+            for (int index = 6; index < argc; ++index) {
                 const std::string input(argv[index]);
                 const auto separator = input.find('=');
                 plugin.set_input(strategy, input.substr(0, separator), input.substr(separator + 1));
@@ -70,7 +72,7 @@ int main(int argc, char** argv) {
             const auto error = plugin.last_error(strategy);
             if (!error.empty())
                 throw std::runtime_error(error);
-            reference.push_back(snapshot(report));
+            reference.push_back(snapshot(report, drawdown_weight));
             prefix_bars += report.input_bars_processed;
             plugin.free_report(&report);
             plugin.free_strategy(strategy);
@@ -94,6 +96,7 @@ int main(int argc, char** argv) {
         std::size_t processed = 1;
         std::vector<bool> trades_equal;
         std::vector<bool> objectives_equal;
+        std::vector<double> stream_objectives;
         for (std::size_t rung = 0; rung < counts.size(); ++rung) {
             while (processed < counts[rung]) {
                 if (push(strategy, dataset.data() + processed) != 0)
@@ -103,9 +106,10 @@ int main(int argc, char** argv) {
             pf_report_t report{};
             if (fill(strategy, &report) != 0)
                 throw std::runtime_error(plugin.last_error(strategy));
-            const auto current = snapshot(report);
+            const auto current = snapshot(report, drawdown_weight);
             trades_equal.push_back(current.trades == reference[rung].trades);
             objectives_equal.push_back(current.objective == reference[rung].objective);
+            stream_objectives.push_back(current.objective);
             plugin.free_report(&report);
         }
         const double stream_seconds = std::chrono::duration<double>(
@@ -122,6 +126,8 @@ int main(int argc, char** argv) {
                 std::cout << ',';
             std::cout << "{\"bars\":" << counts[rung]
                       << ",\"trades_equal\":" << (trades_equal[rung] ? "true" : "false")
+                      << ",\"prefix_objective\":" << reference[rung].objective
+                      << ",\"stream_objective\":" << stream_objectives[rung]
                       << ",\"objective_equal\":"
                       << (objectives_equal[rung] ? "true" : "false") << '}';
         }

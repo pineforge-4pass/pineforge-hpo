@@ -514,6 +514,25 @@ void test_trial_executor(const std::filesystem::path& plugin_path) {
     require(second.succeeded(), "second trial did not use a fresh strategy handle");
     require_near(second.report.net_profit, 1'120.0, "second trial result is wrong");
 
+    const auto full_prefix = executor.execute_prefix(
+        {{"Length", "14"}}, {{"initial_capital", "200000"}}, executor.dataset().size());
+    require(full_prefix.succeeded(), "full-size prefix failed");
+    require(full_prefix.report.net_profit == first.report.net_profit,
+            "full-size prefix changed the objective");
+    require(full_prefix.report.total_trades == first.report.total_trades,
+            "full-size prefix changed trades");
+    const auto partial = executor.execute_prefix(
+        {{"Length", "14"}, {"BatchPrefixTest", "1"}}, {{"initial_capital", "200000"}}, 1);
+    require(partial.succeeded(), "partial prefix failed");
+    require(partial.report.input_bars_processed == 1, "prefix did not limit input bars");
+    require(partial.report.net_profit == first.report.net_profit,
+            "prefix did not apply runtime settings");
+    require_throws_containing([&] { (void)executor.execute_prefix({}, {}, 0); },
+                              "prefix size", "empty prefix was accepted");
+    require_throws_containing([&] {
+        (void)executor.execute_prefix({}, {}, executor.dataset().size() + 1);
+    }, "prefix size", "oversized prefix was accepted");
+
     auto scalar_configuration = test_configuration();
     scalar_configuration.capture_equity_curve = false;
     TrialExecutor scalar_executor(plugin, test_dataset(), scalar_configuration);

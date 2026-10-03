@@ -7,6 +7,7 @@
 #include <deque>
 #include <future>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -17,6 +18,8 @@ template <typename Result>
 class BatchExecutor final {
 public:
     explicit BatchExecutor(unsigned count) : started_(Clock::now()) {
+        if (count == 0)
+            throw std::invalid_argument("batch executor requires at least one worker");
         try {
             for (unsigned worker = 0; worker < count; ++worker) {
                 workers_.emplace_back([this] {
@@ -54,6 +57,8 @@ public:
         auto future = task.get_future();
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (closing_)
+                throw std::logic_error("batch executor is closed");
             queue_.push_back(std::move(task));
         }
         ready_.notify_one();

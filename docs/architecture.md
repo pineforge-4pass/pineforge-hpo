@@ -164,9 +164,20 @@ Four native samplers are implemented:
 
 Grid and random candidates may be generated before execution. dlib and TPE
 candidates must be interleaved with feedback. The scheduler proposes a fixed
-worker-sized batch, runs its backtests concurrently, and reports results in
-trial-id order. This keeps a fixed seed and worker count repeatable without
-letting thread completion timing alter the model.
+logical batch (`--batch-size`, defaulting to workers), runs its backtests on a
+persistent FIFO thread pool, and commits results in trial-id order. Only the
+coordinator touches samplers and pruning history. An explicit batch size makes
+the same seed repeatable across worker counts without letting completion timing
+alter either proposals or pruning cuts.
+
+The default `--batch-lag 0` commits batch b before proposing b+1, preserving the
+0.1.x adaptive sequence at the default batch size. Opt-in lag one keeps two
+batches submitted: b+1 uses history through b-1, with b's parameters still
+pending. TPE includes those parameters in its constant-liar bad estimator;
+lag-one TPE rejects `constant_liar=false`. Even an already-finished future is
+not visible to the coordinator until its whole batch is committed. Pruning
+cuts use the same frozen history. The lag is persisted replay provenance,
+not a timing-dependent optimization. See [batching](batching.md).
 
 For a finite candidate policy, the coordinator reserves a full vector in the
 seen set before returning it from `ask()`. The reservation is therefore visible
@@ -188,7 +199,7 @@ gamma fraction. Numeric marginals use bounded Gaussian mixtures with quantized
 bin-mass likelihoods for discrete values; categorical and boolean marginals use
 prior-smoothed probabilities. Candidate ranking maximizes the summed per-field
 log likelihood ratio. Constant-liar batching adds outstanding parameters only
-to the bad estimator. Failed and infeasible requests are abandoned and do not
+to the bad estimator. Failed, infeasible, and pruned requests are abandoned and do not
 train either model. Under a finite policy, abandonment does not release the
 parameter vector from the seen set.
 

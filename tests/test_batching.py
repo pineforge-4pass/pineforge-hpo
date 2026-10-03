@@ -29,7 +29,7 @@ class BatchReplayTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def invoke(self, *extra: str, workers: int = 4, sampler: str = "tpe"):
+    def invoke(self, *extra: str, workers: int = 4, sampler: str = "tpe", progress=None):
         return subprocess.run(
             [
                 str(NATIVE), "run", "--strategy", str(PLUGIN),
@@ -40,8 +40,10 @@ class BatchReplayTests(unittest.TestCase):
                 "--magnifier-samples", "6", "--magnifier-distribution", "triangle",
                 "--fixed-input", "BatchPrefixTest", "1",
                 "--int-dim", "Length", "1", "100", "1", *extra,
+                *(["--progress-fd", str(progress)] if progress is not None else []),
             ],
             text=True, capture_output=True, check=False,
+            pass_fds=(progress,) if progress is not None else (),
         )
 
     def result(self, *extra: str, workers: int = 4, sampler: str = "tpe"):
@@ -52,9 +54,11 @@ class BatchReplayTests(unittest.TestCase):
     def replay(self, *extra: str, sampler: str = "tpe") -> None:
         reference = None
         for workers in (1, 2, 4, 8):
-            result = self.result("--batch-size", "4", *extra,
-                                 workers=workers, sampler=sampler)
-            encoded = json.dumps(result["trials"], separators=(",", ":"))
+            completed = self.invoke("--batch-size", "4", *extra,
+                                    workers=workers, sampler=sampler)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            start = completed.stdout.index('  "trials": [') + len('  "trials": ')
+            encoded = completed.stdout[start:completed.stdout.rfind("\n}")].encode()
             if reference is None:
                 reference = encoded
             self.assertEqual(encoded, reference, f"replay changed at workers={workers}")
@@ -66,6 +70,15 @@ class BatchReplayTests(unittest.TestCase):
     def test_fixed_lag_replay(self) -> None:
         for sampler in ("tpe", "dlib_global", "random", "grid"):
             self.replay("--batch-lag", "1", sampler=sampler)
+
+    def test_fixed_lag_uses_one_previous_pending_batch(self) -> None:
+        random_start = self.result("--tpe-startup-trials", "100", "--batch-size", "4")
+        lagged = self.result("--tpe-startup-trials", "4", "--batch-size", "4",
+                             "--batch-lag", "1")
+        barrier = self.result("--tpe-startup-trials", "4", "--batch-size", "4")
+        parameters = lambda result: [trial["parameters"] for trial in result["trials"]]
+        self.assertEqual(parameters(lagged)[:8], parameters(random_start)[:8])
+        self.assertNotEqual(parameters(barrier)[4:8], parameters(random_start)[4:8])
 
     def test_default_compatibility(self) -> None:
         for sampler in ("tpe", "dlib_global", "random", "grid"):
@@ -101,6 +114,27 @@ class BatchReplayTests(unittest.TestCase):
         self.assertTrue(any(trial["status"] == "pruned" for trial in result["trials"]))
         self.assertTrue(all(trial["status"] in ("ok", "pruned")
                             for trial in result["trials"]))
+
+    def test_pruned_progress_matches_terminal_records(self) -> None:
+        path = Path(self.directory.name) / "progress.jsonl"
+        with path.open("w") as progress:
+            completed = self.invoke("--batch-size", "4", "--batch-lag", "1",
+                                    "--pruner", "median", progress=progress.fileno())
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        final = json.loads(completed.stdout)
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        self.assertEqual(sorted(lines, key=lambda trial: trial["trial_id"]), final["trials"])
+        self.assertTrue(any(trial["status"] == "pruned" for trial in lines))
+
+    def test_stop_skips_unstarted_pipelined_pruned_trials(self) -> None:
+        completed = self.invoke("--batch-size", "4", "--batch-lag", "1",
+                                "--pruner", "median", "--max-wall-seconds", "0.03",
+                                "--fixed-input", "DelayMs", "10")
+        self.assertIn(completed.returncode, (0, 2), completed.stderr)
+        final = json.loads(completed.stdout)
+        self.assertEqual(final["stop_reason"], "deadline")
+        self.assertLess(len(final["trials"]), 32)
+        self.assertTrue(all(trial["status"] != "pending" for trial in final["trials"]))
 
     def test_bad_options(self) -> None:
         for flags in (("--batch-size", "0"), ("--batch-lag", "2"),

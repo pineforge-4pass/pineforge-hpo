@@ -961,69 +961,68 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
             }
         }
         for (std::size_t rung = 0; rung < bar_counts.size(); ++rung) {
-        const bool full_window = bar_counts[rung] == executor.dataset().size();
-        const auto execution = executor.execute_prefix(
-            serialized, options.strategy_overrides, bar_counts[rung]);
-        record.bars_processed_total += execution.report.input_bars_processed;
-        record.script_bars_processed_total += execution.report.script_bars_processed;
-        record.magnifier_ticks_total += execution.report.magnifier_sample_ticks_total;
-        if (!execution.succeeded()) {
-            record.status = "engine_error";
-            record.error = execution.error;
-            return record;
-        }
-        record.total_trades = execution.report.total_trades;
-        record.net_profit = execution.report.net_profit;
-        record.input_bars_processed = execution.report.input_bars_processed;
-        record.script_bars_processed = execution.report.script_bars_processed;
-        record.magnifier_sample_ticks_total = execution.report.magnifier_sample_ticks_total;
-        record.input_tf_seconds = execution.report.input_tf_seconds;
-        record.script_tf_seconds = execution.report.script_tf_seconds;
-        record.script_tf_ratio = execution.report.script_tf_ratio;
-        record.needs_aggregation = execution.report.needs_aggregation;
-        auto metric_map = collect_metrics(execution.report, expressions, &record.metrics);
-        const auto score = objective.evaluate(metric_map, options.evaluation_policy);
-        if (!score.valid) {
-            record.status = "objective_error";
-            record.error = score.diagnostic;
-            return record;
-        }
-        if (!std::isfinite(score.value)) {
-            record.status = "objective_error";
-            record.error = "objective result is non-finite and cannot be ranked";
-            return record;
-        }
-        record.objective = score.value;
-        if (!full_window) {
-            record.rung_scores.push_back(score.value);
-            if (pruner.prune(score.value, cuts[rung])) {
-                record.status = "pruned";
-                record.pruning_cut = cuts[rung];
+            const bool full_window = bar_counts[rung] == executor.dataset().size();
+            const auto execution = executor.execute_prefix(
+                serialized, options.strategy_overrides, bar_counts[rung]);
+            record.bars_processed_total += execution.report.input_bars_processed;
+            record.script_bars_processed_total += execution.report.script_bars_processed;
+            record.magnifier_ticks_total += execution.report.magnifier_sample_ticks_total;
+            if (!execution.succeeded()) {
+                record.status = "engine_error";
+                record.error = execution.error;
                 return record;
             }
-            continue;
-        }
-        record.feasible = true;
-        for (const auto& constraint : constraints) {
-            const auto result = constraint.evaluate(metric_map, constraint_policy);
-            if (!result.valid) {
-                record.status = "constraint_error";
-                record.error = result.diagnostic;
-                record.feasible = false;
-                break;
+            record.total_trades = execution.report.total_trades;
+            record.net_profit = execution.report.net_profit;
+            record.input_bars_processed = execution.report.input_bars_processed;
+            record.script_bars_processed = execution.report.script_bars_processed;
+            record.magnifier_sample_ticks_total = execution.report.magnifier_sample_ticks_total;
+            record.input_tf_seconds = execution.report.input_tf_seconds;
+            record.script_tf_seconds = execution.report.script_tf_seconds;
+            record.script_tf_ratio = execution.report.script_tf_ratio;
+            record.needs_aggregation = execution.report.needs_aggregation;
+            auto metric_map = collect_metrics(execution.report, expressions, &record.metrics);
+            const auto score = objective.evaluate(metric_map, options.evaluation_policy);
+            if (!score.valid) {
+                record.status = "objective_error";
+                record.error = score.diagnostic;
+                return record;
             }
-            if (!std::isfinite(result.value)) {
-                record.status = "constraint_error";
-                record.error = "constraint result is non-finite";
-                record.feasible = false;
-                break;
+            if (!std::isfinite(score.value)) {
+                record.status = "objective_error";
+                record.error = "objective result is non-finite and cannot be ranked";
+                return record;
             }
-            if (result.value == 0.0)
-                record.feasible = false;
-        }
-        if (record.status == "pending") {
-            record.status = record.feasible ? "ok" : "constraint_violation";
-        }
+            record.objective = score.value;
+            if (!full_window) {
+                record.rung_scores.push_back(score.value);
+                if (pruner.prune(score.value, cuts[rung])) {
+                    record.status = "pruned";
+                    record.pruning_cut = cuts[rung];
+                    return record;
+                }
+                continue;
+            }
+            record.feasible = true;
+            for (const auto& constraint : constraints) {
+                const auto result = constraint.evaluate(metric_map, constraint_policy);
+                if (!result.valid) {
+                    record.status = "constraint_error";
+                    record.error = result.diagnostic;
+                    record.feasible = false;
+                    break;
+                }
+                if (!std::isfinite(result.value)) {
+                    record.status = "constraint_error";
+                    record.error = "constraint result is non-finite";
+                    record.feasible = false;
+                    break;
+                }
+                if (result.value == 0.0)
+                    record.feasible = false;
+            }
+            if (record.status == "pending")
+                record.status = record.feasible ? "ok" : "constraint_violation";
         }
     } catch (const std::exception& error) {
         record.status = "trial_error";
@@ -1111,6 +1110,13 @@ std::string render_results(const Options& options,
         << ",\n  \"replay_contract\": \"ordered_batches_v1\",\n"
         << "  \"pruner\": \"" << options.pruner_name << "\",\n"
         << "  \"pruner_eta\": " << options.pruner_eta << ",\n"
+        << "  \"pruner_rungs\": [";
+    for (std::size_t rung = 0; rung < options.pruner_rungs.size(); ++rung) {
+        if (rung)
+            out << ", ";
+        out << json_number(options.pruner_rungs[rung]);
+    }
+    out << "],\n"
         << "  \"search_space_finite\": " << (finite_cardinality ? "true" : "false") << ",\n"
         << "  \"search_space_cardinality\": ";
     if (finite_cardinality)
