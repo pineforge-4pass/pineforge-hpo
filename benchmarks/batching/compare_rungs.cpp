@@ -120,7 +120,8 @@ int main(int argc, char** argv) {
                   << "{\"prefix_seconds\":" << prefix_seconds
                   << ",\"stream_seconds\":" << stream_seconds
                   << ",\"prefix_bars\":" << prefix_bars
-                  << ",\"stream_bars\":" << processed << ",\"rungs\":[";
+                  << ",\"stream_bars\":" << processed
+                  << ",\"full_trades\":\"" << reference.back().trades << "\",\"rungs\":[";
         for (std::size_t rung = 0; rung < counts.size(); ++rung) {
             if (rung)
                 std::cout << ',';

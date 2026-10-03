@@ -48,6 +48,38 @@ def old_projection(result: dict):
     return trials
 
 
+def canonical_parity(study, artifact, candidate, probe: dict) -> dict:
+    command = [sys.executable, str(ROOT / "external/pineforge-engine/docker/run_json.py"),
+               "--so", str(artifact.plugin_path), "--ohlcv", str(study.datasets[0].ohlcv),
+               "--inputs", json.dumps(candidate["parameters"]),
+               "--input-tf", study.datasets[0].input_tf,
+               "--script-tf", study.datasets[0].script_tf,
+               "--chart-tz", study.datasets[0].chart_timezone]
+    completed = subprocess.run(command, text=True, capture_output=True, check=True)
+    canonical = json.loads(completed.stdout)
+    for path, score in candidate["metrics"].items():
+        value = canonical
+        for component in path.split("."):
+            value = value[component]
+        if value != score:
+            raise RuntimeError(f"canonical metric mismatch: {path}")
+    actual = []
+    integer_fields = {0, 1, 6, 11, 12, 13}
+    for row in probe["full_trades"].split(";"):
+        if row:
+            actual.append(tuple(int(value) if index in integer_fields else float.fromhex(value)
+                                for index, value in enumerate(row.split(":"))))
+    expected = [(trade["entry_time"], trade["exit_time"], trade["entry_price"],
+                 trade["exit_price"], trade["pnl"], trade["pnl_pct"],
+                 int(trade["side"] == "long"), trade["max_runup"], trade["max_drawdown"],
+                 trade["qty"], trade["commission"], trade["entry_bar_index"],
+                 trade["exit_bar_index"], int(trade["open_at_end"]))
+                for trade in canonical["trades"]]
+    if actual != expected or len(actual) != candidate["total_trades"]:
+        raise RuntimeError("canonical trade mismatch")
+    return {"metrics_equal": True, "trades_equal": True, "closed_trades": len(actual)}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline", type=Path, required=True)
@@ -98,6 +130,7 @@ def main() -> None:
     rows = []
     replay = []
     probes = {}
+    harness_checks = {}
     inputs = {}
     for study_name, document in studies.items():
         path = output / f"{study_name}.study.json"
@@ -203,6 +236,10 @@ def main() -> None:
             completed = subprocess.run(probe_command, text=True, capture_output=True)
             probes[study_name].append(json.loads(completed.stdout) if completed.returncode == 0
                                       else {"error": completed.stderr.strip()})
+        harness_checks[study_name] = canonical_parity(
+            study, artifact, baseline_best, probes[study_name][-1])
+        for probe in probes[study_name]:
+            probe.pop("full_trades", None)
     with (output / "measurements.csv").open("w") as destination:
         writer = csv.DictWriter(destination, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -219,6 +256,7 @@ def main() -> None:
                     ["git", "-C", str(ROOT / "external/pineforge-engine"), "rev-parse", "HEAD"],
                     text=True).strip(),
                 "repeats": args.repeats, "inputs": inputs, "replay": replay, "stream_probes": probes,
+                "canonical_harness_checks": harness_checks,
                 "shadow_full_runs_excluded_from_timing_and_metering": True,
                 "measurements_sha256": digest(output / "measurements.csv")}
     (output / "measurements.metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
