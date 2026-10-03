@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.0
+
+- Bound native TPE history after the default 1,000-proposal warm-up to 25 global elites
+  and 64 recent non-elites. Cache numeric density tables in deterministic 32-completion
+  epochs, retain live constant-liar overlays, and use eight acquisition draws after warm-up.
+  Preserve full-history acquisition through 1,000 proposals; record the new
+  `pineforge_product_tpe_v3_bounded` identity and `scale_ei_candidates` setting.
+- Generate grid/random candidates lazily, use all workers for deadline-only adaptive studies,
+  and accept `--max-trials 0 --max-wall-seconds S` without imposing a trial cap.
+- Add native `--trials-out all|best-k|none`, `--best-k N` (default 10), and optional
+  `--trials-file FILE` terminal-trial NDJSON. `all` remains the compatibility default;
+  `best-k` and `none` bound resident trial retention independently of trial count.
+- Keep `schema_version: 1` and every existing terminal-trial field/type unchanged, including
+  all three billing bar counters. Progress and trials-file lines are now monotonic by trial
+  ID, complete and flushed on cooperative stop, with bounded writer backpressure.
+- Add result fields `trials_out`, `best_k`, `search_space_cardinality_overflow`, and, when
+  dropping the full list, `summary.counts_by_status`, `summary.best_k`, and
+  `summary.space_coverage`. In `none`, `trials` is empty; in `best-k` it contains retained
+  feasible winners. Existing best/coverage/count fields describe the entire study.
+- Permit default adaptive sampling when a finite Cartesian product exceeds uint64;
+  cardinality is then null and the additive overflow flag is true. Exact finite policies
+  still require representable cardinality. Disk-backed exact ordinal indexes avoid growing
+  resident uniqueness sets. Disabled pruning retains no history; enabled pruning keeps
+  the latest 1,024 observations per rung.
+- Add timing-sidecar proposal/barrier, progress serialization/write/byte, and final JSON
+  render/write/byte diagnostics; publish scaling and paired-quality evidence, a 100,000-trial
+  native memory/time regression, worker replay, output parity, and stop-flush tests.
+- Native `prepare` is reserved for a separately gated 0.4.x follow-up; the existing Python
+  `prepare_run()` API remains available and unchanged.
+
 ## 0.3.1 — 2026-10-04
 
 - Native `--syminfo FILE` applies the instrument lot-size grid: an optional `mincontract`

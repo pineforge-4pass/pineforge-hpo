@@ -1,0 +1,36 @@
+{
+  "schema": "pineforge-hpo.scaling-evidence.v1",
+  "baseline_revision": "6ccb6d4",
+  "version": "0.4.0",
+  "platform": "Linux-7.0.0-1013-aws-x86_64-with-glibc2.39",
+  "cpu": "Intel Xeon Platinum 8375C, 8 vCPU, 16 GiB",
+  "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "build": "Release, C++17, -O3 -DNDEBUG",
+  "source_sha256": {
+    "src/core/tpe_sampler.cpp": "ac5b44c8982d5aa3daa547da933c54f9c7d09572914c4784febf9a84b6b03fad",
+    "src/core/pruner.cpp": "4127dd4df4e13ea5c01d7f794507c3eafb7bd268689967a85a3cc5e489e23af0",
+    "src/core/ordinal_set.hpp": "66f940da4d8b3a7f29eae335cf1a318e0c6e2b356c3435d7106971243ab02564",
+    "src/cli/main.cpp": "1434c1ebb5a82756fcb9bb414256b0619c2e4345a8c834cd83a5f0031f45e999",
+    "src/cli/batch_executor.hpp": "38eff70993831d99b6e160b25469d4532ddad816189f57cc6b234417a28e8021",
+    "include/pineforge/hpo/sampler.hpp": "3f9b27d48825e575b591bbd462b6dec2170357d9187b7cd1ff4a1bc9be01077d",
+    "include/pineforge/hpo/pruner.hpp": "735949c56f029a3f16bb59b9dc3910572a353deaa8ea78c8d9c1a61182935691",
+    "benchmarks/scaling/README.md": "e169efff6cbf672bcacbbbc1f98b8aebeef8e625470fb24aa7cfd7d803d7b696",
+    "benchmarks/scaling/collect_evidence.py": "ce296d3b1e3e9b366567b75552c702f6eca38ab15bbbafe6e9c3cc1216873828",
+    "benchmarks/scaling/profile.cpp": "1d6e1f947465d83b00f74d97eb6aa728aed30a4bdcbf4722ee30545d60b91c35",
+    "benchmarks/scaling/quality_replica.py": "a0d1f1aaaa3daacbc0b8328a5c6fb39857c9cf38268650629b60d6e049899d69",
+    "benchmarks/scaling/run_native.py": "3ff2450d461567559ac645f8e92360f570d017db696955e9a6aa7f23aad3534b",
+    "benchmarks/scaling/strategy.pine": "fbca02f2abfce4e663a606d0af9bf61e07ce47277ce68939f8fda74b35162277"
+  },
+  "engine_revision": "5718c5dc05086fc5b66b4cb565617efe837131e3",
+  "codegen_revision": "5bf595b5e826562c131710b3e93e96e6f8e0a0e4",
+  "coco_repository": "numbbo/coco-experiment",
+  "coco_revision": "dd4bd1f0cc7699a2b612448d85aafb94636fe947",
+  "measured_binary_sha256": {
+    "before_native": "09ba6b1701cbaec8973c16087514db07ab4b7e8a14259ab507586e5a2279406b",
+    "after_native": "501cd07876970ca866d8bc462324a35cdd37afca2fc3ef75a89a79f8ed18389b"
+  },
+  "protocol": "random prefill, then timed ask; after uses 256 asks with batch8 feedback",
+  "limitations": "before is a snapshot probe, not a full million-trial adaptive run",
+  "rows": 56,
+  "csv_sha256": "47f9d9c85add8c06ae9fd0e26edb481e8d02bae4a4ccb717fca52e1d331e05be"
+}

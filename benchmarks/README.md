@@ -10,6 +10,7 @@ part of the normal build.
 |---|---|---|
 | [`optuna/`](optuna/README.md) | Compare PineForge native TPE with official Optuna TPE on paired synthetic problems | Active |
 | `batching/` | Compare baseline, logical batches, fixed lag, and prefix pruning on real strategies | Active |
+| [`scaling/`](scaling/README.md) | History-flat acquisition, million-trial outputs, and pinned quality replay | Active |
 
 The Optuna suite includes continuous, non-separable, mixed-type, log-scale, and
 million-candidate discrete objectives. Its checked-in

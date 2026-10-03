@@ -1,5 +1,18 @@
 # Deterministic batching and prefix pruning (0.3.0)
 
+## Scaling in 0.4.0
+
+Logical batch/lag semantics below remain unchanged. Bounded TPE model state and
+cached acquisition reduce coordinator work; opt-in lag one overlaps proposal
+work with the previous executing batch. The runner now uses every worker for
+deadline-only adaptive studies, generates nonadaptive candidates lazily, and
+keeps only best-k terminal payloads when requested. Enabled pruners bound each
+rung's reference history to its latest 1,024 finite scores; disabled pruning
+keeps no rung history. The progress writer uses bounded backpressure and emits
+complete terminal records in increasing ID order, independent of worker timing.
+See [the before/after profile and quality evidence](../benchmarks/scaling/README.md)
+and [the native output contract](api.md).
+
 ## What changes, and what does not
 
 The default remains the 0.1.x proposal schedule: `batch_size=workers`,

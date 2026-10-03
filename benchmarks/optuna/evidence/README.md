@@ -38,3 +38,22 @@ and version remain recorded without exposing a contributor's home directory.
 Ad-hoc benchmark outputs belong under ignored `build/`. Files enter this
 directory only when they are small, tied to a reviewed result, and published
 with a verified metadata sidecar.
+
+## Native scaling 0.4.0
+
+The reviewed measurements in [`../../scaling/README.md`](../../scaling/README.md)
+publish three compact CSVs with adjacent `.csv.metadata.json` sidecars:
+
+| Profile | CSV | Verified CSV SHA-256 |
+|---|---|---|
+| Acquisition versus history | [`2026-10-03-scale-ask.csv`](2026-10-03-scale-ask.csv) | `47f9d9c85add8c06ae9fd0e26edb481e8d02bae4a4ccb717fca52e1d331e05be` |
+| Native throughput, retention, billing | [`2026-10-03-scale-native.csv`](2026-10-03-scale-native.csv) | `7aa11607484bce378946ce7d66faac68797a8f290be63393e0c4bfc464a763d5` |
+| Paired normalized-regret quality | [`2026-10-03-scale-quality.csv`](2026-10-03-scale-quality.csv) | `c37edecfcae2881c19c63ee6e3f753978ec739117f442ed929d37df96b427574` |
+
+The sidecars include exact source and measured binary hashes, compiler/platform,
+engine/codegen/COCO pins, row counts, and verified CSV hashes. Acquisition rows
+distinguish baseline snapshot asks from after batch-eight feedback. Native rows
+distinguish the light million-trial gate, output-only matrix, hourly real-strategy
+shapes, and the slow magnifier shape. Quality includes the pinned hard-suite
+replica and 32D extension, with 144 paired studies and zero maximum paired delta
+at 100/300/1,000 trials. No long-budget quality-equivalence claim is made.

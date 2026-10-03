@@ -66,7 +66,7 @@ or Python CLI pass-throughs:
 | Flag | Semantics |
 | --- | --- |
 | `--syminfo FILE` | Flat or wrapped instrument JSON. Optional positive finite `mintick`/`pointvalue` and NUL-free `timezone`/`session` strings are applied after inputs and overrides, in harness order. Empty strings keep defaults; unrelated catalog keys are ignored. |
-| `--progress-fd N` | An inherited writable descriptor receives one flushed JSONL object per terminal trial, serialized by one writer. Objects equal final `trials[]` entries; completion order may differ from final trial-ID order. Consumers must drain a pipe concurrently. |
+| `--progress-fd N` | An inherited writable descriptor receives one complete, flushed JSONL object per terminal trial, serialized by one writer in increasing trial-ID order. Objects use the unchanged terminal-trial schema regardless of final retention mode. Consumers must drain a pipe concurrently. |
 | `--max-wall-seconds S` | Positive finite study wall cap, measured from native initialization. SIGTERM/SIGINT and the cap stop new worker claims and adaptive batches; in-flight trials can finish. |
 | `--record-metric PATH` | Repeatable extra metric path, validated before the first trial. Keys preserve expression spelling, including aliases, and unavailable values are `null`. |
 | `--trial-timeout-seconds T` | Positive finite per-trial wall cap, starting at worker claim. On the first expiry, record one `trial_timeout`, flush progress and final JSON from terminal trials, and `_exit(3)` without joining any hung worker. Other in-flight/unstarted trials are excluded. |
@@ -108,11 +108,70 @@ result-destination failures can prevent final JSON publication.
 Progress I/O errors do not disable timeout protection: if an in-flight trial hangs,
 the watchdog still emits final JSON and exits 3, with the I/O diagnostic on stderr.
 
-The native schema remains version 1. Without the new flags, all existing result
-fields and proposal/scoring behavior are preserved, apart from the product
-version and the additive magnifier counter. CMake accepts an installed engine
+The native schema remains version 1. CMake accepts an installed engine
 prefix as well as a source/build tree, finding `pineforge/version.h` under either
 `include/` or `build/include/`.
+
+## Contract changes in 0.4.0
+
+These controls are native `run` flags, not new StudySpec fields or Python wrapper
+pass-throughs. Existing callers retain `--trials-out all` by default.
+
+- `--trials-out all` retains every terminal record in `trials`, as before. This
+  compatibility mode intentionally uses memory proportional to study size.
+- `--trials-out best-k --best-k N` retains at most N feasible, finite-objective
+  winners in `trials`; ties prefer the lower trial ID. Records are emitted in
+  trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.
+- `--trials-out none` emits `trials: []`. Both bounded modes include `summary`
+  with `counts_by_status`, `best_k` (full terminal-record objects), and
+  `space_coverage` (finite/cardinality/overflow/unique/full/exhaustive facts).
+- `--trials-file FILE` optionally writes every full terminal record as flushed
+  NDJSON, independently of retention, with or without fd progress.
+- `--max-trials 0 --max-wall-seconds 3600` runs adaptive sampling without a trial
+  cap. `trials_requested: 0` denotes this deadline-only budget. In-flight work
+  finishes cooperatively; a wall cap is not a hard interrupt of engine execution.
+
+The fd progress stream is the complete billing record, not the retained final
+list. Each line still has `trial_id`, `status`, `feasible`, `objective`,
+`parameters`, `total_trades`, `net_profit`, `backtest`, `metrics`, and `error`,
+plus the existing optional pruning object. The `backtest` counters remain
+`input_bars_processed`, `script_bars_processed`, and
+`magnifier_sample_ticks_total`, with unchanged names and types. No terminal-line
+field is removed, renamed, or added. IDs are unique and increasing; unstarted
+proposals can leave gaps. SIGTERM/deadline drains terminal lines before final
+output. A broken destination is an I/O error; no durable delivery is promised
+after a consumer closes its pipe.
+
+`schema_version` stays 1. Additive result fields are `trials_out`, `best_k`,
+`search_space_cardinality_overflow`, the conditional `summary` block, and
+`sampler_config.scale_ei_candidates`. All prior result fields retain their types.
+Top-level counts, best trial, and coverage describe the entire study. When the
+Cartesian product exceeds uint64, default adaptive sampling accepts it and
+reports finite=true/cardinality=null/overflow=true without claiming exact unique
+coverage; grid and exact finite policies reject it.
+
+TPE's identity changes to `pineforge_product_tpe_v3_bounded` (`_finite` for exact
+finite policies). Its default first 1,000 proposals keep full-history estimation.
+Thereafter 25 elites plus 64 recent non-elites, 513-point numeric density tables,
+32-completion refit epochs, and eight EI draws bound history-dependent work.
+`--tpe-scale-ei-candidates N` changes the post-warm-up draws, capped by
+`--tpe-ei-candidates`; record it for replay. Seed, explicit batch size, lag, and
+pruning remain deterministic across worker counts. Enabled pruners now retain
+the latest 1,024 values per rung.
+
+Bounded modes retain fixed warm-up/model history, outstanding logical batches,
+a bounded writer queue, and best-k, independent of total trials. Exact finite
+coverage may use a temporary disk index growing with unique attempts; a
+small-space bitset is capped at 12.5 MB. Dataset/engine state still depends on
+bars and workers. `all` and dlib's optimizer history are not covered by the
+bounded-memory TPE guarantee.
+
+The timing-only `--scheduler-stats` sidecar adds `proposal_seconds`,
+`barrier_seconds`, `progress_serialization_seconds`, `progress_write_seconds`,
+`progress_bytes`, `final_json_bytes`, `final_json_render_seconds`, and
+`final_json_write_seconds`. These are not replay or billing fields. See
+[scaling evidence](../benchmarks/scaling/README.md). Native `prepare` remains
+a separately gated 0.4.x follow-up; Python `prepare_run()` remains unchanged.
 
 ## Compatibility boundaries
 

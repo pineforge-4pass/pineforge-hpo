@@ -9,6 +9,7 @@
 
 #include "json.hpp"
 #include "batch_executor.hpp"
+#include "../core/ordinal_set.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -57,6 +58,9 @@ struct Options {
     std::filesystem::path strategy;
     std::filesystem::path ohlcv;
     std::filesystem::path output;
+    std::filesystem::path trials_file;
+    std::string trials_out = "all";
+    std::uint64_t best_k = 10;
     std::filesystem::path syminfo;
     std::string objective;
     std::vector<std::string> constraints;
@@ -229,12 +233,15 @@ void print_help() {
               << "Study options:\n"
               << "  --sampler grid|random|tpe|dlib_global  default: grid\n"
               << "  --candidate-policy sampler_default|without_replacement|exhaustive\n"
-              << "  --max-trials N              0 means all grid candidates\n"
+              << "  --max-trials N              0: grid exhaustive; adaptive deadline only\n"
               << "  --seed N                    sampler seed; dlib max 2147483647\n"
               << "  --workers N                 execution threads\n"
               << "  --batch-size N              proposals per batch; default: workers\n"
               << "  --batch-lag 0|1             fixed feedback lag; default: 0\n"
               << "  --scheduler-stats FILE      nondeterministic timing sidecar\n"
+              << "  --trials-out all|best-k|none final trial retention; default: all\n"
+              << "  --best-k N                  retained feasible winners; default: 10\n"
+              << "  --trials-file FILE          flushed full terminal-trial NDJSON\n"
               << "  --pruner none|median|halving default: none\n"
               << "  --pruner-rungs F,F          increasing prefixes; default: 0.25,0.5\n"
               << "  --pruner-eta N              elimination factor >= 2; default: 2\n"
@@ -248,6 +255,7 @@ void print_help() {
               << "TPE options:\n"
               << "  --tpe-startup-trials N      random observations before model fitting\n"
               << "  --tpe-ei-candidates N       candidates scored by log l(x)/g(x)\n"
+              << "  --tpe-scale-ei-candidates N acquisition draws after bounded warm-up\n"
               << "  --tpe-gamma-fraction X      good-observation fraction in (0, 1]\n"
               << "  --tpe-gamma-cap N           maximum good observations\n"
               << "  --tpe-prior-weight X        positive Parzen prior weight\n"
@@ -330,6 +338,16 @@ Options parse_options(int argc, char** argv) {
             out.candidate_policy = parse_candidate_policy(require_value(argc, argv, i, option));
         } else if (option == "--max-trials") {
             out.max_trials = parse_u64(require_value(argc, argv, i, option), option);
+        } else if (option == "--trials-out") {
+            out.trials_out = require_value(argc, argv, i, option);
+            if (out.trials_out != "all" && out.trials_out != "best-k" && out.trials_out != "none")
+                usage_error("--trials-out must be all, best-k, or none");
+        } else if (option == "--best-k") {
+            out.best_k = parse_u64(require_value(argc, argv, i, option), option);
+            if (out.best_k == 0 || out.best_k > 1'000'000)
+                usage_error("--best-k must be between 1 and 1000000");
+        } else if (option == "--trials-file") {
+            out.trials_file = require_value(argc, argv, i, option);
         } else if (option == "--seed") {
             out.seed = parse_u64(require_value(argc, argv, i, option), option);
         } else if (option == "--workers") {
@@ -385,6 +403,9 @@ Options parse_options(int argc, char** argv) {
             out.tpe_config.startup_trials = parse_u64(require_value(argc, argv, i, option), option);
         } else if (option == "--tpe-ei-candidates") {
             out.tpe_config.ei_candidates = parse_u64(require_value(argc, argv, i, option), option);
+        } else if (option == "--tpe-scale-ei-candidates") {
+            out.tpe_config.scale_ei_candidates =
+                parse_u64(require_value(argc, argv, i, option), option);
         } else if (option == "--tpe-gamma-fraction") {
             out.tpe_config.gamma_fraction =
                 parse_double(require_value(argc, argv, i, option), option);
@@ -499,8 +520,8 @@ Options parse_options(int argc, char** argv) {
     if (out.objective.empty())
         usage_error("--objective is required");
     if ((out.sampler == "random" || out.sampler == "tpe" || out.sampler == "dlib_global") &&
-        out.max_trials == 0) {
-        usage_error(out.sampler + " sampling requires --max-trials > 0");
+        out.max_trials == 0 && out.max_wall_seconds == 0.0) {
+        usage_error(out.sampler + " sampling requires --max-trials or --max-wall-seconds");
     }
     if (out.candidate_policy != pfh::CandidatePolicy::SamplerDefault && out.sampler != "tpe" &&
         out.sampler != "grid") {
@@ -517,6 +538,9 @@ Options parse_options(int argc, char** argv) {
         usage_error("--tpe-startup-trials must be greater than zero");
     if (out.tpe_config.ei_candidates == 0 || out.tpe_config.ei_candidates > 1'000'000)
         usage_error("--tpe-ei-candidates must be between 1 and 1000000");
+    if (out.tpe_config.scale_ei_candidates == 0 ||
+        out.tpe_config.scale_ei_candidates > 1'000'000)
+        usage_error("--tpe-scale-ei-candidates must be between 1 and 1000000");
     if (!(out.tpe_config.gamma_fraction > 0.0 && out.tpe_config.gamma_fraction <= 1.0))
         usage_error("--tpe-gamma-fraction must be in (0, 1]");
     if (out.tpe_config.gamma_cap == 0)
@@ -731,14 +755,83 @@ std::string render_trial(const TrialRecord& trial) {
 
 enum class StopReason : std::uint8_t { kNone, kCancelled, kDeadline, kTrialTimeout };
 
+class TrialArchive final {
+public:
+    TrialArchive(const Options& options, const pfh::SearchSpace& space, bool finite)
+        : options_(options), space_(space), finite_(finite) {}
+
+    void add(const TrialRecord& record) {
+        ++completed;
+        ++counts[record.status];
+        objective_coverage = objective_coverage &&
+            (record.status == "ok" || record.status == "constraint_violation");
+        if (finite_ && options_.sampler != "grid" &&
+            options_.candidate_policy == pfh::CandidatePolicy::SamplerDefault)
+            ordinals_.insert(space_.candidate_ordinal(record.candidate));
+        if (options_.trials_out == "all")
+            all_.push_back(record);
+        if (!record.feasible || !record.objective || !std::isfinite(*record.objective))
+            return;
+        const auto compare = [&](const TrialRecord& left, const TrialRecord& right) {
+            if (*left.objective != *right.objective)
+                return options_.direction == Direction::kMaximize
+                    ? *left.objective > *right.objective : *left.objective < *right.objective;
+            return left.trial_id < right.trial_id;
+        };
+        if (best_.size() == options_.best_k) {
+            if (!compare(record, best_.front()))
+                return;
+            std::pop_heap(best_.begin(), best_.end(), compare);
+            best_.pop_back();
+        }
+        best_.push_back(record);
+        std::push_heap(best_.begin(), best_.end(), compare);
+    }
+
+    std::vector<TrialRecord> retained() {
+        auto records = options_.trials_out == "all" ? std::move(all_) : best_;
+        std::sort(records.begin(), records.end(), [](const auto& left, const auto& right) {
+            return left.trial_id < right.trial_id;
+        });
+        return records;
+    }
+
+    std::optional<std::uint64_t> unique() const {
+        if (!finite_)
+            return std::nullopt;
+        return options_.sampler == "grid" ||
+               options_.candidate_policy != pfh::CandidatePolicy::SamplerDefault
+            ? completed : ordinals_.size();
+    }
+
+    std::uint64_t completed = 0;
+    std::map<std::string, std::uint64_t> counts;
+    bool objective_coverage = true;
+
+private:
+    const Options& options_;
+    const pfh::SearchSpace& space_;
+    bool finite_;
+    pfh::detail::OrdinalSet ordinals_;
+    std::vector<TrialRecord> all_;
+    std::vector<TrialRecord> best_;
+};
+
 class RunState final {
 public:
     using Clock = std::chrono::steady_clock;
 
-    RunState(const Options& options, Clock::time_point started,
+    RunState(const Options& options, Clock::time_point started, TrialArchive& archive,
              std::function<void(const std::vector<TrialRecord>&)> timeout_result)
-        : options_(options), started_(started), timeout_result_(std::move(timeout_result)) {
-        if (options_.progress_fd >= 0 || options_.trial_timeout_seconds > 0.0)
+        : options_(options), started_(started), archive_(archive),
+          timeout_result_(std::move(timeout_result)) {
+        if (!options_.trials_file.empty()) {
+            trials_file_.open(options_.trials_file, std::ios::binary | std::ios::trunc);
+            if (!trials_file_)
+                throw std::runtime_error("cannot open --trials-file");
+        }
+        if (options_.progress_fd >= 0 || trials_file_.is_open() ||
+            options_.trial_timeout_seconds > 0.0)
             writer_ = std::thread([this] { watch(); });
     }
 
@@ -762,22 +855,36 @@ public:
         if (stopped())
             return false;
         active_.emplace(candidate.id, ActiveTrial{candidate, Clock::now()});
-        changed_.notify_one();
+        changed_.notify_all();
         return true;
     }
 
     void finish(const TrialRecord& record) {
-        if (options_.progress_fd < 0 && options_.trial_timeout_seconds == 0.0)
-            return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (timed_out_)
             return;
         active_.erase(record.trial_id);
-        if (options_.trial_timeout_seconds > 0.0)
-            completed_.emplace(record.trial_id, record);
-        if (options_.progress_fd >= 0 && !progress_failed_)
-            pending_.push_back(render_trial(record) + "\n");
-        changed_.notify_one();
+        archive_.add(record);
+        if ((options_.progress_fd >= 0 || trials_file_.is_open()) && !progress_failed_) {
+            const auto limit = 2 * (options_.batch_size ? options_.batch_size : options_.workers);
+            changed_.wait(lock, [&] {
+                return pending_.size() < limit || progress_failed_ || timed_out_ ||
+                       record.trial_id == next_progress_id_;
+            });
+            if (!progress_failed_ && !timed_out_) {
+                const auto begin = Clock::now();
+                pending_.emplace(record.trial_id, render_trial(record) + "\n");
+                serialization_seconds_ += seconds_since(begin);
+            }
+        }
+        changed_.notify_all();
+    }
+
+    void skip(std::uint64_t trial_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (options_.progress_fd >= 0 || trials_file_.is_open())
+            pending_.emplace(trial_id, "");
+        changed_.notify_all();
     }
 
     void shutdown() {
@@ -794,6 +901,10 @@ public:
         if (!error_.empty())
             throw std::runtime_error(error_);
     }
+
+    double serialization_seconds() const noexcept { return serialization_seconds_; }
+    double progress_write_seconds() const noexcept { return progress_write_seconds_; }
+    std::uint64_t progress_bytes() const noexcept { return progress_bytes_; }
 
     const char* stop_reason() const {
         switch (reason_.load()) {
@@ -815,6 +926,16 @@ private:
     }
 
     void write_progress(const std::string& line) {
+        if (line.empty())
+            return;
+        if (trials_file_.is_open()) {
+            trials_file_ << line;
+            trials_file_.flush();
+            if (!trials_file_)
+                throw std::runtime_error("failed writing terminal trial to --trials-file");
+        }
+        if (options_.progress_fd < 0)
+            return;
         std::size_t written = 0;
         while (written < line.size()) {
             const auto count = ::write(options_.progress_fd, line.data() + written,
@@ -842,7 +963,7 @@ private:
             for (;;) {
                 std::unique_lock<std::mutex> lock(mutex_);
                 changed_.wait_for(lock, std::chrono::milliseconds(5),
-                                  [&] { return done_ || !pending_.empty(); });
+                                  [&] { return done_ || pending_.count(next_progress_id_) != 0; });
                 if (!timed_out_ && options_.trial_timeout_seconds > 0.0) {
                     for (const auto& [trial_id, trial] : active_) {
                         if (seconds_since(trial.started) < options_.trial_timeout_seconds)
@@ -852,35 +973,41 @@ private:
                         auto record = make_trial_record(trial.candidate, options_);
                         record.status = "trial_timeout";
                         record.error = "trial exceeded --trial-timeout-seconds";
-                        completed_.emplace(trial_id, record);
-                        if (options_.progress_fd >= 0 && !progress_failed_)
-                            pending_.push_back(render_trial(record) + "\n");
+                        archive_.add(record);
+                        if ((options_.progress_fd >= 0 || trials_file_.is_open()) &&
+                            !progress_failed_)
+                            pending_.emplace(trial_id, render_trial(record) + "\n");
+                        changed_.notify_all();
                         break;
                     }
                 }
-                if (!pending_.empty()) {
-                    auto line = std::move(pending_.front());
-                    pending_.pop_front();
+                auto next = pending_.find(next_progress_id_);
+                if (next == pending_.end() && (timed_out_ || done_))
+                    next = pending_.begin();
+                if (next != pending_.end()) {
+                    next_progress_id_ = next->first + 1;
+                    auto line = std::move(next->second);
+                    pending_.erase(next);
+                    changed_.notify_all();
                     lock.unlock();
                     try {
+                        const auto begin = Clock::now();
                         write_progress(line);
+                        progress_write_seconds_ += seconds_since(begin);
+                        progress_bytes_ += line.size();
                     } catch (const std::exception& error) {
                         std::lock_guard<std::mutex> failed_lock(mutex_);
                         error_ = error.what();
                         progress_failed_ = true;
                         pending_.clear();
+                        changed_.notify_all();
                         StopReason expected = StopReason::kNone;
                         reason_.compare_exchange_strong(expected, StopReason::kCancelled);
                     }
                     continue;
                 }
                 if (timed_out_) {
-                    std::vector<TrialRecord> trials;
-                    trials.reserve(completed_.size());
-                    for (const auto& [trial_id, record] : completed_) {
-                        (void)trial_id;
-                        trials.push_back(record);
-                    }
+                    auto trials = archive_.retained();
                     lock.unlock();
                     if (!error_.empty()) {
                         std::cerr << "pineforge-hpo-native: " << error_ << '\n';
@@ -900,23 +1027,30 @@ private:
             }
             std::lock_guard<std::mutex> lock(mutex_);
             error_ = error.what();
+            progress_failed_ = true;
             reason_.store(StopReason::kCancelled);
+            changed_.notify_all();
         }
     }
 
     const Options& options_;
     Clock::time_point started_;
+    TrialArchive& archive_;
     std::function<void(const std::vector<TrialRecord>&)> timeout_result_;
     std::atomic<StopReason> reason_{StopReason::kNone};
     std::mutex mutex_;
     std::condition_variable changed_;
     std::map<std::uint64_t, ActiveTrial> active_;
-    std::map<std::uint64_t, TrialRecord> completed_;
-    std::deque<std::string> pending_;
+    std::map<std::uint64_t, std::string> pending_;
+    std::uint64_t next_progress_id_ = 0;
+    std::ofstream trials_file_;
     std::string error_;
     bool progress_failed_ = false;
     bool timed_out_ = false;
     bool done_ = false;
+    double serialization_seconds_ = 0.0;
+    double progress_write_seconds_ = 0.0;
+    std::uint64_t progress_bytes_ = 0;
     std::thread writer_;
 };
 
@@ -948,32 +1082,6 @@ void validate_metric_identifiers(const std::vector<pfh::MetricExpression*>& expr
             }
         }
     }
-}
-
-std::vector<pfh::Candidate> generate_candidates(const Options& options,
-                                                const pfh::SearchSpace& space,
-                                                RunState& state) {
-    std::unique_ptr<pfh::Sampler> sampler;
-    if (options.sampler == "grid") {
-        sampler = std::make_unique<pfh::GridSampler>(space);
-    } else if (options.sampler == "random") {
-        sampler = std::make_unique<pfh::RandomSampler>(space, options.seed, options.max_trials);
-    } else {
-        throw std::logic_error("adaptive samplers cannot pre-generate candidates");
-    }
-
-    std::vector<pfh::Candidate> candidates;
-    while (options.max_trials == 0 || candidates.size() < options.max_trials) {
-        if (state.stopped())
-            break;
-        auto candidate = sampler->next();
-        if (!candidate)
-            break;
-        candidates.push_back(std::move(*candidate));
-    }
-    if (candidates.empty() && !state.stopped())
-        throw std::runtime_error("sampler produced no candidates");
-    return candidates;
 }
 
 bool better(Direction direction, double candidate, double current) {
@@ -1079,12 +1187,23 @@ std::string render_results(const Options& options,
                            const std::vector<TrialRecord>& trials,
                            const std::optional<std::size_t>& best_index,
                            std::uint64_t duplicate_proposals_skipped,
-                           const std::string& requested_stop_reason = {}) {
+                           const std::string& requested_stop_reason = {},
+                           const TrialArchive* archive = nullptr) {
+    const bool finite_space = std::all_of(space.dimensions().begin(), space.dimensions().end(),
+        [](const pfh::Dimension& dimension) {
+            return std::visit([](const auto& item) {
+                using DimensionType = std::decay_t<decltype(item)>;
+                if constexpr (std::is_same_v<DimensionType, pfh::RealDimension>)
+                    return item.low() == item.high() || item.step().has_value();
+                else
+                    return true;
+            }, dimension);
+        });
     const auto sampler_implementation = [&]() -> const char* {
         if (options.sampler == "tpe") {
             return options.candidate_policy == pfh::CandidatePolicy::SamplerDefault
-                       ? "pineforge_product_tpe_v2"
-                       : "pineforge_product_tpe_v2_finite";
+                       ? "pineforge_product_tpe_v3_bounded"
+                       : "pineforge_product_tpe_v3_bounded_finite";
         }
         if (options.sampler == "dlib_global")
             return "dlib_global_function_search_20.0.1";
@@ -1094,7 +1213,9 @@ std::string render_results(const Options& options,
     }();
 
     std::optional<std::uint64_t> unique_candidates;
-    if (finite_cardinality.has_value()) {
+    if (archive) {
+        unique_candidates = archive->unique();
+    } else if (finite_cardinality.has_value()) {
         std::unordered_set<std::uint64_t> ordinals;
         ordinals.reserve(trials.size());
         for (const auto& trial : trials) {
@@ -1103,11 +1224,13 @@ std::string render_results(const Options& options,
         unique_candidates = static_cast<std::uint64_t>(ordinals.size());
     }
     const std::uint64_t trials_requested =
-        options.max_trials != 0 ? options.max_trials : finite_cardinality.value_or(0);
+        options.max_trials != 0 ? options.max_trials :
+            (options.sampler == "grid" ? finite_cardinality.value_or(0) : 0);
+    const std::uint64_t trials_completed = archive ? archive->completed : trials.size();
     const bool search_space_exhausted =
         finite_cardinality.has_value() && unique_candidates == finite_cardinality;
     const bool full_parameter_coverage = search_space_exhausted;
-    const bool terminal_objective_coverage =
+    const bool terminal_objective_coverage = archive ? archive->objective_coverage :
         std::all_of(trials.begin(), trials.end(), [](const TrialRecord& trial) {
             return trial.status == "ok" || trial.status == "constraint_violation";
         });
@@ -1116,7 +1239,8 @@ std::string render_results(const Options& options,
         ? requested_stop_reason
         : search_space_exhausted
             ? "search_space_exhausted"
-            : (trials.size() >= trials_requested ? "trial_budget_reached" : "sampler_stopped");
+            : (trials_requested && trials_completed >= trials_requested
+                ? "trial_budget_reached" : "sampler_stopped");
     std::ostringstream out;
     out << "{\n"
         << "  \"schema_version\": 1,\n"
@@ -1136,6 +1260,7 @@ std::string render_results(const Options& options,
         << "  \"sampler_config\": ";
     if (options.sampler == "tpe") {
         out << "{\"startup_trials\": " << options.tpe_config.startup_trials
+            << ", \"scale_ei_candidates\": " << options.tpe_config.scale_ei_candidates
             << ", \"ei_candidates\": " << options.tpe_config.ei_candidates
             << ", \"gamma_fraction\": " << json_number(options.tpe_config.gamma_fraction)
             << ", \"gamma_cap\": " << options.tpe_config.gamma_cap
@@ -1159,14 +1284,16 @@ std::string render_results(const Options& options,
         out << json_number(options.pruner_rungs[rung]);
     }
     out << "],\n"
-        << "  \"search_space_finite\": " << (finite_cardinality ? "true" : "false") << ",\n"
+        << "  \"search_space_finite\": " << (finite_space ? "true" : "false") << ",\n"
+        << "  \"search_space_cardinality_overflow\": "
+        << (finite_space && !finite_cardinality ? "true" : "false") << ",\n"
         << "  \"search_space_cardinality\": ";
     if (finite_cardinality)
         out << *finite_cardinality;
     else
         out << "null";
     out << ",\n  \"trials_requested\": " << trials_requested << ",\n"
-        << "  \"trials_completed\": " << trials.size() << ",\n"
+        << "  \"trials_completed\": " << trials_completed << ",\n"
         << "  \"unique_candidates_attempted\": ";
     if (unique_candidates)
         out << *unique_candidates;
@@ -1197,13 +1324,41 @@ std::string render_results(const Options& options,
     }
     out << ",\n  \"trials\": [\n";
 
-    for (std::size_t i = 0; i < trials.size(); ++i) {
+    for (std::size_t i = 0; options.trials_out != "none" && i < trials.size(); ++i) {
         out << "    " << render_trial(trials[i]);
         if (i + 1 != trials.size())
             out << ',';
         out << '\n';
     }
-    out << "  ]\n}\n";
+    out << "  ]";
+    if (archive && options.trials_out != "all") {
+        out << ",\n  \"summary\": {\"counts_by_status\": {";
+        std::size_t count_index = 0;
+        for (const auto& [status, count] : archive->counts) {
+            if (count_index++)
+                out << ',';
+            out << '"' << json_escape(status) << "\":" << count;
+        }
+        out << "},\"best_k\":[";
+        for (std::size_t index = 0; index < trials.size(); ++index) {
+            if (index)
+                out << ',';
+            out << render_trial(trials[index]);
+        }
+        out << "],\"space_coverage\":{\"search_space_finite\":"
+            << (finite_space ? "true" : "false")
+            << ",\"search_space_cardinality_overflow\":"
+            << (finite_space && !finite_cardinality ? "true" : "false")
+            << ",\"search_space_cardinality\":"
+            << (finite_cardinality ? std::to_string(*finite_cardinality) : "null")
+            << ",\"unique_candidates_attempted\":"
+            << (unique_candidates ? std::to_string(*unique_candidates) : "null")
+            << ",\"full_parameter_coverage\":" << (full_parameter_coverage ? "true" : "false")
+            << ",\"exhaustive_equivalent\":" << (exhaustive_equivalent ? "true" : "false")
+            << "}}";
+    }
+    out << ",\n  \"trials_out\":\"" << options.trials_out << "\",\n"
+        << "  \"best_k\":" << options.best_k << "\n}\n";
     return out.str();
 }
 
@@ -1244,7 +1399,14 @@ int run(const Options& options) {
     if (options.batch_lag && options.sampler == "tpe" && !options.tpe_config.constant_liar)
         throw std::invalid_argument("lag-one TPE requires constant liar enabled");
     pfh::SearchSpace space(options.dimensions);
-    const auto finite_cardinality = space.finite_cardinality();
+    std::optional<std::uint64_t> finite_cardinality;
+    try {
+        finite_cardinality = space.finite_cardinality();
+    } catch (const std::overflow_error&) {
+        if (options.sampler == "grid" ||
+            options.candidate_policy != pfh::CandidatePolicy::SamplerDefault)
+            throw;
+    }
     if (options.sampler == "grid" && !finite_cardinality.has_value()) {
         throw std::invalid_argument(
             "grid sampling requires a step on every varying real dimension");
@@ -1302,21 +1464,24 @@ int run(const Options& options) {
     constraint_policy.non_finite_metric = pfh::NonFinitePolicy::Reject;
     constraint_policy.non_finite_result = pfh::NonFinitePolicy::Reject;
 
-    std::vector<TrialRecord> trials;
+    TrialArchive archive(options, space, finite_cardinality.has_value());
     std::atomic<std::uint64_t> duplicate_proposals_skipped{0};
-    RunState state(options, started, [&](const std::vector<TrialRecord>& completed) {
+    RunState state(options, started, archive, [&](const std::vector<TrialRecord>& completed) {
         write_results(options, render_results(options, space, finite_cardinality, completed,
                                              best_trial(options, completed),
                                              duplicate_proposals_skipped.load(),
-                                             "trial_timeout"));
+                                             "trial_timeout", &archive));
     });
     const auto direction = options.direction == Direction::kMaximize
                                ? pfh::ObjectiveDirection::Maximize
                                : pfh::ObjectiveDirection::Minimize;
     const auto batch_size = options.batch_size ? options.batch_size : options.workers;
     const auto worker_count = static_cast<unsigned>(std::min<std::uint64_t>(
-        options.workers, options.max_trials ? options.max_trials : finite_cardinality.value_or(1)));
+        options.workers, options.max_trials ? options.max_trials :
+            finite_cardinality.value_or(options.workers)));
     pfh::BatchExecutor<TrialRecord> workers(worker_count);
+    double proposal_seconds = 0.0;
+    double barrier_seconds = 0.0;
     const auto evaluate_batches = [&](auto propose, auto feedback) {
         std::deque<std::vector<std::future<TrialRecord>>> pending;
         std::uint64_t proposed = 0;
@@ -1334,15 +1499,20 @@ int run(const Options& options) {
                     exhausted = true;
                     break;
                 }
+                const auto proposal_start = RunState::Clock::now();
                 auto candidate = propose();
+                proposal_seconds += std::chrono::duration<double>(
+                    RunState::Clock::now() - proposal_start).count();
                 if (!candidate) {
                     exhausted = true;
                     break;
                 }
                 ++proposed;
                 batch.push_back(workers.submit([&, candidate = std::move(*candidate), cuts] {
-                    if (!state.begin(candidate))
+                    if (!state.begin(candidate)) {
+                        state.skip(candidate.id);
                         return make_trial_record(candidate, options);
+                    }
                     auto trial = evaluate_candidate(candidate, space, options, executor, objective,
                                                     constraints, expressions, constraint_policy,
                                                     pruner, bar_counts, cuts);
@@ -1362,14 +1532,17 @@ int run(const Options& options) {
             pending.pop_front();
             std::vector<TrialRecord> completed;
             completed.reserve(batch.size());
-            for (auto& result : batch)
+            for (auto& result : batch) {
+                const auto wait_start = RunState::Clock::now();
                 completed.push_back(result.get());
+                barrier_seconds += std::chrono::duration<double>(
+                    RunState::Clock::now() - wait_start).count();
+            }
             for (auto& trial : completed) {
                 feedback(trial);
                 if (trial.status == "pending")
                     continue;
                 pruner.observe(trial.rung_scores);
-                trials.push_back(std::move(trial));
             }
             if (!exhausted)
                 submit_batch();
@@ -1398,37 +1571,53 @@ int run(const Options& options) {
         evaluate_adaptive(sampler);
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
     } else {
-        auto candidates = generate_candidates(options, space, state);
-        std::size_t next = 0;
-        evaluate_batches([&]() -> std::optional<pfh::Candidate> {
-            if (next == candidates.size())
-                return std::nullopt;
-            return std::move(candidates[next++]);
-        }, [](const TrialRecord&) {});
+        std::unique_ptr<pfh::Sampler> sampler;
+        if (options.sampler == "grid")
+            sampler = std::make_unique<pfh::GridSampler>(space);
+        else
+            sampler = std::make_unique<pfh::RandomSampler>(space, options.seed, options.max_trials);
+        evaluate_batches([&] { return sampler->next(); }, [](const TrialRecord&) {});
     }
     workers.close();
+    const double capacity = workers.elapsed_seconds() * worker_count;
+
+    state.shutdown();
+    if (archive.completed == 0 && !state.stopped())
+        throw std::runtime_error("sampler produced no candidates");
+
+    const auto trials = archive.retained();
+    const auto best_index = best_trial(options, trials);
+
+    const auto render_start = RunState::Clock::now();
+    const auto json = render_results(options, space, finite_cardinality, trials, best_index,
+                                     duplicate_proposals_skipped.load(), state.stop_reason(),
+                                     &archive);
+    const auto write_start = RunState::Clock::now();
+    write_results(options, json);
+    const auto write_end = RunState::Clock::now();
     if (!options.scheduler_stats.empty()) {
         std::ofstream stats(options.scheduler_stats);
         if (!stats)
             throw std::runtime_error("cannot open scheduler stats file");
-        const double capacity = workers.elapsed_seconds() * worker_count;
         stats << "{\"worker_seconds\":" << json_number(capacity)
               << ",\"busy_seconds\":" << json_number(workers.busy_seconds())
               << ",\"idle_seconds\":"
-              << json_number(std::max(0.0, capacity - workers.busy_seconds())) << "}\n";
+              << json_number(std::max(0.0, capacity - workers.busy_seconds()))
+              << ",\"proposal_seconds\":" << json_number(proposal_seconds)
+              << ",\"barrier_seconds\":" << json_number(barrier_seconds)
+              << ",\"progress_serialization_seconds\":"
+              << json_number(state.serialization_seconds())
+              << ",\"progress_write_seconds\":" << json_number(state.progress_write_seconds())
+              << ",\"progress_bytes\":" << state.progress_bytes()
+              << ",\"final_json_bytes\":" << json.size()
+              << ",\"final_json_render_seconds\":"
+              << json_number(std::chrono::duration<double>(write_start - render_start).count())
+              << ",\"final_json_write_seconds\":"
+              << json_number(std::chrono::duration<double>(write_end - write_start).count())
+              << "}\n";
         if (!stats)
             throw std::runtime_error("failed writing scheduler stats file");
     }
-
-    state.shutdown();
-    if (trials.empty() && !state.stopped())
-        throw std::runtime_error("sampler produced no candidates");
-
-    const auto best_index = best_trial(options, trials);
-
-    const auto json = render_results(options, space, finite_cardinality, trials, best_index,
-                                     duplicate_proposals_skipped.load(), state.stop_reason());
-    write_results(options, json);
     state.check_error();
     return best_index ? 0 : 2;
 }

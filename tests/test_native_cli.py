@@ -304,7 +304,7 @@ def main() -> int:
             "native result omitted the HPO version",
         )
         require(
-            tpe_json["sampler_implementation"] == "pineforge_product_tpe_v2",
+            tpe_json["sampler_implementation"] == "pineforge_product_tpe_v3_bounded",
             "native result omitted the TPE implementation version",
         )
         require(tpe_json["sampler"] == "tpe", "wrong TPE sampler in output")
@@ -329,6 +329,7 @@ def main() -> int:
             == {
                 "startup_trials": 3,
                 "ei_candidates": 16,
+                "scale_ei_candidates": 8,
                 "gamma_fraction": 0.25,
                 "gamma_cap": 4,
                 "prior_weight": 1.5,
@@ -411,7 +412,7 @@ def main() -> int:
         )
         require(
             exhaustive_tpe_json["sampler_implementation"]
-            == "pineforge_product_tpe_v2_finite"
+            == "pineforge_product_tpe_v3_bounded_finite"
             and exhaustive_tpe_json["candidate_policy"] == "exhaustive"
             and exhaustive_tpe_json["candidate_policy_implementation"]
             == "pineforge_finite_space_v1",

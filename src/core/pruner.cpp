@@ -9,7 +9,7 @@ namespace pineforge::hpo {
 
 Pruner::Pruner(PrunerKind kind, std::vector<double> rungs, unsigned eta, bool minimize)
     : kind_(kind), rungs_(std::move(rungs)), eta_(eta), minimize_(minimize),
-      history_(rungs_.size()) {
+      history_(rungs_.size()), cursors_(rungs_.size()) {
     if (eta_ < 2)
         throw std::invalid_argument("pruner eta must be at least 2");
     double previous = 0.0;
@@ -62,9 +62,17 @@ std::vector<std::optional<double>> Pruner::cuts() const {
 }
 
 void Pruner::observe(const std::vector<std::optional<double>>& scores) {
+    if (kind_ == PrunerKind::None)
+        return;
     for (std::size_t rung = 0; rung < std::min(scores.size(), history_.size()); ++rung) {
-        if (scores[rung] && std::isfinite(*scores[rung]))
+        if (!scores[rung] || !std::isfinite(*scores[rung]))
+            continue;
+        if (history_[rung].size() < 1024) {
             history_[rung].push_back(*scores[rung]);
+        } else {
+            history_[rung][cursors_[rung]] = *scores[rung];
+            cursors_[rung] = (cursors_[rung] + 1) % 1024;
+        }
     }
 }
 

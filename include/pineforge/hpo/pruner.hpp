@@ -10,6 +10,8 @@ namespace pineforge::hpo {
 enum class PrunerKind { None, Median, Halving };
 
 /// Coordinator-owned rung history. Workers receive immutable cut snapshots.
+/// Enabled policies retain the latest 1,024 finite observations per rung; disabled policies
+/// retain none. Cut selection remains independent of worker completion timing.
 class Pruner final {
 public:
     /// Validates increasing fractions in (0, 1) and an elimination factor >= 2.
@@ -29,6 +31,7 @@ private:
     unsigned eta_;
     bool minimize_;
     std::vector<std::vector<double>> history_;
+    std::vector<std::size_t> cursors_;
 };
 
 }  // namespace pineforge::hpo

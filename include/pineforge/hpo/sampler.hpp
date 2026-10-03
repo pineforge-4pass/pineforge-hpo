@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <random>
@@ -117,6 +118,9 @@ struct TpeSamplerConfig {
     /// This scale-independent constant-liar policy discourages concurrent asks from proposing
     /// the same region.
     bool constant_liar = true;
+
+    /// Acquisition draws after the bounded-history warm-up; never exceeds ei_candidates.
+    std::uint64_t scale_ei_candidates = 8;
 };
 
 /// @brief Independent, single-objective Tree-structured Parzen Estimator sampler.
@@ -129,6 +133,11 @@ struct TpeSamplerConfig {
 /// next() is an alias for ask(). Every returned candidate remains outstanding until tell() or
 /// abandon() receives its ID. Public methods are thread-safe, although deterministic replay
 /// requires the same ordering of ask/tell/abandon calls.
+///
+/// With the default configuration, the first 1,000 proposals use the full-history estimator.
+/// Thereafter the sampler retains at most gamma_cap elite observations and 64 recent non-elite
+/// observations. Larger gamma_cap values extend warm-up to gamma_cap + 64 proposals. Numeric
+/// density tables and 32-completion refit epochs bound work independently of study length.
 class TpeSampler final : public Sampler {
 public:
     /// Constructs a native TPE sampler; `max_candidates == 0` means unbounded generation.
@@ -176,6 +185,8 @@ public:
     std::uint64_t completed() const noexcept;
     /// Returns the number of candidates awaiting tell() or abandon().
     std::uint64_t outstanding() const noexcept;
+    /// Returns the bounded number of completed observations kept for density estimation.
+    std::size_t retained_observations() const;
     /// Returns internal duplicate proposals rejected by a finite policy.
     std::uint64_t duplicate_proposals_skipped() const noexcept;
     /// Returns the reproducibility seed.

@@ -34,5 +34,13 @@ int main() {
     require(*halving.cuts()[0] == 3.0);
     require(median.bar_counts(3) == std::vector<std::size_t>({1, 2, 3}));
     require(median.bar_counts(1) == std::vector<std::size_t>({1}));
+    pfh::Pruner rolling(pfh::PrunerKind::Median, {0.5}, 2, false);
+    pfh::Pruner disabled(pfh::PrunerKind::None, {0.5}, 2, false);
+    for (unsigned index = 0; index < 2000; ++index) {
+        rolling.observe({static_cast<double>(index)});
+        disabled.observe({static_cast<double>(index)});
+    }
+    require(*rolling.cuts()[0] == 1487.5);
+    require(!disabled.cuts()[0]);
     return 0;
 }
