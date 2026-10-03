@@ -9,6 +9,7 @@ part of the normal build.
 | Suite | Purpose | Status |
 |---|---|---|
 | [`optuna/`](optuna/README.md) | Compare PineForge native TPE with official Optuna TPE on paired synthetic problems | Active |
+| `batching/` | Compare baseline, logical batches, fixed lag, and prefix pruning on real strategies | Active |
 
 The Optuna suite includes continuous, non-separable, mixed-type, log-scale, and
 million-candidate discrete objectives. Its checked-in
@@ -52,6 +53,34 @@ The command writes:
   hash, source revision, validation evidence, and CSV hash.
 
 ## Benchmark policy
+
+### Batching and pruning
+
+Build the current runner and optional A/B prefix/stream probe against the pinned
+engine headers, and supply a separate native executable built from baseline
+commit `fd9ba82`:
+
+```bash
+cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release \
+  -DPINEFORGE_HPO_BUILD_BATCH_BENCHMARK=ON
+cmake --build build/release -j4
+PYTHONPATH=python:external/pineforge-codegen-oss \
+  python3 benchmarks/batching/run_benchmark.py \
+  --baseline build/baseline/bin/pineforge-hpo-native \
+  --native build/release/bin/pineforge-hpo-native \
+  --probe build/release/bin/pineforge_hpo_compare_rungs \
+  --output build/batching-measurements
+```
+
+The driver compiles/caches one artifact per strategy before timing. It records
+three native wall runs per mode, cumulative input-bar work, best objective,
+baseline-best rank/status, untimed full-window shadow quality checks, and raw
+array SHA-256 replay at 1/2/4/8 workers. It compares prefix reruns with streaming
+for first/best candidates using the study's drawdown coefficient. Raw output and
+the metadata sidecar stay in the selected ignored output directory. See
+[the published design and measurements](../docs/batching.md).
+
+### Common policy
 
 New or changed suites should follow these rules:
 

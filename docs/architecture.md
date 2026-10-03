@@ -408,7 +408,7 @@ objective, and constraint inputs.
 ## Not implemented yet
 
 - account/portfolio execution;
-- study persistence, checkpoint/resume, and pruning;
+- study persistence and checkpoint/resume;
 - distributed execution or process-worker recovery;
 - CMA-ES, evolutionary, or other additional Optuna-style samplers;
 - conditional/hierarchical spaces and multi-objective Pareto studies;
