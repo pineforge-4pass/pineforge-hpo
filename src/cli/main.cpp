@@ -1,5 +1,6 @@
 #include <pineforge/hpo/dataset.hpp>
 #include <pineforge/hpo/objective.hpp>
+#include <pineforge/hpo/pruner.hpp>
 #include <pineforge/hpo/sampler.hpp>
 #include <pineforge/hpo/search_space.hpp>
 #include <pineforge/hpo/strategy_plugin.hpp>
@@ -7,6 +8,7 @@
 #include <pineforge/hpo/types.hpp>
 
 #include "json.hpp"
+#include "batch_executor.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -76,6 +78,13 @@ struct Options {
     int progress_fd = -1;
     double max_wall_seconds = 0.0;
     double trial_timeout_seconds = 0.0;
+    std::uint64_t batch_size = 0;
+    unsigned batch_lag = 0;
+    std::filesystem::path scheduler_stats;
+    pfh::PrunerKind pruner = pfh::PrunerKind::None;
+    std::string pruner_name = "none";
+    std::vector<double> pruner_rungs{0.25, 0.5};
+    unsigned pruner_eta = 2;
     bool bar_magnifier = false;
     int magnifier_samples = 4;
     pf_magnifier_distribution_t magnifier_distribution = PF_MAGNIFIER_ENDPOINTS;
@@ -101,6 +110,12 @@ struct TrialRecord {
     std::int32_t script_tf_ratio = 0;
     bool needs_aggregation = false;
     std::map<std::string, double> metrics;
+    std::vector<std::optional<double>> rung_scores;
+    std::int64_t bars_processed_total = 0;
+    std::int64_t script_bars_processed_total = 0;
+    std::int64_t magnifier_ticks_total = 0;
+    std::optional<double> pruning_cut;
+    bool pruning_enabled = false;
 };
 
 static_assert(std::atomic<bool>::is_always_lock_free);
@@ -216,7 +231,13 @@ void print_help() {
               << "  --candidate-policy sampler_default|without_replacement|exhaustive\n"
               << "  --max-trials N              0 means all grid candidates\n"
               << "  --seed N                    sampler seed; dlib max 2147483647\n"
-              << "  --workers N                 trial threads and adaptive batch size\n"
+              << "  --workers N                 execution threads\n"
+              << "  --batch-size N              proposals per batch; default: workers\n"
+              << "  --batch-lag 0|1             fixed feedback lag; default: 0\n"
+              << "  --scheduler-stats FILE      nondeterministic timing sidecar\n"
+              << "  --pruner none|median|halving default: none\n"
+              << "  --pruner-rungs F,F          increasing prefixes; default: 0.25,0.5\n"
+              << "  --pruner-eta N              elimination factor >= 2; default: 2\n"
               << "  --direction maximize|minimize\n"
               << "  --constraint EXPR           comparison expression; repeatable\n"
               << "  --division-by-zero reject|ieee\n"
@@ -317,6 +338,41 @@ Options parse_options(int argc, char** argv) {
                 usage_error("--workers must be between 1 and the platform unsigned maximum");
             }
             out.workers = static_cast<unsigned>(value);
+        } else if (option == "--batch-size") {
+            out.batch_size = parse_u64(require_value(argc, argv, i, option), option);
+            if (out.batch_size == 0 || out.batch_size > 1'000'000)
+                usage_error("--batch-size must be between 1 and 1000000");
+        } else if (option == "--batch-lag") {
+            const auto value = parse_u64(require_value(argc, argv, i, option), option);
+            if (value > 1)
+                usage_error("--batch-lag must be 0 or 1");
+            out.batch_lag = static_cast<unsigned>(value);
+        } else if (option == "--scheduler-stats") {
+            out.scheduler_stats = require_value(argc, argv, i, option);
+        } else if (option == "--pruner") {
+            out.pruner_name = require_value(argc, argv, i, option);
+            if (out.pruner_name == "none")
+                out.pruner = pfh::PrunerKind::None;
+            else if (out.pruner_name == "median")
+                out.pruner = pfh::PrunerKind::Median;
+            else if (out.pruner_name == "halving")
+                out.pruner = pfh::PrunerKind::Halving;
+            else
+                usage_error("--pruner must be none, median, or halving");
+        } else if (option == "--pruner-rungs") {
+            const auto value = require_value(argc, argv, i, option);
+            std::istringstream source(value);
+            std::string fraction;
+            out.pruner_rungs.clear();
+            while (std::getline(source, fraction, ','))
+                out.pruner_rungs.push_back(parse_double(fraction, option));
+            if (out.pruner_rungs.empty() || value.back() == ',')
+                usage_error("--pruner-rungs requires comma-separated fractions");
+        } else if (option == "--pruner-eta") {
+            const auto value = parse_u64(require_value(argc, argv, i, option), option);
+            if (value < 2 || value > std::numeric_limits<unsigned>::max())
+                usage_error("--pruner-eta must be at least 2 and fit unsigned");
+            out.pruner_eta = static_cast<unsigned>(value);
         } else if (option == "--direction") {
             const auto value = require_value(argc, argv, i, option);
             if (value == "maximize")
@@ -582,6 +638,7 @@ TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& op
     TrialRecord record;
     record.trial_id = candidate.id;
     record.candidate = candidate;
+    record.pruning_enabled = options.pruner != pfh::PrunerKind::None;
     for (const auto& name : options.recorded_metrics)
         record.metrics.emplace(name, std::numeric_limits<double>::quiet_NaN());
     return record;
@@ -619,7 +676,17 @@ std::string render_trial(const TrialRecord& trial) {
             out << ", ";
         out << "\"" << json_escape(name) << "\": " << json_number(value);
     }
-    out << "}, \"error\": \"" << json_escape(trial.error) << "\"}";
+    out << "}, \"error\": \"" << json_escape(trial.error) << "\"";
+    if (trial.pruning_enabled) {
+        out << ", \"pruning\": {\"method\": \"prefix_rerun\", \"rungs_completed\": "
+            << trial.rung_scores.size()
+            << ", \"bars_processed_total\": " << trial.bars_processed_total
+            << ", \"script_bars_processed_total\": " << trial.script_bars_processed_total
+            << ", \"magnifier_sample_ticks_total\": " << trial.magnifier_ticks_total
+            << ", \"cut\": "
+            << (trial.pruning_cut ? json_number(*trial.pruning_cut) : "null") << "}";
+    }
+    out << "}";
     return out.str();
 }
 
@@ -881,7 +948,10 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
                                const pfh::MetricExpression& objective,
                                const std::vector<pfh::MetricExpression>& constraints,
                                const std::vector<pfh::MetricExpression*>& expressions,
-                               const pfh::EvaluationPolicy& constraint_policy) {
+                               const pfh::EvaluationPolicy& constraint_policy,
+                               const pfh::Pruner& pruner,
+                               const std::vector<std::size_t>& bar_counts,
+                               const std::vector<std::optional<double>>& cuts) {
     TrialRecord record = make_trial_record(candidate, options);
     try {
         auto serialized = space.serialize_candidate(record.candidate);
@@ -890,7 +960,13 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
                 throw std::invalid_argument("fixed input overlaps search dimension: " + key);
             }
         }
-        const auto execution = executor.execute(serialized, options.strategy_overrides);
+        for (std::size_t rung = 0; rung < bar_counts.size(); ++rung) {
+        const bool full_window = bar_counts[rung] == executor.dataset().size();
+        const auto execution = executor.execute_prefix(
+            serialized, options.strategy_overrides, bar_counts[rung]);
+        record.bars_processed_total += execution.report.input_bars_processed;
+        record.script_bars_processed_total += execution.report.script_bars_processed;
+        record.magnifier_ticks_total += execution.report.magnifier_sample_ticks_total;
         if (!execution.succeeded()) {
             record.status = "engine_error";
             record.error = execution.error;
@@ -918,6 +994,15 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
             return record;
         }
         record.objective = score.value;
+        if (!full_window) {
+            record.rung_scores.push_back(score.value);
+            if (pruner.prune(score.value, cuts[rung])) {
+                record.status = "pruned";
+                record.pruning_cut = cuts[rung];
+                return record;
+            }
+            continue;
+        }
         record.feasible = true;
         for (const auto& constraint : constraints) {
             const auto result = constraint.evaluate(metric_map, constraint_policy);
@@ -939,64 +1024,12 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
         if (record.status == "pending") {
             record.status = record.feasible ? "ok" : "constraint_violation";
         }
+        }
     } catch (const std::exception& error) {
         record.status = "trial_error";
         record.error = error.what();
     }
     return record;
-}
-
-std::vector<TrialRecord> evaluate_batch(const std::vector<pfh::Candidate>& candidates,
-                                        unsigned requested_workers,
-                                        const pfh::SearchSpace& space,
-                                        const Options& options,
-                                        const pfh::TrialExecutor& executor,
-                                        const pfh::MetricExpression& objective,
-                                        const std::vector<pfh::MetricExpression>& constraints,
-                                        const std::vector<pfh::MetricExpression*>& expressions,
-                                        const pfh::EvaluationPolicy& constraint_policy,
-                                        RunState& state) {
-    if (candidates.empty())
-        return {};
-
-    std::vector<TrialRecord> trials(candidates.size());
-    std::atomic<std::size_t> next{0};
-    const auto worker_count =
-        static_cast<unsigned>(std::min<std::size_t>(requested_workers, candidates.size()));
-    std::vector<std::thread> workers;
-    workers.reserve(worker_count);
-    try {
-        for (unsigned worker = 0; worker < worker_count; ++worker) {
-            workers.emplace_back([&]() {
-                for (;;) {
-                    if (state.stopped())
-                        return;
-                    const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
-                    if (index >= candidates.size())
-                        return;
-                    if (!state.begin(candidates[index]))
-                        return;
-                    trials[index] =
-                        evaluate_candidate(candidates[index], space, options, executor, objective,
-                                           constraints, expressions, constraint_policy);
-                    state.finish(trials[index]);
-                }
-            });
-        }
-    } catch (...) {
-        next.store(candidates.size(), std::memory_order_relaxed);
-        for (auto& worker : workers) {
-            if (worker.joinable())
-                worker.join();
-        }
-        throw;
-    }
-    for (auto& worker : workers)
-        worker.join();
-    trials.erase(std::remove_if(trials.begin(), trials.end(), [](const TrialRecord& trial) {
-        return trial.status == "pending";
-    }), trials.end());
-    return trials;
 }
 
 std::string render_results(const Options& options,
@@ -1073,6 +1106,11 @@ std::string render_results(const Options& options,
     }
     out << "  \"direction\": \""
         << (options.direction == Direction::kMaximize ? "maximize" : "minimize") << "\",\n"
+        << "  \"batch_size\": " << (options.batch_size ? options.batch_size : options.workers)
+        << ",\n  \"batch_lag\": " << options.batch_lag
+        << ",\n  \"replay_contract\": \"ordered_batches_v1\",\n"
+        << "  \"pruner\": \"" << options.pruner_name << "\",\n"
+        << "  \"pruner_eta\": " << options.pruner_eta << ",\n"
         << "  \"search_space_finite\": " << (finite_cardinality ? "true" : "false") << ",\n"
         << "  \"search_space_cardinality\": ";
     if (finite_cardinality)
@@ -1153,6 +1191,10 @@ void write_results(const Options& options, const std::string& json) {
 
 int run(const Options& options) {
     const auto started = RunState::Clock::now();
+    pfh::Pruner pruner(options.pruner, options.pruner_rungs, options.pruner_eta,
+                       options.direction == Direction::kMinimize);
+    if (options.batch_lag && options.sampler == "tpe" && !options.tpe_config.constant_liar)
+        throw std::invalid_argument("lag-one TPE requires constant liar enabled");
     pfh::SearchSpace space(options.dimensions);
     const auto finite_cardinality = space.finite_cardinality();
     if (options.sampler == "grid" && !finite_cardinality.has_value()) {
@@ -1206,6 +1248,7 @@ int run(const Options& options) {
     if (!options.syminfo.empty())
         configuration.symbol_info = read_symbol_info(options.syminfo);
     const pfh::TrialExecutor executor(plugin, dataset, configuration);
+    const auto bar_counts = pruner.bar_counts(dataset->size());
     pfh::EvaluationPolicy constraint_policy = options.evaluation_policy;
     constraint_policy.division_by_zero = pfh::DivisionByZeroPolicy::Reject;
     constraint_policy.non_finite_metric = pfh::NonFinitePolicy::Reject;
@@ -1222,46 +1265,80 @@ int run(const Options& options) {
     const auto direction = options.direction == Direction::kMaximize
                                ? pfh::ObjectiveDirection::Maximize
                                : pfh::ObjectiveDirection::Minimize;
-    const auto evaluate_adaptive = [&](auto& sampler) {
-        while (trials.size() < options.max_trials) {
-            if (state.stopped())
-                break;
-            const auto remaining = options.max_trials - trials.size();
-            const auto batch_size =
-                static_cast<std::size_t>(std::min<std::uint64_t>(options.workers, remaining));
-            std::vector<pfh::Candidate> candidates;
-            candidates.reserve(batch_size);
-            for (std::size_t index = 0; index < batch_size; ++index) {
-                if (state.stopped())
-                    break;
-                auto candidate = sampler.ask();
-                if (!candidate)
-                    break;
-                candidates.push_back(std::move(*candidate));
+    const auto batch_size = options.batch_size ? options.batch_size : options.workers;
+    const auto worker_count = static_cast<unsigned>(std::min<std::uint64_t>(
+        options.workers, options.max_trials ? options.max_trials : finite_cardinality.value_or(1)));
+    pfh::BatchExecutor<TrialRecord> workers(worker_count);
+    const auto evaluate_batches = [&](auto propose, auto feedback) {
+        std::deque<std::vector<std::future<TrialRecord>>> pending;
+        std::uint64_t proposed = 0;
+        bool exhausted = false;
+        const auto submit_batch = [&] {
+            if (state.stopped()) {
+                exhausted = true;
+                return;
             }
-            if (candidates.empty())
-                break;
+            std::vector<std::future<TrialRecord>> batch;
+            const auto cuts = pruner.cuts();
+            for (std::uint64_t index = 0; index < batch_size &&
+                 (!options.max_trials || proposed < options.max_trials); ++index) {
+                if (state.stopped()) {
+                    exhausted = true;
+                    break;
+                }
+                auto candidate = propose();
+                if (!candidate) {
+                    exhausted = true;
+                    break;
+                }
+                ++proposed;
+                batch.push_back(workers.submit([&, candidate = std::move(*candidate), cuts] {
+                    if (!state.begin(candidate))
+                        return make_trial_record(candidate, options);
+                    auto trial = evaluate_candidate(candidate, space, options, executor, objective,
+                                                    constraints, expressions, constraint_policy,
+                                                    pruner, bar_counts, cuts);
+                    state.finish(trial);
+                    return trial;
+                }));
+            }
+            if (!batch.empty())
+                pending.push_back(std::move(batch));
+            else
+                exhausted = true;
+        };
+        while (!exhausted && pending.size() < options.batch_lag + 1)
+            submit_batch();
+        while (!pending.empty()) {
+            auto batch = std::move(pending.front());
+            pending.pop_front();
+            std::vector<TrialRecord> completed;
+            completed.reserve(batch.size());
+            for (auto& result : batch)
+                completed.push_back(result.get());
+            for (auto& trial : completed) {
+                feedback(trial);
+                if (trial.status == "pending")
+                    continue;
+                pruner.observe(trial.rung_scores);
+                trials.push_back(std::move(trial));
+            }
+            if (!exhausted)
+                submit_batch();
+        }
+    };
+    const auto evaluate_adaptive = [&](auto& sampler) {
+        evaluate_batches([&] {
+            auto candidate = sampler.ask();
             if constexpr (std::is_same_v<std::decay_t<decltype(sampler)>, pfh::TpeSampler>)
                 duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
-
-            auto batch = evaluate_batch(candidates, options.workers, space, options, executor,
-                                        objective, constraints, expressions, constraint_policy,
-                                        state);
-            // Proposal state is coordinator-owned. Ordered feedback makes a fixed
-            // seed and worker count deterministic even if workers finish in a
-            // different order. Only genuine feasible observations train the model;
-            // failures and constraint violations are abandoned instead of being
-            // assigned fabricated objective values.
-            for (const auto& trial : batch) {
-                if (trial.feasible && trial.objective && std::isfinite(*trial.objective)) {
-                    sampler.tell(trial.trial_id, *trial.objective);
-                } else {
-                    sampler.abandon(trial.trial_id);
-                }
-            }
-            for (auto& trial : batch)
-                trials.push_back(std::move(trial));
-        }
+            return candidate;
+        }, [&](const TrialRecord& trial) {
+            if (trial.feasible && trial.objective && std::isfinite(*trial.objective))
+                sampler.tell(trial.trial_id, *trial.objective);
+            else
+                sampler.abandon(trial.trial_id);
+        });
     };
 
     if (options.sampler == "dlib_global") {
@@ -1274,8 +1351,25 @@ int run(const Options& options) {
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
     } else {
         auto candidates = generate_candidates(options, space, state);
-        trials = evaluate_batch(candidates, options.workers, space, options, executor, objective,
-                                constraints, expressions, constraint_policy, state);
+        std::size_t next = 0;
+        evaluate_batches([&]() -> std::optional<pfh::Candidate> {
+            if (next == candidates.size())
+                return std::nullopt;
+            return std::move(candidates[next++]);
+        }, [](const TrialRecord&) {});
+    }
+    workers.close();
+    if (!options.scheduler_stats.empty()) {
+        std::ofstream stats(options.scheduler_stats);
+        if (!stats)
+            throw std::runtime_error("cannot open scheduler stats file");
+        const double capacity = workers.elapsed_seconds() * worker_count;
+        stats << "{\"worker_seconds\":" << json_number(capacity)
+              << ",\"busy_seconds\":" << json_number(workers.busy_seconds())
+              << ",\"idle_seconds\":"
+              << json_number(std::max(0.0, capacity - workers.busy_seconds())) << "}\n";
+        if (!stats)
+            throw std::runtime_error("failed writing scheduler stats file");
     }
 
     state.shutdown();

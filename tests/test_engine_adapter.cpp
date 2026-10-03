@@ -142,7 +142,8 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
         return;
     }
 
-    if (bar_count != 2 || std::strcmp(input_timeframe, "1") != 0 ||
+    const bool prefix_test = parse_or(state->inputs, "BatchPrefixTest", 0.0) == 1.0;
+    if ((!prefix_test && bar_count != 2) || std::strcmp(input_timeframe, "1") != 0 ||
         std::strcmp(script_timeframe, "5") != 0 || bar_magnifier != 1 || magnifier_samples != 6 ||
         magnifier_distribution != PF_MAGNIFIER_TRIANGLE) {
         state->error = "backtest configuration was not forwarded";
@@ -150,6 +151,9 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     }
 
     const int length = static_cast<int>(parse_or(state->inputs, "Length", 0.0));
+    if (prefix_test) {
+        std::this_thread::sleep_for(std::chrono::milliseconds((length % 7) + 1));
+    }
     if (state->syminfo_order_error) {
         state->error = "symbol setters did not follow inputs/overrides and harness order";
         return;

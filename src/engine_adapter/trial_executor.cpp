@@ -256,6 +256,14 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
 
 TrialExecutionResult TrialExecutor::execute(const ParameterValues& inputs,
                                             const ParameterValues& strategy_overrides) const {
+    return execute_prefix(inputs, strategy_overrides, dataset_->size());
+}
+
+TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs,
+                                                   const ParameterValues& strategy_overrides,
+                                                   std::size_t bar_count) const {
+    if (bar_count == 0 || bar_count > dataset_->size())
+        throw std::invalid_argument("prefix size must be within the dataset");
     TrialResources resources(*plugin_, plugin_->create_strategy());
     plugin_->set_chart_timezone(resources.strategy(), configuration_.chart_timezone);
     for (const auto& entry : strategy_overrides) {
@@ -268,7 +276,7 @@ TrialExecutionResult TrialExecutor::execute(const ParameterValues& inputs,
         plugin_->set_symbol_info(resources.strategy(), *configuration_.symbol_info);
 
     plugin_->run_backtest_full(resources.strategy(), dataset_->data(),
-                               static_cast<int>(dataset_->size()), configuration_.input_timeframe,
+                               static_cast<int>(bar_count), configuration_.input_timeframe,
                                configuration_.script_timeframe, configuration_.bar_magnifier,
                                configuration_.magnifier_samples,
                                configuration_.magnifier_distribution, &resources.report);

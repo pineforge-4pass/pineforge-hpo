@@ -112,6 +112,11 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_native_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_batching
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_batching.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         foreach(contract syminfo progress final_write_signal progress_nonblocking progress_error
                          cancel deadline metrics magnifier timeout timeout_progress_error)
             add_test(NAME pineforge_hpo_runner_${contract}
@@ -137,3 +142,7 @@ else()
     message(STATUS
         "Skipping engine-adapter dynamic-plugin tests: adapter/CLI disabled or dlopen unavailable")
 endif()
+add_executable(pineforge_hpo_test_pruner test_pruner.cpp)
+target_link_libraries(pineforge_hpo_test_pruner PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_pruner PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_pruner COMMAND pineforge_hpo_test_pruner)

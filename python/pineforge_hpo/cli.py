@@ -467,6 +467,14 @@ def _native_command(
         "--non-finite",
         "allow" if study.objective.nan_policy == "propagate" else "reject",
     ]
+    if study.execution.batch_size is not None:
+        command.extend(("--batch-size", str(study.execution.batch_size)))
+    if study.execution.batch_lag:
+        command.extend(("--batch-lag", str(study.execution.batch_lag)))
+    if study.execution.pruner != "none":
+        command.extend(("--pruner", study.execution.pruner,
+                        "--pruner-rungs", ",".join(map(str, study.execution.pruner_rungs)),
+                        "--pruner-eta", str(study.execution.pruner_eta)))
     if study.sampler.kind == "tpe":
         if not isinstance(study.sampler.config, TpeSamplerConfig):
             raise CliError("sampler.kind=tpe requires a valid typed sampler.config")
