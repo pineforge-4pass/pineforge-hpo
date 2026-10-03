@@ -18,7 +18,8 @@
   under both `include/` and `build/include/`.
 - U8: native `--trial-timeout-seconds T` records one `trial_timeout`, emits final
   JSON from terminal trials with `stop_reason: trial_timeout`, and `_exit(3)`
-  without joining hung workers. The study aborts rather than changing worker count.
+  without joining hung workers. The watchdog remains active if progress I/O fails.
+  The study aborts rather than changing worker count.
 - U9: public `pineforge_hpo.prepare_run(study_path, engine_root, cache_dir)` returns
   native argv and artifact JSON without launching, reusing CLI preparation.
 - Existing trial statuses remain `ok`, `constraint_violation`, `objective_error`,

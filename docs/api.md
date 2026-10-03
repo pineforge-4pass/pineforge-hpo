@@ -86,6 +86,8 @@ results. A timeout may therefore have `ok: true` and a best trial while exiting
 3. All stop paths publish final JSON to stdout and `--output` when configured.
 `trials_completed` counts terminal records, including the timeout record.
 Cancellation/deadline can validly return an empty table and exit 2.
+Progress I/O errors do not disable timeout protection: if an in-flight trial hangs,
+the watchdog still emits final JSON and exits 3, with the I/O diagnostic on stderr.
 
 The native schema remains version 1. Without the new flags, all existing result
 fields and proposal/scoring behavior are preserved, apart from the product

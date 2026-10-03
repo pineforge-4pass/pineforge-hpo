@@ -164,6 +164,24 @@ def main() -> int:
                         "watchdog discarded completed trials")
                 progress.seek(0)
                 check_progress(result, [json.loads(line) for line in progress])
+        elif case == "timeout_progress_error":
+            read_fd, write_fd = os.pipe()
+            os.close(read_fd)
+            child = process(native, plugin, csv, write_fd, "--fixed-input", "HangAtLength", "15",
+                            "--fixed-input", "DelayMs", "50", "--trial-timeout-seconds", "0.2",
+                            workers=2)
+            os.close(write_fd)
+            try:
+                stdout, stderr = child.communicate(timeout=3)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait()
+            require(child.returncode == 3, f"progress I/O disabled the watchdog: {stderr}")
+            result = json.loads(stdout)
+            require(result["stop_reason"] == "trial_timeout", "timeout final JSON missing")
+            require(sum(trial["status"] == "trial_timeout" for trial in result["trials"]) == 1,
+                    "progress I/O changed the timeout terminal table")
         else:
             raise RuntimeError(f"unknown test case: {case}")
     print(f"PASS native runner {case}")

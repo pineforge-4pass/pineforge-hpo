@@ -665,7 +665,7 @@ public:
         active_.erase(record.trial_id);
         if (options_.trial_timeout_seconds > 0.0)
             completed_.emplace(record.trial_id, record);
-        if (options_.progress_fd >= 0)
+        if (options_.progress_fd >= 0 && !progress_failed_)
             pending_.push_back(render_trial(record) + "\n");
         changed_.notify_one();
     }
@@ -733,7 +733,7 @@ private:
                         record.status = "trial_timeout";
                         record.error = "trial exceeded --trial-timeout-seconds";
                         completed_.emplace(trial_id, record);
-                        if (options_.progress_fd >= 0)
+                        if (options_.progress_fd >= 0 && !progress_failed_)
                             pending_.push_back(render_trial(record) + "\n");
                         break;
                     }
@@ -742,7 +742,16 @@ private:
                     auto line = std::move(pending_.front());
                     pending_.pop_front();
                     lock.unlock();
-                    write_progress(line);
+                    try {
+                        write_progress(line);
+                    } catch (const std::exception& error) {
+                        std::lock_guard<std::mutex> failed_lock(mutex_);
+                        error_ = error.what();
+                        progress_failed_ = true;
+                        pending_.clear();
+                        StopReason expected = StopReason::kNone;
+                        reason_.compare_exchange_strong(expected, StopReason::kCancelled);
+                    }
                     continue;
                 }
                 if (timed_out_) {
@@ -753,6 +762,10 @@ private:
                         trials.push_back(record);
                     }
                     lock.unlock();
+                    if (!error_.empty()) {
+                        std::cerr << "pineforge-hpo-native: " << error_ << '\n';
+                        std::cerr.flush();
+                    }
                     timeout_result_(trials);
                     ::_exit(3);
                 }
@@ -781,6 +794,7 @@ private:
     std::map<std::uint64_t, TrialRecord> completed_;
     std::deque<std::string> pending_;
     std::string error_;
+    bool progress_failed_ = false;
     bool timed_out_ = false;
     bool done_ = false;
     std::thread writer_;

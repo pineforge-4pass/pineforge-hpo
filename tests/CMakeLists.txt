@@ -107,7 +107,8 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_native_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        foreach(contract syminfo progress cancel deadline metrics magnifier timeout)
+        foreach(contract syminfo progress cancel deadline metrics magnifier timeout
+                         timeout_progress_error)
             add_test(NAME pineforge_hpo_runner_${contract}
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/test_runner_contract.py"
