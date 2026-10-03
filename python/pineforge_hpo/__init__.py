@@ -46,6 +46,17 @@ def _distribution_version() -> str:
 
 __version__ = _distribution_version()
 
+
+def prepare_run(study_path, engine_root=None, cache_dir=None, **options):
+    """Return native argv and artifact JSON; do not launch the native process.
+
+    Optional keyword arguments are native, compiler, and eigen_include, matching
+    the existing CLI build/executable overrides.
+    """
+    from .cli import prepare_run as prepare
+
+    return prepare(study_path, engine_root, cache_dir, **options)
+
 __all__ = [
     "__version__",
     "ArtifactBuildError",
@@ -69,5 +80,6 @@ __all__ = [
     "build_strategy_artifact",
     "codegen_identity",
     "load_study_spec",
+    "prepare_run",
     "transpile_source",
 ]

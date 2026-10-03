@@ -261,6 +261,8 @@ TrialExecutionResult TrialExecutor::execute(const ParameterValues& inputs,
     for (const auto& entry : inputs) {
         plugin_->set_input(resources.strategy(), entry.first, entry.second);
     }
+    if (configuration_.symbol_info)
+        plugin_->set_symbol_info(resources.strategy(), *configuration_.symbol_info);
 
     plugin_->run_backtest_full(resources.strategy(), dataset_->data(),
                                static_cast<int>(dataset_->size()), configuration_.input_timeframe,

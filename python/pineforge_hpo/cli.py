@@ -553,8 +553,17 @@ def _compile(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run(args: argparse.Namespace) -> int:
-    study = load_study_spec(args.study, require_files=True)
+def prepare_run(
+    study_path: str | Path,
+    engine_root: str | Path | None = None,
+    cache_dir: str | Path | None = None,
+    *,
+    native: str | Path | None = None,
+    compiler: str | None = None,
+    eigen_include: str | Path | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    """Validate/build once and return native argv and artifact JSON without launching."""
+    study = load_study_spec(study_path, require_files=True)
     artifact: dict[str, Any]
     if study.strategy.source is not None:
         source_path = study.strategy.source
@@ -562,9 +571,14 @@ def _run(args: argparse.Namespace) -> int:
             source = source_path.read_text(encoding="utf-8")
         except OSError as error:
             raise CliError(f"cannot read Pine source {source_path}: {error}") from error
-        built = _builder(args, _resolve_engine_root(args.engine_root)).build(
-            source, filename=str(source_path)
-        )
+        built = ArtifactBuilder(
+            engine_root=_resolve_engine_root(
+                None if engine_root is None else str(engine_root)
+            ),
+            cache_dir=cache_dir,
+            compiler=compiler,
+            eigen_include=eigen_include,
+        ).build(source, filename=str(source_path))
         _validate_manifest_inputs(study, built.inputs)
         artifact = _artifact_json(built)
     else:
@@ -572,12 +586,25 @@ def _run(args: argparse.Namespace) -> int:
         artifact, inputs = _precompiled_artifact(study.strategy.artifact)
         _validate_manifest_inputs(study, inputs)
 
-    native = _resolve_native(args.native)
+    native_path = _resolve_native(None if native is None else str(native))
     command = _native_command(
         study,
-        native=native,
+        native=native_path,
         plugin=Path(artifact["plugin"]),
         artifact_key=str(artifact["artifact_key"]),
+    )
+    return command, artifact
+
+
+def _run(args: argparse.Namespace) -> int:
+    study = load_study_spec(args.study, require_files=True)
+    command, artifact = prepare_run(
+        study.spec_path,
+        args.engine_root,
+        args.cache_dir,
+        native=args.native,
+        compiler=args.compiler,
+        eigen_include=args.eigen_include,
     )
     try:
         completed = subprocess.run(command, text=True, capture_output=True, check=False)

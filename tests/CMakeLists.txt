@@ -74,6 +74,17 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         PREFIX ""
         OUTPUT_NAME "fake_strategy_no_timezone")
 
+    foreach(plugin pineforge_hpo_fake_strategy pineforge_hpo_fake_strategy_no_timezone)
+        if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+            target_compile_options(${plugin} PRIVATE
+                -fsanitize=address,undefined -fno-omit-frame-pointer)
+            target_link_options(${plugin} PRIVATE -fsanitize=address,undefined)
+        elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+            target_compile_options(${plugin} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(${plugin} PRIVATE -fsanitize=thread)
+        endif()
+    endforeach()
+
     add_executable(pineforge_hpo_test_engine_adapter test_engine_adapter.cpp)
     target_link_libraries(pineforge_hpo_test_engine_adapter PRIVATE
         PineForgeHPO::engine_adapter

@@ -1,5 +1,6 @@
 #include <pineforge/hpo/strategy_plugin.hpp>
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -75,6 +76,14 @@ StrategyPlugin::StrategyPlugin(std::filesystem::path path) : path_(std::move(pat
             library_handle_, path_, "strategy_set_override");
         strategy_set_chart_timezone_ = load_optional_symbol<StrategySetChartTimezoneFn>(
             library_handle_, "strategy_set_chart_timezone");
+        strategy_set_syminfo_mintick_ = load_optional_symbol<StrategySetSymbolDoubleFn>(
+            library_handle_, "strategy_set_syminfo_mintick");
+        strategy_set_syminfo_pointvalue_ = load_optional_symbol<StrategySetSymbolDoubleFn>(
+            library_handle_, "strategy_set_syminfo_pointvalue");
+        strategy_set_syminfo_timezone_ = load_optional_symbol<StrategySetSymbolStringFn>(
+            library_handle_, "strategy_set_syminfo_timezone");
+        strategy_set_syminfo_session_ = load_optional_symbol<StrategySetSymbolStringFn>(
+            library_handle_, "strategy_set_syminfo_session");
         run_backtest_full_ =
             load_required_symbol<RunBacktestFullFn>(library_handle_, path_, "run_backtest_full");
         strategy_get_last_error_ = load_required_symbol<StrategyGetLastErrorFn>(
@@ -113,6 +122,10 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
       strategy_set_input_(other.strategy_set_input_),
       strategy_set_override_(other.strategy_set_override_),
       strategy_set_chart_timezone_(other.strategy_set_chart_timezone_),
+      strategy_set_syminfo_mintick_(other.strategy_set_syminfo_mintick_),
+      strategy_set_syminfo_pointvalue_(other.strategy_set_syminfo_pointvalue_),
+      strategy_set_syminfo_timezone_(other.strategy_set_syminfo_timezone_),
+      strategy_set_syminfo_session_(other.strategy_set_syminfo_session_),
       run_backtest_full_(other.run_backtest_full_),
       strategy_get_last_error_(other.strategy_get_last_error_),
       report_free_(other.report_free_),
@@ -124,6 +137,10 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
     other.strategy_set_input_ = nullptr;
     other.strategy_set_override_ = nullptr;
     other.strategy_set_chart_timezone_ = nullptr;
+    other.strategy_set_syminfo_mintick_ = nullptr;
+    other.strategy_set_syminfo_pointvalue_ = nullptr;
+    other.strategy_set_syminfo_timezone_ = nullptr;
+    other.strategy_set_syminfo_session_ = nullptr;
     other.run_backtest_full_ = nullptr;
     other.strategy_get_last_error_ = nullptr;
     other.report_free_ = nullptr;
@@ -143,6 +160,10 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     strategy_set_input_ = other.strategy_set_input_;
     strategy_set_override_ = other.strategy_set_override_;
     strategy_set_chart_timezone_ = other.strategy_set_chart_timezone_;
+    strategy_set_syminfo_mintick_ = other.strategy_set_syminfo_mintick_;
+    strategy_set_syminfo_pointvalue_ = other.strategy_set_syminfo_pointvalue_;
+    strategy_set_syminfo_timezone_ = other.strategy_set_syminfo_timezone_;
+    strategy_set_syminfo_session_ = other.strategy_set_syminfo_session_;
     run_backtest_full_ = other.run_backtest_full_;
     strategy_get_last_error_ = other.strategy_get_last_error_;
     report_free_ = other.report_free_;
@@ -155,6 +176,10 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     other.strategy_set_input_ = nullptr;
     other.strategy_set_override_ = nullptr;
     other.strategy_set_chart_timezone_ = nullptr;
+    other.strategy_set_syminfo_mintick_ = nullptr;
+    other.strategy_set_syminfo_pointvalue_ = nullptr;
+    other.strategy_set_syminfo_timezone_ = nullptr;
+    other.strategy_set_syminfo_session_ = nullptr;
     other.run_backtest_full_ = nullptr;
     other.strategy_get_last_error_ = nullptr;
     other.report_free_ = nullptr;
@@ -212,6 +237,31 @@ void StrategyPlugin::set_chart_timezone(pf_strategy_t strategy, const std::strin
                                  "' does not support a chart timezone");
     }
     strategy_set_chart_timezone_(strategy, timezone.c_str());
+}
+
+void StrategyPlugin::set_symbol_info(pf_strategy_t strategy, const SymbolInfo& info) const {
+    if (strategy == nullptr)
+        throw std::invalid_argument("cannot set symbol info on a null strategy handle");
+    for (const auto& value : {info.mintick, info.pointvalue}) {
+        if (value && (!std::isfinite(*value) || *value <= 0.0))
+            throw std::invalid_argument("symbol numbers must be finite and positive");
+    }
+    reject_embedded_null(info.timezone, "symbol timezone");
+    reject_embedded_null(info.session, "symbol session");
+    if ((info.mintick && !strategy_set_syminfo_mintick_) ||
+        (info.pointvalue && !strategy_set_syminfo_pointvalue_) ||
+        (!info.timezone.empty() && !strategy_set_syminfo_timezone_) ||
+        (!info.session.empty() && !strategy_set_syminfo_session_)) {
+        throw std::runtime_error("strategy plugin does not support requested symbol info");
+    }
+    if (info.mintick)
+        strategy_set_syminfo_mintick_(strategy, *info.mintick);
+    if (info.pointvalue)
+        strategy_set_syminfo_pointvalue_(strategy, *info.pointvalue);
+    if (!info.timezone.empty())
+        strategy_set_syminfo_timezone_(strategy, info.timezone.c_str());
+    if (!info.session.empty())
+        strategy_set_syminfo_session_(strategy, info.session.c_str());
 }
 
 void StrategyPlugin::run_backtest_full(pf_strategy_t strategy,
