@@ -326,8 +326,9 @@ Metric lookup supports:
 - `metrics.longs.<trade-stat>`;
 - `metrics.shorts.<trade-stat>`;
 - `metrics.equity.<equity-stat>`;
-- `report.total_trades`, `report.net_profit`, selected processed-bar counters,
-  and their short aliases.
+- `report.total_trades`, `report.net_profit`, `report.input_bars_processed`,
+  `report.script_bars_processed`, `report.magnifier_sample_ticks_total`, and
+  their short aliases (without the `report.` prefix).
 
 `<trade-stat>` and `<equity-stat>` are the field names of the engine's
 `pf_trade_stats_t` and `pf_equity_stats_t`. Engine 1.0 renamed two equity

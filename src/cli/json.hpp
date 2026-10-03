@@ -65,7 +65,8 @@ class JsonParser {
     }
     void skip_whitespace() {
         while (position_ < input_.size() &&
-               (input_[position_] == ' ' || input_[position_] == '\t' || input_[position_] == '\r' || input_[position_] == '\n'))
+               (input_[position_] == ' ' || input_[position_] == '\t' ||
+                input_[position_] == '\r' || input_[position_] == '\n'))
             ++position_;
     }
     bool take(char character) {
@@ -125,7 +126,8 @@ class JsonParser {
                     out += static_cast<char>(character);
                     continue;
                 }
-                unsigned continuation_count = character >= 0xf0 ? 3 : character >= 0xe0 ? 2 : character >= 0xc2 ? 1 : 0;
+                unsigned continuation_count = character >= 0xf0 ? 3
+                    : character >= 0xe0 ? 2 : character >= 0xc2 ? 1 : 0;
                 if (!continuation_count || character > 0xf4)
                     fail();
                 unsigned point = character & ((1u << (6 - continuation_count)) - 1);
@@ -245,12 +247,14 @@ class JsonParser {
         } else {
             if (position_ == input_.size() || input_[position_] < '1' || input_[position_] > '9')
                 fail();
-            while (position_ < input_.size() && input_[position_] >= '0' && input_[position_] <= '9')
+            while (position_ < input_.size() && input_[position_] >= '0' &&
+                   input_[position_] <= '9')
                 ++position_;
         }
         if (take('.')) {
             auto old = position_;
-            while (position_ < input_.size() && input_[position_] >= '0' && input_[position_] <= '9')
+            while (position_ < input_.size() && input_[position_] >= '0' &&
+                   input_[position_] <= '9')
                 ++position_;
             if (position_ == old)
                 fail();
@@ -259,7 +263,8 @@ class JsonParser {
             if (!take('+'))
                 take('-');
             auto old = position_;
-            while (position_ < input_.size() && input_[position_] >= '0' && input_[position_] <= '9')
+            while (position_ < input_.size() && input_[position_] >= '0' &&
+                   input_[position_] <= '9')
                 ++position_;
             if (position_ == old)
                 fail();
