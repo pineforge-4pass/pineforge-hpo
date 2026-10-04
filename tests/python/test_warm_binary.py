@@ -46,7 +46,7 @@ class WarmBinaryTests(unittest.TestCase):
     def test_optional_sampler_state(self):
         payload = "opaque checkpoint\n"
         state = (
-            "PFHTPE1\n" + hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
+            "PFHTPE2\n" + hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
         )
         encoded = state.encode()
         plain = encode_warm_block(self.study, self.trials)

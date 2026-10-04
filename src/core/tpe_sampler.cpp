@@ -1,6 +1,9 @@
 #include "pineforge/hpo/sampler.hpp"
 #include "ordinal_set.hpp"
 #include "sha256.hpp"
+#include "mt19937_64.hpp"
+#include "numeric_build.hpp"
+#include "dimension_workers.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,7 +11,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
-#include <future>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -62,7 +64,8 @@ std::string state_signature(const SearchSpace& space, std::uint64_t seed,
            << config.ei_candidates << ' ' << double_bits(config.gamma_fraction) << ' '
            << config.gamma_cap << ' ' << double_bits(config.prior_weight) << ' '
            << config.constant_liar << ' ' << config.history_switch.value_or(0) << ' '
-           << config.scale_ei_candidates << ' ' << config.bad_reservoir_size << ' ';
+           << config.scale_ei_candidates << ' ' << config.bad_reservoir_size << ' '
+           << std::quoted(detail::numeric_build_identity()) << ' ';
     for (const auto& dimension : space.dimensions()) {
         output << dimension.index() << ' ' << std::quoted(std::string(dimension_name(dimension)))
                << ' ';
@@ -109,32 +112,7 @@ void fingerprint_score(StateFingerprint& fingerprint, std::uint64_t identifier, 
                         std::to_string(double_bits(score)));
 }
 
-template <typename Function>
-void dimension_work(std::size_t dimensions, bool parallel, Function&& function) {
-    const auto workers = parallel ? std::min<std::size_t>(
-        dimensions, std::min<unsigned>(8, std::max(1U, std::thread::hardware_concurrency()))) : 1;
-    if (workers == 1) {
-        for (std::size_t index = 0; index < dimensions; ++index)
-            function(index);
-        return;
-    }
-    std::atomic<std::size_t> next{0};
-    std::vector<std::future<void>> tasks;
-    for (std::size_t worker = 0; worker < workers; ++worker) {
-        tasks.push_back(std::async(std::launch::async, [&] {
-            while (true) {
-                const auto index = next.fetch_add(1, std::memory_order_relaxed);
-                if (index >= dimensions)
-                    return;
-                function(index);
-            }
-        }));
-    }
-    for (auto& task : tasks)
-        task.get();
-}
-
-std::uint64_t bounded_random(std::mt19937_64& engine, std::uint64_t bound) {
+std::uint64_t bounded_random(detail::Mt19937_64& engine, std::uint64_t bound) {
     if (bound == 0) {
         throw std::invalid_argument("TPE random bound must be positive");
     }
@@ -147,15 +125,15 @@ std::uint64_t bounded_random(std::mt19937_64& engine, std::uint64_t bound) {
     }
 }
 
-double unit_random(std::mt19937_64& engine) {
+double unit_random(detail::Mt19937_64& engine) {
     return static_cast<double>(engine() >> 11U) * kInverse53;
 }
 
-double open_unit_random(std::mt19937_64& engine) {
+double open_unit_random(detail::Mt19937_64& engine) {
     return (static_cast<double>(engine() >> 11U) + 0.5) * kInverse53;
 }
 
-double standard_normal(std::mt19937_64& engine) {
+double standard_normal(detail::Mt19937_64& engine) {
     // Do not cache the second Box-Muller variate: every call consumes exactly
     // two engine values, which makes reset/replay behavior straightforward.
     const double radius = std::sqrt(-2.0 * std::log(open_unit_random(engine)));
@@ -416,7 +394,7 @@ public:
         }
     }
 
-    double sample(std::mt19937_64& engine) const {
+    double sample(detail::Mt19937_64& engine) const {
         const double target = unit_random(engine) * total_weight_;
         double cumulative = 0.0;
         const Component* selected = &components_.back();
@@ -609,7 +587,7 @@ public:
         }
     }
 
-    std::size_t sample(std::mt19937_64& engine) const {
+    std::size_t sample(detail::Mt19937_64& engine) const {
         const double target = unit_random(engine) * total_mass_;
         double cumulative = 0.0;
         for (std::size_t i = 0; i < masses_.size(); ++i) {
@@ -642,6 +620,8 @@ private:
 };
 
 void validate_config(const TpeSamplerConfig& config) {
+    if (config.max_threads > 1024)
+        throw std::invalid_argument("TPE max_threads must be in [0, 1024]");
     if (config.history_switch && *config.history_switch == 0)
         throw std::invalid_argument("TPE history_switch must be positive");
     if (config.startup_trials == 0) {
@@ -966,7 +946,7 @@ public:
         if (!reuse_good || !reuse_bad) {
             std::vector<DimensionModel> updated(space.dimensions().size());
             try {
-                dimension_work(updated.size(), !compact_history_ && bad.size() >= 4096,
+                dimension_work(updated.size(), !compact_history_ && bad.size() >= 4096, config,
                                [&](std::size_t index) {
                     auto* cached = cached_models_.empty() ? nullptr : &cached_models_[index];
                     if (cached && !reuse_bad) {
@@ -1055,7 +1035,7 @@ public:
                     values[column] = fixed_value(dimension);
                 }
             }
-            dimension_work(models.size(), !compact_history_ && history_.size() >= 4096,
+            dimension_work(models.size(), !compact_history_ && history_.size() >= 4096, config,
                            [&](std::size_t column) {
                 const auto& dimension = space.dimensions()[column];
                 const auto& encoding = encodings_[column];
@@ -1218,8 +1198,8 @@ public:
     }
 
     std::mutex mutex_;
-    std::mt19937_64 engine_;
-    std::mt19937_64 reservoir_engine_;
+    detail::Mt19937_64 engine_;
+    detail::Mt19937_64 reservoir_engine_;
     std::vector<Encoding> encodings_;
     std::vector<std::uint64_t> history_;
     std::vector<std::uint64_t> older_bad_;
@@ -1252,13 +1232,17 @@ public:
     std::string write_state(const std::string& signature) const {
         std::ostringstream output;
         output.imbue(std::locale::classic());
-        output << std::quoted(signature) << '\n' << attempted_ << ' ' << next_id_ << ' '
+        output << std::quoted(signature) << '\n'
+               << std::quoted(detail::numeric_build_identity()) << '\n'
+               << attempted_ << ' ' << next_id_ << ' '
                << completed_.load(std::memory_order_relaxed) << ' ' << fallback_cursor_ << ' '
                << compact_history_ << ' ' << cached_compact_ << ' ' << cached_epoch_ << ' '
                << older_bad_seen_ << '\n';
         for (const auto word : fingerprint_)
             output << word << ' ';
-        output << '\n' << engine_ << '\n' << reservoir_engine_ << '\n';
+        output << '\n';
+        engine_.write(output);
+        reservoir_engine_.write(output);
         const auto references = [&](const auto& values) {
             output << (compact_history_ ? values.size() : 0) << ' ';
             if (compact_history_)
@@ -1269,8 +1253,8 @@ public:
         references(history_);
         references(older_bad_);
         const auto identifiers = [&](const auto& values) {
-            output << (compact_history_ ? values.size() : 0) << ' ';
-            if (compact_history_)
+            output << (cached_compact_ ? values.size() : 0) << ' ';
+            if (cached_compact_)
                 for (const auto identifier : values)
                     output << identifier << ' ';
             output << '\n';
@@ -1278,7 +1262,7 @@ public:
         identifiers(good_ids_);
         identifiers(bad_model_ids_);
         const auto payload = output.str();
-        return "PFHTPE1\n" + detail::sha256(payload) + '\n' + payload;
+        return "PFHTPE2\n" + detail::sha256(payload) + '\n' + payload;
     }
 
     bool read_state(const std::string& state, const std::string& signature,
@@ -1286,27 +1270,39 @@ public:
         if (state.empty())
             return false;
         if (state.size() > 16 * 1024 * 1024 || state.size() < 73 ||
-            state.substr(0, 8) != "PFHTPE1\n" || state[72] != '\n' ||
+            state.substr(0, 8) != "PFHTPE2\n" || state[72] != '\n' ||
             detail::sha256(std::string_view(state).substr(73)) != state.substr(8, 64))
             throw std::invalid_argument("invalid TPE sampler-state checksum/version");
         std::istringstream input(state.substr(73));
         input.imbue(std::locale::classic());
         std::string stored_signature;
-        input >> std::quoted(stored_signature);
+        if (!(input >> std::quoted(stored_signature)))
+            throw std::invalid_argument("invalid TPE sampler-state signature");
         if (stored_signature != signature)
+            return false;
+        std::string stored_build;
+        if (!(input >> std::quoted(stored_build)))
+            throw std::invalid_argument("invalid TPE sampler-state build identity");
+        if (stored_build != detail::numeric_build_identity())
             return false;
         std::uint64_t attempts, next_id, completed, fallback, epoch, older_seen;
         unsigned compact, cached_compact;
         StateFingerprint fingerprint{};
-        std::mt19937_64 engine;
-        std::mt19937_64 reservoir;
+        detail::Mt19937_64 engine;
+        detail::Mt19937_64 reservoir;
         if (!(input >> attempts >> next_id >> completed >> fallback >> compact >> cached_compact
                     >> epoch >> older_seen) || compact > 1 || cached_compact > 1)
             throw std::invalid_argument("invalid TPE sampler-state counters");
         for (auto& word : fingerprint)
             input >> word;
-        if (!(input >> engine >> reservoir))
-            throw std::invalid_argument("invalid TPE sampler-state RNG");
+        if (!input)
+            throw std::invalid_argument("invalid TPE sampler-state fingerprint");
+        if (attempts != source_->size() || next_id != next_id_ ||
+            completed != completed_.load(std::memory_order_relaxed) ||
+            fingerprint != fingerprint_)
+            return false;
+        engine.read(input);
+        reservoir.read(input);
         const auto identifiers = [&] {
             std::uint64_t count;
             if (!(input >> count) || count > source_->size() || count > state.size())
@@ -1328,10 +1324,6 @@ public:
             (compact && !config.history_switch) ||
             (finite_cardinality_ && fallback > *finite_cardinality_))
             throw std::invalid_argument("invalid TPE sampler-state structure");
-        if (attempts != source_->size() || next_id != next_id_ ||
-            completed != completed_.load(std::memory_order_relaxed) ||
-            fingerprint != fingerprint_)
-            return false;
         const auto row_for_id = [&](std::uint64_t identifier) {
             std::uint64_t begin = 0;
             std::uint64_t end = source_->size();
@@ -1388,6 +1380,21 @@ public:
     }
 
 private:
+    template <typename Function>
+    void dimension_work(std::size_t dimensions, bool parallel, const TpeSamplerConfig& config,
+                        Function&& function) {
+        if (!parallel) {
+            for (std::size_t index = 0; index < dimensions; ++index)
+                function(index);
+            return;
+        }
+        const auto requested = config.max_threads ? config.max_threads : 8;
+        workers_.run(dimensions, std::min(requested, available_cpus_), function);
+    }
+
+    detail::DimensionWorkers workers_;
+    unsigned available_cpus_ = detail::available_cpus();
+
     static Encoding make_encoding(const Dimension& dimension) {
         return std::visit(
             [](const auto& item) -> Encoding {

@@ -169,6 +169,10 @@ def main():
                 "src/core/sampler.cpp",
                 "src/core/tpe_sampler.cpp",
                 "src/core/sha256.hpp",
+                "src/core/mt19937_64.hpp",
+                "src/core/numeric_build.hpp",
+                "src/core/numeric_build_flags.hpp.in",
+                "src/core/dimension_workers.hpp",
                 "include/pineforge/hpo/sampler.hpp",
             )
         },

@@ -64,7 +64,7 @@ Single measurements are diagnostic, not a statistical performance guarantee.
 
 Old terminal rows do not record the number of model-dependent numeric rejection
 draws, reservation retries, or losing acquisition candidates. A fixed RNG discard
-cannot recover the legacy cursor. v0.6.1 therefore never replays proposals and restores
+cannot recover the legacy cursor. v0.7.0 therefore never replays proposals and restores
 exactness through a saved RNG/reservoir/cache checkpoint; legacy row-only TPE parents
 reconstruct deterministically. Grid/random continuation is unchanged.
 
@@ -76,12 +76,12 @@ change neighbor bandwidths, chronological weights, good/bad membership and pendi
 constant-liar components. Bounded mode is a different estimator and remains an owner
 decision. See `docs/study-spec.md` for the checkpoint wire contract.
 
-## Measured v0.6.1 result (2026-10-04 UTC)
+## Measured pre-review result (2026-10-04 UTC)
 
 One foreground run on AWS spot `c7i.2xlarge`, eight vCPUs, shaped to 8 GiB with no
 swap; GCC 13.3.0, `-O3 -ffp-contract=off -pthread`. These are sampler-only seconds,
 not Cloud Run estimates. Before is the actual v0.6.0 implementation; after uses the
-final v0.6.1 sampler source. See the boundaries above before comparing these numbers
+pre-review PR #9 sampler source at `633a73e1`. See the boundaries above before comparing these numbers
 with application startup or isolated model-fit measurements.
 
 ### Time to first new trial
@@ -133,9 +133,9 @@ The initial `sequence.csv` covers genuine 128/4,104 full-history and 256-row bou
 parents at both input counts; `sequence-native.csv` and runner replay-oracle checks
 also verify the release implementation. Raw ad-hoc artifacts are not committed.
 
-### Verification gates
+### Pre-review verification gates
 
-- Release CTest: 30/30; Python: 70/70 after installing package version 0.6.1.
+- Release CTest: 30/30; Python: 70/70 on the unshipped pre-review implementation.
 - ASan/UBSan: 30/30, leak detection enabled, 32-MiB quarantine. The initial default
   256-MiB quarantine trips the existing 64-MiB RSS-growth assertion; the documented
   quarantine setting resolves it without disabling or loosening any assertion.

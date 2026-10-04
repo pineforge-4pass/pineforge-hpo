@@ -334,6 +334,7 @@ def main() -> int:
                 "scale_ei_candidates": 8,
                 "history_switch": 128,
                 "bad_reservoir_size": 448,
+                "max_threads": 0,
                 "gamma_fraction": 0.25,
                 "gamma_cap": 4,
                 "prior_weight": 1.5,

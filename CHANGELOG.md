@@ -1,22 +1,61 @@
 # Changelog
 
-## 0.6.1 — 2026-10-04
+## 0.7.0 — 2026-10-05
 
-- Remove historical TPE proposal replay from every continuation path. Import validated
-  observations directly, regardless of history count, seed or proposal batch size.
-- Add checksummed `tpe_sampler_state` result checkpoints and optional `PFHSTATE`
-  blocks in warm v2. Matching checkpoints restore suggestion/reservoir RNGs, finite
-  fallback position and bounded model/cache membership without historical proposals.
-  Full-history checkpoints use a configuration digest and remain constant-size.
-- Preserve bit-identical checkpoint continuation, including partial parent batches.
-  **Compatibility change:** v0.5/v0.6 row-only TPE histories use deterministic history
-  reconstruction, not the former uninterrupted-sequence promise. Rejection sampling
-  consumes a model-dependent number of RNG draws that terminal rows do not record.
-  Grid and random continuation semantics remain unchanged. Older readers reject the
-  optional binary state extension; omit it when exporting rows for those readers.
-- Fit and score independent full-history TPE dimensions on up to eight cores while
-  preserving serial sampling, within-dimension arithmetic and ordered reductions.
-  Bounded `history_switch` remains opt-in; no sampler defaults change.
+- Remove historical TPE proposal replay from all continuation paths. Imported
+  observations never generate historical proposals, for any history count/batch/seed.
+- Add checksummed `tpe_sampler_state` and optional `PFHSTATE` warm-v2 blocks.
+  `PFHTPE2` serializes both MT19937-64 engines canonically (312 words + position),
+  independently of libc++/libstdc++ stream formats; zero/degenerate MT states are refused.
+  Enforce compiler/stdlib/target/floating-point numerical-build identity in the
+  signature. A foreign build or different/shorter history rebuilds, never exits 4
+  merely because its valid checkpoint is incompatible. Checksums are integrity,
+  not authenticity: warm inputs must be trusted.
+- Full-history checkpoints are independent of history count. Bounded checkpoints
+  include retained/cached model IDs, so their size depends on configured retention.
+  At the switch boundary stale full-history model ID lists are omitted; the 16-MiB
+  payload cap still applies. Matching checkpoints preserve partial-batch continuation.
+- Keep `replay_contract: "ordered_batches_v1"` for fresh-run ordering and add
+  `continuation_contract: "sampler_checkpoint_v2"` for TPE (the unshipped PR initially
+  changed `replay_contract` to `sampler_checkpoint_v1`; this is now separated).
+  Replace `warm_start_model: "replayed_batches"` with `"restored_sampler_state"`;
+  `"rebuilt_history"` remains. Add `TpeSampler::sampler_state()` and the optional
+  sampler-state argument/source overload to `warm_start()`.
+- Fit/score independent dimensions with internal persistent threads, preserving
+  serial RNG draws, per-dimension arithmetic and declaration-order reductions.
+  Add C++/work.json `max_threads` and `--tpe-max-threads`: 0 defaults to
+  min(8, available CPUs), capped by affinity and Linux cgroup v1/v2 quota. Explicit
+  thread limits never change results. Failed thread creation falls back to serial.
+  `WarmStartSource` implementations must support concurrent const reads.
+  `history_switch` remains an owner opt-in; no estimator default changes.
+
+### Breaking changes
+
+Row-only v0.5/v0.6 TPE parents no longer reproduce the uninterrupted proposal stream,
+including complete matching lag-zero batches. They rebuild deterministically. JSONL
+trial streams alone can never give exact TPE continuation; keep a separately saved
+matching checkpoint with the complete history. Model-dependent rejection/retry draws
+prevent reconstructing the exact RNG cursor from terminal rows without replay.
+Grid/random continuation semantics are unchanged. `PFHSTATE`-extended warm files are
+rejected by readers <=0.6; omit state blocks for a compatible row-only export.
+The C++ warm-start interface, config and result fields change: this is 0.7.0, not a
+patch release.
+
+This explicitly withdraws these v0.5/v0.6 promises (v0.6.0 commit `6fc5b1fe`):
+
+- `docs/study-spec.md:799`: “TPE first attempts to replay the ordered parent as complete
+  lag-zero ask/tell batches with the current seed/configuration. Every proposal and ID
+  must match. On success it preserves the RNG, density caches and bounded reservoir
+  state, so its first new proposal (and subsequent proposals under the same
+  batching/results) equals the long run.”
+- CHANGELOG 0.5.0: “Recover uninterrupted TPE proposals at matching complete lag-zero
+  batch boundaries; expose deterministic reconstruction when replay is not possible.”
+- `include/pineforge/hpo/sampler.hpp:214`: “IDs continue after the largest imported ID.
+  Returns true when complete lag-zero batches replay exactly, preserving the
+  uninterrupted RNG/model state; otherwise rebuilds history with a continuation_seed()
+  RNG. replay_batch_size == 0 disables replay.”
+- `docs/api.md:219`: “TPE results expose `warm_start_model: "replayed_batches" |
+  "rebuilt_history"`.”
 
 ## 0.6.0 — 2026-10-04
 

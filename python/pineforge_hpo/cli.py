@@ -502,6 +502,8 @@ def _native_command(
             (
                 "--tpe-startup-trials",
                 str(config.startup_trials),
+                "--tpe-max-threads",
+                str(config.max_threads),
                 "--tpe-ei-candidates",
                 str(config.ei_candidates),
                 "--tpe-gamma-fraction",

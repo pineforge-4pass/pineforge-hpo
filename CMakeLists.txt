@@ -119,8 +119,17 @@ target_include_directories(pineforge_hpo_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
-target_compile_options(pineforge_hpo_core PRIVATE
-    -Wall -Wextra -Wpedantic)
+target_compile_options(pineforge_hpo_core PRIVATE -Wall -Wextra -Wpedantic)
+set_source_files_properties(src/core/tpe_sampler.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off"
+    COMPILE_DEFINITIONS "PFH_FP_CONTRACT_OFF=1")
+string(TOUPPER "${CMAKE_BUILD_TYPE}" PFH_BUILD_TYPE)
+set(PFH_NUMERIC_FLAGS
+    "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${PFH_BUILD_TYPE}} -ffp-contract=off")
+configure_file(src/core/numeric_build_flags.hpp.in
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/numeric_build_flags.hpp" @ONLY)
+target_include_directories(pineforge_hpo_core PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated")
 find_package(Threads REQUIRED)
 target_link_libraries(pineforge_hpo_core PUBLIC dlib::dlib Threads::Threads)
 

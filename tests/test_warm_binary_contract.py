@@ -133,7 +133,64 @@ def check(directory, native, baseline, plugin):
                                      "warm_sha256": hashlib.sha256(single).hexdigest(),
                                      "comparisons": ["baseline-replay", "checkpoint-json",
                                                      "checkpoint-binary", "reversed-blocks"]})
+    evidence.extend(check_bounded_checkpoint(directory, native, baseline, plugin, csv))
     evidence.extend(check_fallback(directory, native, baseline, plugin, csv))
+    return evidence
+
+
+def check_bounded_checkpoint(directory, native, baseline, plugin, csv):
+    dimensions = ("--int-dim", "Length", "0", "19999", "1")
+    extra = ("--tpe-history-switch", "32", "--tpe-bad-reservoir-size", "7")
+    evidence = []
+    for batch in (1, 5, 8):
+        count = ((201 + batch - 1) // batch) * batch
+        label = f"bounded-checkpoint-r7-b{batch}"
+        _, old_parent, old_path, _ = run(
+            baseline, plugin, csv, directory, "tpe", batch, trials=count,
+            dimensions=dimensions, extra=extra, label=label + "-old-parent")
+        _, parent, parent_path, _ = run(
+            native, plugin, csv, directory, "tpe", batch, trials=count,
+            dimensions=dimensions, extra=extra, label=label + "-parent")
+        require(fingerprint(parent) == fingerprint(old_parent), "bounded fresh oracle differs")
+        _, expected, _, _ = run(
+            baseline, plugin, csv, directory, "tpe", batch, trials=300, warm=old_path,
+            dimensions=dimensions, extra=extra, label=label + "-old-replay")
+        _, actual, _, _ = run(
+            native, plugin, csv, directory, "tpe", batch, trials=300, warm=parent_path,
+            dimensions=dimensions, extra=extra, label=label + "-restored")
+        require(actual["warm_start_model"] == "restored_sampler_state",
+                "bounded checkpoint failed to restore")
+        require(fingerprint(actual) == fingerprint(expected), "bounded checkpoint oracle differs")
+        require(actual["replay_contract"] == "ordered_batches_v1" and
+                actual["continuation_contract"] == "sampler_checkpoint_v2",
+                "fresh ordering and continuation contracts differ")
+        foreign = copy.deepcopy(parent)
+        state = foreign["tpe_sampler_state"]
+        payload = state[73:]
+        lines = payload.splitlines(keepends=True)
+        lines[1] = '"foreign-stdlib/fp-build"\n'
+        payload = "".join(lines)
+        foreign["tpe_sampler_state"] = "PFHTPE2\n" + hashlib.sha256(
+            payload.encode()).hexdigest() + "\n" + payload
+        foreign_path = directory / (label + "-foreign.json")
+        foreign_path.write_text(json.dumps(foreign))
+        _, rebuilt, _, _ = run(
+            native, plugin, csv, directory, "tpe", batch, trials=8, warm=foreign_path,
+            dimensions=dimensions, extra=extra, label=label + "-foreign-rebuild")
+        require(rebuilt["warm_start_model"] == "rebuilt_history", "foreign token did not rebuild")
+        shorter = copy.deepcopy(parent)
+        shorter["trials"] = shorter["trials"][:12]
+        shorter["trials_completed"] = 12
+        short_path = directory / (label + "-short.json")
+        short_path.write_text(json.dumps(shorter))
+        _, rebuilt, _, _ = run(
+            native, plugin, csv, directory, "tpe", batch, trials=8, warm=short_path,
+            dimensions=dimensions, extra=extra, label=label + "-short-rebuild")
+        require(rebuilt["warm_start_model"] == "rebuilt_history", "short history did not rebuild")
+        evidence.append({"case": label, "suggestions": 300,
+                         "suggestion_sha256": fingerprint(expected),
+                         "comparisons": ["old-bounded-replay", "bounded-checkpoint",
+                                         "foreign-build-rebuild", "short-history-rebuild"]})
     return evidence
 
 

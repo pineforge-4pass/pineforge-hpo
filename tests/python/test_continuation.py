@@ -73,7 +73,7 @@ class ContinuationTests(unittest.TestCase):
     def test_checkpoint_checksum_preflight(self):
         payload = "valid opaque payload"
         checkpoint = (
-            "PFHTPE1\n" + hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
+            "PFHTPE2\n" + hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
         )
         parent = {
             "space": recorded_space(self.study),

@@ -431,7 +431,7 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
                 history.sampler_state = state->text();
                 const auto& checkpoint = history.sampler_state;
                 if (checkpoint.size() > 16 * 1024 * 1024 || checkpoint.size() < 73 ||
-                    checkpoint.substr(0, 8) != "PFHTPE1\n" || checkpoint[72] != '\n' ||
+                    checkpoint.substr(0, 8) != "PFHTPE2\n" || checkpoint[72] != '\n' ||
                     sha256(std::string_view(checkpoint).substr(73)) != checkpoint.substr(8, 64))
                     throw std::runtime_error("invalid sampler-state checksum/version");
             }

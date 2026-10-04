@@ -214,15 +214,15 @@ public:
                 const std::string state(
                     reinterpret_cast<const char*>(mapping_.bytes + offset + 16),
                     static_cast<std::size_t>(bytes));
-                if (state.size() < 73 || state.substr(0, 8) != "PFHTPE1\n" ||
+                if (state.size() < 73 || state.substr(0, 8) != "PFHTPE2\n" ||
                     state[72] != '\n' || sha256(std::string_view(state).substr(73)) !=
                         state.substr(8, 64))
                     throw std::runtime_error("invalid sampler-state checksum/version");
                 std::istringstream payload(state.substr(73));
                 payload.imbue(std::locale::classic());
-                std::string signature;
+                std::string signature, numeric_build;
                 std::uint64_t rows;
-                if (!(payload >> std::quoted(signature) >> rows))
+                if (!(payload >> std::quoted(signature) >> std::quoted(numeric_build) >> rows))
                     throw std::runtime_error("invalid sampler-state header");
                 const auto checksum = state.substr(8, 64);
                 const auto inserted = checkpoints.emplace(rows, checksum);

@@ -78,6 +78,19 @@ The confidence intervals do not prove equivalence or rule out meaningful quality
 
 ## Replay contract: ordered_batches_v1
 
+Every sampler emits `replay_contract: "ordered_batches_v1"` for fresh-run
+proposal/feedback ordering. This is not a row-only TPE continuation guarantee.
+Since 0.7.0, TPE separately emits `continuation_contract: "sampler_checkpoint_v2"`: a
+matching complete checkpoint/numerical build and matching future lag-zero schedule
+preserve the exact sequence. Row-only parents (including JSONL) rebuild history and
+are never exact by virtue of matching batch boundaries alone. Grid/random emit
+`continuation_contract: "ordered_batches_v1"` and keep their prior continuation semantics.
+
+TPE `max_threads` controls only fit/score resources. Its default is min(8, CPUs
+allowed by affinity/cgroup quota); a persistent pool reuses workers across EI draws,
+and creation failures fall back to serial. 1 and 8 workers produce identical bits.
+The limit is not a sampler-state/replay identity input.
+
 Replay provenance includes seed, logical batch size, feedback lag, pruning
 policy/rungs/eta, sampler configuration, search space, objective/constraints,
 artifact/runtime, and data. Workers are execution capacity, not a replay input

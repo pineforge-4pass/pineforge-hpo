@@ -93,6 +93,7 @@ class TpeSamplerConfig:
     prior_weight: float = 1.0
     constant_liar: bool = True
     history_switch: int | None = None
+    max_threads: int = 0
 
 
 @dataclass(frozen=True)
@@ -638,6 +639,7 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
                 "prior_weight",
                 "constant_liar",
                 "history_switch",
+                "max_threads",
             },
             config_path,
             issues,
@@ -713,6 +715,15 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
             )
             history_switch = None
 
+        max_threads = raw_config.get("max_threads", 0)
+        if not _is_int(max_threads) or not 0 <= max_threads <= 1024:
+            issues.append(
+                ValidationIssue(
+                    f"{config_path}.max_threads", "must be an integer in [0, 1024]"
+                )
+            )
+            max_threads = 0
+
         config = TpeSamplerConfig(
             startup_trials=startup_trials,
             ei_candidates=ei_candidates,
@@ -721,6 +732,7 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
             prior_weight=float(prior_weight),
             constant_liar=constant_liar,
             history_switch=history_switch,
+            max_threads=max_threads,
         )
     elif raw_config:
         issues.append(

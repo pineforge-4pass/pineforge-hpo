@@ -154,6 +154,10 @@ struct TpeSamplerConfig {
 
     /// Uniform older non-elite reservoir size, in addition to 64 recent observations.
     std::uint64_t bad_reservoir_size = 448;
+
+    /// Maximum independent-dimension workers; zero selects min(8, available CPUs).
+    /// Linux CPU quotas and affinity constrain the default. This never changes suggestions.
+    std::uint32_t max_threads = 0;
 };
 
 /// @brief Independent, single-objective Tree-structured Parzen Estimator sampler.

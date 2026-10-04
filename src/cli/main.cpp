@@ -277,6 +277,7 @@ void print_help() {
               << "TPE options:\n"
               << "  --tpe-startup-trials N      random observations before model fitting\n"
               << "  --tpe-ei-candidates N       candidates scored by log l(x)/g(x)\n"
+              << "  --tpe-max-threads N        fit/score workers; 0: min(8, available CPUs)\n"
               << "  --tpe-history-switch N     completed observations before bounded TPE"
                  " (default unset: never switch; JSON null)\n"
               << "  --tpe-scale-ei-candidates N acquisition draws after the history switch\n"
@@ -431,6 +432,11 @@ Options parse_options(int argc, char** argv) {
             out.tpe_config.startup_trials = parse_u64(require_value(argc, argv, i, option), option);
         } else if (option == "--tpe-ei-candidates") {
             out.tpe_config.ei_candidates = parse_u64(require_value(argc, argv, i, option), option);
+        } else if (option == "--tpe-max-threads") {
+            const auto count = parse_u64(require_value(argc, argv, i, option), option);
+            if (count > 1024)
+                usage_error("--tpe-max-threads must be between 0 and 1024");
+            out.tpe_config.max_threads = static_cast<std::uint32_t>(count);
         } else if (option == "--tpe-history-switch") {
             out.tpe_config.history_switch =
                 parse_u64(require_value(argc, argv, i, option), option);
@@ -1401,6 +1407,7 @@ std::string render_results(const Options& options,
             << ", \"scale_ei_candidates\": " << options.tpe_config.scale_ei_candidates
             << ", \"bad_reservoir_size\": " << options.tpe_config.bad_reservoir_size
             << ", \"ei_candidates\": " << options.tpe_config.ei_candidates
+            << ", \"max_threads\": " << options.tpe_config.max_threads
             << ", \"gamma_fraction\": " << json_number(options.tpe_config.gamma_fraction)
             << ", \"gamma_cap\": " << options.tpe_config.gamma_cap
             << ", \"prior_weight\": " << json_number(options.tpe_config.prior_weight)
@@ -1414,7 +1421,9 @@ std::string render_results(const Options& options,
         << "  \"batch_size\": " << (options.batch_size ? options.batch_size : options.workers)
         << ",\n  \"batch_lag\": " << options.batch_lag
         << ",\n  \"replay_contract\": \""
-        << (options.sampler == "tpe" ? "sampler_checkpoint_v1" : "ordered_batches_v1")
+        << "ordered_batches_v1"
+        << "\",\n  \"continuation_contract\": \""
+        << (options.sampler == "tpe" ? "sampler_checkpoint_v2" : "ordered_batches_v1")
         << "\",\n"
         << "  \"pruner\": \"" << options.pruner_name << "\",\n"
         << "  \"pruner_eta\": " << options.pruner_eta << ",\n"

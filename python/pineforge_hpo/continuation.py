@@ -253,7 +253,7 @@ def load_warm_start(study: StudySpec, path: str | Path) -> WarmHistory:
                 if (
                     len(checkpoint.encode("utf-8")) > 16 * 1024 * 1024
                     or len(checkpoint) < 73
-                    or not checkpoint.startswith("PFHTPE1\n")
+                    or not checkpoint.startswith("PFHTPE2\n")
                     or checkpoint[72] != "\n"
                     or hashlib.sha256(checkpoint[73:].encode("utf-8")).hexdigest()
                     != checkpoint[8:72]

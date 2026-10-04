@@ -269,9 +269,9 @@ stream from `(seed, warm trial count)` and rejects parent points. TPE restores f
 feasible observations, startup progress, attempted-point reservations and bounded
 history. Pruned/partial trials do not train the final-objective model; available rung
 scores seed the prefix pruner. Grid and finite `without_replacement` runs preserve
-exhaustive final-set equivalence. TPE can recover exact proposals at matching complete
-lag-zero batch boundaries; changed batching falls back to deterministic history
-reconstruction, not a promise of uninterrupted proposal equivalence.
+exhaustive final-set equivalence. TPE preserves exact proposals only with a matching sampler checkpoint, the same
+numerical build and future lag-zero ask/tell schedule. Row-only parents always
+reconstruct deterministically; matching batch boundaries alone are not sufficient.
 
 Exit **4** means incompatible/malformed warm history; exit **5** means a finite space
 is exhausted. Both are initialization refusals, before strategy/data loading or any
@@ -285,19 +285,23 @@ there is no file footer or total-file trial count to rewrite. IDs are uint64 to
 preserve the existing ID domain. The app can use the dependency-free
 `pineforge_hpo.warm_binary.write_warm_block` reference writer for each ingested chunk.
 Keep the app's per-object SHA-256 and keep mapped files immutable during a run.
-JSON warm inputs remain accepted in 0.6.1 (with their existing 256-MiB cap).
+JSON warm inputs remain accepted in 0.7.0 (with their existing 256-MiB cap).
 Binary input currently requires `execution.pruner=none`; use JSON for rung history.
 See the [byte-level v2 specification](docs/study-spec.md)
 and [resource benchmark](benchmarks/warm/README.md).
 
-**TPE continuation in 0.6.1:** historical proposals are never replayed. Keep the complete
+**TPE continuation in 0.7.0:** historical proposals are never replayed. Keep the complete
 result's `tpe_sampler_state` checkpoint with all attempted rows to preserve the exact
 uninterrupted stream; native `warm-encode` carries it into optional `PFHSTATE` blocks.
 Python ingest writers accept `sampler_state=`. Legacy row-only v0.5/v0.6 parents remain
 valid but use deterministic reconstruction, not the previous matching-batch TPE replay
 promise. Grid/random continuation is unchanged. Older binary readers reject the optional
-state extension; omit it for those readers. Full-history TPE fit/scoring now uses up to
-eight cores with unchanged suggestion arithmetic; `history_switch` is still opt-in.
+state extension; omit it for those readers. Full-history TPE fit/scoring reuses up to
+eight workers with unchanged suggestion arithmetic. `sampler.config.max_threads`
+(`--tpe-max-threads`) controls the resource limit, not model behavior; the default
+is `min(8, available CPUs)`, respecting affinity and Linux cgroup v1/v2 quotas.
+`history_switch` is still opt-in. Warm files are trusted input: the checkpoint
+checksum detects corruption, not forgery or authenticity.
 
 ## Define a study
 
