@@ -112,6 +112,46 @@ The native schema remains version 1. CMake accepts an installed engine
 prefix as well as a source/build tree, finding `pineforge/version.h` under either
 `include/` or `build/include/`.
 
+## Contract changes in 0.6.0
+
+`run --warm-start FILE` auto-detects concatenated binary v2 blocks as well as
+v0.5 JSON/JSONL. Binary validation checks every block's version, space hash,
+column descriptors/counts, lengths and scalar domains before plugin/data loading.
+Failures remain exit 4; finite exhaustion remains exit 5. Warm records never
+appear on fd 3 or in the new trial file. Parent IDs remain uint64 and new IDs
+follow their maximum, independent of block/row ordering.
+
+| Control/API | Contract |
+| --- | --- |
+| `warm-encode --spec STUDY --input JSON --output WARM [--block-trials N]` | Native converter, also exposed by the Python CLI; converts complete result JSON, trial arrays or JSONL. `N` is positive; omit it for one block. No plugin, data or strategy compilation. |
+| `space-info --spec STUDY --warm-start WARM` | Existing four-field response, using the read-only mapped loader and an exact tried-vector index. |
+| Native `space-info ... --warm-details` | Adds `warm_trials`, `next_id`, `completed` and `feasible`, without hashing the payload. Add `--warm-digest` to request exact-input `source_sha256`. |
+| Python `warm_start_metadata(study, file, native=...)` | JSON preflight or native binary preflight. Binary use needs the native executable, not a compiler or engine plugin. |
+| Python `encode_warm_block(study, trials)` | Returns one validated byte block, with all rows sorted by ID. |
+| Python `write_warm_block(stream, study, trials)` | Writes one block to a binary stream and returns its byte count. Concatenate chunks without separators. |
+| C++ `TpeSampler::warm_start(shared_ptr<const WarmStartSource>, batch)` | A pristine sampler retains immutable shared rows; columns decode only for active model/replay work, not into permanent candidate maps. Same replay/reconstruction semantics as the vector overload. |
+
+`WarmStartSource` rows must have strictly increasing unique IDs, valid typed
+parameters in search-space declaration order and optional finite feasible
+objectives. The sampler validates before replacing its state; `reset()` releases
+the source. The source owner must not modify mapped bytes for the sampler's lifetime.
+
+New terminal records add `constraint_values`, in study declaration order:
+each evaluated constraint expression's finite numeric result (usually 0/1), or
+null when unavailable. Existing feasibility/TPE semantics do not change: only
+finite `ok` objectives train, while all states reserve attempted points for finite
+policies. Binary constraint columns have canonical expression order. Legacy
+records without this array encode null columns, never invented evaluations.
+
+The [precise format](study-spec.md) includes golden
+vectors. There is no metrics/text/rung column. Binary warm input is incompatible
+with active prefix pruning; legacy JSON continues to restore rung history.
+With `trials_out=all`, binary ancestors are materialized only during final result
+rendering as minimal JSON records, so that result can itself be a complete parent.
+Avoid `all` when retaining the original binary plus new chunk records is sufficient.
+The legacy 256-MiB cap applies only to JSON; binary supports up to `UINT32_MAX`
+total rows across blocks and int32 indices for at most 2^31 grid/choice values.
+
 ## Contract changes in 0.5.0
 
 ### Continuation controls
@@ -173,7 +213,8 @@ With `trials_out=all`, `warm_start_trials` separately preserves the full ancesto
 history for another continuation. Summary/none results are not complete parents:
 retain the original parent and concatenate its complete JSONL with the new job's
 JSONL instead. A standalone `trials` array must likewise contain the entire intended
-ancestry and each trial's recorded space. Inputs are capped at 256 MiB.
+ancestry and each trial's recorded space. JSON inputs are capped at 256 MiB;
+the v2 binary cap and minimal ancestor representation are described above.
 
 TPE results expose `warm_start_model: "replayed_batches" | "rebuilt_history"`.
 `generated()` counts new proposals, `completed()` includes imported trainable

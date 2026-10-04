@@ -1,0 +1,12 @@
+[
+  {"trial_id": 2147483648, "status": "ok", "feasible": true, "objective": 1.5,
+   "parameters": {"a_integer": -10, "b_stepped": -0.75, "c_boolean": false,
+                  "d_category": "beta", "e_continuous": -0.0}, "constraint_values": [1.0]},
+  {"trial_id": 2147483650, "status": "engine_error", "feasible": false, "objective": null,
+   "parameters": {"a_integer": 0, "b_stepped": 0.5, "c_boolean": true,
+                  "d_category": 3.0, "e_continuous": 0.125}, "constraint_values": [null]},
+  {"trial_id": 9007199254740993, "status": "constraint_violation", "feasible": false,
+   "objective": -0.0,
+   "parameters": {"a_integer": 10, "b_stepped": 1.0, "c_boolean": false,
+                  "d_category": "alpha", "e_continuous": 9.5}, "constraint_values": [0.0]}
+]

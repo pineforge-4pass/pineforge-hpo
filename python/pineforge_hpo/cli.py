@@ -23,8 +23,9 @@ from .continuation import (
     SpaceExhaustedError,
     WarmStartError,
     cardinality,
-    load_warm_start,
     space_info,
+    is_binary_warm,
+    warm_start_metadata,
 )
 from .study_spec import (
     ParameterSpec,
@@ -596,9 +597,13 @@ def prepare_run(
             raise WarmStartError(
                 "warm-start incompatible: dlib_global is not supported"
             )
-        history = load_warm_start(preflight, warm_start)
+        history = warm_start_metadata(preflight, warm_start, native=native)
+        if preflight.execution.pruner != "none" and is_binary_warm(warm_start):
+            raise WarmStartError(
+                "warm-start incompatible: binary history has no pruning rungs"
+            )
         count = cardinality(preflight)
-        remaining = None if count is None else count - len(history.tried)
+        remaining = None if count is None else count - history["tried"]
         if remaining == 0:
             raise SpaceExhaustedError(
                 "space exhausted: every parameter vector was tried"
@@ -613,7 +618,7 @@ def prepare_run(
             raise WarmStartError(
                 "warm-start incompatible: finite budget does not fit remaining space"
             )
-        if preflight.sampler.trials > (1 << 64) - 1 - history.next_id:
+        if preflight.sampler.trials > (1 << 64) - 1 - history["next_id"]:
             raise WarmStartError(
                 "warm-start incompatible: new trial budget would overflow trial IDs"
             )
@@ -720,9 +725,31 @@ def _run(args: argparse.Namespace) -> int:
 def _space_info(args: argparse.Namespace) -> int:
     study = load_study_spec(args.spec, continuation=True)
     print(
-        json.dumps(space_info(study, args.warm_start), sort_keys=True, allow_nan=False)
+        json.dumps(
+            space_info(study, args.warm_start, native=args.native),
+            sort_keys=True,
+            allow_nan=False,
+        )
     )
     return 0
+
+
+def _warm_encode(args: argparse.Namespace) -> int:
+    command = [
+        str(_resolve_native(args.native)),
+        "warm-encode",
+        "--spec",
+        args.spec,
+        "--input",
+        args.input,
+        "--output",
+        args.output,
+    ]
+    if args.block_trials is not None:
+        if args.block_trials <= 0:
+            raise CliError("--block-trials must be positive")
+        command.extend(("--block-trials", str(args.block_trials)))
+    return subprocess.run(command, check=False).returncode
 
 
 def _add_build_options(parser: argparse.ArgumentParser) -> None:
@@ -754,7 +781,8 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--native", help="pineforge-hpo-native executable")
     run_parser.add_argument("--output", help="write the final JSON result atomically")
     run_parser.add_argument(
-        "--warm-start", help="parent fd-3 JSONL or complete result JSON"
+        "--warm-start",
+        help="binary v2 blocks, parent fd-3 JSONL or complete result JSON",
     )
     run_parser.add_argument(
         "--progress-fd", type=int, help="terminal new trials descriptor"
@@ -766,10 +794,27 @@ def _parser() -> argparse.ArgumentParser:
         "space-info", help="inspect coverage without execution"
     )
     info_parser.add_argument("--spec", required=True, help="StudySpec JSON path")
+    info_parser.add_argument("--native", help="native binary loader for v2 input")
     info_parser.add_argument(
-        "--warm-start", help="parent fd-3 JSONL or complete result JSON"
+        "--warm-start",
+        help="binary v2 blocks, parent fd-3 JSONL or complete result JSON",
     )
     info_parser.set_defaults(handler=_space_info)
+    encode_parser = commands.add_parser(
+        "warm-encode", help="encode JSON/JSONL history as v2"
+    )
+    encode_parser.add_argument("--spec", required=True, help="StudySpec JSON path")
+    encode_parser.add_argument(
+        "--input", required=True, help="complete JSON/JSONL history"
+    )
+    encode_parser.add_argument(
+        "--output", required=True, help="binary warm output path"
+    )
+    encode_parser.add_argument(
+        "--block-trials", type=int, help="maximum rows per output block"
+    )
+    encode_parser.add_argument("--native", help="pineforge-hpo-native executable")
+    encode_parser.set_defaults(handler=_warm_encode)
     return parser
 
 

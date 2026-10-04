@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import struct
+import subprocess
 from typing import Any
 
 from .study_spec import (
@@ -368,12 +369,68 @@ def load_warm_start(study: StudySpec, path: str | Path) -> WarmHistory:
         raise WarmStartError(f"warm-start incompatible: {error}") from error
 
 
+def is_binary_warm(path: str | Path) -> bool:
+    """Detect binary input without reading its payload or interpreting JSON."""
+    with Path(path).expanduser().open("rb") as source:
+        return source.read(1) == b"P"
+
+
+def warm_start_metadata(
+    study: StudySpec, path: str | Path, *, native: str | Path | None = None
+) -> dict[str, Any]:
+    """Inspect sampler history; binary validation stays in the native mmap loader."""
+    try:
+        if is_binary_warm(path):
+            from .cli import _resolve_native
+
+            process = subprocess.run(
+                [
+                    str(_resolve_native(native)),
+                    "space-info",
+                    "--spec",
+                    str(study.spec_path),
+                    "--warm-start",
+                    str(Path(path).expanduser().resolve()),
+                    "--warm-details",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if process.returncode:
+                message = process.stderr.strip().split("warm-start incompatible: ")[-1]
+                raise WarmStartError(f"warm-start incompatible: {message}")
+            return json.loads(process.stdout)
+        history = load_warm_start(study, path)
+        count = cardinality(study)
+        return {
+            "cardinality": count,
+            "tried": len(history.tried),
+            "remaining": None if count is None else count - len(history.tried),
+            "space_hash": space_hash(study),
+            "warm_trials": len(history.trials),
+            "next_id": history.next_id,
+            "completed": history.completed,
+            "feasible": history.feasible,
+            "source_sha256": history.source_sha256,
+        }
+    except OSError as error:
+        raise WarmStartError(f"warm-start incompatible: {error}") from error
+
+
 def space_info(
-    study: StudySpec, warm_start: str | Path | None = None
+    study: StudySpec,
+    warm_start: str | Path | None = None,
+    *,
+    native: str | Path | None = None,
 ) -> dict[str, Any]:
     """Inspect coverage without compiling a strategy, loading data, or drawing candidates."""
     count = cardinality(study)
-    tried = 0 if warm_start is None else len(load_warm_start(study, warm_start).tried)
+    tried = (
+        0
+        if warm_start is None
+        else warm_start_metadata(study, warm_start, native=native)["tried"]
+    )
     return {
         "cardinality": count,
         "tried": tried,

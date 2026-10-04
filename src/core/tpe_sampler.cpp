@@ -654,6 +654,39 @@ public:
         double score;
     };
 
+    struct ObservationView {
+        const Candidate* candidate;
+        std::uint64_t row;
+    };
+
+    static constexpr std::uint64_t owned_marker = std::uint64_t{1} << 63;
+
+    ObservationView view(std::uint64_t reference) const {
+        return reference & owned_marker
+            ? ObservationView{&owned_history_.at(reference).candidate, 0}
+            : ObservationView{nullptr, reference};
+    }
+
+    std::uint64_t observation_id(const ObservationView& observation) const {
+        return observation.candidate ? observation.candidate->id : source_->id(observation.row);
+    }
+
+    double observation_score(std::uint64_t reference) const {
+        return reference & owned_marker ? owned_history_.at(reference).score :
+            *source_->objective(reference) * source_direction_;
+    }
+
+    ParameterValue observation_value(const ObservationView& observation, std::size_t column,
+                                     const std::string& name) const {
+        return observation.candidate ? *observation.candidate->find(name) :
+            source_->parameter(observation.row, column);
+    }
+
+    void discard_observation(std::uint64_t reference) {
+        if (reference & owned_marker)
+            owned_history_.erase(reference);
+    }
+
     struct DimensionModel {
         enum class Kind {
             Fixed,
@@ -696,6 +729,9 @@ public:
         reservoir_engine_.seed(seed ^ 0xd1b54a32d192ed03ULL);
         history_.clear();
         older_bad_.clear();
+        owned_history_.clear();
+        source_.reset();
+        next_owned_ = 0;
         older_bad_seen_ = 0;
         compact_history_ = false;
         cached_models_.clear();
@@ -759,41 +795,41 @@ public:
     }
 
     void refresh_models(const SearchSpace& space, const TpeSamplerConfig& config) {
-        std::vector<const CompletedObservation*> ranked;
+        std::vector<std::uint64_t> ranked;
         ranked.reserve(history_.size() + older_bad_.size());
         for (const auto& observation : history_) {
-            ranked.push_back(&observation);
+            ranked.push_back(observation);
         }
         for (const auto& observation : older_bad_)
-            ranked.push_back(&observation);
-        std::sort(ranked.begin(), ranked.end(), [](const auto* left, const auto* right) {
-            if (left->score != right->score) {
-                return left->score > right->score;
+            ranked.push_back(observation);
+        std::sort(ranked.begin(), ranked.end(), [&](auto left, auto right) {
+            if (observation_score(left) != observation_score(right)) {
+                return observation_score(left) > observation_score(right);
             }
-            return left->candidate.id < right->candidate.id;
+            return observation_id(view(left)) < observation_id(view(right));
         });
 
         const std::size_t good_count = compact_history_
             ? std::min(history_.size() - 1,
                        gamma_count(completed_.load(std::memory_order_relaxed), config))
             : gamma_count(history_.size(), config);
-        std::vector<const Candidate*> good;
-        std::vector<const Candidate*> bad;
+        std::vector<ObservationView> good;
+        std::vector<ObservationView> bad;
         good.reserve(good_count);
         bad.reserve(ranked.size() - good_count + pending_.size());
         for (std::size_t i = 0; i < ranked.size(); ++i) {
-            (i < good_count ? good : bad).push_back(&ranked[i]->candidate);
+            (i < good_count ? good : bad).push_back(view(ranked[i]));
         }
 
-        auto chronological = [](const Candidate* left, const Candidate* right) {
-            return left->id < right->id;
+        auto chronological = [&](const auto& left, const auto& right) {
+            return observation_id(left) < observation_id(right);
         };
         std::sort(good.begin(), good.end(), chronological);
         std::sort(bad.begin(), bad.end(), chronological);
         if (config.constant_liar && !compact_history_) {
             for (const auto& [pending_id, candidate] : pending_) {
                 (void)pending_id;
-                bad.push_back(&candidate);
+                bad.push_back({&candidate, 0});
             }
             std::sort(bad.begin(), bad.end(), chronological);
         }
@@ -802,10 +838,10 @@ public:
         const auto bad_weights = observation_weights(bad.size());
         std::vector<std::uint64_t> good_ids;
         std::vector<std::uint64_t> bad_ids;
-        for (const auto* candidate : good)
-            good_ids.push_back(candidate->id);
-        for (const auto* candidate : bad)
-            bad_ids.push_back(candidate->id);
+        for (const auto& observation : good)
+            good_ids.push_back(observation_id(observation));
+        for (const auto& observation : bad)
+            bad_ids.push_back(observation_id(observation));
         const auto model_epoch = completed_.load(std::memory_order_relaxed) / 32;
         const bool reuse_good = good_ids == good_ids_ &&
                                 !cached_models_.empty() &&
@@ -818,7 +854,7 @@ public:
             std::vector<DimensionModel> updated;
             updated.reserve(space.dimensions().size());
             for (std::size_t index = 0; index < space.dimensions().size(); ++index) {
-                updated.push_back(build_model(space.dimensions()[index], encodings_[index],
+                updated.push_back(build_model(index, space.dimensions()[index], encodings_[index],
                     good, bad, good_weights, bad_weights, config.prior_weight, compact_history_,
                     cached_models_.empty() ? nullptr : &cached_models_[index], reuse_good,
                     reuse_bad));
@@ -842,7 +878,7 @@ public:
             std::vector<std::uint64_t> current_ids;
             current_ids.reserve(good_count);
             for (std::size_t index = 0; index < good_count; ++index)
-                current_ids.push_back(history_[index].candidate.id);
+                current_ids.push_back(observation_id(view(history_[index])));
             std::sort(current_ids.begin(), current_ids.end());
             good_changed = current_ids != good_ids_;
         }
@@ -971,7 +1007,13 @@ public:
     }
 
     void retain_observation(Candidate candidate, double score) {
-        history_.push_back({std::move(candidate), score});
+        if (warm_replay_row_) {
+            history_.push_back(*warm_replay_row_);
+            return;
+        }
+        const auto reference = owned_marker | next_owned_++;
+        owned_history_.emplace(reference, CompletedObservation{std::move(candidate), score});
+        history_.push_back(reference);
     }
 
     void compact_observations(const TpeSamplerConfig& config) {
@@ -985,23 +1027,30 @@ public:
         compact_history_ = true;
         if (history_.size() <= elite_count + recent_count)
             return;
-        std::sort(history_.begin(), history_.end(), [](const auto& left, const auto& right) {
-            return left.score != right.score ? left.score > right.score
-                                            : left.candidate.id < right.candidate.id;
+        std::sort(history_.begin(), history_.end(), [&](auto left, auto right) {
+            return observation_score(left) != observation_score(right)
+                ? observation_score(left) > observation_score(right)
+                : observation_id(view(left)) < observation_id(view(right));
         });
         std::sort(history_.begin() + elite_count, history_.end(),
-                  [](const auto& left, const auto& right) {
-                      return left.candidate.id > right.candidate.id;
+                  [&](auto left, auto right) {
+                      return observation_id(view(left)) > observation_id(view(right));
                   });
         const auto retained = elite_count + recent_count;
         for (auto index = history_.size(); index > retained; --index) {
             ++older_bad_seen_;
             if (older_bad_.size() < config.bad_reservoir_size) {
-                older_bad_.push_back(std::move(history_[index - 1]));
+                older_bad_.push_back(history_[index - 1]);
             } else if (config.bad_reservoir_size != 0) {
                 const auto selected = bounded_random(reservoir_engine_, older_bad_seen_);
-                if (selected < older_bad_.size())
-                    older_bad_[selected] = std::move(history_[index - 1]);
+                if (selected < older_bad_.size()) {
+                    discard_observation(older_bad_[selected]);
+                    older_bad_[selected] = history_[index - 1];
+                } else {
+                    discard_observation(history_[index - 1]);
+                }
+            } else {
+                discard_observation(history_[index - 1]);
             }
         }
         history_.resize(retained);
@@ -1039,8 +1088,13 @@ public:
     std::mt19937_64 engine_;
     std::mt19937_64 reservoir_engine_;
     std::vector<Encoding> encodings_;
-    std::vector<CompletedObservation> history_;
-    std::vector<CompletedObservation> older_bad_;
+    std::vector<std::uint64_t> history_;
+    std::vector<std::uint64_t> older_bad_;
+    std::map<std::uint64_t, CompletedObservation> owned_history_;
+    std::shared_ptr<const WarmStartSource> source_;
+    std::optional<std::uint64_t> warm_replay_row_;
+    double source_direction_ = 1.0;
+    std::uint64_t next_owned_ = 0;
     std::uint64_t older_bad_seen_ = 0;
     bool compact_history_ = false;
     bool cached_compact_ = false;
@@ -1451,10 +1505,10 @@ private:
             dimension);
     }
 
-    static DimensionModel build_model(const Dimension& dimension,
+    DimensionModel build_model(std::size_t column, const Dimension& dimension,
                                       const Encoding& encoding,
-                                      const std::vector<const Candidate*>& good,
-                                      const std::vector<const Candidate*>& bad,
+                                      const std::vector<ObservationView>& good,
+                                      const std::vector<ObservationView>& bad,
                                       const std::vector<double>& good_weights,
                                       const std::vector<double>& bad_weights,
                                       double prior_weight, bool fast_density,
@@ -1476,12 +1530,14 @@ private:
             std::vector<double> bad_values;
             good_values.reserve(good.size());
             bad_values.reserve(bad.size());
-            for (const Candidate* candidate : reuse_good ? std::vector<const Candidate*>{} : good) {
-                good_values.push_back(encode_numeric(dimension, encoding, *candidate->find(name)));
-            }
-            for (const Candidate* candidate : reuse_bad ? std::vector<const Candidate*>{} : bad) {
-                bad_values.push_back(encode_numeric(dimension, encoding, *candidate->find(name)));
-            }
+            if (!reuse_good)
+                for (const auto& observation : good)
+                    good_values.push_back(encode_numeric(dimension, encoding,
+                        observation_value(observation, column, name)));
+            if (!reuse_bad)
+                for (const auto& observation : bad)
+                    bad_values.push_back(encode_numeric(dimension, encoding,
+                        observation_value(observation, column, name)));
             model.kind = DimensionModel::Kind::Numeric;
             model.good_numeric = reuse_good ? cached->good_numeric :
                 std::make_shared<NumericModel>(good_values, good_weights, prior_weight,
@@ -1495,12 +1551,14 @@ private:
         std::vector<std::size_t> bad_values;
         good_values.reserve(good.size());
         bad_values.reserve(bad.size());
-        for (const Candidate* candidate : reuse_good ? std::vector<const Candidate*>{} : good) {
-            good_values.push_back(categorical_index(dimension, *candidate->find(name)));
-        }
-        for (const Candidate* candidate : reuse_bad ? std::vector<const Candidate*>{} : bad) {
-            bad_values.push_back(categorical_index(dimension, *candidate->find(name)));
-        }
+        if (!reuse_good)
+            for (const auto& observation : good)
+                good_values.push_back(categorical_index(dimension,
+                    observation_value(observation, column, name)));
+        if (!reuse_bad)
+            for (const auto& observation : bad)
+                bad_values.push_back(categorical_index(dimension,
+                    observation_value(observation, column, name)));
         model.kind = DimensionModel::Kind::Categorical;
         model.good_categorical = reuse_good ? cached->good_categorical :
             std::make_shared<CategoricalModel>(static_cast<std::size_t>(encoding.count),
@@ -1662,56 +1720,95 @@ void TpeSampler::abandon(std::uint64_t candidate_id) {
 
 bool TpeSampler::warm_start(const std::vector<WarmStartObservation>& observations,
                            std::uint64_t replay_batch_size) {
+    class VectorSource final : public WarmStartSource {
+    public:
+        VectorSource(const SearchSpace& space, std::vector<WarmStartObservation> values)
+            : values_(std::move(values)) {
+            for (const auto& dimension : space.dimensions())
+                names_.emplace_back(dimension_name(dimension));
+            for (const auto& value : values_)
+                if (!space.is_valid(value.candidate))
+                    throw std::invalid_argument("invalid TPE warm-start observation");
+            std::sort(values_.begin(), values_.end(), [](const auto& left, const auto& right) {
+                return left.candidate.id < right.candidate.id;
+            });
+        }
+        std::uint64_t size() const noexcept override { return values_.size(); }
+        std::uint64_t id(std::uint64_t row) const override { return values_.at(row).candidate.id; }
+        ParameterValue parameter(std::uint64_t row, std::size_t column) const override {
+            return values_.at(row).candidate.values.at(names_.at(column));
+        }
+        std::optional<double> objective(std::uint64_t row) const override {
+            return values_.at(row).objective;
+        }
+    private:
+        std::vector<WarmStartObservation> values_;
+        std::vector<std::string> names_;
+    };
+    return warm_start(std::make_shared<VectorSource>(space_, observations), replay_batch_size);
+}
+
+bool TpeSampler::warm_start(std::shared_ptr<const WarmStartSource> source,
+                           std::uint64_t replay_batch_size) {
     std::unique_ptr<Impl> previous;
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     if (impl_->generated_ != 0 || impl_->completed_ != 0 || impl_->next_id_ != 0 ||
         !impl_->pending_.empty())
         throw std::logic_error("TPE warm start requires a pristine sampler");
-    auto ordered = observations;
-    std::sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
-        return left.candidate.id < right.candidate.id;
-    });
+    if (!source || source->size() >= Impl::owned_marker)
+        throw std::invalid_argument("invalid TPE warm-start source");
     std::uint64_t next_id = 0;
-    for (const auto& observation : ordered) {
-        if (!space_.is_valid(observation.candidate) || observation.candidate.id < next_id ||
-            observation.candidate.id == std::numeric_limits<std::uint64_t>::max() ||
-            (observation.objective && !std::isfinite(*observation.objective)))
+    for (std::uint64_t row = 0; row < source->size(); ++row) {
+        const auto identifier = source->id(row);
+        const auto objective = source->objective(row);
+        if (identifier < next_id || identifier == std::numeric_limits<std::uint64_t>::max() ||
+            (objective && !std::isfinite(*objective)))
             throw std::invalid_argument("invalid TPE warm-start observation");
-        next_id = observation.candidate.id + 1;
+        for (std::size_t column = 0; column < space_.dimensions().size(); ++column)
+            if (!dimension_contains(space_.dimensions()[column], source->parameter(row, column)))
+                throw std::invalid_argument("invalid TPE warm-start parameter");
+        next_id = identifier + 1;
     }
     const auto policy = candidate_policy_ == CandidatePolicy::Exhaustive
         ? CandidatePolicy::WithoutReplacement : candidate_policy_;
     TpeSampler restored(space_, seed_, direction_, 0, config_, policy);
-    bool replayed = !ordered.empty() && replay_batch_size != 0 &&
-        ordered.size() % replay_batch_size == 0;
-    for (std::size_t begin = 0; replayed && begin < ordered.size();
+    restored.impl_->source_ = source;
+    restored.impl_->source_direction_ = direction_ == ObjectiveDirection::Maximize ? 1.0 : -1.0;
+    bool replayed = source->size() != 0 && replay_batch_size != 0 &&
+        source->size() % replay_batch_size == 0;
+    for (std::uint64_t begin = 0; replayed && begin < source->size();
          begin += replay_batch_size) {
         for (std::size_t index = begin; index < begin + replay_batch_size; ++index) {
             const auto proposal = restored.ask();
-            if (!proposal || proposal->id != ordered[index].candidate.id ||
-                proposal->values != ordered[index].candidate.values) {
+            const auto observation = source->observation(space_, index);
+            if (!proposal || proposal->id != observation.candidate.id ||
+                proposal->values != observation.candidate.values) {
                 replayed = false;
                 break;
             }
         }
         if (replayed) {
             for (std::size_t index = begin; index < begin + replay_batch_size; ++index) {
-                if (ordered[index].objective)
-                    restored.tell(ordered[index].candidate.id, *ordered[index].objective);
+                restored.impl_->warm_replay_row_ = index;
+                if (const auto objective = source->objective(index))
+                    restored.tell(source->id(index), *objective);
                 else
-                    restored.abandon(ordered[index].candidate.id);
+                    restored.abandon(source->id(index));
+                restored.impl_->warm_replay_row_.reset();
             }
         }
     }
     if (!replayed) {
-        restored.impl_ = std::make_unique<Impl>(space_, continuation_seed(seed_, ordered.size()),
+        restored.impl_ = std::make_unique<Impl>(space_, continuation_seed(seed_, source->size()),
                                                impl_->finite_cardinality_);
-        for (const auto& observation : ordered) {
-            restored.impl_->reserve_candidate(space_, observation.candidate);
-            if (observation.objective) {
-                const double score = direction_ == ObjectiveDirection::Maximize
-                    ? *observation.objective : -*observation.objective;
-                restored.impl_->retain_observation(observation.candidate, score);
+        restored.impl_->source_ = source;
+        restored.impl_->source_direction_ = direction_ == ObjectiveDirection::Maximize ? 1.0 : -1.0;
+        for (std::uint64_t row = 0; row < source->size(); ++row) {
+            if (restored.impl_->reservations_)
+                restored.impl_->reserve_candidate(
+                    space_, source->observation(space_, row).candidate);
+            if (source->objective(row)) {
+                restored.impl_->history_.push_back(row);
                 ++restored.impl_->completed_;
                 restored.impl_->compact_observations(config_);
             }

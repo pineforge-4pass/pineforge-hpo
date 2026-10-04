@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "mode": "single_strategy",
+  "strategies": [{
+    "id": "golden",
+    "source": "not-needed.pine",
+    "datasets": ["fixture"],
+    "fixed_inputs": {},
+    "strategy_overrides": {},
+    "search_space": {
+      "a_integer": {"kind": "integer", "low": -10, "high": 10, "step": 2},
+      "b_stepped": {"kind": "real", "low": -1.0, "high": 1.0, "step": 0.25},
+      "c_boolean": {"kind": "boolean"},
+      "d_category": {"kind": "categorical", "choices": ["alpha", "beta", 3.0]},
+      "e_continuous": {"kind": "real", "low": -10.0, "high": 10.0}
+    }
+  }],
+  "datasets": [{"id": "fixture", "ohlcv": "not-needed.csv", "input_tf": "1",
+                "script_tf": "1", "chart_timezone": "UTC"}],
+  "objective": {"kind": "expression", "direction": "maximize",
+                "expression": "metrics.all.net_profit", "constraints": ["metrics.all.num_trades >= 1"]},
+  "sampler": {"kind": "random", "seed": 73, "trials": 16},
+  "execution": {"workers": 2, "batch_size": 2, "isolation": "threads"}
+}

@@ -389,6 +389,8 @@ inline std::string read_document(const std::filesystem::path& path) {
     return result;
 }
 
+class BinaryWarmSource;
+
 struct WarmHistory {
     std::string source_sha256;
     std::vector<WarmStartObservation> observations;
@@ -398,9 +400,17 @@ struct WarmHistory {
     std::uint64_t completed = 0;
     std::uint64_t feasible = 0;
     std::uint64_t next_id = 0;
+    std::shared_ptr<const BinaryWarmSource> binary;
+
+    std::uint64_t size() const;
+    std::uint64_t tried_count() const;
+    bool contains(const Candidate& candidate) const;
+    std::uint64_t ordinal(const SearchSpace& space, std::uint64_t row) const;
+    Json record(const SearchSpace& space, std::uint64_t row) const;
+    std::string source_digest() const;
 };
 
-inline WarmHistory load_warm_history(const std::filesystem::path& path,
+inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
                                      const SearchSpace& space, const Json& current_space) {
     WarmHistory history;
     if (path.empty())
@@ -560,3 +570,5 @@ inline WarmHistory load_warm_history(const std::filesystem::path& path,
 }
 
 }
+
+#include "warm_binary.hpp"

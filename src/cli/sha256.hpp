@@ -26,21 +26,25 @@ inline std::string sha256(std::string_view input) {
     std::array<std::uint32_t, 8> state{
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    std::vector<unsigned char> bytes(input.begin(), input.end());
-    const auto bit_length = static_cast<std::uint64_t>(bytes.size()) * 8;
-    bytes.push_back(0x80);
-    while (bytes.size() % 64 != 56)
-        bytes.push_back(0);
+    const auto bit_length = static_cast<std::uint64_t>(input.size()) * 8;
+    std::vector<unsigned char> tail(input.begin() + input.size() / 64 * 64, input.end());
+    tail.push_back(0x80);
+    while (tail.size() % 64 != 56)
+        tail.push_back(0);
     for (int shift = 56; shift >= 0; shift -= 8)
-        bytes.push_back(static_cast<unsigned char>(bit_length >> shift));
+        tail.push_back(static_cast<unsigned char>(bit_length >> shift));
     const auto rotate = [](std::uint32_t value, unsigned shift) {
         return (value >> shift) | (value << (32 - shift));
     };
-    for (std::size_t offset = 0; offset < bytes.size(); offset += 64) {
+    const auto full_bytes = input.size() / 64 * 64;
+    for (std::size_t offset = 0; offset < full_bytes + tail.size(); offset += 64) {
+        const auto* bytes = offset < full_bytes
+            ? reinterpret_cast<const unsigned char*>(input.data()) + offset
+            : tail.data() + offset - full_bytes;
         std::array<std::uint32_t, 64> words{};
         for (std::size_t index = 0; index < 16; ++index) {
             for (std::size_t byte = 0; byte < 4; ++byte)
-                words[index] = (words[index] << 8) | bytes[offset + index * 4 + byte];
+                words[index] = (words[index] << 8) | bytes[index * 4 + byte];
         }
         for (std::size_t index = 16; index < words.size(); ++index) {
             const auto first = words[index - 15];

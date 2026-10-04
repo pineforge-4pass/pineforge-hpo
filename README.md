@@ -243,7 +243,7 @@ CMake accepts either an engine source/build tree or an installed release prefix,
 for example `-DPINEFORGE_ENGINE_ROOT=/opt/pineforge`. Generated `version.h` is
 found in either `include/` or `build/include/`.
 
-## Continue a study (0.5.0)
+## Continue a study (0.6.0)
 
 A continuation is a **new job** seeded with a finished parent's trials. Check coverage
 without compiling the strategy or opening its market data, then request a new budget:
@@ -251,10 +251,13 @@ without compiling the strategy or opening its market data, then request a new bu
 ```bash
 pineforge-hpo space-info --spec study.json --warm-start parent.result.json
 pineforge-hpo run study.json --warm-start parent.result.json > continued.result.json
+pineforge-hpo warm-encode --spec study.json --input parent.result.json --output parent.warm
+pineforge-hpo run study.json --warm-start parent.warm > continued.result.json
 ```
 
 The study's `sampler.trials` is the **additional** trial budget. `--warm-start` accepts
-the parent's complete result JSON, its `trials` array, or the exact terminal-trial JSONL
+concatenated binary v2 blocks, the parent's complete result JSON, its `trials` array,
+or the exact terminal-trial JSONL
 written by `--progress-fd`/`--trials-file`. Input is auto-detected. Native runs accept
 the same flag. Warm trials never appear on the progress descriptor or in the new
 trials file; trial IDs start after the parent's highest ID. Results record the source
@@ -275,6 +278,17 @@ is exhausted. Both are initialization refusals, before strategy/data loading or 
 billable trial. `space-info` still succeeds for exhausted spaces. Existing timeout
 exit **3** is unchanged. See [the API contract](docs/api.md)
 and [canonical identity and replay rules](docs/study-spec.md).
+
+Binary v2 stores **all earlier trials, sampler fields only**, without parsing JSON
+or retaining candidate maps per warm row. Blocks can be concatenated directly;
+there is no file footer or total-file trial count to rewrite. IDs are uint64 to
+preserve the existing ID domain. The app can use the dependency-free
+`pineforge_hpo.warm_binary.write_warm_block` reference writer for each ingested chunk.
+Keep the app's per-object SHA-256 and keep mapped files immutable during a run.
+JSON warm inputs remain accepted in 0.6.0 (with their existing 256-MiB cap).
+Binary input currently requires `execution.pruner=none`; use JSON for rung history.
+See the [byte-level v2 specification](docs/study-spec.md)
+and [resource benchmark](benchmarks/warm/README.md).
 
 ## Define a study
 
