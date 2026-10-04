@@ -16,8 +16,15 @@ VERSION = 2
 HEADER = struct.Struct("<8sHHIQQIIII32s")
 NULL_BITS = 0x7FF8000000000000
 STATES = (
-    "ok", "constraint_violation", "engine_error", "objective_error", "constraint_error",
-    "trial_error", "trial_timeout", "pruned", "partial",
+    "ok",
+    "constraint_violation",
+    "engine_error",
+    "objective_error",
+    "constraint_error",
+    "trial_error",
+    "trial_timeout",
+    "pruned",
+    "partial",
 )
 
 
@@ -66,7 +73,9 @@ def encode_warm_block(study: StudySpec, trials: Sequence[Mapping[str, Any]]) -> 
         descriptors = bytearray()
         columns = [_column("Q", identifiers), bytes(states)]
         for name, parameter in sorted(study.search_space.items()):
-            kind = {"integer": 1, "real": 2, "boolean": 3, "categorical": 4}[parameter.kind]
+            kind = {"integer": 1, "real": 2, "boolean": 3, "categorical": 4}[
+                parameter.kind
+            ]
             encoding = 2 if parameter.kind == "real" and parameter.step is None else 1
             descriptors.extend(struct.pack("<BBH", kind, encoding, 0))
             values = [row[name] for row in parameters]
@@ -77,27 +86,43 @@ def encode_warm_block(study: StudySpec, trials: Sequence[Mapping[str, Any]]) -> 
             if count is None or count > 1 << 31:
                 raise ValueError(f"binary parameter grid index exceeds int32: {name}")
             if parameter.kind == "integer":
-                indices = [(value - parameter.low) // parameter.step for value in values]
+                indices = [
+                    (value - parameter.low) // parameter.step for value in values
+                ]
             elif parameter.kind == "real":
-                indices = [round((value - parameter.low) / parameter.step) for value in values]
+                indices = [
+                    round((value - parameter.low) / parameter.step) for value in values
+                ]
                 for trial, index in zip(ordered, indices):
-                    decoded = float(parameter.low) if parameter.low == parameter.high else \
-                        _fused_grid_value(index, parameter.step, parameter.low)
+                    decoded = (
+                        float(parameter.low)
+                        if parameter.low == parameter.high
+                        else _fused_grid_value(index, parameter.step, parameter.low)
+                    )
                     if index + 1 == count and decoded > parameter.high:
                         decoded = float(parameter.high)
                     if struct.pack("<d", decoded) != struct.pack(
-                            "<d", trial["parameters"][name]):
+                        "<d", trial["parameters"][name]
+                    ):
                         raise ValueError(f"noncanonical binary grid parameter: {name}")
             elif parameter.kind == "boolean":
                 indices = [int(value) for value in values]
             else:
-                indices = [next(index for index, choice in enumerate(parameter.choices)
-                                if type(value) is type(choice) and value == choice)
-                           for value in values]
+                indices = [
+                    next(
+                        index
+                        for index, choice in enumerate(parameter.choices)
+                        if type(value) is type(choice) and value == choice
+                    )
+                    for value in values
+                ]
                 for value, index in zip(values, indices):
                     if type(value) is float and struct.pack("<d", value) != struct.pack(
-                            "<d", parameter.choices[index]):
-                        raise ValueError(f"noncanonical binary choice parameter: {name}")
+                        "<d", parameter.choices[index]
+                    ):
+                        raise ValueError(
+                            f"noncanonical binary choice parameter: {name}"
+                        )
             if any(not 0 <= index < count for index in indices):
                 raise ValueError(f"invalid binary grid index: {name}")
             columns.append(_column("i", indices))
@@ -109,22 +134,37 @@ def encode_warm_block(study: StudySpec, trials: Sequence[Mapping[str, Any]]) -> 
             if not isinstance(values, (list, tuple)) or len(values) != constraint_count:
                 raise ValueError("constraint column counts do not match study")
             constraint_rows.append(values)
-        constraint_order = sorted(range(constraint_count),
-                                  key=lambda index: study.objective.constraints[index])
+        constraint_order = sorted(
+            range(constraint_count),
+            key=lambda index: study.objective.constraints[index],
+        )
         for column in constraint_order:
-            columns.append(b"".join(_score(values[column]) for values in constraint_rows))
+            columns.append(
+                b"".join(_score(values[column]) for values in constraint_rows)
+            )
         header_bytes = HEADER.size + len(descriptors)
         payload = b"".join(columns)
-        header = HEADER.pack(MAGIC, VERSION, 0, header_bytes, header_bytes + len(payload),
-                             len(ordered), len(study.search_space), 1, constraint_count, 0,
-                             bytes.fromhex(space_hash(study)))
+        header = HEADER.pack(
+            MAGIC,
+            VERSION,
+            0,
+            header_bytes,
+            header_bytes + len(payload),
+            len(ordered),
+            len(study.search_space),
+            1,
+            constraint_count,
+            0,
+            bytes.fromhex(space_hash(study)),
+        )
         return header + descriptors + payload
     except (ValueError, TypeError, KeyError, OverflowError, StopIteration) as error:
         raise WarmStartError(f"warm-start incompatible: {error}") from error
 
 
-def write_warm_block(output: BinaryIO, study: StudySpec,
-                     trials: Sequence[Mapping[str, Any]]) -> int:
+def write_warm_block(
+    output: BinaryIO, study: StudySpec, trials: Sequence[Mapping[str, Any]]
+) -> int:
     """Write one validated chunk to a binary stream; return its byte count."""
     block = encode_warm_block(study, trials)
     written = output.write(block)

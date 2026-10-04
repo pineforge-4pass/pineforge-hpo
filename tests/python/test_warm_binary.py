@@ -47,20 +47,32 @@ class WarmBinaryTests(unittest.TestCase):
         rich = copy.deepcopy(self.trials)
         for trial in rich:
             trial.update(metrics={"discard": 1234}, error="discard", notes="discard")
-        self.assertEqual(encode_warm_block(self.study, rich[::-1]),
-                         encode_warm_block(self.study, self.trials))
+        self.assertEqual(
+            encode_warm_block(self.study, rich[::-1]),
+            encode_warm_block(self.study, self.trials),
+        )
         self.assertNotIn(b"discard", encode_warm_block(self.study, rich))
 
     def test_constraint_order_is_canonical(self):
-        forward = replace(self.study, objective=replace(
-            self.study.objective, constraints=("z expression", "a expression")))
-        backward = replace(self.study, objective=replace(
-            self.study.objective, constraints=("a expression", "z expression")))
+        forward = replace(
+            self.study,
+            objective=replace(
+                self.study.objective, constraints=("z expression", "a expression")
+            ),
+        )
+        backward = replace(
+            self.study,
+            objective=replace(
+                self.study.objective, constraints=("a expression", "z expression")
+            ),
+        )
         first, second = copy.deepcopy(self.trials), copy.deepcopy(self.trials)
         for left, right in zip(first, second):
             left["constraint_values"] = [1.0, -0.0]
             right["constraint_values"] = [-0.0, 1.0]
-        self.assertEqual(encode_warm_block(forward, first), encode_warm_block(backward, second))
+        self.assertEqual(
+            encode_warm_block(forward, first), encode_warm_block(backward, second)
+        )
 
     def test_reject_invalid_records(self):
         mutations = [
@@ -73,7 +85,9 @@ class WarmBinaryTests(unittest.TestCase):
             lambda rows: rows[0].update(constraint_values=[]),
             lambda rows: rows[0]["parameters"].update(e_continuous=float("inf")),
             lambda rows: rows[0]["parameters"].update(a_integer=-9),
-            lambda rows: rows[0]["parameters"].update(b_stepped=math.nextafter(-0.75, 0.0)),
+            lambda rows: rows[0]["parameters"].update(
+                b_stepped=math.nextafter(-0.75, 0.0)
+            ),
         ]
         for mutation in mutations:
             with self.subTest(mutation=mutation):
