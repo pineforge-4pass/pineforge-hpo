@@ -17,6 +17,15 @@ from typing import Any, Mapping, Sequence
 
 from . import __version__
 from .artifact import ArtifactBuildError, ArtifactBuilder, StrategyArtifact
+from .continuation import (
+    SPACE_EXHAUSTED_EXIT,
+    WARM_START_EXIT,
+    SpaceExhaustedError,
+    WarmStartError,
+    cardinality,
+    load_warm_start,
+    space_info,
+)
 from .study_spec import (
     ParameterSpec,
     StudySpec,
@@ -578,9 +587,39 @@ def prepare_run(
     native: str | Path | None = None,
     compiler: str | None = None,
     eigen_include: str | Path | None = None,
+    warm_start: str | Path | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """Validate/build once and return native argv and artifact JSON without launching."""
-    study = load_study_spec(study_path, require_files=True)
+    if warm_start is not None:
+        preflight = load_study_spec(study_path, continuation=True)
+        if preflight.sampler.kind == "dlib_global":
+            raise WarmStartError(
+                "warm-start incompatible: dlib_global is not supported"
+            )
+        history = load_warm_start(preflight, warm_start)
+        count = cardinality(preflight)
+        remaining = None if count is None else count - len(history.tried)
+        if remaining == 0:
+            raise SpaceExhaustedError(
+                "space exhausted: every parameter vector was tried"
+            )
+        if preflight.sampler.candidate_policy != "sampler_default" and (
+            preflight.sampler.trials > remaining
+            or (
+                preflight.sampler.candidate_policy == "exhaustive"
+                and preflight.sampler.trials != remaining
+            )
+        ):
+            raise WarmStartError(
+                "warm-start incompatible: finite budget does not fit remaining space"
+            )
+        if preflight.sampler.trials > (1 << 64) - 1 - history.next_id:
+            raise WarmStartError(
+                "warm-start incompatible: new trial budget would overflow trial IDs"
+            )
+    study = load_study_spec(
+        study_path, require_files=True, continuation=warm_start is not None
+    )
     artifact: dict[str, Any]
     if study.strategy.source is not None:
         source_path = study.strategy.source
@@ -610,11 +649,13 @@ def prepare_run(
         plugin=Path(artifact["plugin"]),
         artifact_key=str(artifact["artifact_key"]),
     )
+    if warm_start is not None:
+        command.extend(("--warm-start", str(Path(warm_start).expanduser().resolve())))
     return command, artifact
 
 
 def _run(args: argparse.Namespace) -> int:
-    study = load_study_spec(args.study, require_files=True)
+    study = load_study_spec(args.study, continuation=args.warm_start is not None)
     command, artifact = prepare_run(
         study.spec_path,
         args.engine_root,
@@ -622,11 +663,31 @@ def _run(args: argparse.Namespace) -> int:
         native=args.native,
         compiler=args.compiler,
         eigen_include=args.eigen_include,
+        warm_start=args.warm_start,
     )
+    if args.progress_fd is not None:
+        command.extend(("--progress-fd", str(args.progress_fd)))
+    if args.trials_file:
+        command.extend(
+            ("--trials-file", str(Path(args.trials_file).expanduser().resolve()))
+        )
     try:
-        completed = subprocess.run(command, text=True, capture_output=True, check=False)
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            **(
+                {"pass_fds": (args.progress_fd,)}
+                if args.progress_fd is not None
+                else {}
+            ),
+        )
     except OSError as error:
         raise CliError(f"cannot start native runner: {error}") from error
+    if completed.returncode in {WARM_START_EXIT, SPACE_EXHAUSTED_EXIT}:
+        print(completed.stderr.strip(), file=sys.stderr)
+        return completed.returncode
     if completed.returncode not in {0, 2}:
         detail = (
             completed.stderr.strip() or completed.stdout.strip() or "no diagnostics"
@@ -654,6 +715,14 @@ def _run(args: argparse.Namespace) -> int:
         _write_json(Path(args.output), result)
     print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
     return completed.returncode
+
+
+def _space_info(args: argparse.Namespace) -> int:
+    study = load_study_spec(args.spec, continuation=True)
+    print(
+        json.dumps(space_info(study, args.warm_start), sort_keys=True, allow_nan=False)
+    )
+    return 0
 
 
 def _add_build_options(parser: argparse.ArgumentParser) -> None:
@@ -684,8 +753,23 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("study", help="StudySpec JSON path")
     run_parser.add_argument("--native", help="pineforge-hpo-native executable")
     run_parser.add_argument("--output", help="write the final JSON result atomically")
+    run_parser.add_argument(
+        "--warm-start", help="parent fd-3 JSONL or complete result JSON"
+    )
+    run_parser.add_argument(
+        "--progress-fd", type=int, help="terminal new trials descriptor"
+    )
+    run_parser.add_argument("--trials-file", help="write only new trials as JSONL")
     _add_build_options(run_parser)
     run_parser.set_defaults(handler=_run)
+    info_parser = commands.add_parser(
+        "space-info", help="inspect coverage without execution"
+    )
+    info_parser.add_argument("--spec", required=True, help="StudySpec JSON path")
+    info_parser.add_argument(
+        "--warm-start", help="parent fd-3 JSONL or complete result JSON"
+    )
+    info_parser.set_defaults(handler=_space_info)
     return parser
 
 
@@ -705,6 +789,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return int(args.handler(args))
+    except WarmStartError as error:
+        print(f"pineforge-hpo: {error}", file=sys.stderr)
+        return WARM_START_EXIT
+    except SpaceExhaustedError as error:
+        print(f"pineforge-hpo: {error}", file=sys.stderr)
+        return SPACE_EXHAUSTED_EXIT
     except ArtifactBuildError as error:
         print(f"pineforge-hpo: {_format_artifact_error(error)}", file=sys.stderr)
     except (CliError, StudySpecError) as error:

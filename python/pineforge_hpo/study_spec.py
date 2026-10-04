@@ -847,6 +847,8 @@ def _validate_candidate_policy(
     strategy: StrategySpec,
     sampler: SamplerSpec,
     issues: list[ValidationIssue],
+    *,
+    continuation: bool = False,
 ) -> None:
     if sampler.candidate_policy == "sampler_default":
         return
@@ -883,7 +885,7 @@ def _validate_candidate_policy(
             break
         cardinality *= count
 
-    if not cardinality_valid:
+    if not cardinality_valid or continuation:
         return
 
     if (
@@ -997,7 +999,9 @@ def _parse_execution(value: Any, issues: list[ValidationIssue]) -> ExecutionSpec
     )
 
 
-def load_study_spec(path: str | Path, *, require_files: bool = False) -> StudySpec:
+def load_study_spec(
+    path: str | Path, *, require_files: bool = False, continuation: bool = False
+) -> StudySpec:
     """Load StudySpec v1 and resolve every filesystem path relative to its JSON file."""
 
     spec_path = Path(path).expanduser().resolve()
@@ -1086,7 +1090,7 @@ def load_study_spec(path: str | Path, *, require_files: bool = False) -> StudySp
 
     objective = _parse_objective(root.get("objective"), issues)
     sampler = _parse_sampler(root.get("sampler"), issues)
-    _validate_candidate_policy(strategy, sampler, issues)
+    _validate_candidate_policy(strategy, sampler, issues, continuation=continuation)
     execution = _parse_execution(root.get("execution"), issues)
 
     if (

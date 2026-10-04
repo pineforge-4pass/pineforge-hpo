@@ -253,7 +253,7 @@ class CliTests(unittest.TestCase):
             )
         expected = _native_command(
             load_study_spec(self.study_path, require_files=True),
-            native=self.native,
+            native=self.native.resolve(),
             plugin=self._artifact().plugin_path,
             artifact_key="a" * 64,
         )
@@ -261,6 +261,42 @@ class CliTests(unittest.TestCase):
         self.assertEqual(artifact["artifact_key"], "a" * 64)
         builder_type.return_value.build.assert_called_once()
         run.assert_not_called()
+
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_prepare_exhaustive_continuation_uses_remaining_budget(
+        self, builder_type: mock.Mock
+    ) -> None:
+        from pineforge_hpo.cli import prepare_run
+        from pineforge_hpo.continuation import recorded_space
+
+        parent = self.root / "parent.jsonl"
+        parent.write_text(
+            json.dumps(
+                {
+                    "trial_id": 7,
+                    "status": "ok",
+                    "feasible": True,
+                    "objective": 1.0,
+                    "parameters": {"Length": 2, "Threshold": 0.5},
+                    "space": recorded_space(load_study_spec(self.study_path)),
+                }
+            )
+        )
+        self._write_study(
+            sampler={
+                "kind": "grid",
+                "seed": 7,
+                "trials": 5,
+                "candidate_policy": "exhaustive",
+            }
+        )
+        builder_type.return_value.build.return_value = self._artifact()
+        command, _ = prepare_run(
+            self.study_path, self.root, native=self.native, warm_start=parent
+        )
+        self.assertEqual(command[command.index("--max-trials") + 1], "5")
+        self.assertEqual(command[command.index("--candidate-policy") + 1], "exhaustive")
+        builder_type.return_value.build.assert_called_once()
 
     def test_grid_continuous_real_is_rejected_before_native_execution(self) -> None:
         study = load_study_spec(self.study_path)

@@ -90,6 +90,15 @@ enum class CandidatePolicy {
 /// Returns the stable StudySpec spelling of @p policy.
 const char* candidate_policy_name(CandidatePolicy policy) noexcept;
 
+/// Derives a portable continuation RNG seed; an empty history preserves the original seed.
+std::uint64_t continuation_seed(std::uint64_t seed, std::uint64_t warm_trials) noexcept;
+
+/// One previously attempted candidate; only finite, feasible completed objectives are supplied.
+struct WarmStartObservation {
+    Candidate candidate;
+    std::optional<double> objective;
+};
+
 /// Tuning parameters for the native product-density TPE implementation.
 struct TpeSamplerConfig {
     /// Number of completed trials required before fitting Parzen estimators.
@@ -182,6 +191,16 @@ public:
     /// Removes an outstanding failed or pruned candidate without training TPE.
     /// @throws std::invalid_argument when @p candidate_id is not outstanding.
     void abandon(std::uint64_t candidate_id);
+
+    /// Imports attempted candidates into a pristine sampler without consuming its new budget.
+    /// Feasible objectives train the same estimator as tell(); other attempts only reserve points.
+    /// IDs continue after the largest imported ID. Returns true when complete lag-zero batches
+    /// replay exactly, preserving the uninterrupted RNG/model state; otherwise rebuilds history
+    /// with a continuation_seed() RNG. replay_batch_size == 0 disables replay.
+    /// @throws std::invalid_argument for invalid candidates, IDs, or non-finite objectives.
+    /// @throws std::logic_error if the sampler is not pristine.
+    bool warm_start(const std::vector<WarmStartObservation>& observations,
+                    std::uint64_t replay_batch_size = 0);
 
     /// Restores the seeded initial state and clears finite-space reservations.
     ///

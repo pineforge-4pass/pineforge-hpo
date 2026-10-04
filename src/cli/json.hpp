@@ -273,9 +273,9 @@ class JsonParser {
     }
 
 public:
-    explicit JsonParser(std::string_view input) : input_(input) {
-        if (input.size() > 1024 * 1024)
-            throw std::runtime_error("JSON frame exceeds 1 MiB");
+    explicit JsonParser(std::string_view input, std::size_t limit = 1024 * 1024) : input_(input) {
+        if (input.size() > limit)
+            throw std::runtime_error("JSON frame exceeds " + std::to_string(limit) + " bytes");
     }
     Json run() {
         auto json = parse(0);
@@ -285,5 +285,7 @@ public:
         return json;
     }
 };
-inline Json parse_json(std::string_view input) { return JsonParser(input).run(); }
+inline Json parse_json(std::string_view input, std::size_t limit = 1024 * 1024) {
+    return JsonParser(input, limit).run();
+}
 }

@@ -707,6 +707,114 @@ constraint policy. Adaptive TPE and grid may visit the same set in different
 orders, so intermediate best-so-far results need not match even when their final
 best result does.
 
+## Continuation and space identity (0.5.0)
+
+Continuation is a CLI/job input, not a new StudySpec field. Pass `--warm-start FILE`
+to `run` or `space-info --spec STUDY`. The new study must have the same parameter
+names, kinds, numeric bounds/steps, categorical choice order/types, log flags,
+objective expression, direction and constraints. Changing the trial budget, seed,
+workers, batch size, HPO version or engine/codegen pins does not change its space hash.
+This identity does **not** certify unchanged market data, fixed inputs or strategy
+behavior: the caller is responsible for keeping observations semantically comparable.
+
+The input is auto-detected as terminal-trial JSONL, a standalone trial array, or a
+complete result object. Result objects combine `warm_start_trials` with new `trials`.
+Space metadata is intentionally repeated on each new trial so a standalone trial
+array remains self-describing. Budget for that per-line storage/transport overhead;
+the 256 MiB input cap is a byte cap, not a constant-memory import guarantee.
+Trial IDs must be unique uint64 integers leaving room for a continuation ID, parameters
+must lie in the declared space, objectives/rung scores must be finite or null, and
+statuses must be `ok`, `constraint_violation`, `engine_error`, `objective_error`,
+`constraint_error`, `trial_error`, `trial_timeout`, `pruned` or `partial`.
+Feasibility must agree with status. Unknown statuses fail closed at initialization.
+
+Legacy complete results can supply an embedded `study_spec` or a `study` JSON path
+(relative to the parent file) when declarative `space` was not recorded. Legacy bare
+JSONL without recorded space cannot prove bounds/objective compatibility and is
+refused; use the complete parent result or attach its normalized recorded space to
+each trial. Older hash versions are accepted by recomputing from that recorded space,
+not by requiring a digest from the current package version.
+
+### Canonical hash v1
+
+`space_hash` is lowercase SHA-256 of UTF-8 JSON, without trailing newline, with sorted
+object keys, no insignificant whitespace, unescaped non-ASCII characters and standard
+JSON string escaping. The root contains exactly `space_hash_version: 1`, `parameters`
+and `objective`:
+
+- `parameters` maps sorted names to `kind`: `integer`, `real`, `boolean` or
+  `categorical`.
+- Integer entries also contain `low`, `high`, `step` as decimal **strings**, and a
+  Boolean `log`; omitted step/log normalize to `1`/`false`.
+- Real entries contain `low`, `high` and optional `step` as **16 lowercase hex digits
+  of IEEE-754 binary64 bits** (`step: null` for continuous), and Boolean `log`.
+  Omitted log normalizes to false; signed zero normalizes to positive zero.
+- Boolean entries contain only `kind`.
+- Categorical entries contain ordered `choices`: each is `[type, value]` with type
+  `integer`, `real`, `boolean` or `string`. Integer/real values use the same decimal
+  string/binary64-hex encodings; Boolean/string values remain JSON Boolean/string.
+- `objective` contains exact `expression`, `direction` and lexicographically sorted
+  expression-string `constraints`. Constraint order does not affect identity; all
+  other order-sensitive values, including choices, are preserved.
+
+The recorded declarative `space` retains normal numeric JSON values, not hash-encoded
+strings, so future versions can recompute a different canonical form. Changing the
+definition requires bumping `space_hash_version`; package/pin bumps do not.
+The golden digest for `examples/single_strategy/study.json` is
+`1188c07588652f2b365a1fc233815d5c51d350e92106051309d9e84ad586071a`.
+Python and native golden/parity tests pin this definition.
+
+### Sampler and replay rules
+
+Grid scans its original Cartesian ordinal order and skips every parent vector, even
+failed/pruned ones; sparse histories therefore resume at the first untried ordinal.
+`without_replacement` reserves every attempted vector across parent plus new trials.
+If the combined budget reaches cardinality, these finite policies produce the same
+final set as a single exhaustive run. Neither rule depends on parent trial IDs being
+contiguous. IDs always resume after the maximum ID.
+Budgets that exceed the remaining uint64 trial-ID capacity fail preflight with exit 4.
+Native wall-only continuations stop at that capacity rather than wrapping IDs, and
+refuse before loading plugins/data when no additional trial ID is available.
+An `exhaustive` continuation's additional budget must equal the remaining cardinality;
+`without_replacement` cannot request more than remains. Incompatible warm budgets
+are refused with exit 4 before compilation or billing.
+
+Random uses `continuation_seed(seed, warm_trials)`: for nonzero warm count, unsigned
+64-bit SplitMix-style mixing of `seed XOR (warm_trials + 0x9e3779b97f4a7c15)`, using
+the `0xbf58476d1ce4e5b9` and `0x94d049bb133111eb` multipliers and shifts 30/27/31.
+Zero warm trials preserves the original seed. Parent vectors are rejected; after
+64 unsuccessful finite draws a deterministic untried-ordinal fallback ensures
+progress. New random points can repeat one another under `sampler_default`.
+The finite ordinal fallback can stop a random continuation early once it has visited
+every non-parent ordinal; its combined coverage is then complete.
+
+TPE trains only on finite completed feasible objectives, as in live `tell()`;
+infeasible/failed/pruned/partial trials follow live `abandon()` semantics. Imported
+observations count toward startup and the history-switch threshold. Available
+`pruning.rung_scores` restore the bounded prefix-pruner histories, not final-objective
+observations. Changing pruning rungs invalidates their meaning; keep the parent's
+prefix schedule for pruning equivalence.
+
+TPE first attempts to replay the ordered parent as complete lag-zero ask/tell batches
+with the current seed/configuration. Every proposal and ID must match. On success it
+preserves the RNG, density caches and bounded reservoir state, so its first new
+proposal (and subsequent proposals under the same batching/results) equals the long
+run. This is tested at batches **2, 5 and 8**, including bounded history and failures.
+
+Otherwise it reconstructs all trainable history in ID order with the derived
+continuation RNG and applies the same history switch and reservations. Changed batch
+sizes, lag-one schedules, sparse IDs or a partial final batch need not preserve the
+uninterrupted proposal stream: different pending constant-liar candidates, RNG
+consumption and model rebuild boundaries are not recoverable from terminal trials
+alone. The weaker invariant is deterministic, bounded history reconstruction with
+correct startup progress and exclusion of all reserved vectors. Exact byte replay
+holds for the same parent bytes, seed, sampler configuration, batch size and worker
+count (excluding explicitly requested timing sidecars).
+
+The app may choose TPE `batch = clamp(floor((trials - exploration) / 20), 2, workers)`
+for worker counts 2..8, and random/grid `batch = workers`. Batch size is not part of
+space identity; matching it matters for TPE proposal equivalence, not compatibility.
+
 ## Resolution and validation rules
 
 1. All file paths resolve against the directory containing `study.json`.
