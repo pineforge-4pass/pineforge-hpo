@@ -16,9 +16,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
-from pineforge_hpo.continuation import recorded_space, space_hash
-from pineforge_hpo.study_spec import load_study_spec
-from pineforge_hpo.warm_binary import HEADER, MAGIC, VERSION
+from pineforge_hpo.continuation import recorded_space, space_hash  # noqa: E402
+from pineforge_hpo.study_spec import load_study_spec  # noqa: E402
+from pineforge_hpo.warm_binary import HEADER, MAGIC, VERSION  # noqa: E402
 
 SEED = 73
 COUNTS = (100_000, 500_000, 1_000_000, 2_000_000)
