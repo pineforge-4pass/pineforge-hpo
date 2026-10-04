@@ -8,6 +8,7 @@
 #include <pineforge/hpo/types.hpp>
 
 #include "json.hpp"
+#include "continuation.hpp"
 #include "batch_executor.hpp"
 #include "../core/ordinal_set.hpp"
 
@@ -61,6 +62,11 @@ struct Options {
     std::filesystem::path ohlcv;
     std::filesystem::path output;
     std::filesystem::path trials_file;
+    std::filesystem::path warm_start;
+    std::shared_ptr<const pfh::detail::WarmHistory> warm_history;
+    std::shared_ptr<const std::string> space_json;
+    std::string space_hash;
+    bool tpe_warm_replayed = false;
     std::string trials_out = "all";
     std::uint64_t best_k = 10;
     std::filesystem::path syminfo;
@@ -100,6 +106,8 @@ struct Options {
 };
 
 struct TrialRecord {
+    std::shared_ptr<const std::string> space_json;
+    std::string space_hash;
     bool tpe_enabled = false;
     std::optional<std::uint64_t> tpe_history_switch;
     std::uint64_t trial_id = 0;
@@ -258,6 +266,7 @@ void print_help() {
               << "  --trial-timeout-seconds T   positive per-trial limit; exits 3 on timeout\n\n"
               << "TPE options:\n"
               << "  --tpe-startup-trials N      random observations before model fitting\n"
+              << "  --warm-start FILE          import parent fd-3 JSONL or complete result JSON\n"
               << "  --tpe-ei-candidates N       candidates scored by log l(x)/g(x)\n"
               << "  --tpe-history-switch N     completed observations before bounded TPE"
                  " (default unset: never switch; JSON null)\n"
@@ -282,7 +291,8 @@ void print_help() {
               << "Study wall cap: stop_reason deadline. "
                  "Trial cap: status/stop_reason trial_timeout.\n"
               << "Exit codes: 0 best feasible trial; 1 initialization/I/O error;\n"
-              << "            2 no feasible trial; 3 trial timeout (no worker join).\n";
+              << "            2 no feasible trial; 3 trial timeout (no worker join);\n"
+              << "            4 warm-start incompatible; 5 space exhausted.\n";
 }
 
 void add_categorical_choice(Options& options, std::string name, pfh::ParameterValue value) {
@@ -363,6 +373,8 @@ Options parse_options(int argc, char** argv) {
                 usage_error("--workers must be between 1 and the platform unsigned maximum");
             }
             out.workers = static_cast<unsigned>(value);
+        } else if (option == "--warm-start") {
+            out.warm_start = require_value(argc, argv, i, option);
         } else if (option == "--batch-size") {
             out.batch_size = parse_u64(require_value(argc, argv, i, option), option);
             if (out.batch_size == 0 || out.batch_size > 1'000'000)
@@ -698,6 +710,8 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
 
 TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& options) {
     TrialRecord record;
+    record.space_json = options.space_json;
+    record.space_hash = options.space_hash;
     if (options.sampler == "tpe") {
         record.tpe_enabled = true;
         record.tpe_history_switch = options.tpe_config.history_switch;
@@ -774,8 +788,19 @@ std::string render_trial(const TrialRecord& trial) {
             << ", \"script_bars_processed_total\": " << trial.script_bars_processed_total
             << ", \"magnifier_sample_ticks_total\": " << trial.magnifier_ticks_total
             << ", \"cut\": "
-            << (trial.pruning_cut ? json_number(*trial.pruning_cut) : "null") << "}";
+            << (trial.pruning_cut ? json_number(*trial.pruning_cut) : "null")
+            << ", \"rung_scores\": [";
+        for (std::size_t index = 0; index < trial.rung_scores.size(); ++index) {
+            if (index)
+                out << ',';
+            out << (trial.rung_scores[index] ? json_number(*trial.rung_scores[index]) : "null");
+        }
+        out << "]}";
     }
+    if (trial.space_json)
+        out << ", \"space_hash_version\": " << pfh::detail::space_hash_version
+            << ", \"space_hash\": \"" << trial.space_hash << "\", \"space\": "
+            << *trial.space_json;
     out << "}";
     return out.str();
 }
@@ -786,15 +811,24 @@ class TrialArchive final {
 public:
     TrialArchive(const Options& options, const pfh::SearchSpace& space, bool finite)
         : options_(options), space_(space), finite_(finite),
-          ordinals_(finite ? space.finite_cardinality().value_or(0) : 0) {}
+          ordinals_(finite ? space.finite_cardinality().value_or(0) : 0) {
+        if (options.warm_history) {
+            objective_coverage = options.warm_history->completed ==
+                options.warm_history->observations.size();
+            if (finite_) {
+                for (const auto& observation : options.warm_history->observations)
+                    ordinals_.insert(space.candidate_ordinal(observation.candidate));
+            }
+        }
+    }
 
     void add(const TrialRecord& record) {
         ++completed;
         ++counts[record.status];
         objective_coverage = objective_coverage &&
             (record.status == "ok" || record.status == "constraint_violation");
-        if (finite_ && options_.sampler != "grid" &&
-            options_.candidate_policy == pfh::CandidatePolicy::SamplerDefault)
+        if (finite_ && (options_.warm_history || (options_.sampler != "grid" &&
+            options_.candidate_policy == pfh::CandidatePolicy::SamplerDefault)))
             ordinals_.insert(space_.candidate_ordinal(record.candidate));
         if (options_.trials_out == "all")
             all_.push_back(record);
@@ -827,6 +861,8 @@ public:
     std::optional<std::uint64_t> unique() const {
         if (!finite_)
             return std::nullopt;
+        if (options_.warm_history)
+            return ordinals_.size();
         return options_.sampler == "grid" ||
                options_.candidate_policy != pfh::CandidatePolicy::SamplerDefault
             ? completed : ordinals_.size();
@@ -854,6 +890,8 @@ public:
         : options_(options), started_(started), archive_(archive),
           timeout_result_(std::move(timeout_result)),
           has_trials_file_(!options_.trials_file.empty()) {
+        if (options.warm_history)
+            next_progress_id_ = options.warm_history->next_id;
         if (!options_.trials_file.empty()) {
             trials_file_.open(options_.trials_file, std::ios::binary | std::ios::trunc);
             if (!trials_file_)
@@ -1316,6 +1354,9 @@ std::string render_results(const Options& options,
     std::ostringstream out;
     out << "{\n"
         << "  \"schema_version\": 1,\n"
+        << "  \"space_hash_version\": " << pfh::detail::space_hash_version << ",\n"
+        << "  \"space_hash\": \"" << options.space_hash << "\",\n"
+        << "  \"space\": " << *options.space_json << ",\n"
         << "  \"pineforge_hpo_version\": \"" << PINEFORGE_HPO_VERSION << "\",\n"
         << "  \"sampler_implementation\": \"" << sampler_implementation << "\",\n"
         << "  \"ok\": " << (best_index ? "true" : "false") << ",\n"
@@ -1437,6 +1478,25 @@ std::string render_results(const Options& options,
             << ",\"exhaustive_equivalent\":" << (exhaustive_equivalent ? "true" : "false")
             << "}}";
     }
+    if (options.warm_history) {
+        const auto& warm = *options.warm_history;
+        out << ",\n  \"warm_start\": {\"source_sha256\":\"" << warm.source_sha256
+            << "\",\"trials\":" << warm.observations.size()
+            << ",\"completed\":" << warm.completed << ",\"feasible\":" << warm.feasible
+            << ",\"space_hash\":\"" << options.space_hash << "\"}";
+        if (options.sampler == "tpe")
+            out << ",\n  \"warm_start_model\":\""
+                << (options.tpe_warm_replayed ? "replayed_batches" : "rebuilt_history") << "\"";
+        if (options.trials_out == "all") {
+            out << ",\n  \"warm_start_trials\": [";
+            for (std::size_t index = 0; index < warm.records.size(); ++index) {
+                if (index)
+                    out << ',';
+                out << pfh::detail::dump_json(warm.records[index]);
+            }
+            out << ']';
+        }
+    }
     out << ",\n  \"trials_out\":\"" << options.trials_out << "\",\n"
         << "  \"best_k\":" << options.best_k << "\n}\n";
     return out.str();
@@ -1472,7 +1532,7 @@ void write_results(const Options& options, const std::string& json) {
     }
 }
 
-int run(const Options& options) {
+int run(Options options) {
     const auto started = RunState::Clock::now();
     pfh::Pruner pruner(options.pruner, options.pruner_rungs, options.pruner_eta,
                        options.direction == Direction::kMinimize);
@@ -1491,18 +1551,44 @@ int run(const Options& options) {
         throw std::invalid_argument(
             "grid sampling requires a step on every varying real dimension");
     }
+    const auto recorded = pfh::detail::recorded_space(space, options.objective,
+        options.direction == Direction::kMaximize ? "maximize" : "minimize", options.constraints);
+    options.space_json = std::make_shared<const std::string>(pfh::detail::dump_json(recorded));
+    options.space_hash = pfh::detail::space_hash(recorded);
+    if (!options.warm_start.empty()) {
+        if (options.sampler == "dlib_global")
+            throw pfh::detail::WarmStartError("dlib_global continuation is not supported");
+        auto warm = std::make_shared<pfh::detail::WarmHistory>(
+            pfh::detail::load_warm_history(options.warm_start, space, recorded));
+        if (finite_cardinality && warm->tried.size() == *finite_cardinality)
+            throw pfh::detail::SpaceExhausted();
+        if (warm->next_id == std::numeric_limits<std::uint64_t>::max() ||
+            options.max_trials > std::numeric_limits<std::uint64_t>::max() - warm->next_id)
+            throw pfh::detail::WarmStartError("new trial budget would overflow trial IDs");
+        for (const auto& scores : warm->rung_scores)
+            pruner.observe(scores);
+        options.warm_history = std::move(warm);
+    }
     if (options.candidate_policy != pfh::CandidatePolicy::SamplerDefault) {
         if (!finite_cardinality.has_value()) {
             throw std::invalid_argument(
                 "finite candidate policy requires a step on every varying real dimension");
         }
+        const auto remaining = *finite_cardinality -
+            (options.warm_history ? options.warm_history->tried.size() : 0);
+        if (options.warm_history && (options.max_trials > remaining ||
+            (options.candidate_policy == pfh::CandidatePolicy::Exhaustive &&
+                options.max_trials != remaining)))
+            throw pfh::detail::WarmStartError("finite budget does not fit remaining space");
         if (options.max_trials > *finite_cardinality) {
             throw std::invalid_argument(
                 "finite candidate budget must not exceed search-space cardinality");
         }
         if (options.candidate_policy == pfh::CandidatePolicy::Exhaustive &&
-            options.max_trials != *finite_cardinality) {
+            options.max_trials != remaining) {
             throw std::invalid_argument(
+                options.warm_history ?
+                "exhaustive candidate budget must equal remaining search-space cardinality" :
                 "exhaustive candidate budget must equal search-space cardinality");
         }
     }
@@ -1556,6 +1642,8 @@ int run(const Options& options) {
                                ? pfh::ObjectiveDirection::Maximize
                                : pfh::ObjectiveDirection::Minimize;
     const auto batch_size = options.batch_size ? options.batch_size : options.workers;
+    const auto available_ids = std::numeric_limits<std::uint64_t>::max() -
+        (options.warm_history ? options.warm_history->next_id : 0);
     const auto worker_count = static_cast<unsigned>(std::min<std::uint64_t>(
         options.workers, options.max_trials ? options.max_trials :
             finite_cardinality.value_or(options.workers)));
@@ -1575,7 +1663,7 @@ int run(const Options& options) {
             const auto cuts = pruner.cuts();
             for (std::uint64_t index = 0; index < batch_size &&
                  (!options.max_trials || proposed < options.max_trials); ++index) {
-                if (state.stopped()) {
+                if (state.stopped() || proposed == available_ids) {
                     exhausted = true;
                     break;
                 }
@@ -1649,8 +1737,14 @@ int run(const Options& options) {
         pfh::DlibGlobalSampler sampler(space, options.seed, direction, options.max_trials);
         evaluate_adaptive(sampler);
     } else if (options.sampler == "tpe") {
+        const auto policy = options.warm_history &&
+            options.candidate_policy == pfh::CandidatePolicy::Exhaustive
+            ? pfh::CandidatePolicy::WithoutReplacement : options.candidate_policy;
         pfh::TpeSampler sampler(space, options.seed, direction, options.max_trials,
-                                options.tpe_config, options.candidate_policy);
+                                options.tpe_config, policy);
+        if (options.warm_history)
+            options.tpe_warm_replayed = sampler.warm_start(options.warm_history->observations,
+                options.batch_lag == 0 ? batch_size : 0);
         evaluate_adaptive(sampler);
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
     } else {
@@ -1658,8 +1752,34 @@ int run(const Options& options) {
         if (options.sampler == "grid")
             sampler = std::make_unique<pfh::GridSampler>(space);
         else
-            sampler = std::make_unique<pfh::RandomSampler>(space, options.seed, options.max_trials);
-        evaluate_batches([&] { return sampler->next(); }, [](const TrialRecord&) {});
+            sampler = std::make_unique<pfh::RandomSampler>(space,
+                pfh::continuation_seed(options.seed, options.warm_history ?
+                    options.warm_history->observations.size() : 0),
+                options.warm_history ? 0 : options.max_trials);
+        std::uint64_t next_id = options.warm_history ? options.warm_history->next_id : 0;
+        std::uint64_t fallback_ordinal = 0;
+        evaluate_batches([&]() -> std::optional<pfh::Candidate> {
+            for (std::uint64_t attempt = 0;; ++attempt) {
+                auto candidate = sampler->next();
+                if (!candidate)
+                    return std::nullopt;
+                if (options.warm_history && options.warm_history->tried.count(
+                        pfh::detail::candidate_key(*candidate))) {
+                    if (options.sampler == "random" && finite_cardinality && attempt >= 63) {
+                        do {
+                            if (fallback_ordinal >= *finite_cardinality)
+                                return std::nullopt;
+                            candidate = space.candidate_at(fallback_ordinal++, next_id);
+                        } while (options.warm_history->tried.count(
+                            pfh::detail::candidate_key(*candidate)));
+                    } else {
+                        continue;
+                    }
+                }
+                candidate->id = next_id++;
+                return candidate;
+            }
+        }, [](const TrialRecord&) {});
     }
     workers.close();
     const double capacity = workers.elapsed_seconds() * worker_count;
@@ -1709,6 +1829,37 @@ int run(const Options& options) {
 
 int main(int argc, char** argv) {
     try {
+        if (argc > 1 && std::string(argv[1]) == "space-info") {
+            std::filesystem::path spec;
+            std::filesystem::path warm;
+            for (int index = 2; index < argc; ++index) {
+                const std::string option = argv[index];
+                if (option == "--spec")
+                    spec = require_value(argc, argv, index, option);
+                else if (option == "--warm-start")
+                    warm = require_value(argc, argv, index, option);
+                else
+                    usage_error("unknown space-info option: " + option);
+            }
+            if (spec.empty())
+                usage_error("space-info requires --spec");
+            const auto recorded = pfh::detail::space_from_spec(
+                pfh::detail::parse_json(pfh::detail::read_document(spec)));
+            const auto space = pfh::detail::search_space_from_recorded(recorded);
+            std::optional<std::uint64_t> cardinality;
+            try {
+                cardinality = space.finite_cardinality();
+            } catch (const std::overflow_error&) {
+            }
+            const auto history = pfh::detail::load_warm_history(warm, space, recorded);
+            const auto tried = history.tried.size();
+            std::cout << "{\"cardinality\":"
+                      << (cardinality ? std::to_string(*cardinality) : "null")
+                      << ",\"tried\":" << tried << ",\"remaining\":"
+                      << (cardinality ? std::to_string(*cardinality - tried) : "null")
+                      << ",\"space_hash\":\"" << pfh::detail::space_hash(recorded) << "\"}\n";
+            return 0;
+        }
         struct sigaction action {};
         action.sa_handler = request_stop;
         action.sa_flags = SA_RESTART;
@@ -1720,6 +1871,12 @@ int main(int argc, char** argv) {
         if (::sigaction(SIGPIPE, &action, nullptr) != 0)
             throw std::runtime_error("cannot install progress I/O error handler");
         return run(parse_options(argc, argv));
+    } catch (const pfh::detail::WarmStartError& error) {
+        std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
+        return 4;
+    } catch (const pfh::detail::SpaceExhausted& error) {
+        std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
+        return 5;
     } catch (const std::exception& error) {
         std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
         return 1;

@@ -243,6 +243,39 @@ CMake accepts either an engine source/build tree or an installed release prefix,
 for example `-DPINEFORGE_ENGINE_ROOT=/opt/pineforge`. Generated `version.h` is
 found in either `include/` or `build/include/`.
 
+## Continue a study (0.5.0)
+
+A continuation is a **new job** seeded with a finished parent's trials. Check coverage
+without compiling the strategy or opening its market data, then request a new budget:
+
+```bash
+pineforge-hpo space-info --spec study.json --warm-start parent.result.json
+pineforge-hpo run study.json --warm-start parent.result.json > continued.result.json
+```
+
+The study's `sampler.trials` is the **additional** trial budget. `--warm-start` accepts
+the parent's complete result JSON, its `trials` array, or the exact terminal-trial JSONL
+written by `--progress-fd`/`--trials-file`. Input is auto-detected. Native runs accept
+the same flag. Warm trials never appear on the progress descriptor or in the new
+trials file; trial IDs start after the parent's highest ID. Results record the source
+file SHA-256, warm counts, and a versioned `space_hash` independent of HPO versions,
+compiler identity, and dependency pins.
+
+Grid skips tried combinations in its original order. Random derives a deterministic
+stream from `(seed, warm trial count)` and rejects parent points. TPE restores finite
+feasible observations, startup progress, attempted-point reservations and bounded
+history. Pruned/partial trials do not train the final-objective model; available rung
+scores seed the prefix pruner. Grid and finite `without_replacement` runs preserve
+exhaustive final-set equivalence. TPE can recover exact proposals at matching complete
+lag-zero batch boundaries; changed batching falls back to deterministic history
+reconstruction, not a promise of uninterrupted proposal equivalence.
+
+Exit **4** means incompatible/malformed warm history; exit **5** means a finite space
+is exhausted. Both are initialization refusals, before strategy/data loading or any
+billable trial. `space-info` still succeeds for exhausted spaces. Existing timeout
+exit **3** is unchanged. See [the API contract](docs/api.md)
+and [canonical identity and replay rules](docs/study-spec.md).
+
 ## Define a study
 
 Studies are strict JSON documents. Paths are resolved relative to the StudySpec file, not

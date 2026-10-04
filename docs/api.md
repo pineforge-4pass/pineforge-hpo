@@ -112,6 +112,77 @@ The native schema remains version 1. CMake accepts an installed engine
 prefix as well as a source/build tree, finding `pineforge/version.h` under either
 `include/` or `build/include/`.
 
+## Contract changes in 0.5.0
+
+### Continuation controls
+
+| Surface | Contract |
+| --- | --- |
+| Python `run STUDY --warm-start FILE` | Validate the parent before compilation; use the study's trial budget for new work only. |
+| Native `run ... --warm-start FILE` | Same input formats, checks, samplers and billing contract. |
+| `space-info --spec STUDY [--warm-start FILE]` | Read-only JSON with `cardinality`, `tried`, `remaining`, `space_hash`; no compilation, plugin loading or dataset access. |
+| Python `prepare_run(..., warm_start=FILE)` | Preflight, then return native argv and artifact metadata without launching. |
+| C++ `TpeSampler::warm_start(history, replay_batch_size)` | Import `WarmStartObservation` candidates plus optional finite objectives into a pristine sampler; return whether exact batch replay succeeded. |
+
+`space-info` uses the count of **unique attempted vectors**, not successful observations.
+`cardinality` and `remaining` are `null` for continuous or uint64-overflowing spaces.
+It returns zero even when `remaining == 0`; a study run refuses such a parent.
+Finite `without_replacement` continuation budgets cannot exceed `remaining`;
+`exhaustive` continuation budgets must equal it. Invalid warm budgets fail with exit 4.
+`load_study_spec(..., continuation=True)` defers those budget checks to warm preflight;
+ordinary, non-continuation validation remains unchanged.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Success (a run has a feasible winner; space-info completed). |
+| 1 | Existing ordinary initialization/I/O/StudySpec error. |
+| 2 | Existing no-feasible-new-trial result. |
+| 3 | Existing native hard trial-timeout exit; unchanged. |
+| 4 | `warm-start incompatible: ...`: mismatched space/objective, unsupported sampler, unknown status or invalid/incomplete parent. |
+| 5 | `space exhausted: ...`: every finite vector has been tried. |
+
+### Result and terminal-trial fields
+
+Every result and new terminal-trial line records `space_hash_version: 1`, `space_hash`
+and declarative `space`. The hash covers parameter names, typed domains, bounds/steps,
+ordered choices, log flags, objective expression, direction and sorted constraints.
+Its exact portable canonical form is specified in [StudySpec](study-spec.md).
+Compatibility is recomputed from recorded space, including for older hash versions.
+
+A continuation result adds:
+
+```json
+"warm_start": {
+  "source_sha256": "sha256 of the exact input bytes",
+  "trials": 200,
+  "completed": 200,
+  "feasible": 190,
+  "space_hash": "canonical current-space digest"
+}
+```
+
+`completed` counts `ok` and `constraint_violation`; `feasible` counts `ok` trials.
+A propagated nonfinite objective is serialized as `null` and does not train TPE.
+Failed, infeasible, pruned and partial vectors count as tried; finite candidate
+policies reserve them. TPE `sampler_default` may repeat parent vectors, like live TPE.
+The existing requested/completed trial counters, `best_*`, and `trials` concern only
+the **new job**, never the parent. Coverage concerns the union of parent and new work.
+Warm history is never re-emitted on fd 3 or into the new `--trials-file`.
+
+With `trials_out=all`, `warm_start_trials` separately preserves the full ancestor
+history for another continuation. Summary/none results are not complete parents:
+retain the original parent and concatenate its complete JSONL with the new job's
+JSONL instead. A standalone `trials` array must likewise contain the entire intended
+ancestry and each trial's recorded space. Inputs are capped at 256 MiB.
+
+TPE results expose `warm_start_model: "replayed_batches" | "rebuilt_history"`.
+`generated()` counts new proposals, `completed()` includes imported trainable
+observations, and `outstanding()` starts at zero. New IDs follow the highest imported
+ID, including failed/pruned trials. Import validates all observations before mutating
+the sampler; failures leave it unchanged. `reset()` returns to the original empty study.
+
+`dlib_global` continuation is not supported and fails closed with exit 4.
+
 ## Contract changes in 0.4.0
 
 These controls are native `run` flags, not new StudySpec fields or Python wrapper

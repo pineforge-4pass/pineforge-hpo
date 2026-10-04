@@ -707,6 +707,7 @@ public:
             reservations_->clear();
         }
         fallback_cursor_ = 0;
+        next_id_ = 0;
         generated_.store(0, std::memory_order_relaxed);
         completed_.store(0, std::memory_order_relaxed);
         outstanding_.store(0, std::memory_order_relaxed);
@@ -1052,6 +1053,7 @@ public:
     std::optional<std::uint64_t> finite_cardinality_;
     std::optional<FiniteReservationSet> reservations_;
     std::uint64_t fallback_cursor_ = 0;
+    std::uint64_t next_id_ = 0;
     bool has_varying_dimension_ = false;
     std::atomic<std::uint64_t> generated_{0};
     std::atomic<std::uint64_t> completed_{0};
@@ -1563,12 +1565,15 @@ std::optional<Candidate> TpeSampler::next() {
 std::optional<Candidate> TpeSampler::ask() {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     const std::uint64_t generated = impl_->generated_.load(std::memory_order_relaxed);
+    const std::uint64_t candidate_id = impl_->next_id_;
     if (max_candidates_ != 0 && generated >= max_candidates_) {
         return std::nullopt;
     }
     if (impl_->finite_space_exhausted()) {
         return std::nullopt;
     }
+    if (candidate_id == std::numeric_limits<std::uint64_t>::max())
+        throw std::overflow_error("TPE trial IDs exhausted");
     if (candidate_policy_ == CandidatePolicy::SamplerDefault && !impl_->has_varying_dimension_ &&
         generated != 0) {
         return std::nullopt;
@@ -1580,12 +1585,13 @@ std::optional<Candidate> TpeSampler::ask() {
         impl_->history_.empty();
     std::optional<Candidate> candidate;
     if (candidate_policy_ == CandidatePolicy::SamplerDefault) {
-        candidate = startup ? std::optional<Candidate>(impl_->random_candidate(space_, generated))
-                            : impl_->tpe_candidate(space_, generated, config_);
+        candidate = startup ? std::optional<Candidate>(
+                                  impl_->random_candidate(space_, candidate_id))
+                            : impl_->tpe_candidate(space_, candidate_id, config_);
     } else if (startup) {
         constexpr std::uint64_t kStartupReservationAttempts = 64;
         for (std::uint64_t attempt = 0; attempt < kStartupReservationAttempts; ++attempt) {
-            Candidate proposal = impl_->random_candidate(space_, generated);
+            Candidate proposal = impl_->random_candidate(space_, candidate_id);
             if (impl_->reserve_candidate(space_, proposal)) {
                 candidate = std::move(proposal);
                 break;
@@ -1593,16 +1599,16 @@ std::optional<Candidate> TpeSampler::ask() {
             impl_->duplicate_proposals_skipped_.fetch_add(1, std::memory_order_relaxed);
         }
         if (!candidate.has_value()) {
-            candidate = impl_->fallback_candidate(space_, generated);
+            candidate = impl_->fallback_candidate(space_, candidate_id);
         }
     } else {
-        candidate = impl_->tpe_candidate(space_, generated, config_);
+        candidate = impl_->tpe_candidate(space_, candidate_id, config_);
         if (candidate.has_value()) {
             if (!impl_->reserve_candidate(space_, *candidate)) {
                 throw std::logic_error("TPE selected a finite candidate that was already reserved");
             }
         } else {
-            candidate = impl_->fallback_candidate(space_, generated);
+            candidate = impl_->fallback_candidate(space_, candidate_id);
         }
     }
     if (!candidate.has_value()) {
@@ -1616,6 +1622,7 @@ std::optional<Candidate> TpeSampler::ask() {
         throw std::logic_error("duplicate TPE candidate id");
     }
     impl_->generated_.store(generated + 1, std::memory_order_relaxed);
+    ++impl_->next_id_;
     impl_->outstanding_.fetch_add(1, std::memory_order_relaxed);
     return candidate;
 }
@@ -1651,6 +1658,71 @@ void TpeSampler::abandon(std::uint64_t candidate_id) {
     impl_->pending_.erase(found);
     impl_->pending_encodings_.erase(candidate_id);
     impl_->outstanding_.fetch_sub(1, std::memory_order_relaxed);
+}
+
+bool TpeSampler::warm_start(const std::vector<WarmStartObservation>& observations,
+                           std::uint64_t replay_batch_size) {
+    std::unique_ptr<Impl> previous;
+    std::lock_guard<std::mutex> lock(impl_->mutex_);
+    if (impl_->generated_ != 0 || impl_->completed_ != 0 || impl_->next_id_ != 0 ||
+        !impl_->pending_.empty())
+        throw std::logic_error("TPE warm start requires a pristine sampler");
+    auto ordered = observations;
+    std::sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
+        return left.candidate.id < right.candidate.id;
+    });
+    std::uint64_t next_id = 0;
+    for (const auto& observation : ordered) {
+        if (!space_.is_valid(observation.candidate) || observation.candidate.id < next_id ||
+            observation.candidate.id == std::numeric_limits<std::uint64_t>::max() ||
+            (observation.objective && !std::isfinite(*observation.objective)))
+            throw std::invalid_argument("invalid TPE warm-start observation");
+        next_id = observation.candidate.id + 1;
+    }
+    const auto policy = candidate_policy_ == CandidatePolicy::Exhaustive
+        ? CandidatePolicy::WithoutReplacement : candidate_policy_;
+    TpeSampler restored(space_, seed_, direction_, 0, config_, policy);
+    bool replayed = !ordered.empty() && replay_batch_size != 0 &&
+        ordered.size() % replay_batch_size == 0;
+    for (std::size_t begin = 0; replayed && begin < ordered.size();
+         begin += replay_batch_size) {
+        for (std::size_t index = begin; index < begin + replay_batch_size; ++index) {
+            const auto proposal = restored.ask();
+            if (!proposal || proposal->id != ordered[index].candidate.id ||
+                proposal->values != ordered[index].candidate.values) {
+                replayed = false;
+                break;
+            }
+        }
+        if (replayed) {
+            for (std::size_t index = begin; index < begin + replay_batch_size; ++index) {
+                if (ordered[index].objective)
+                    restored.tell(ordered[index].candidate.id, *ordered[index].objective);
+                else
+                    restored.abandon(ordered[index].candidate.id);
+            }
+        }
+    }
+    if (!replayed) {
+        restored.impl_ = std::make_unique<Impl>(space_, continuation_seed(seed_, ordered.size()),
+                                               impl_->finite_cardinality_);
+        for (const auto& observation : ordered) {
+            restored.impl_->reserve_candidate(space_, observation.candidate);
+            if (observation.objective) {
+                const double score = direction_ == ObjectiveDirection::Maximize
+                    ? *observation.objective : -*observation.objective;
+                restored.impl_->retain_observation(observation.candidate, score);
+                ++restored.impl_->completed_;
+                restored.impl_->compact_observations(config_);
+            }
+        }
+    }
+    restored.impl_->generated_ = 0;
+    restored.impl_->duplicate_proposals_skipped_.store(0, std::memory_order_relaxed);
+    restored.impl_->next_id_ = next_id;
+    previous.swap(impl_);
+    impl_.swap(restored.impl_);
+    return replayed;
 }
 
 void TpeSampler::reset() {

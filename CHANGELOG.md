@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0 — 2026-10-04
+
+- Add `--warm-start FILE` study continuation from terminal-trial JSONL, complete
+  result JSON or a trial array. Import history without emitting/billing old trials;
+  continue IDs after the parent's maximum and record exact source SHA-256/counts.
+- Add read-only `space-info --spec STUDY [--warm-start FILE]`, portable canonical
+  space-hash v1 and declarative recorded space. Identity ignores package/compiler/pin
+  bumps; older hash versions are recomputed from recorded space. Refuse incompatible
+  parents with exit 4 and finite exhaustion with exit 5; timeout exit 3 is unchanged.
+- Restore TPE observations, startup quota, bounded history, finite reservations and
+  pruning rung history. Recover uninterrupted TPE proposals at matching complete
+  lag-zero batch boundaries; expose deterministic reconstruction when replay is not
+  possible. Grid retains untried ordinal order; random derives a continuation stream
+  and excludes parent points.
+- Cover native/Python contracts, hash goldens, billing, replay at batches 2/5/8 and
+  200 + 200 versus 400 finite-set/proposal equivalence.
+
 ## 0.4.0
 
 - Keep exact 0.3.0 full-history TPE by default for the entire study. The default

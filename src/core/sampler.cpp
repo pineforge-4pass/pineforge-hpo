@@ -148,6 +148,15 @@ const char* candidate_policy_name(CandidatePolicy policy) noexcept {
     return "unknown";
 }
 
+std::uint64_t continuation_seed(std::uint64_t seed, std::uint64_t warm_trials) noexcept {
+    if (warm_trials == 0)
+        return seed;
+    auto mixed = seed ^ (warm_trials + 0x9e3779b97f4a7c15ULL);
+    mixed = (mixed ^ (mixed >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    mixed = (mixed ^ (mixed >> 27)) * 0x94d049bb133111ebULL;
+    return mixed ^ (mixed >> 31);
+}
+
 GridSampler::GridSampler(SearchSpace space) : space_(std::move(space)) {
     const auto cardinality = space_.finite_cardinality();
     if (!cardinality.has_value()) {
