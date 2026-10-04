@@ -14,7 +14,7 @@ From the current source, with the baseline at `../baseline`:
 ```bash
 mkdir -p build/noreplay
 for variant in before after; do
-  tree=.; define=
+  tree=.; define=-DPFH_FP_CONTRACT_OFF=1
   if [ "$variant" = before ]; then
     tree=../baseline; define=-DPFH_NOREPLAY_BASELINE
   fi
@@ -152,3 +152,98 @@ also verify the release implementation. Raw ad-hoc artifacts are not committed.
 - Ruff 0.15.20: check and format check pass. Clean Doxygen: zero warnings;
   generated-site validation: 247 HTML files. Pinned Optuna smoke: six CSV rows,
   with verified CSV digest and retained metadata sidecar.
+
+## Reviewed 0.7.0 result (2026-10-04 UTC)
+
+Sampler source `46bb7d20281c4dc4daaabad55d96e6ecf266963b` replaces the unshipped
+checkpoint with canonical `PFHTPE2`, enforces numerical-build identity and uses
+persistent quota-aware workers. These changes warrant refreshing the cost tables.
+The new measurements run alone on spot instance `i-04305f7dbad41c695`, an
+8-vCPU `c7i.2xlarge` with an 8-GiB/no-swap cgroup (the physical instance has
+16 GiB), GCC 13.3.0, `-O3 -ffp-contract=off -pthread`, seed 73 and batch eight.
+
+### Time to first new proposal
+
+Seconds for sampler import plus the first new ask/tell. The before column retains
+the earlier actual v0.6.0 replay measurements on the same resource shape; both
+after columns are refreshed. File parsing, plugin/data loading and strategy
+execution are outside this timer. The fixture and censoring boundaries above apply.
+
+| Inputs | Parent trials | Before: replay | After: row-only | After: checkpoint |
+| ---: | ---: | ---: | ---: | ---: |
+| 5 | 1,000 | 0.817078 | 0.005472 | 0.005437 |
+| 5 | 8,000 | 59.299945 | 0.038097 | 0.036429 |
+| 5 | 50,000 | >29* | 0.214840 | 0.221478 |
+| 5 | 500,000 | >29* | 2.245702 | 2.245443 |
+| 5 | 1,000,000 | >29* | 4.563063 | 4.535660 |
+| 32 | 1,000 | 6.960174 | 0.023607 | 0.022851 |
+| 32 | 8,000 | 461.686966 | 0.087531 | 0.087696 |
+| 32 | 50,000 | >60* | 0.537085 | 0.537704 |
+| 32 | 500,000 | >60* | 5.533129 | 5.539204 |
+| 32 | 1,000,000 | >60* | 11.161494 | 11.158025 |
+
+`*` denotes a censored matching-8k-prefix/synthetic-suffix fixture, **not** a
+completed matching 50k–1M uninterrupted-history replay. Checkpoint timing parents
+are constructed by direct import outside the timer; genuine uninterrupted-parent
+exactness is established by the independent executable oracles, not these timers.
+
+### Eight-proposal batch
+
+All three columns are remeasured. Seconds include cold-cache fitting, acquisition
+and pending constant-liar updates, excluding import/setup equally across modes.
+
+| Inputs | History | Before: full | After: exact full | Bounded: switch 1,000 |
+| ---: | ---: | ---: | ---: | ---: |
+| 5 | 100,000 | 1.652692 | 0.847239 | 0.001044 |
+| 5 | 500,000 | 10.195724 | 4.856719 | 0.001035 |
+| 5 | 2,000,000 | 43.988586 | 21.283209 | 0.001153 |
+| 32 | 100,000 | 13.401302 | 3.161808 | 0.004764 |
+| 32 | 500,000 | 69.167101 | 16.534632 | 0.004770 |
+| 32 | 2,000,000 | 287.644111 | 70.008436 | 0.004720 |
+
+All six exact-full suggestion hashes equal the unmodified v0.6.0 baseline. The
+500k/32-input batch improves 4.18x; the 2M/32-input batch improves 4.11x. At 2M/32,
+peak RSS is 7,738,616 KiB before and 4,936,308 KiB after. Full-history work still
+grows with history. These single measurements are not Cloud Run timings or an SLA.
+Bounded mode remains a different model and an owner decision; no default changes.
+
+### Reservoir mutation evidence
+
+Native cases use exactly 201 parent observations plus 300 new observations,
+`history_switch=32`, `bad_reservoir_size=7`, and the listed batches. Each mutant is
+compiled separately from the final sampler source. Both fail with
+`uninterrupted and continuation proposals differ` rather than a setup error.
+
+| Implementation | Batch 1 | Batch 5 | Batch 8 |
+| --- | --- | --- | --- |
+| Control | PASS (exit 0) | PASS (exit 0) | PASS (exit 0) |
+| One extra reservoir draw after restore | KILLED (exit 1) | KILLED (exit 1) | KILLED (exit 1) |
+| Skip reservoir RNG restoration | KILLED (exit 1) | KILLED (exit 1) | KILLED (exit 1) |
+
+### Reviewed verification gates
+
+- Release CTest: 31/31; ASan/UBSan: 31/31 with leak detection and a 32-MiB
+  quarantine; TSan: 31/31 with temporary mmap randomization 28, reset to 32 afterward.
+- Python: 70/70, installed package 0.7.0. Ruff 0.15.20 check and format check pass.
+- Actual v0.5.0 and v0.6.0 runner oracles: 91 cases and 4,612 new suggestions each,
+  including three small-reservoir bounded checkpoints and successful foreign-build
+  and shorter-history reconstruction. Old replay parents are rounded to complete
+  batches (201/205/208); native mutation cases deliberately retain a 201-row parent.
+- The checked-in canonical two-engine golden restores the same 4,096 future words
+  per engine on Ubuntu/libstdc++ and macOS/libc++ CI. Its shared SHA-256 is
+  `3132b2ec79fbb1b9741d1c771356ba94ffce7e41c5e172e442ddc5350fb6db70`.
+  Actual Mac-to-Linux and Linux-to-Mac full checkpoint exchanges rebuild with exit
+  zero because numerical builds differ; same-build checkpoints restore.
+- Explicit one/eight-worker tests cover 4,200 mixed/log rows and 4,096 rows with
+  32 inputs, including independent v0.6.0 serial hashes. Worker reuse, resource-failure
+  fallback, quota parsing, and a real 150% CPU-quota container are tested.
+- Real-strategy E2E: 12 continuation cases, one compiled artifact, seven identical
+  canonical C-ABI trade records and four identical metrics. Gitlinks remain pinned.
+- Doxygen: zero warnings; 247 HTML files validated. Pinned Optuna smoke: six CSV
+  rows with a metadata sidecar. Both native CI platforms pass.
+
+Raw review evidence is retained under ignored `build/review/`. Refreshed table
+inputs are `timings/resume-native.csv` and `timings/batch.csv`; their metadata
+sidecars include verified CSV, fixture, executable and current-source hashes.
+The smoke sidecar, `oracle-v050-equivalence.json`, `oracle-v060-equivalence.json`,
+`mutant-results.json`, exchange logs and gate logs are retained alongside them.
