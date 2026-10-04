@@ -2,6 +2,8 @@
 
 **Release decision: bounded TPE is opt-in.** The default never switches and keeps
 the exact 0.3.0 estimator throughout the study (`tpe_history_switch=null`).
+The [default identity gate](default-2026-10-04.md) compares 24 studies at 3k:
+72,000 proposal/value records, zero differences versus 0.3.0.
 `--tpe-history-switch 1000` is a reasonable explicit opt-in for 10k–1M trials.
 The [bounded-model report](final-2026-10-04.md) measures 3k/10k median-regret-ratio
 geomeans 1.036492/1.031570: about 3.65%/3.16% worse, accepted as an opt-in tradeoff.

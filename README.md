@@ -437,6 +437,8 @@ The reservoir, EI draws, and test thresholds are not tuned to recover that numbe
 The flat 64D ask probe measures 656.450/663.061 microseconds at 100k/1M history,
 above the 375-microsecond W=8 budget; opted-in 64D sampling remains a known bottleneck.
 See the [final switch evidence and all gates](benchmarks/scaling/final-2026-10-04.md).
+The [default 3k identity gate](benchmarks/scaling/default-2026-10-04.md) compares
+72,000 proposal/value records across eight problems and three seeds, with zero diffs.
 
 Generated strategies are compiled with the parity-critical
 `-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags; with Clang, the builder also passes

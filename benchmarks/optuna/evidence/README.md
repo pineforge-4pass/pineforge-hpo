@@ -1,5 +1,13 @@
 # Published benchmark evidence
 
+## 0.4.0 full-history default identity
+
+`2026-10-04-default-full-history-identity.csv` contains all 24 default-mode
+studies (eight problems, three seeds, 3,000 proposals): 72,000 compared
+proposal/value records and zero differences versus pinned 0.3.0. Its adjacent
+metadata and SHA-256 sidecar record verified paired trace hashes, binaries,
+sampler sources, and pins. See the [identity report](../../scaling/default-2026-10-04.md).
+
 This directory contains the compact machine-readable evidence for
 [`results-2026-07-18.md`](../results-2026-07-18.md). These are current reruns of
 the documented profiles, not reconstructed metadata for an older unpublished
