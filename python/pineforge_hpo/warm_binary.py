@@ -12,6 +12,7 @@ from .continuation import WarmStartError, _parameters, space_hash
 from .study_spec import StudySpec, _finite_parameter_cardinality, _fused_grid_value
 
 MAGIC = b"PFHWARM\0"
+STATE_MAGIC = b"PFHSTATE"
 VERSION = 2
 HEADER = struct.Struct("<8sHHIQQIIII32s")
 NULL_BITS = 0x7FF8000000000000
@@ -45,7 +46,12 @@ def _score(value: Any) -> bytes:
     return struct.pack("<d", value)
 
 
-def encode_warm_block(study: StudySpec, trials: Sequence[Mapping[str, Any]]) -> bytes:
+def encode_warm_block(
+    study: StudySpec,
+    trials: Sequence[Mapping[str, Any]],
+    *,
+    sampler_state: str | None = None,
+) -> bytes:
     """Encode every attempted trial in one chunk, sorting rows by uint64 trial ID.
 
     Parameters use lexicographic name order. Missing v0.5 constraint values become
@@ -157,16 +163,28 @@ def encode_warm_block(study: StudySpec, trials: Sequence[Mapping[str, Any]]) -> 
             0,
             bytes.fromhex(space_hash(study)),
         )
-        return header + descriptors + payload
+        block = header + descriptors + payload
+        if sampler_state is not None:
+            if not isinstance(sampler_state, str) or not sampler_state:
+                raise ValueError("sampler_state must be a nonempty string")
+            state = sampler_state.encode("utf-8")
+            if len(state) > 16 * 1024 * 1024:
+                raise ValueError("sampler_state exceeds 16 MiB")
+            block += STATE_MAGIC + struct.pack("<Q", len(state)) + state
+        return block
     except (ValueError, TypeError, KeyError, OverflowError, StopIteration) as error:
         raise WarmStartError(f"warm-start incompatible: {error}") from error
 
 
 def write_warm_block(
-    output: BinaryIO, study: StudySpec, trials: Sequence[Mapping[str, Any]]
+    output: BinaryIO,
+    study: StudySpec,
+    trials: Sequence[Mapping[str, Any]],
+    *,
+    sampler_state: str | None = None,
 ) -> int:
     """Write one validated chunk to a binary stream; return its byte count."""
-    block = encode_warm_block(study, trials)
+    block = encode_warm_block(study, trials, sampler_state=sampler_state)
     written = output.write(block)
     if written != len(block):
         raise OSError("short write of binary warm block")

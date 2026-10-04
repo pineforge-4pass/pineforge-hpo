@@ -22,16 +22,17 @@ double score(const pfh::Candidate& candidate) {
     return -std::abs(value - 0.37);
 }
 
-void replay(std::uint64_t batch, bool bounded, pfh::CandidatePolicy policy) {
+void checkpoint_equivalence(std::uint64_t batch, bool bounded, pfh::CandidatePolicy policy,
+                            std::uint64_t history_count) {
     const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0, 0.001)});
     pfh::TpeSamplerConfig config;
     if (bounded)
         config.history_switch = 32;
     pfh::TpeSampler uninterrupted(space, 73, pfh::ObjectiveDirection::Maximize, 0, config, policy);
     std::vector<pfh::WarmStartObservation> warm;
-    for (std::uint64_t begin = 0; begin < 200; begin += batch) {
+    for (std::uint64_t begin = 0; begin < history_count; begin += batch) {
         std::vector<pfh::Candidate> pending;
-        for (std::uint64_t index = 0; index < batch; ++index) {
+        for (std::uint64_t index = 0; index < std::min(batch, history_count - begin); ++index) {
             const auto candidate = uninterrupted.ask();
             require(candidate.has_value(), "parent proposal missing");
             pending.push_back(*candidate);
@@ -47,7 +48,8 @@ void replay(std::uint64_t batch, bool bounded, pfh::CandidatePolicy policy) {
         }
     }
     pfh::TpeSampler continued(space, 73, pfh::ObjectiveDirection::Maximize, 200, config, policy);
-    require(continued.warm_start(warm, batch), "complete batches did not replay exactly");
+    require(continued.warm_start(warm, batch, uninterrupted.sampler_state()),
+            "checkpoint did not restore exactly");
     require(continued.generated() == 0, "warm observations consumed new budget");
     require(continued.duplicate_proposals_skipped() == 0, "warm skip count leaked into new job");
     require(continued.completed() == uninterrupted.completed(), "completed count differs");
@@ -56,7 +58,7 @@ void replay(std::uint64_t batch, bool bounded, pfh::CandidatePolicy policy) {
             "bounded warm history differs");
     for (std::uint64_t begin = 0; begin < 200; begin += batch) {
         std::vector<pfh::Candidate> pending;
-        for (std::uint64_t index = 0; index < batch; ++index) {
+        for (std::uint64_t index = 0; index < std::min(batch, 200 - begin); ++index) {
             const auto expected = uninterrupted.ask();
             const auto actual = continued.ask();
             require(expected && actual, "continuation proposal missing");
@@ -70,6 +72,115 @@ void replay(std::uint64_t batch, bool bounded, pfh::CandidatePolicy policy) {
         }
     }
     require(!continued.ask(), "new continuation budget ignored");
+}
+
+void checkpoint_validation() {
+    const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0)});
+    pfh::TpeSampler parent(space, 17);
+    std::vector<pfh::WarmStartObservation> warm;
+    for (std::uint64_t index = 0; index < 33; ++index) {
+        const auto candidate = *parent.ask();
+        parent.tell(candidate.id, score(candidate));
+        warm.push_back({candidate, score(candidate)});
+    }
+    const auto state = parent.sampler_state();
+    pfh::TpeSampler legacy(space, 17);
+    require(!legacy.warm_start(warm, 1), "legacy history generated historical proposals");
+    pfh::TpeSampler different_seed(space, 18);
+    require(!different_seed.warm_start(warm, 1, state), "different seed restored a checkpoint");
+    warm.front().objective = 42;
+    pfh::TpeSampler changed_history(space, 17);
+    require(!changed_history.warm_start(warm, 1, state), "changed history restored a checkpoint");
+    pfh::TpeSampler corrupt(space, 17);
+    bool rejected = false;
+    try {
+        corrupt.warm_start(warm, 1, state + "corrupt");
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    require(rejected && corrupt.generated() == 0 && corrupt.completed() == 0,
+            "corrupt checkpoint mutated the sampler");
+    const auto pending = *parent.ask();
+    rejected = false;
+    try {
+        parent.sampler_state();
+    } catch (const std::logic_error&) {
+        rejected = true;
+    }
+    require(rejected, "checkpoint allowed outstanding candidates");
+    parent.abandon(pending.id);
+    parent.reset();
+    pfh::TpeSampler initial(space, 17);
+    require(parent.sampler_state() == initial.sampler_state(), "reset left checkpoint state");
+}
+
+void parallel_checkpoint_equivalence() {
+    const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0),
+        pfh::RealDimension("y", 0.01, 10.0, std::nullopt, true),
+        pfh::IntegerDimension("period", 1, 10000),
+        pfh::CategoricalDimension("mode", {std::string("a"), std::string("b")}),
+        pfh::BooleanDimension("enabled")});
+    std::vector<pfh::WarmStartObservation> warm;
+    for (std::uint64_t identifier = 0; identifier < 4200; ++identifier) {
+        pfh::Candidate candidate;
+        candidate.id = identifier;
+        candidate.values = {{"x", static_cast<double>(identifier % 997) / 997.0},
+            {"y", 0.01 + static_cast<double>(identifier % 991) / 100.0},
+            {"period", static_cast<std::int64_t>(identifier + 1)},
+            {"mode", std::string(identifier % 2 ? "a" : "b")},
+            {"enabled", identifier % 2 != 0}};
+        warm.push_back({candidate, static_cast<double>(identifier % 101)});
+    }
+    pfh::TpeSampler parent(space, 73);
+    parent.warm_start(warm);
+    pfh::TpeSampler child(space, 73);
+    require(child.warm_start(warm, 8, parent.sampler_state()),
+            "full-history parallel checkpoint did not restore");
+    std::vector<pfh::Candidate> pending;
+    for (std::uint64_t index = 0; index < 8; ++index) {
+        const auto expected = *parent.ask();
+        const auto actual = *child.ask();
+        require(expected.id == actual.id && expected.values == actual.values,
+                "parallel fit/scoring changed checkpoint suggestions");
+        pending.push_back(actual);
+    }
+    for (const auto& candidate : pending) {
+        parent.tell(candidate.id, static_cast<double>(candidate.id % 101));
+        child.tell(candidate.id, static_cast<double>(candidate.id % 101));
+    }
+}
+
+void linear_history_import() {
+    class CountingSource final : public pfh::WarmStartSource {
+    public:
+        explicit CountingSource(std::uint64_t count) : count_(count) {}
+        std::uint64_t size() const noexcept override { return count_; }
+        std::uint64_t id(std::uint64_t row) const override { return row; }
+        pfh::ParameterValue parameter(std::uint64_t row, std::size_t column) const override {
+            ++reads;
+            return static_cast<double>((row + column) % 997) / 997.0;
+        }
+        std::optional<double> objective(std::uint64_t row) const override {
+            return static_cast<double>(row % 101);
+        }
+        mutable std::uint64_t reads = 0;
+    private:
+        std::uint64_t count_;
+    };
+    const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0),
+                                  pfh::RealDimension("y", 0.0, 1.0)});
+    for (const auto count : {31U, 1000U, 8000U}) {
+        for (const auto batch : {1U, 8U, 31U}) {
+            for (const auto seed : {7U, 73U}) {
+                auto source = std::make_shared<CountingSource>(count);
+                pfh::TpeSampler sampler(space, seed);
+                require(!sampler.warm_start(source, batch), "row-only import restored state");
+                require(source->reads == 4 * count, "import fitted or replayed historical models");
+                require(sampler.generated() == 0 && sampler.completed() == count,
+                        "import changed candidate accounting");
+            }
+        }
+    }
 }
 
 void rebuilt_history() {
@@ -157,15 +268,22 @@ int main() {
         require(pfh::detail::space_hash(mixed) ==
             "fd04b34677f03f8d4d2f49cccb1c58ca42ea9fcc448bbcd05ab72d052c5ecb90",
             "mixed typed/Unicode space hash golden changed");
-        for (const auto batch : {2, 5, 8}) {
+        for (const auto batch : {1, 2, 4, 5, 8, 32}) {
             for (const bool bounded : {false, true}) {
-                replay(batch, bounded, pfh::CandidatePolicy::SamplerDefault);
-                replay(batch, bounded, pfh::CandidatePolicy::WithoutReplacement);
+                for (const auto history : {31, 64, 201}) {
+                    checkpoint_equivalence(batch, bounded, pfh::CandidatePolicy::SamplerDefault,
+                                           history);
+                    checkpoint_equivalence(batch, bounded, pfh::CandidatePolicy::WithoutReplacement,
+                                           history);
+                }
             }
         }
+        checkpoint_validation();
+        parallel_checkpoint_equivalence();
+        linear_history_import();
         rebuilt_history();
         invalid_imports();
-        std::cout << "PASS: SHA/golden, replay and uninterrupted equivalence (batches 2/5/8), "
+        std::cout << "PASS: SHA/golden, checkpoint/uninterrupted equivalence, partial batches, "
                      "bounded warm history, startup, IDs, finite reservations "
                      "and invalid imports\n";
         return 0;

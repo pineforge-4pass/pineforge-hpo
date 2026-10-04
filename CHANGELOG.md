@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.1 — 2026-10-04
+
+- Remove historical TPE proposal replay from every continuation path. Import validated
+  observations directly, regardless of history count, seed or proposal batch size.
+- Add checksummed `tpe_sampler_state` result checkpoints and optional `PFHSTATE`
+  blocks in warm v2. Matching checkpoints restore suggestion/reservoir RNGs, finite
+  fallback position and bounded model/cache membership without historical proposals.
+  Full-history checkpoints use a configuration digest and remain constant-size.
+- Preserve bit-identical checkpoint continuation, including partial parent batches.
+  **Compatibility change:** v0.5/v0.6 row-only TPE histories use deterministic history
+  reconstruction, not the former uninterrupted-sequence promise. Rejection sampling
+  consumes a model-dependent number of RNG draws that terminal rows do not record.
+  Grid and random continuation semantics remain unchanged. Older readers reject the
+  optional binary state extension; omit it when exporting rows for those readers.
+- Fit and score independent full-history TPE dimensions on up to eight cores while
+  preserving serial sampling, within-dimension arithmetic and ordered reductions.
+  Bounded `history_switch` remains opt-in; no sampler defaults change.
+
 ## 0.6.0 — 2026-10-04
 
 - Add exact, sampler-only binary warm format v2: independently self-describing,

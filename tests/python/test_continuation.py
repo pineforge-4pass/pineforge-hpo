@@ -70,6 +70,32 @@ class ContinuationTests(unittest.TestCase):
         self.assertEqual((info["tried"], info["remaining"]), (2, 7))
         self.assertFalse((self.root / "does-not-exist.csv").exists())
 
+    def test_checkpoint_checksum_preflight(self):
+        payload = "valid opaque payload"
+        checkpoint = (
+            "PFHTPE1\n" + hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
+        )
+        parent = {
+            "space": recorded_space(self.study),
+            "trials": self.trials,
+            "tpe_sampler_state": checkpoint,
+        }
+        self.parent.write_text(json.dumps(parent))
+        self.assertEqual(space_info(self.study, self.parent)["tried"], 2)
+        for invalid in (checkpoint + "corrupt", "", 7):
+            parent["tpe_sampler_state"] = invalid
+            self.parent.write_text(json.dumps(parent))
+            with self.assertRaises(WarmStartError):
+                load_warm_start(self.study, self.parent)
+            with (
+                contextlib.redirect_stderr(io.StringIO()),
+                mock.patch("pineforge_hpo.cli.ArtifactBuilder") as builder,
+            ):
+                self.assertEqual(
+                    main(["run", str(self.spec), "--warm-start", str(self.parent)]), 4
+                )
+                builder.assert_not_called()
+
     def test_mixed_typed_unicode_hash_golden(self):
         self.document["strategies"][0]["search_space"] = {
             "count": {"kind": "integer", "low": -2, "high": 4, "step": 2},

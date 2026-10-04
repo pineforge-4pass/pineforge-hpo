@@ -127,9 +127,9 @@ follow their maximum, independent of block/row ordering.
 | `space-info --spec STUDY --warm-start WARM` | Existing four-field response, using the read-only mapped loader and an exact tried-vector index. |
 | Native `space-info ... --warm-details` | Adds `warm_trials`, `next_id`, `completed` and `feasible`, without hashing the payload. Add `--warm-digest` to request exact-input `source_sha256`. |
 | Python `warm_start_metadata(study, file, native=...)` | JSON preflight or native binary preflight. Binary use needs the native executable, not a compiler or engine plugin. |
-| Python `encode_warm_block(study, trials)` | Returns one validated byte block, with all rows sorted by ID. |
-| Python `write_warm_block(stream, study, trials)` | Writes one block to a binary stream and returns its byte count. Concatenate chunks without separators. |
-| C++ `TpeSampler::warm_start(shared_ptr<const WarmStartSource>, batch)` | A pristine sampler retains immutable shared rows; columns decode only for active model/replay work, not into permanent candidate maps. Same replay/reconstruction semantics as the vector overload. |
+| Python `encode_warm_block(study, trials, sampler_state=None)` | Returns validated rows sorted by ID; the optional keyword-only checkpoint appends a state block. |
+| Python `write_warm_block(stream, study, trials, sampler_state=None)` | Writes rows and optional state to a binary stream and returns its byte count. Concatenate chunks without separators. |
+| C++ `TpeSampler::warm_start(shared_ptr<const WarmStartSource>, batch, state)` | A pristine sampler retains immutable shared rows, validates and reconstructs without proposal replay. A matching optional checkpoint restores exact state. |
 
 `WarmStartSource` rows must have strictly increasing unique IDs, valid typed
 parameters in search-space declaration order and optional finite feasible
@@ -152,6 +152,20 @@ Avoid `all` when retaining the original binary plus new chunk records is suffici
 The legacy 256-MiB cap applies only to JSON; binary supports up to `UINT32_MAX`
 total rows across blocks and int32 indices for at most 2^31 grid/choice values.
 
+## Contract changes in 0.6.1
+
+TPE warm start never replays historical proposals. New result checkpoints preserve
+exact continuation for the same sampler implementation and numerical build; legacy
+row-only histories reconstruct deterministically instead. The existing batch argument
+remains source-compatible but is ignored. See the continuation controls and sampler
+rules for the explicit legacy compatibility change.
+
+Full-history model construction and density evaluation parallelize independent
+dimensions on up to eight hardware threads once the history is large enough. Candidate
+sampling remains serial, every dimension preserves its original arithmetic order,
+and density ratios reduce in declaration order. No behavior flag or changed default
+is required. The optional bounded estimator still has distinct model semantics.
+
 ## Contract changes in 0.5.0
 
 ### Continuation controls
@@ -162,7 +176,7 @@ total rows across blocks and int32 indices for at most 2^31 grid/choice values.
 | Native `run ... --warm-start FILE` | Same input formats, checks, samplers and billing contract. |
 | `space-info --spec STUDY [--warm-start FILE]` | Read-only JSON with `cardinality`, `tried`, `remaining`, `space_hash`; no compilation, plugin loading or dataset access. |
 | Python `prepare_run(..., warm_start=FILE)` | Preflight, then return native argv and artifact metadata without launching. |
-| C++ `TpeSampler::warm_start(history, replay_batch_size)` | Import `WarmStartObservation` candidates plus optional finite objectives into a pristine sampler; return whether exact batch replay succeeded. |
+| C++ `TpeSampler::warm_start(history, replay_batch_size, sampler_state)` | Import candidates and optional finite objectives; return whether the optional checkpoint restored exact state. The legacy batch argument is retained but ignored in 0.6.1. |
 
 `space-info` uses the count of **unique attempted vectors**, not successful observations.
 `cardinality` and `remaining` are `null` for continuous or uint64-overflowing spaces.
@@ -216,7 +230,26 @@ JSONL instead. A standalone `trials` array must likewise contain the entire inte
 ancestry and each trial's recorded space. JSON inputs are capped at 256 MiB;
 the v2 binary cap and minimal ancestor representation are described above.
 
-TPE results expose `warm_start_model: "replayed_batches" | "rebuilt_history"`.
+In 0.6.1, TPE results expose
+`warm_start_model: "restored_sampler_state" | "rebuilt_history"`,
+`replay_contract: "sampler_checkpoint_v1"`, and `tpe_sampler_state` when no
+candidates remain outstanding. `TpeSampler::sampler_state()` provides the same
+opaque, checksummed checkpoint to C++ callers and refuses outstanding candidates.
+Keep the complete history alongside this checkpoint; a checkpoint is not a trial store.
+Matching configuration, seed, direction and typed history restore exact RNG and
+bounded model state. A changed seed/configuration/history falls back to deterministic
+reconstruction; malformed checkpoint bytes fail closed. Lag-one runner continuation
+also reconstructs, as before. New batch sizes are accepted but only matching future
+ask/tell schedules preserve the uninterrupted sequence.
+
+**Legacy TPE compatibility:** row-only v0.5/v0.6 JSON/JSONL/binary histories no longer
+replay proposals, even for complete matching lag-zero batches. Their next proposals
+are deterministic reconstructed-history suggestions, not necessarily the old replay
+stream. Numeric rejection draws and finite reservation retries depend on historical
+models, so their exact RNG cursor cannot be inferred from winning terminal rows.
+Grid/random behavior is unchanged. Complete 0.6.1 result JSON and native warm-encode
+preserve checkpoints; a JSONL trial stream or reduced result needs separately retained
+complete rows and the checkpoint to recover exact TPE continuation.
 `generated()` counts new proposals, `completed()` includes imported trainable
 observations, and `outstanding()` starts at zero. New IDs follow the highest imported
 ID, including failed/pruned trials. Import validates all observations before mutating

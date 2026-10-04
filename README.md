@@ -285,10 +285,19 @@ there is no file footer or total-file trial count to rewrite. IDs are uint64 to
 preserve the existing ID domain. The app can use the dependency-free
 `pineforge_hpo.warm_binary.write_warm_block` reference writer for each ingested chunk.
 Keep the app's per-object SHA-256 and keep mapped files immutable during a run.
-JSON warm inputs remain accepted in 0.6.0 (with their existing 256-MiB cap).
+JSON warm inputs remain accepted in 0.6.1 (with their existing 256-MiB cap).
 Binary input currently requires `execution.pruner=none`; use JSON for rung history.
 See the [byte-level v2 specification](docs/study-spec.md)
 and [resource benchmark](benchmarks/warm/README.md).
+
+**TPE continuation in 0.6.1:** historical proposals are never replayed. Keep the complete
+result's `tpe_sampler_state` checkpoint with all attempted rows to preserve the exact
+uninterrupted stream; native `warm-encode` carries it into optional `PFHSTATE` blocks.
+Python ingest writers accept `sampler_state=`. Legacy row-only v0.5/v0.6 parents remain
+valid but use deterministic reconstruction, not the previous matching-batch TPE replay
+promise. Grid/random continuation is unchanged. Older binary readers reject the optional
+state extension; omit it for those readers. Full-history TPE fit/scoring now uses up to
+eight cores with unchanged suggestion arithmetic; `history_switch` is still opt-in.
 
 ## Define a study
 

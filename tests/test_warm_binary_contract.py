@@ -79,14 +79,25 @@ def check(directory, native, baseline, plugin):
                     _, parent, parent_path, _ = run(
                         baseline, plugin, csv, directory, sampler, batch, trials=128,
                         dimensions=dimensions, extra=extra, label=label + "-parent")
+                    if sampler == "tpe":
+                        _, checkpoint_parent, checkpoint_path, _ = run(
+                            native, plugin, csv, directory, sampler, batch, trials=128,
+                            dimensions=dimensions, extra=extra, label=label + "-checkpoint")
+                        require(fingerprint(parent) == fingerprint(checkpoint_parent),
+                                f"{label}: fresh suggestions differ from baseline")
+                        parent = checkpoint_parent
+                        parent_path = checkpoint_path
                     binary_path = directory / (label + ".bin")
                     multi_path = directory / (label + "-multi.bin")
-                    single = encode_warm_block(study, parent["trials"])
+                    state = parent.get("tpe_sampler_state")
+                    single = encode_warm_block(study, parent["trials"], sampler_state=state)
                     binary_path.write_bytes(single)
                     chunks = [parent["trials"][begin:begin + 17]
                               for begin in range(0, 128, 17)]
-                    multi_path.write_bytes(b"".join(encode_warm_block(study, chunk)
-                                                   for chunk in reversed(chunks)))
+                    multi_path.write_bytes(b"".join(
+                        encode_warm_block(study, chunk,
+                                          sampler_state=state if index == 0 else None)
+                        for index, chunk in enumerate(reversed(chunks))))
                     encoded_path = directory / (label + "-native.bin")
                     process = subprocess.run(
                         [str(native), "warm-encode", "--spec", str(spec_path),
@@ -120,8 +131,8 @@ def check(directory, native, baseline, plugin):
                     evidence.append({"case": label, "suggestions": 48,
                                      "suggestion_sha256": expected,
                                      "warm_sha256": hashlib.sha256(single).hexdigest(),
-                                     "comparisons": ["v0.5-json", "v0.6-json",
-                                                     "v0.6-binary", "reversed-blocks"]})
+                                     "comparisons": ["baseline-replay", "checkpoint-json",
+                                                     "checkpoint-binary", "reversed-blocks"]})
     evidence.extend(check_fallback(directory, native, baseline, plugin, csv))
     return evidence
 

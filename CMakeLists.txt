@@ -121,7 +121,8 @@ target_include_directories(pineforge_hpo_core
         $<INSTALL_INTERFACE:include>)
 target_compile_options(pineforge_hpo_core PRIVATE
     -Wall -Wextra -Wpedantic)
-target_link_libraries(pineforge_hpo_core PUBLIC dlib::dlib)
+find_package(Threads REQUIRED)
+target_link_libraries(pineforge_hpo_core PUBLIC dlib::dlib Threads::Threads)
 
 if(PINEFORGE_HPO_BUILD_ENGINE_ADAPTER)
     add_library(pineforge_hpo_engine_adapter STATIC

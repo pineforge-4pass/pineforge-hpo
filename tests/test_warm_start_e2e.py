@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 import subprocess
+import struct
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -153,9 +154,33 @@ def main():
         for segment in metric.split("."):
             value = value[segment]
         require(fixed["metrics"][metric] == value, f"canonical/native {metric} differs")
+    trade_probe = directory / "real-strategy-trades"
+    subprocess.run(
+        ["g++", "-std=c++17", "-O2", "-ffp-contract=off", "-I", str(ROOT / "include"),
+         "-I", str(ROOT / "external/pineforge-engine/include"),
+         "-I", str(ROOT / "external/pineforge-engine/build/include"),
+         str(ROOT / "tests/real_strategy_trades.cpp"),
+         str(ROOT / "src/engine_adapter/strategy_plugin.cpp"),
+         str(ROOT / "src/engine_adapter/dataset.cpp"), "-ldl", "-o", str(trade_probe)],
+        check=True, timeout=120,
+    )
+    trade_process = subprocess.run(
+        [str(trade_probe), plugin, str(csv)], capture_output=True, check=True, timeout=60,
+    )
+    (directory / "native-trades.json").write_bytes(trade_process.stdout)
+    actual_trades = json.loads(trade_process.stdout)
+    require(len(actual_trades) == len(canonical["trades"]), "canonical trade rows differ")
+    for actual_trade, expected_trade in zip(actual_trades, canonical["trades"]):
+        for field, value in actual_trade.items():
+            expected = expected_trade[field]
+            if type(value) is float:
+                require(struct.pack("<d", value) == struct.pack("<d", expected),
+                        f"canonical/native trade {field} bits differ")
+            else:
+                require(value == expected, f"canonical/native trade {field} differs")
     print(
         f"PASS CANONICAL: fixed Entry Level=101, trades={fixed['total_trades']}, "
-        f"identical metrics={','.join(metrics)}",
+        f"identical C-ABI trade fields and metrics={','.join(metrics)}",
         flush=True,
     )
 
@@ -222,14 +247,18 @@ def main():
             _, parent, parent_path, parent_jsonl = run(
                 label + "-parent", sampler, policy, batch
             )
+            exact_parent = parent_path if sampler == "tpe" else parent_jsonl
             child_bytes, child, child_path, _ = run(
-                label + "-child", sampler, policy, batch, warm=parent_jsonl
+                label + "-child", sampler, policy, batch, warm=exact_parent
             )
             binary_path = directory / (label + ".bin")
-            binary_path.write_bytes(encode_warm_block(study, parent["trials"]))
+            state = parent.get("tpe_sampler_state")
+            binary_path.write_bytes(encode_warm_block(study, parent["trials"],
+                                                    sampler_state=state))
             multi_path = directory / (label + "-multi.bin")
             multi_path.write_bytes(b"".join(
-                encode_warm_block(study, parent["trials"][begin:begin + 37])
+                encode_warm_block(study, parent["trials"][begin:begin + 37],
+                                  sampler_state=state if begin == 0 else None)
                 for begin in range(0, 200, 37)))
             for mode, warm_path in (("binary", binary_path), ("multi", multi_path)):
                 _, binary_child, _, _ = run(
@@ -237,7 +266,7 @@ def main():
                 require(child["trials"] == binary_child["trials"],
                         f"real strategy {mode} differs from JSON continuation")
             replay_bytes, _, _, _ = run(
-                label + "-replay", sampler, policy, batch, warm=parent_jsonl
+                label + "-replay", sampler, policy, batch, warm=exact_parent
             )
             require(child_bytes == replay_bytes, "continuation is not byte-identical")
             _, from_result, _, _ = run(
@@ -247,7 +276,7 @@ def main():
             _, long_run, _, _ = run(label + "-long", sampler, policy, batch, trials=400)
             require(
                 child["warm_start"]["source_sha256"]
-                == hashlib.sha256(parent_jsonl.read_bytes()).hexdigest(),
+                == hashlib.sha256(exact_parent.read_bytes()).hexdigest(),
                 "source SHA mismatch",
             )
             require(

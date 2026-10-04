@@ -43,6 +43,27 @@ class WarmBinaryTests(unittest.TestCase):
         self.assertEqual(write_warm_block(stream, self.study, self.trials), 247)
         self.assertEqual(stream.getvalue(), encode_warm_block(self.study, self.trials))
 
+    def test_optional_sampler_state(self):
+        payload = "opaque checkpoint\n"
+        state = (
+            "PFHTPE1\n" + hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
+        )
+        encoded = state.encode()
+        plain = encode_warm_block(self.study, self.trials)
+        expected = plain + b"PFHSTATE" + struct.pack("<Q", len(encoded)) + encoded
+        self.assertEqual(
+            encode_warm_block(self.study, self.trials, sampler_state=state), expected
+        )
+        stream = io.BytesIO()
+        self.assertEqual(
+            write_warm_block(stream, self.study, self.trials, sampler_state=state),
+            len(expected),
+        )
+        self.assertEqual(stream.getvalue(), expected)
+        for invalid in ("", 1, "x" * (16 * 1024 * 1024 + 1)):
+            with self.assertRaises(WarmStartError):
+                encode_warm_block(self.study, self.trials, sampler_state=invalid)
+
     def test_order_and_minimal_fields(self):
         rich = copy.deepcopy(self.trials)
         for trial in rich:

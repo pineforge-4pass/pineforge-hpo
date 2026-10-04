@@ -5,6 +5,12 @@ This suite compares the actual v0.5.0 native runner at
 benchmark, not an optimizer-quality, complete-job or storage-throughput claim.
 Raw evidence and CSV metadata stay under ignored `build/` directories.
 
+The historical v0.6.0 result measured format loading only. Since v0.6.1, row-only TPE
+parents reconstruct without proposal replay; exact continuation requires the optional
+sampler checkpoint. The [no-replay suite](../noreplay/README.md) measures import through
+the first new trial, tests checkpoint continuation against the old replay oracle, and
+compares exact full-history versus opted-in bounded batch cost.
+
 ## Resource protocol
 
 Use an otherwise idle little-endian Linux machine with 8 vCPU. Each measured

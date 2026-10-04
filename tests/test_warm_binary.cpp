@@ -54,6 +54,31 @@ void run(const std::filesystem::path& directory) {
     const auto json_path = directory / "warm.json";
     write(json_path, detail::dump_json(document));
     const auto legacy = detail::load_warm_history(json_path, space, recorded);
+    pfh::TpeSampler full_state(space, 73, pfh::ObjectiveDirection::Maximize);
+    full_state.warm_start(legacy.observations);
+    pfh::TpeSampler partial_state(space, 73, pfh::ObjectiveDirection::Maximize);
+    partial_state.warm_start(std::vector<pfh::WarmStartObservation>(
+        legacy.observations.begin(), legacy.observations.begin() + 1));
+    const auto state_block = [](const std::string& state) {
+        std::ostringstream output;
+        output.write(reinterpret_cast<const char*>(detail::warm_state_magic.data()), 8);
+        detail::warm_write_integer(output, static_cast<std::uint64_t>(state.size()));
+        output << state;
+        return output.str();
+    };
+    const auto full_checkpoint = full_state.sampler_state();
+    const auto state_path = directory / "state.bin";
+    write(state_path, single + state_block(full_checkpoint) +
+                     state_block(partial_state.sampler_state()));
+    const auto state_history = detail::load_warm_history(state_path, space, recorded);
+    require(state_history.sampler_state == full_checkpoint,
+            "out-of-order checkpoint selection used a stale state");
+    pfh::TpeSampler restored(space, 73, pfh::ObjectiveDirection::Maximize);
+    require(restored.warm_start(state_history.binary, 8, state_history.sampler_state),
+            "binary checkpoint was not restored");
+    write(state_path, single + state_block(full_checkpoint) + state_block(full_checkpoint));
+    require(detail::load_warm_history(state_path, space, recorded).sampler_state == full_checkpoint,
+            "identical duplicate checkpoints were rejected");
     for (std::uint64_t row = 0; row < history.size(); ++row) {
         const auto actual = history.binary->observation(space, row);
         const auto& expected = legacy.observations[row];

@@ -393,6 +393,7 @@ class BinaryWarmSource;
 
 struct WarmHistory {
     std::string source_sha256;
+    std::string sampler_state;
     std::vector<WarmStartObservation> observations;
     std::vector<std::vector<std::optional<double>>> rung_scores;
     std::vector<Json> records;
@@ -426,6 +427,14 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
         const Json* parent_space = nullptr;
         std::optional<Json> legacy_space;
         if (document && document->kind == Json::Kind::Object && document->find("trials")) {
+            if (const auto* state = document->find("tpe_sampler_state")) {
+                history.sampler_state = state->text();
+                const auto& checkpoint = history.sampler_state;
+                if (checkpoint.size() > 16 * 1024 * 1024 || checkpoint.size() < 73 ||
+                    checkpoint.substr(0, 8) != "PFHTPE1\n" || checkpoint[72] != '\n' ||
+                    sha256(std::string_view(checkpoint).substr(73)) != checkpoint.substr(8, 64))
+                    throw std::runtime_error("invalid sampler-state checksum/version");
+            }
             if (const auto* mode = document->find("trials_out"); mode && mode->text() != "all")
                 throw std::runtime_error("summary/none result is not a complete trial history");
             const auto& records = field(*document, "trials");

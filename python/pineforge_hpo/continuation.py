@@ -246,6 +246,19 @@ def load_warm_start(study: StudySpec, path: str | Path) -> WarmHistory:
             document = None
         parent_space = None
         if isinstance(document, dict) and "trials" in document:
+            if "tpe_sampler_state" in document:
+                checkpoint = document["tpe_sampler_state"]
+                if not isinstance(checkpoint, str):
+                    raise ValueError("sampler-state must be a string")
+                if (
+                    len(checkpoint.encode("utf-8")) > 16 * 1024 * 1024
+                    or len(checkpoint) < 73
+                    or not checkpoint.startswith("PFHTPE1\n")
+                    or checkpoint[72] != "\n"
+                    or hashlib.sha256(checkpoint[73:].encode("utf-8")).hexdigest()
+                    != checkpoint[8:72]
+                ):
+                    raise ValueError("invalid sampler-state checksum/version")
             if document.get("trials_out", "all") != "all":
                 raise ValueError("summary/none result is not a complete trial history")
             own_trials = document["trials"]
