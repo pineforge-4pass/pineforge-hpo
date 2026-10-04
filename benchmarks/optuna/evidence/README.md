@@ -1,5 +1,13 @@
 # Published benchmark evidence
 
+## 0.4.0 full-history default identity
+
+`2026-10-04-default-full-history-identity.csv` contains all 24 default-mode
+studies (eight problems, three seeds, 3,000 proposals): 72,000 compared
+proposal/value records and zero differences versus pinned 0.3.0. Its adjacent
+metadata and SHA-256 sidecar record verified paired trace hashes, binaries,
+sampler sources, and pins. See the [identity report](../../scaling/default-2026-10-04.md).
+
 This directory contains the compact machine-readable evidence for
 [`results-2026-07-18.md`](../results-2026-07-18.md). These are current reruns of
 the documented profiles, not reconstructed metadata for an older unpublished
@@ -38,3 +46,58 @@ and version remain recorded without exposing a contributor's home directory.
 Ad-hoc benchmark outputs belong under ignored `build/`. Files enter this
 directory only when they are small, tied to a reviewed result, and published
 with a verified metadata sidecar.
+
+## Native scaling 0.4.0
+
+The reviewed measurements in [`../../scaling/README.md`](../../scaling/README.md)
+publish three compact CSVs with adjacent `.csv.metadata.json` sidecars:
+
+| Profile | CSV | Verified CSV SHA-256 |
+|---|---|---|
+| Acquisition versus history | [`2026-10-03-scale-ask.csv`](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/benchmarks/optuna/evidence/2026-10-03-scale-ask.csv) | `47f9d9c85add8c06ae9fd0e26edb481e8d02bae4a4ccb717fca52e1d331e05be` |
+| Native throughput, retention, billing | [`2026-10-03-scale-native.csv`](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/benchmarks/optuna/evidence/2026-10-03-scale-native.csv) | `7aa11607484bce378946ce7d66faac68797a8f290be63393e0c4bfc464a763d5` |
+| Paired normalized-regret quality | [`2026-10-03-scale-quality.csv`](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/benchmarks/optuna/evidence/2026-10-03-scale-quality.csv) | `c37edecfcae2881c19c63ee6e3f753978ec739117f442ed929d37df96b427574` |
+
+The sidecars include exact source and measured binary hashes, compiler/platform,
+engine/codegen/COCO pins, row counts, and verified CSV hashes. Acquisition rows
+distinguish baseline snapshot asks from after batch-eight feedback. Native rows
+distinguish the light million-trial gate, output-only matrix, hourly real-strategy
+shapes, and the slow magnifier shape. Quality includes the pinned hard-suite
+replica and 32D extension, with 144 paired studies and zero maximum paired delta
+at 100/300/1,000 trials. No long-budget quality-equivalence claim is made.
+
+## Review-fix evidence (release blocked)
+
+The [review-fix report](../../scaling/review-2026-10-03.md) supersedes the original
+sampler measurements. `2026-10-03-review-quality.csv` contains 500 per-seed
+comparisons across five complete configurations at 3k/10k, with trace hashes,
+binary hashes, frozen-reference description, normalizer and source provenance.
+Adjacent `review-ask`, `review-native`, and `review-ordinal` CSVs record flat
+history probes, finite before/after plus the final million-trial run, and dense
+versus disk insertion. Every CSV has a verified `.csv.metadata.json` sidecar.
+The selected 3k geomean is 1.015738: **the required <=1.01 gate fails**.
+
+## Historical history-switch retry evidence (superseded)
+
+The [history-switch report](../../scaling/switch-2026-10-03.md) supersedes the
+review-fix estimator measurements. `2026-10-03-switch-quality.csv` contains 100
+per-seed comparisons (80 at 3k, 20 at 10k). Adjacent `switch-ask`, `switch-native`,
+`switch-ordinal`, and `switch-identity` CSVs record the default-selection and flat
+history probes, 100k/1M billing runs, dense/disk insertion, and 96 prefix identity
+studies. Each CSV has a verified metadata sidecar with source/binary/trace hashes,
+pins and protocol limitations. The historical 3k/10k geomeans are 1.164189/1.118446:
+**both quality gates fail**. Identity has zero differing proposal/value records;
+it is not a long-budget quality-equivalence claim.
+
+## Final 1,000-observation switch evidence (bounded opt-in)
+
+The [final report](../../scaling/final-2026-10-04.md) records the completed-only
+1,000-observation model, now explicit opt-in rather than the default.
+`2026-10-04-final-1000-quality.csv` contains 100 per-seed
+comparisons: 80 at 3k versus pinned 0.3.0 and 20 at 10k versus the benchmark-only
+full-history variant. Final geomeans are 1.036492/1.031570; both revised geomean
+gates failed; these are accepted opt-in tradeoffs. Rotated ellipsoid 20D is 1.245558
+at 3k. The earlier 1.6% tradeoff
+must not be substituted for these measurements. Adjacent `ask`, `native`, `ordinal`,
+and `identity` CSVs have verified source/binary/trace/hash sidecars and record the
+flat-history, billing/memory, membership, and exact-prefix gates.

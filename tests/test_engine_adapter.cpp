@@ -174,7 +174,7 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     }
 
     const int length = static_cast<int>(parse_or(state->inputs, "Length", 0.0));
-    if (prefix_test) {
+    if (prefix_test && parse_or(state->inputs, "BatchPrefixJitter", 1.0) == 1.0) {
         std::this_thread::sleep_for(std::chrono::milliseconds((length % 7) + 1));
     }
     if (bar_count > parse_or(state->inputs, "FailAfterBars", 1e9)) {

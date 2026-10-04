@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <random>
@@ -117,6 +118,15 @@ struct TpeSamplerConfig {
     /// This scale-independent constant-liar policy discourages concurrent asks from proposing
     /// the same region.
     bool constant_liar = true;
+
+    /// Optional completed-observation threshold for bounded models; nullopt means never switch.
+    std::optional<std::uint64_t> history_switch = std::nullopt;
+
+    /// Acquisition draws after the history switch; never exceeds ei_candidates.
+    std::uint64_t scale_ei_candidates = 8;
+
+    /// Uniform older non-elite reservoir size, in addition to 64 recent observations.
+    std::uint64_t bad_reservoir_size = 448;
 };
 
 /// @brief Independent, single-objective Tree-structured Parzen Estimator sampler.
@@ -129,6 +139,14 @@ struct TpeSamplerConfig {
 /// next() is an alias for ask(). Every returned candidate remains outstanding until tell() or
 /// abandon() receives its ID. Public methods are thread-safe, although deterministic replay
 /// requires the same ordering of ask/tell/abandon calls.
+///
+/// By default, proposals use the exact full-history estimator for the entire study.
+/// An explicit history_switch opts into bounded models after that many completed observations.
+/// Thereafter the sampler retains at most gamma_cap elite observations and 64 recent non-elite
+/// observations plus bad_reservoir_size older non-elites from a separate seeded reservoir.
+/// Outstanding or abandoned proposals never advance the switch. Numeric density tables,
+/// elite-change good-model refits, and 32-completion bad-model epochs bound
+/// work independently of study length.
 class TpeSampler final : public Sampler {
 public:
     /// Constructs a native TPE sampler; `max_candidates == 0` means unbounded generation.
@@ -176,6 +194,8 @@ public:
     std::uint64_t completed() const noexcept;
     /// Returns the number of candidates awaiting tell() or abandon().
     std::uint64_t outstanding() const noexcept;
+    /// Returns the bounded number of completed observations kept for density estimation.
+    std::size_t retained_observations() const;
     /// Returns internal duplicate proposals rejected by a finite policy.
     std::uint64_t duplicate_proposals_skipped() const noexcept;
     /// Returns the reproducibility seed.

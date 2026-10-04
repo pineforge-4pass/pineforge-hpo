@@ -1,6 +1,8 @@
 #include "pineforge/hpo/sampler.hpp"
+#include "ordinal_set.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -241,7 +243,8 @@ class NumericModel {
 public:
     NumericModel(std::vector<double> values,
                  const std::vector<double>& weights,
-                 double prior_weight) {
+                 double prior_weight, bool fast_density = false)
+        : fast_density_(fast_density) {
         if (values.size() != weights.size()) {
             throw std::logic_error("TPE numeric values and weights have different sizes");
         }
@@ -273,6 +276,36 @@ public:
             add_component(sorted[i].value, sigma, sorted[i].weight);
         }
         add_component(0.5, 1.0, prior_weight);
+        for (auto& component : components_) {
+            component.log_weight = std::log(component.weight / total_weight_);
+            component.log_normalizer = truncated_log_normalizer(component);
+            component.log_sigma = std::log(component.sigma);
+            component.amplitude = std::exp(component.log_weight - kLogSqrtTwoPi -
+                                           component.log_sigma - component.log_normalizer);
+        }
+        if (fast_density_) {
+            for (const auto& component : components_) {
+                const double step = 1.0 / (density_.size() - 1) / component.sigma;
+                const auto first = static_cast<std::size_t>(std::max(0.0,
+                    std::floor((component.mean - 8.0 * component.sigma) *
+                               (density_.size() - 1))));
+                const auto last = static_cast<std::size_t>(std::min(
+                    static_cast<double>(density_.size() - 1),
+                    std::ceil((component.mean + 8.0 * component.sigma) *
+                              (density_.size() - 1))));
+                const double standardized =
+                    (static_cast<double>(first) / (density_.size() - 1) - component.mean) /
+                    component.sigma;
+                double term = component.amplitude * std::exp(-0.5 * standardized * standardized);
+                double ratio = std::exp(-standardized * step - 0.5 * step * step);
+                const double ratio_step = std::exp(-step * step);
+                for (auto index = first; index <= last; ++index) {
+                    density_[index] += term;
+                    term *= ratio;
+                    ratio *= ratio_step;
+                }
+            }
+        }
     }
 
     double sample(std::mt19937_64& engine) const {
@@ -300,22 +333,79 @@ public:
 
     double log_density(double value) const {
         const double bounded = std::clamp(value, 0.0, 1.0);
+        if (fast_density_) {
+            const double position = bounded * (density_.size() - 1);
+            const auto index = std::min(static_cast<std::size_t>(position), density_.size() - 2);
+            const double fraction = position - index;
+            return std::log(density_[index] + fraction * (density_[index + 1] - density_[index]));
+        }
         return mixture_log_density([&](const Component& component) {
             const double standardized = (bounded - component.mean) / component.sigma;
-            return -kLogSqrtTwoPi - std::log(component.sigma) - 0.5 * standardized * standardized -
-                   truncated_log_normalizer(component);
+            return -kLogSqrtTwoPi - component.log_sigma - 0.5 * standardized * standardized -
+                   component.log_normalizer;
         });
     }
 
     double log_bin_mass(double lower, double upper) const {
         const double bounded_lower = std::clamp(lower, 0.0, 1.0);
         const double bounded_upper = std::clamp(upper, bounded_lower, 1.0);
+        if (fast_density_ && bounded_upper - bounded_lower <= 1e-4 &&
+            bounded_upper > bounded_lower) {
+            return log_density((bounded_lower + bounded_upper) * 0.5) +
+                   std::log(bounded_upper - bounded_lower);
+        }
         return mixture_log_density([&](const Component& component) {
             const double standardized_lower = (bounded_lower - component.mean) / component.sigma;
             const double standardized_upper = (bounded_upper - component.mean) / component.sigma;
             return log_normal_interval(standardized_lower, standardized_upper) -
-                   truncated_log_normalizer(component);
+                   component.log_normalizer;
         });
+    }
+
+    struct PendingComponent {
+        double mean;
+        double sigma;
+        double amplitude;
+    };
+
+    std::vector<PendingComponent> pending_components(const std::vector<double>& values) const {
+        std::vector<PendingComponent> result;
+        result.reserve(values.size());
+        const double sigma = 1.0 /
+            std::min<std::size_t>(100, components_.size() + values.size() + 1);
+        for (const double mean : values) {
+            const double normalizer = log_normal_interval(-mean / sigma, (1.0 - mean) / sigma);
+            result.push_back({mean, sigma,
+                              std::exp(-kLogSqrtTwoPi - std::log(sigma) - normalizer)});
+        }
+        return result;
+    }
+
+    double pending_log_density(double value, const std::vector<PendingComponent>& pending) const {
+        if (pending.empty())
+            return log_density(value);
+        double density = std::exp(log_density(value)) * total_weight_;
+        for (const auto& component : pending) {
+            const double standardized = (value - component.mean) / component.sigma;
+            density += component.amplitude * std::exp(-0.5 * standardized * standardized);
+        }
+        return std::log(density / (total_weight_ + pending.size()));
+    }
+
+    double pending_log_bin_mass(double lower, double upper,
+                               const std::vector<PendingComponent>& pending) const {
+        if (pending.empty())
+            return log_bin_mass(lower, upper);
+        if (fast_density_ && upper - lower <= 1e-4 && upper > lower)
+            return pending_log_density((lower + upper) * 0.5, pending) + std::log(upper - lower);
+        double mass = std::exp(log_bin_mass(lower, upper)) * total_weight_;
+        for (const auto& component : pending) {
+            const double normalizer = std::exp(log_normal_interval(
+                -component.mean / component.sigma, (1.0 - component.mean) / component.sigma));
+            mass += std::exp(log_normal_interval((lower - component.mean) / component.sigma,
+                (upper - component.mean) / component.sigma)) / normalizer;
+        }
+        return std::log(mass / (total_weight_ + pending.size()));
     }
 
 private:
@@ -323,6 +413,10 @@ private:
         double mean;
         double sigma;
         double weight;
+        double log_weight = 0.0;
+        double log_normalizer = 0.0;
+        double log_sigma = 0.0;
+        double amplitude = 0.0;
     };
 
     static double truncated_log_normalizer(const Component& component) {
@@ -333,12 +427,11 @@ private:
     template <typename ComponentLogProbability>
     double mixture_log_density(ComponentLogProbability&& component_log_probability) const {
         double largest = -std::numeric_limits<double>::infinity();
-        std::vector<double> terms;
-        terms.reserve(components_.size());
+        terms_.clear();
         for (const auto& component : components_) {
             const double log_probability =
-                std::log(component.weight / total_weight_) + component_log_probability(component);
-            terms.push_back(log_probability);
+                component.log_weight + component_log_probability(component);
+            terms_.push_back(log_probability);
             largest = std::max(largest, log_probability);
         }
         if (largest == -std::numeric_limits<double>::infinity()) {
@@ -346,7 +439,7 @@ private:
         }
 
         double scaled_sum = 0.0;
-        for (const double term : terms) {
+        for (const double term : terms_) {
             scaled_sum += std::exp(term - largest);
         }
         return largest + std::log(scaled_sum);
@@ -362,6 +455,10 @@ private:
     }
 
     std::vector<Component> components_;
+    std::array<double, 513> density_{};
+    // Shared model scratch is accessed only while the owning sampler holds Impl::mutex_.
+    mutable std::vector<double> terms_;
+    bool fast_density_;
     double total_weight_ = 0.0;
 };
 
@@ -379,6 +476,7 @@ public:
         for (const double weight : weights) {
             mixture_weight += weight;
         }
+        mixture_weight_ = mixture_weight;
 
         // Each observed categorical kernel is a smoothed point mass.  The
         // final prior kernel is uniform.  A mixture of categorical kernels can
@@ -419,18 +517,35 @@ public:
         return std::log(masses_.at(value) / total_mass_);
     }
 
+    double pending_log_density(std::size_t value, const std::vector<double>& pending) const {
+        if (pending.empty())
+            return log_density(value);
+        double mass = masses_.at(value) / total_mass_ * mixture_weight_;
+        const double alpha = 1.0 / (mixture_weight_ + pending.size());
+        for (const double observed : pending)
+            mass += (alpha + (observed == value ? 1.0 : 0.0)) / (1.0 + alpha * masses_.size());
+        return std::log(mass / (mixture_weight_ + pending.size()));
+    }
+
 private:
     std::vector<double> masses_;
     double total_mass_ = 0.0;
+    double mixture_weight_ = 0.0;
 };
 
 void validate_config(const TpeSamplerConfig& config) {
+    if (config.history_switch && *config.history_switch == 0)
+        throw std::invalid_argument("TPE history_switch must be positive");
     if (config.startup_trials == 0) {
         throw std::invalid_argument("TPE startup_trials must be positive");
     }
     if (config.ei_candidates == 0 || config.ei_candidates > kMaxEiCandidates) {
         throw std::invalid_argument("TPE ei_candidates must be in [1, 1000000]");
     }
+    if (config.scale_ei_candidates == 0 || config.scale_ei_candidates > kMaxEiCandidates)
+        throw std::invalid_argument("TPE scale_ei_candidates must be in [1, 1000000]");
+    if (config.bad_reservoir_size > 65536)
+        throw std::invalid_argument("TPE bad_reservoir_size must be in [0, 65536]");
     if (!std::isfinite(config.gamma_fraction) || config.gamma_fraction <= 0.0 ||
         config.gamma_fraction > 1.0) {
         throw std::invalid_argument("TPE gamma_fraction must be finite and in (0, 1]");
@@ -466,7 +581,7 @@ public:
                 const std::uint64_t mask = std::uint64_t{1} << (ordinal % 64U);
                 return (dense_words_[word] & mask) != 0;
             }
-            return sparse_ordinals_.count(ordinal) != 0;
+            return sparse_ordinals_.contains(ordinal);
         }
 
         bool insert(std::uint64_t ordinal) {
@@ -483,7 +598,7 @@ public:
                 ++size_;
                 return true;
             }
-            const bool inserted = sparse_ordinals_.insert(ordinal).second;
+            const bool inserted = sparse_ordinals_.insert(ordinal);
             if (inserted) {
                 ++size_;
             }
@@ -504,7 +619,7 @@ public:
         std::uint64_t cardinality_;
         bool dense_;
         std::vector<std::uint64_t> dense_words_;
-        std::unordered_set<std::uint64_t> sparse_ordinals_;
+        detail::OrdinalSet sparse_ordinals_;
         std::uint64_t size_ = 0;
     };
 
@@ -547,16 +662,17 @@ public:
         };
 
         Kind kind = Kind::Fixed;
-        std::unique_ptr<NumericModel> good_numeric;
-        std::unique_ptr<NumericModel> bad_numeric;
-        std::unique_ptr<CategoricalModel> good_categorical;
-        std::unique_ptr<CategoricalModel> bad_categorical;
+        std::shared_ptr<NumericModel> good_numeric;
+        std::shared_ptr<NumericModel> bad_numeric;
+        std::shared_ptr<CategoricalModel> good_categorical;
+        std::shared_ptr<CategoricalModel> bad_categorical;
     };
 
     Impl(const SearchSpace& space,
          std::uint64_t seed,
          std::optional<std::uint64_t> finite_cardinality)
-        : engine_(seed), finite_cardinality_(finite_cardinality) {
+        : engine_(seed), reservoir_engine_(seed ^ 0xd1b54a32d192ed03ULL),
+          finite_cardinality_(finite_cardinality) {
         if (finite_cardinality_.has_value()) {
             reservations_.emplace(*finite_cardinality_);
         }
@@ -577,8 +693,16 @@ public:
             throw std::logic_error("TPE cannot reset while candidates are outstanding");
         }
         engine_.seed(seed);
+        reservoir_engine_.seed(seed ^ 0xd1b54a32d192ed03ULL);
         history_.clear();
+        older_bad_.clear();
+        older_bad_seen_ = 0;
+        compact_history_ = false;
+        cached_models_.clear();
+        good_ids_.clear();
+        bad_ids_.clear();
         pending_.clear();
+        pending_encodings_.clear();
         if (reservations_.has_value()) {
             reservations_->clear();
         }
@@ -633,14 +757,14 @@ public:
         return candidate;
     }
 
-    std::optional<Candidate> tpe_candidate(const SearchSpace& space,
-                                           std::uint64_t id,
-                                           const TpeSamplerConfig& config) {
+    void refresh_models(const SearchSpace& space, const TpeSamplerConfig& config) {
         std::vector<const CompletedObservation*> ranked;
-        ranked.reserve(history_.size());
+        ranked.reserve(history_.size() + older_bad_.size());
         for (const auto& observation : history_) {
             ranked.push_back(&observation);
         }
+        for (const auto& observation : older_bad_)
+            ranked.push_back(&observation);
         std::sort(ranked.begin(), ranked.end(), [](const auto* left, const auto* right) {
             if (left->score != right->score) {
                 return left->score > right->score;
@@ -648,7 +772,10 @@ public:
             return left->candidate.id < right->candidate.id;
         });
 
-        const std::size_t good_count = gamma_count(history_.size(), config);
+        const std::size_t good_count = compact_history_
+            ? std::min(history_.size() - 1,
+                       gamma_count(completed_.load(std::memory_order_relaxed), config))
+            : gamma_count(history_.size(), config);
         std::vector<const Candidate*> good;
         std::vector<const Candidate*> bad;
         good.reserve(good_count);
@@ -662,7 +789,7 @@ public:
         };
         std::sort(good.begin(), good.end(), chronological);
         std::sort(bad.begin(), bad.end(), chronological);
-        if (config.constant_liar) {
+        if (config.constant_liar && !compact_history_) {
             for (const auto& [pending_id, candidate] : pending_) {
                 (void)pending_id;
                 bad.push_back(&candidate);
@@ -672,19 +799,81 @@ public:
 
         const auto good_weights = observation_weights(good.size());
         const auto bad_weights = observation_weights(bad.size());
-        std::vector<DimensionModel> models;
-        models.reserve(space.dimensions().size());
-        for (std::size_t i = 0; i < space.dimensions().size(); ++i) {
-            models.push_back(build_model(space.dimensions()[i], encodings_[i], good, bad,
-                                         good_weights, bad_weights, config.prior_weight));
+        std::vector<std::uint64_t> good_ids;
+        std::vector<std::uint64_t> bad_ids;
+        for (const auto* candidate : good)
+            good_ids.push_back(candidate->id);
+        for (const auto* candidate : bad)
+            bad_ids.push_back(candidate->id);
+        const auto model_epoch = completed_.load(std::memory_order_relaxed) / 32;
+        const bool reuse_good = good_ids == good_ids_ &&
+                                !cached_models_.empty() &&
+                                compact_history_ == cached_compact_;
+        const bool reuse_bad = (compact_history_ ? model_epoch == cached_epoch_
+                                                : bad_ids == bad_ids_) &&
+                               !cached_models_.empty() &&
+                               compact_history_ == cached_compact_;
+        if (!reuse_good || !reuse_bad) {
+            std::vector<DimensionModel> updated;
+            updated.reserve(space.dimensions().size());
+            for (std::size_t index = 0; index < space.dimensions().size(); ++index) {
+                updated.push_back(build_model(space.dimensions()[index], encodings_[index],
+                    good, bad, good_weights, bad_weights, config.prior_weight, compact_history_,
+                    cached_models_.empty() ? nullptr : &cached_models_[index], reuse_good,
+                    reuse_bad));
+            }
+            cached_models_ = std::move(updated);
+            good_ids_ = std::move(good_ids);
+            bad_ids_ = std::move(bad_ids);
+            cached_compact_ = compact_history_;
+            cached_epoch_ = model_epoch;
+        }
+    }
+
+    std::optional<Candidate> tpe_candidate(const SearchSpace& space,
+                                         std::uint64_t id,
+                                         const TpeSamplerConfig& config) {
+        const auto model_epoch = completed_.load(std::memory_order_relaxed) / 32;
+        bool good_changed = false;
+        if (compact_history_ && cached_compact_ && !cached_models_.empty()) {
+            const auto good_count = std::min(history_.size() - 1,
+                gamma_count(completed_.load(std::memory_order_relaxed), config));
+            std::vector<std::uint64_t> current_ids;
+            current_ids.reserve(good_count);
+            for (std::size_t index = 0; index < good_count; ++index)
+                current_ids.push_back(history_[index].candidate.id);
+            std::sort(current_ids.begin(), current_ids.end());
+            good_changed = current_ids != good_ids_;
+        }
+        if (!compact_history_ || !cached_compact_ || cached_models_.empty() ||
+            model_epoch != cached_epoch_ || good_changed)
+            refresh_models(space, config);
+        const auto& models = cached_models_;
+
+        std::vector<std::vector<double>> pending_values(models.size());
+        std::vector<std::vector<NumericModel::PendingComponent>> pending_numeric(models.size());
+        if (compact_history_ && config.constant_liar) {
+            for (std::size_t index = 0; index < models.size(); ++index) {
+                for (const auto& entry : pending_encodings_)
+                    pending_values[index].push_back(entry.second[index]);
+                if (models[index].kind == DimensionModel::Kind::Numeric)
+                    pending_numeric[index] =
+                        models[index].bad_numeric->pending_components(pending_values[index]);
+            }
         }
 
         std::optional<Candidate> best;
+        std::vector<ParameterValue> values;
+        std::vector<ParameterValue> best_values;
+        values.reserve(models.size());
         std::unordered_set<std::uint64_t> acquisition_ordinals;
         double best_log_ratio = -std::numeric_limits<double>::infinity();
-        for (std::uint64_t attempt = 0; attempt < config.ei_candidates; ++attempt) {
+        const auto attempts = compact_history_
+            ? std::min(config.ei_candidates, config.scale_ei_candidates) : config.ei_candidates;
+        for (std::uint64_t attempt = 0; attempt < attempts; ++attempt) {
             Candidate candidate;
             candidate.id = id;
+            values.clear();
             double log_ratio = 0.0;
             for (std::size_t i = 0; i < space.dimensions().size(); ++i) {
                 const auto& dimension = space.dimensions()[i];
@@ -696,21 +885,25 @@ public:
                 if (model.kind == DimensionModel::Kind::Numeric) {
                     const double sampled = model.good_numeric->sample(engine_);
                     value = decode_numeric(dimension, encoding, sampled);
-                    const double legal = encode_numeric(dimension, encoding, value);
+                    const bool continuous = encoding.kind == EncodingKind::ContinuousReal ||
+                                            encoding.kind == EncodingKind::LogContinuousReal;
+                    const double legal = compact_history_ && continuous ? sampled :
+                        encode_numeric(dimension, encoding, value);
                     if (encoding.kind == EncodingKind::ContinuousReal ||
                         encoding.kind == EncodingKind::LogContinuousReal) {
                         contribution = model.good_numeric->log_density(legal) -
-                                       model.bad_numeric->log_density(legal);
+                            model.bad_numeric->pending_log_density(legal, pending_numeric[i]);
                     } else {
                         const auto [lower, upper] = numeric_bin(dimension, encoding, value);
                         contribution = model.good_numeric->log_bin_mass(lower, upper) -
-                                       model.bad_numeric->log_bin_mass(lower, upper);
+                            model.bad_numeric->pending_log_bin_mass(lower, upper,
+                                                                    pending_numeric[i]);
                     }
                 } else if (model.kind == DimensionModel::Kind::Categorical) {
                     const std::size_t sampled = model.good_categorical->sample(engine_);
                     value = decode_categorical(dimension, sampled);
                     contribution = model.good_categorical->log_density(sampled) -
-                                   model.bad_categorical->log_density(sampled);
+                        model.bad_categorical->pending_log_density(sampled, pending_values[i]);
                 } else {
                     value = fixed_value(dimension);
                 }
@@ -723,9 +916,12 @@ public:
                 if (!std::isfinite(log_ratio)) {
                     throw std::logic_error("TPE acquisition log ratio is non-finite");
                 }
-                candidate.values.emplace(std::string(dimension_name(dimension)), std::move(value));
+                values.push_back(std::move(value));
             }
             if (reservations_.has_value()) {
+                for (std::size_t index = 0; index < values.size(); ++index)
+                    candidate.values.emplace(std::string(dimension_name(space.dimensions()[index])),
+                                             values[index]);
                 const std::uint64_t ordinal = space.candidate_ordinal(candidate);
                 if (reservations_->contains(ordinal) ||
                     !acquisition_ordinals.insert(ordinal).second) {
@@ -736,7 +932,13 @@ public:
             if (!best.has_value() || log_ratio > best_log_ratio) {
                 best_log_ratio = log_ratio;
                 best = std::move(candidate);
+                best_values = values;
             }
+        }
+        if (best && !reservations_) {
+            for (std::size_t index = 0; index < best_values.size(); ++index)
+                best->values.emplace(std::string(dimension_name(space.dimensions()[index])),
+                                     std::move(best_values[index]));
         }
         return best;
     }
@@ -767,6 +969,66 @@ public:
         return candidate;
     }
 
+    void retain_observation(Candidate candidate, double score) {
+        history_.push_back({std::move(candidate), score});
+    }
+
+    void compact_observations(const TpeSamplerConfig& config) {
+        if (!config.history_switch)
+            return;
+        const std::size_t elite_count = static_cast<std::size_t>(config.gamma_cap);
+        const std::size_t recent_count = 64;
+        if (!compact_history_ &&
+            completed_.load(std::memory_order_relaxed) < *config.history_switch)
+            return;
+        compact_history_ = true;
+        if (history_.size() <= elite_count + recent_count)
+            return;
+        std::sort(history_.begin(), history_.end(), [](const auto& left, const auto& right) {
+            return left.score != right.score ? left.score > right.score
+                                            : left.candidate.id < right.candidate.id;
+        });
+        std::sort(history_.begin() + elite_count, history_.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.candidate.id > right.candidate.id;
+                  });
+        const auto retained = elite_count + recent_count;
+        for (auto index = history_.size(); index > retained; --index) {
+            ++older_bad_seen_;
+            if (older_bad_.size() < config.bad_reservoir_size) {
+                older_bad_.push_back(std::move(history_[index - 1]));
+            } else if (config.bad_reservoir_size != 0) {
+                const auto selected = bounded_random(reservoir_engine_, older_bad_seen_);
+                if (selected < older_bad_.size())
+                    older_bad_[selected] = std::move(history_[index - 1]);
+            }
+        }
+        history_.resize(retained);
+    }
+
+    bool register_pending(const SearchSpace& space, const Candidate& candidate) {
+        std::vector<double> values;
+        values.reserve(encodings_.size());
+        for (std::size_t index = 0; index < encodings_.size(); ++index) {
+            const auto& dimension = space.dimensions()[index];
+            const auto& encoding = encodings_[index];
+            const auto& value = *candidate.find(std::string(dimension_name(dimension)));
+            if (encoding.kind == EncodingKind::FixedInteger ||
+                encoding.kind == EncodingKind::FixedReal)
+                values.push_back(0.5);
+            else if (encoding.kind == EncodingKind::Boolean ||
+                encoding.kind == EncodingKind::Categorical ||
+                encoding.kind == EncodingKind::FixedCategorical)
+                values.push_back(categorical_index(dimension, value));
+            else
+                values.push_back(encode_numeric(dimension, encoding, value));
+        }
+        const auto inserted = pending_.emplace(candidate.id, candidate).second;
+        if (inserted)
+            pending_encodings_.emplace(candidate.id, std::move(values));
+        return inserted;
+    }
+
     bool finite_space_exhausted() const noexcept {
         return reservations_.has_value() && finite_cardinality_.has_value() &&
                reservations_->size() == *finite_cardinality_;
@@ -774,9 +1036,19 @@ public:
 
     std::mutex mutex_;
     std::mt19937_64 engine_;
+    std::mt19937_64 reservoir_engine_;
     std::vector<Encoding> encodings_;
     std::vector<CompletedObservation> history_;
+    std::vector<CompletedObservation> older_bad_;
+    std::uint64_t older_bad_seen_ = 0;
+    bool compact_history_ = false;
+    bool cached_compact_ = false;
+    std::uint64_t cached_epoch_ = 0;
+    std::vector<DimensionModel> cached_models_;
+    std::vector<std::uint64_t> good_ids_;
+    std::vector<std::uint64_t> bad_ids_;
     std::map<std::uint64_t, Candidate> pending_;
+    std::map<std::uint64_t, std::vector<double>> pending_encodings_;
     std::optional<std::uint64_t> finite_cardinality_;
     std::optional<FiniteReservationSet> reservations_;
     std::uint64_t fallback_cursor_ = 0;
@@ -1183,7 +1455,9 @@ private:
                                       const std::vector<const Candidate*>& bad,
                                       const std::vector<double>& good_weights,
                                       const std::vector<double>& bad_weights,
-                                      double prior_weight) {
+                                      double prior_weight, bool fast_density,
+                                      const DimensionModel* cached, bool reuse_good,
+                                      bool reuse_bad) {
         DimensionModel model;
         if (encoding.kind == EncodingKind::FixedInteger ||
             encoding.kind == EncodingKind::FixedReal ||
@@ -1200,17 +1474,18 @@ private:
             std::vector<double> bad_values;
             good_values.reserve(good.size());
             bad_values.reserve(bad.size());
-            for (const Candidate* candidate : good) {
+            for (const Candidate* candidate : reuse_good ? std::vector<const Candidate*>{} : good) {
                 good_values.push_back(encode_numeric(dimension, encoding, *candidate->find(name)));
             }
-            for (const Candidate* candidate : bad) {
+            for (const Candidate* candidate : reuse_bad ? std::vector<const Candidate*>{} : bad) {
                 bad_values.push_back(encode_numeric(dimension, encoding, *candidate->find(name)));
             }
             model.kind = DimensionModel::Kind::Numeric;
-            model.good_numeric =
-                std::make_unique<NumericModel>(good_values, good_weights, prior_weight);
-            model.bad_numeric =
-                std::make_unique<NumericModel>(bad_values, bad_weights, prior_weight);
+            model.good_numeric = reuse_good ? cached->good_numeric :
+                std::make_shared<NumericModel>(good_values, good_weights, prior_weight,
+                                               fast_density);
+            model.bad_numeric = reuse_bad ? cached->bad_numeric :
+                std::make_shared<NumericModel>(bad_values, bad_weights, prior_weight, fast_density);
             return model;
         }
 
@@ -1218,17 +1493,19 @@ private:
         std::vector<std::size_t> bad_values;
         good_values.reserve(good.size());
         bad_values.reserve(bad.size());
-        for (const Candidate* candidate : good) {
+        for (const Candidate* candidate : reuse_good ? std::vector<const Candidate*>{} : good) {
             good_values.push_back(categorical_index(dimension, *candidate->find(name)));
         }
-        for (const Candidate* candidate : bad) {
+        for (const Candidate* candidate : reuse_bad ? std::vector<const Candidate*>{} : bad) {
             bad_values.push_back(categorical_index(dimension, *candidate->find(name)));
         }
         model.kind = DimensionModel::Kind::Categorical;
-        model.good_categorical = std::make_unique<CategoricalModel>(
-            static_cast<std::size_t>(encoding.count), good_values, good_weights, prior_weight);
-        model.bad_categorical = std::make_unique<CategoricalModel>(
-            static_cast<std::size_t>(encoding.count), bad_values, bad_weights, prior_weight);
+        model.good_categorical = reuse_good ? cached->good_categorical :
+            std::make_shared<CategoricalModel>(static_cast<std::size_t>(encoding.count),
+                                               good_values, good_weights, prior_weight);
+        model.bad_categorical = reuse_bad ? cached->bad_categorical :
+            std::make_shared<CategoricalModel>(static_cast<std::size_t>(encoding.count),
+                                               bad_values, bad_weights, prior_weight);
         return model;
     }
 };
@@ -1297,7 +1574,10 @@ std::optional<Candidate> TpeSampler::ask() {
         return std::nullopt;
     }
 
-    const bool startup = impl_->history_.size() < config_.startup_trials || impl_->history_.empty();
+    impl_->compact_observations(config_);
+    const bool startup =
+        impl_->completed_.load(std::memory_order_relaxed) < config_.startup_trials ||
+        impl_->history_.empty();
     std::optional<Candidate> candidate;
     if (candidate_policy_ == CandidatePolicy::SamplerDefault) {
         candidate = startup ? std::optional<Candidate>(impl_->random_candidate(space_, generated))
@@ -1332,8 +1612,7 @@ std::optional<Candidate> TpeSampler::ask() {
         throw std::logic_error("TPE generated an invalid candidate");
     }
 
-    const auto inserted = impl_->pending_.emplace(candidate->id, *candidate);
-    if (!inserted.second) {
+    if (!impl_->register_pending(space_, *candidate)) {
         throw std::logic_error("duplicate TPE candidate id");
     }
     impl_->generated_.store(generated + 1, std::memory_order_relaxed);
@@ -1354,10 +1633,12 @@ void TpeSampler::tell(std::uint64_t candidate_id, double objective_value) {
     }
     const double score =
         direction_ == ObjectiveDirection::Maximize ? objective_value : -objective_value;
-    impl_->history_.push_back({found->second, score});
+    impl_->retain_observation(found->second, score);
     impl_->pending_.erase(found);
+    impl_->pending_encodings_.erase(candidate_id);
     impl_->outstanding_.fetch_sub(1, std::memory_order_relaxed);
     impl_->completed_.fetch_add(1, std::memory_order_relaxed);
+    impl_->compact_observations(config_);
 }
 
 void TpeSampler::abandon(std::uint64_t candidate_id) {
@@ -1368,6 +1649,7 @@ void TpeSampler::abandon(std::uint64_t candidate_id) {
                                     std::to_string(candidate_id));
     }
     impl_->pending_.erase(found);
+    impl_->pending_encodings_.erase(candidate_id);
     impl_->outstanding_.fetch_sub(1, std::memory_order_relaxed);
 }
 
@@ -1385,6 +1667,11 @@ std::uint64_t TpeSampler::completed() const noexcept {
 
 std::uint64_t TpeSampler::outstanding() const noexcept {
     return impl_->outstanding_.load(std::memory_order_relaxed);
+}
+
+std::size_t TpeSampler::retained_observations() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex_);
+    return impl_->history_.size() + impl_->older_bad_.size();
 }
 
 std::uint64_t TpeSampler::duplicate_proposals_skipped() const noexcept {

@@ -272,6 +272,8 @@ def main() -> int:
         )
 
         tpe_args = (
+            "--tpe-history-switch",
+            "128",
             "--tpe-startup-trials",
             "3",
             "--tpe-ei-candidates",
@@ -304,7 +306,7 @@ def main() -> int:
             "native result omitted the HPO version",
         )
         require(
-            tpe_json["sampler_implementation"] == "pineforge_product_tpe_v2",
+            tpe_json["sampler_implementation"] == "pineforge_product_tpe_v3_bounded",
             "native result omitted the TPE implementation version",
         )
         require(tpe_json["sampler"] == "tpe", "wrong TPE sampler in output")
@@ -329,6 +331,9 @@ def main() -> int:
             == {
                 "startup_trials": 3,
                 "ei_candidates": 16,
+                "scale_ei_candidates": 8,
+                "history_switch": 128,
+                "bad_reservoir_size": 448,
                 "gamma_fraction": 0.25,
                 "gamma_cap": 4,
                 "prior_weight": 1.5,
@@ -337,6 +342,9 @@ def main() -> int:
             "TPE configuration was not preserved in result provenance",
         )
         tpe_trials = tpe_json["trials"]
+        require(tpe_json["tpe_history_switch"] == 128 and
+                all(trial["tpe_history_switch"] == 128 for trial in tpe_trials),
+                "TPE history switch is missing from the result or trial archive")
         unique_tpe_parameters = {
             tuple(sorted(trial["parameters"].items())) for trial in tpe_trials
         }
@@ -371,6 +379,14 @@ def main() -> int:
             length_high=20,
         )
         require(tpe_repeat.returncode == 0, "repeated native TPE study failed")
+        tpe_default = invoke(native, plugin, csv, sampler="tpe", max_trials=12)
+        require(tpe_default.returncode == 0, "default full-history TPE study failed")
+        tpe_default_json = json.loads(tpe_default.stdout)
+        require(tpe_default_json["tpe_history_switch"] is None and
+                tpe_default_json["sampler_config"]["history_switch"] is None and
+                all(trial["tpe_history_switch"] is None
+                    for trial in tpe_default_json["trials"]),
+                "unset TPE history switch must be recorded as null")
         tpe_repeat_trials = json.loads(tpe_repeat.stdout)["trials"]
         require(
             [trial["parameters"] for trial in tpe_trials]
@@ -411,7 +427,7 @@ def main() -> int:
         )
         require(
             exhaustive_tpe_json["sampler_implementation"]
-            == "pineforge_product_tpe_v2_finite"
+            == "pineforge_product_tpe_v3_bounded_finite"
             and exhaustive_tpe_json["candidate_policy"] == "exhaustive"
             and exhaustive_tpe_json["candidate_policy_implementation"]
             == "pineforge_finite_space_v1",

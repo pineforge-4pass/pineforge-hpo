@@ -162,8 +162,8 @@ Four native samplers are implemented:
 - `TpeSampler` fits independent per-dimension Parzen marginals and exposes the
   same explicit adaptive request lifecycle.
 
-Grid and random candidates may be generated before execution. dlib and TPE
-candidates must be interleaved with feedback. The scheduler proposes a fixed
+Grid and random candidates are generated lazily; dlib and TPE
+candidates are interleaved with feedback. The scheduler proposes a fixed
 logical batch (`--batch-size`, defaulting to workers), runs its backtests on a
 persistent FIFO thread pool, and commits results in trial-id order. Only the
 coordinator touches samplers and pruning history. An explicit batch size makes
@@ -208,10 +208,28 @@ vectors. `without_replacement` validates `trials <= cardinality`;
 `exhaustive` validates equality. Grid covers the same declared set in its stable
 order. The two orders need not have the same intermediate best-so-far sequence.
 
-The current TPE model is rebuilt from all usable observations. Its proposal
-cost and memory therefore grow with study history; it is a refinement sampler,
-not the engine for a `10^6`-`10^8` candidate sweep. The implementation does not
-silently cap or discard history.
+Version 0.4.0 keeps exact 0.3.0 full-history TPE by default (`history_switch=null`,
+meaning never switch). Explicit `history_switch=N` opts into bounded models at N
+completed usable observations; below N the estimator remains exact. The
+retained set is the global best `gamma_cap` observations plus 64 recent
+non-elites plus a separately seeded reservoir of older non-elites (default 448).
+Each observation enters the older pool once when it leaves the recent window;
+uniform reservoir replacement preserves global bad-model coverage without growing
+history. An explicit larger switch increases the full-history prefix, not the bounded window.
+Fitted numeric density tables use 513 points with Gaussian recurrence and an
+eight-sigma cutoff, interpolating densities and using midpoint mass for tiny
+discrete bins. Good models refit whenever elite IDs change; bad models refit every
+32 completions, with unchanged elites and cached epochs bypassing split construction.
+Pending constant-liar overlays update on every ask. Eight acquisition draws replace
+24 after the switch (configurable). Failed/pruned requests, outstanding proposals,
+worker count, and wall time do not advance the switch. Only successful finite `tell()`
+calls increment the completed observation count; `reset()` restores exact-prefix mode.
+
+In opted-in mode, no SIMD or candidate-scoring threads are required: bounding observations, model
+refits, and acquisition draws makes history cost flat while leaving execution
+cores available for backtests. See [scaling measurements](../benchmarks/scaling/README.md).
+Exact sparse finite reservation/coverage sets use temporary disk indexes with
+bounded resident workspace; finite spaces up to 100,000,000 use capped bitsets.
 
 Log dimensions share one transform contract across adaptive samplers. TPE
 encodes observations as `z = ln(value)` and fits numeric kernels in normalized
@@ -316,13 +334,15 @@ and launches the native executable.
 `pineforge-hpo-native` consumes a compiled strategy plugin, one OHLCV CSV,
 search dimensions, fixed inputs, strategy overrides, objective/constraint
 expressions, sampler settings, and worker count. It produces a JSON study
-summary with every trial and the best feasible trial.
+summary with the best feasible trial and selectable trial retention. `all` is
+the compatibility default; `best-k` and `none` avoid per-trial payload retention.
+Full terminal records may stream to fd progress and an optional NDJSON file.
 
 The native CLI intentionally knows nothing about Pine parsing or codegen.
 Its result JSON includes `schema_version`, `pineforge_hpo_version`, and a stable
 `sampler_implementation` identifier in addition to the sampler configuration,
-seed, complete trial table, and artifact key. Proposal-sequence comparisons must
-match all of those fields plus worker count and search-space definition. The
+seed, retained trial table, and artifact key. Proposal-sequence comparisons must
+match all of those fields plus logical batch size, lag, pruning, and search space. The
 policy layer also persists `candidate_policy`,
 `candidate_policy_implementation`, `search_space_finite`,
 `search_space_cardinality`, `trials_requested`, `trials_completed`,
@@ -336,6 +356,12 @@ trial status to be `ok` or `constraint_violation`. It is false after any engine,
 objective, constraint-evaluation, serialization, or other trial error. The flag
 still relies on the study's artifact, data, runtime, objective, and constraints
 being deterministic; it cannot detect external nondeterminism.
+
+In bounded output modes a scalar archive tracks whole-study status/coverage,
+while a heap retains only best-k feasible records. One ID-ordered writer drains
+a bounded queue and flushes complete terminal lines. Final `summary` exposes
+counts, best-k, and coverage even when `trials` is empty. The progress stream is
+the billing authority; final retention never suppresses a terminal progress line.
 
 ## Current study mode
 

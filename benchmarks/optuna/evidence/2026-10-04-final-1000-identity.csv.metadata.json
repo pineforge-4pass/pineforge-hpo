@@ -1,0 +1,53 @@
+{
+  "schema": "pineforge-hpo.scaling-evidence.v1",
+  "version": "0.4.0",
+  "baseline_revision": "6ccb6d4",
+  "rebased_main_revision": "13885b9",
+  "history_switch": 1000,
+  "ask_budget_us_64d": 375,
+  "switch_policy": "owner-approved full-history prefix; no per-dimension selection budget",
+  "platform": {
+    "system": "Linux",
+    "machine": "x86_64"
+  },
+  "compiler": "g++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "build": "Release, C++17, -O3 -DNDEBUG; AWS c6i.2xlarge, 8 vCPU",
+  "source_sha256": {
+    "src/core/tpe_sampler.cpp": "a28a92d4fc479f4820848dcf5153051aedb927b9abda8998dd6280d95c0dfbdf",
+    "src/core/pruner.cpp": "4127dd4df4e13ea5c01d7f794507c3eafb7bd268689967a85a3cc5e489e23af0",
+    "src/core/ordinal_set.hpp": "c705af5c2e737c7b2b4a7f7f73061d4594f79dc06ee486de3a0a854a52e25cd7",
+    "src/cli/main.cpp": "b62dc3b489bd67edb0402fbc63802dc6fbea30b0334b5566df1cc11820f1529b",
+    "src/cli/batch_executor.hpp": "38eff70993831d99b6e160b25469d4532ddad816189f57cc6b234417a28e8021",
+    "include/pineforge/hpo/sampler.hpp": "f7a58bc1272c6afba7802c98f145db690e16067b193a123cc3f72570ac7b8cff",
+    "python/pineforge_hpo/study_spec.py": "b2425ae456246bfdeca33dca8a9cf3f1c085cb496d771a331d3d9bf2f940428f",
+    "python/pineforge_hpo/cli.py": "cff113a4412ae81e82c253199cec7ec76b2660e88164cabbd87b9d8af43b32a8",
+    "benchmarks/scaling/collect_evidence.py": "ce296d3b1e3e9b366567b75552c702f6eca38ab15bbbafe6e9c3cc1216873828",
+    "benchmarks/scaling/collect_review.py": "d456b66666f4c27b181abb9f6e9399f15e2228e01c49d6626025769814aed3c1",
+    "benchmarks/scaling/collect_switch.py": "06c2d8ad8eeed58d50a220dafc4461fbec95cb0d8821f7798a1ffefa72fdb9f1",
+    "benchmarks/scaling/full_history_reference.py": "0fff0666b1a53c25dee321b4bfe73f6ea9542c278be34af364d3b051fe01ca70",
+    "benchmarks/scaling/identity_replay.py": "2312112d761ad0da9e76d8f0a22d604345b00a767dbecfce791e0af3d30d2946",
+    "benchmarks/scaling/quality_long.py": "cf66250a13821934ee73b1d57929401ba9c9fb16892c65d32eaa942e0d9f1de3",
+    "benchmarks/scaling/quality_replica.py": "a0d1f1aaaa3daacbc0b8328a5c6fb39857c9cf38268650629b60d6e049899d69",
+    "benchmarks/scaling/run_native.py": "a2917422b8b04a5202ed4f8e0c1a90b3411664e67f5650cfaa6cd19d95041e2a",
+    "benchmarks/scaling/identity.cpp": "46b562e8e0597c9f33c160b47c96dd1189e3ea724028bf621af691ccba71d5a9",
+    "benchmarks/scaling/ordinal_profile.cpp": "0ac66710e4ad1a0e8197df7da1997b17b693694e356c4ca0642530bd6f31620c",
+    "benchmarks/scaling/profile.cpp": "fc357881bad8441f8c3b1a00ce65b122835441c5522928d662550f63745297fd"
+  },
+  "normalizers_sha256": "eb2bba79ccf37df54021d88564701ed91b671081ac700d8d851f6137bb9064f3",
+  "coco_repository": "numbbo/coco-experiment",
+  "coco_revision": "dd4bd1f0cc7699a2b612448d85aafb94636fe947",
+  "coco_source_verification": "pinned revision; generated version 2.8.3-dev8+gdd4bd1f0",
+  "engine_revision": "5718c5dc05086fc5b66b4cb565617efe837131e3",
+  "codegen_revision": "5bf595b5e826562c131710b3e93e96e6f8e0a0e4",
+  "quality_gate": "blocked",
+  "studies": 96,
+  "proposal_value_records": 84096,
+  "diff_count": 0,
+  "binary_sha256": {
+    "baseline": "a5cbfdc0aa505474acebf49c726156acf1548ab6b7644afa6376fcc7afe0f811",
+    "switch": "c96e8f38f8d30e326f045278ef5a59df1b5ef77d054cbd54c3f8a53b4943a195"
+  },
+  "protocol": "pinned instance1, ordered ask/tell batches of eight",
+  "rows": 96,
+  "csv_sha256": "f373047ac1aff7f9dcb21f63f604d801c739aa37f2a806cad6cdcb793d3b3eb5"
+}

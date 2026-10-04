@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.4.0
+
+- Keep exact 0.3.0 full-history TPE by default for the entire study. The default
+  history switch is unset (`null` in StudySpec/results means never switch).
+  Opt into `--tpe-history-switch N` to bound native TPE history to 25 global elites,
+  64 recent non-elites, and a seeded reservoir of 448 older non-elites. Cache numeric
+  density tables, refit good models on elite changes and bad models every 32 completions,
+  skip split construction on cache hits, retain live constant-liar overlays, and use eight
+  draws after the switch. Outstanding and abandoned proposals, workers, and elapsed time
+  never advance the switch. Add `--tpe-history-switch N` and StudySpec
+  `sampler.config.history_switch`; record additive `tpe_history_switch` in results and
+  TPE terminal records, plus `sampler_config.history_switch`. Schema version remains 1,
+  and all existing terminal fields/types and billing counters remain unchanged.
+  Record the
+  `pineforge_product_tpe_v3_bounded` identity and `scale_ei_candidates` setting.
+- Add `--tpe-bad-reservoir-size` (default 448, maximum 65,536) and the additive
+  `sampler_config.bad_reservoir_size` result field. Exact proposals below the switch
+  are an identity check, not evidence of long-budget quality equivalence.
+- Make bounded TPE opt-in after measured long-budget refinement costs. With N=1,000,
+  eight problems and ten seeds at 3k give geomean 1.036492 versus 0.3.0,
+  with worst ratio 1.245558. Four problems and five seeds at 10k give geomean 1.031570,
+  with worst
+  ratio 1.091497 versus the benchmark-only full-history variant. This is about 3.65%
+  worse per-problem median regret at 3k, not the superseded round-one 1.6% result.
+  Recommend N=1,000 for 10k–1M studies when flat cost outweighs this quality tradeoff.
+  Full-history default memory and ask cost remain history-growing.
+  The completed-only transition changes reservoir initialization relative to that run;
+  do not reuse its quality claims. Keep the reservoir, EI settings, and quality thresholds.
+  See `benchmarks/scaling/final-2026-10-04.md` for prefix identity, all suites, and the
+  measured 64D throughput limit. Larger switches preserve legacy behavior longer but
+  retain its history-growing ask cost.
+- Final 64D bounded asks cost 656.450/663.061 us at 100k/1M, above the 375-us budget.
+  The synthetic W8 million-trial run completes in 919.82 s with 21,152 KiB peak RSS
+  and every billing line strictly parsed. This is not a universal backtest throughput claim.
+- Generate grid/random candidates lazily, use all workers for deadline-only adaptive studies,
+  and accept `--max-trials 0 --max-wall-seconds S` without imposing a trial cap.
+- Add native `--trials-out all|best-k|none`, `--best-k N` (default 10), and optional
+  `--trials-file FILE` terminal-trial NDJSON. `all` remains the compatibility default;
+  `best-k` and `none` bound resident trial retention independently of trial count.
+- Keep `schema_version: 1` and every existing terminal-trial field/type unchanged, including
+  all three billing bar counters. Progress and trials-file lines are now monotonic by trial
+  ID, complete and flushed on cooperative stop, with bounded writer backpressure.
+- Add result fields `trials_out`, `best_k`, `search_space_cardinality_overflow`, and, when
+  dropping the full list, `summary.counts_by_status`, `summary.best_k`, and
+  `summary.space_coverage`. In `none`, `trials` is empty; in `best-k` it contains retained
+  feasible winners. Existing best/coverage/count fields describe the entire study.
+- Permit default adaptive sampling when a finite Cartesian product exceeds uint64;
+  cardinality is then null and the additive overflow flag is true. Exact finite policies
+  still require representable cardinality. Exact ordinal coverage uses a dense bitset up to
+  cardinality 100,000,000, with a disk-backed fallback above that bound. Disabled pruning
+  retains no history; enabled pruning keeps
+  the latest 1,024 observations per rung.
+- Add timing-sidecar proposal/barrier, progress serialization/write/byte, and final JSON
+  render/write/byte diagnostics; publish scaling and paired-quality evidence, a 100,000-trial
+  native memory/time regression, worker replay, output parity, and stop-flush tests.
+- Keep timeout archive insertion and progress enqueue atomic under backpressure. Bound
+  progress readiness waits to 50 ms and fail explicitly after a two-second stopped-reader
+  grace. Query each pipe's atomic limit with `fpathconf`, falling back to platform
+  `PIPE_BUF`, and write larger records in bounded chunks through the single ordered
+  writer instead of rejecting normal records on macOS. Complete cooperative-stop
+  delivery is unchanged; an I/O failure can leave an oversized record incomplete.
+  Billing still uses received complete progress lines, never incomplete records or
+  final-result counts following an I/O failure.
+- Exercise progress records larger than the platform's real pipe atomic limit under
+  nonblocking backpressure. Keep 3,000-trial output/pruner/worker replay tests and
+  their 1,000-observation switch, but disable artificial per-rung sleeps only in
+  the high-volume output fixture to avoid macOS timeouts. Smaller batching tests
+  retain variable delays to exercise out-of-order worker completion. Quality
+  thresholds and CTest timeouts are unchanged.
+- Extend worker replay past the sampler switch to 3,000 trials and give the native
+  quality suite a 300-second timeout to avoid spurious failures under benchmark load.
+- Native `prepare` is reserved for a separately gated 0.4.x follow-up; the existing Python
+  `prepare_run()` API remains available and unchanged.
+
 ## 0.3.1 — 2026-10-04
 
 - Native `--syminfo FILE` applies the instrument lot-size grid: an optional `mincontract`

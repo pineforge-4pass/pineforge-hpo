@@ -1,0 +1,29 @@
+{
+  "base_revision": "8db9840cbe96ea56db0984aa0110c6de65d43661",
+  "repository_dirty": true,
+  "selected_variant": "fresh",
+  "release_gate": "blocked",
+  "platform": {
+    "system": "Linux",
+    "machine": "x86_64"
+  },
+  "compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "source_sha256": {
+    "VERSION": "40b8eb4000a913a7791090535f291d3d369874162a89ef3c9e3d4e887a1b9e79",
+    "CMakeLists.txt": "5d9b7ad3c1a60ff2376ef057fab360ebd8785f04313f0d69426c83beec1a4e0f",
+    "src/core/tpe_sampler.cpp": "1eaef516671b4450744c30c4f3af675dff37212d73127bfd88dc53f29785b2e0",
+    "src/core/ordinal_set.hpp": "c705af5c2e737c7b2b4a7f7f73061d4594f79dc06ee486de3a0a854a52e25cd7",
+    "src/cli/main.cpp": "ce6174efc466d7a524e74d7ef74f21a93af0a2531d44896b537d121cb4327bb9",
+    "include/pineforge/hpo/sampler.hpp": "acb1862cd014e7118b357104378a186708ba4a66c2e2dd97f463431d1a9d6bc1",
+    "src/cli/batch_executor.hpp": "38eff70993831d99b6e160b25469d4532ddad816189f57cc6b234417a28e8021",
+    "tests/test_tpe_scale.cpp": "5dcf887b0577bf3c7c193df3ec76a1dac0ca857fe4db489b6717a9ade7f6717c",
+    "tests/test_trial_outputs.py": "5175d3113c01d62e3e1f6fc8124538dcdd7e4a89f82cb216b50e7c9790bcd8ab"
+  },
+  "normalizers_sha256": "eb2bba79ccf37df54021d88564701ed91b671081ac700d8d851f6137bb9064f3",
+  "coco_revision": "dd4bd1f0cc7699a2b612448d85aafb94636fe947",
+  "engine_revision": "5718c5dc05086fc5b66b4cb565617efe837131e3",
+  "codegen_revision": "5bf595b5e826562c131710b3e93e96e6f8e0a0e4",
+  "protocol": "W8 batch8 lag1, strict-parsed complete billing lines",
+  "rows": 3,
+  "csv_sha256": "442c11a93406f2dbcdb0b4fe356cef6d436b52b4d9446c159cd36bb83f153e6a"
+}

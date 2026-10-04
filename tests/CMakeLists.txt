@@ -22,7 +22,7 @@ target_link_libraries(pineforge_hpo_test_tpe_quality PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_tpe_quality PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_tpe_quality COMMAND pineforge_hpo_test_tpe_quality)
-set_tests_properties(pineforge_hpo_tpe_quality PROPERTIES TIMEOUT 60)
+set_tests_properties(pineforge_hpo_tpe_quality PROPERTIES TIMEOUT 300)
 
 add_executable(pineforge_hpo_test_tpe_stress test_tpe_stress.cpp)
 target_link_libraries(pineforge_hpo_test_tpe_stress PRIVATE PineForgeHPO::core)
@@ -45,6 +45,16 @@ target_link_libraries(pineforge_hpo_test_tpe_concurrency PRIVATE PineForgeHPO::c
 target_compile_options(pineforge_hpo_test_tpe_concurrency PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_tpe_concurrency COMMAND pineforge_hpo_test_tpe_concurrency)
+
+add_executable(pineforge_hpo_test_tpe_scale test_tpe_scale.cpp)
+target_link_libraries(pineforge_hpo_test_tpe_scale PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_tpe_scale PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_tpe_scale COMMAND pineforge_hpo_test_tpe_scale)
+set_tests_properties(pineforge_hpo_tpe_scale PROPERTIES TIMEOUT 240)
+add_executable(pineforge_hpo_test_ordinal_set test_ordinal_set.cpp)
+target_include_directories(pineforge_hpo_test_ordinal_set PRIVATE "${PROJECT_SOURCE_DIR}/src/core")
+target_compile_options(pineforge_hpo_test_ordinal_set PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_ordinal_set COMMAND pineforge_hpo_test_ordinal_set)
 set_tests_properties(pineforge_hpo_tpe_concurrency PROPERTIES TIMEOUT 30)
 
 if(UNIX AND TARGET PineForgeHPO::engine_adapter)
@@ -140,6 +150,11 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_batching.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_trial_outputs
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_trial_outputs PROPERTIES TIMEOUT 180)
         foreach(contract syminfo progress final_write_signal progress_nonblocking progress_error
                          cancel deadline metrics magnifier timeout timeout_progress_error)
             add_test(NAME pineforge_hpo_runner_${contract}

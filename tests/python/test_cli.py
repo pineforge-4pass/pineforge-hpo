@@ -324,6 +324,7 @@ class CliTests(unittest.TestCase):
             "config": {
                 "startup_trials": 12,
                 "ei_candidates": 48,
+                "history_switch": 4096,
                 "gamma_fraction": 0.2,
                 "gamma_cap": 30,
                 "prior_weight": 2.5,
@@ -345,6 +346,7 @@ class CliTests(unittest.TestCase):
         expected = {
             "--tpe-startup-trials": "12",
             "--tpe-ei-candidates": "48",
+            "--tpe-history-switch": "4096",
             "--tpe-gamma-fraction": "0.2",
             "--tpe-gamma-cap": "30",
             "--tpe-prior-weight": "2.5",
@@ -378,6 +380,7 @@ class CliTests(unittest.TestCase):
         }
         for option, value in expected.items():
             self.assertEqual(command[command.index(option) + 1], value)
+        self.assertNotIn("--tpe-history-switch", command)
 
     def test_log_dimensions_map_to_native_flags(self) -> None:
         document = json.loads(self.study_path.read_text(encoding="utf-8"))
