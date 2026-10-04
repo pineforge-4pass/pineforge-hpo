@@ -142,12 +142,15 @@ proposals can leave gaps. SIGTERM/deadline drains terminal lines before final
 output. Progress pipes are nonblocking, with 50-ms readiness checks and a two-second
 grace for a stalled reader after SIGTERM, deadline, or trial timeout. Expiring that
 grace is an explicit I/O error, not successful delivery; trial timeouts still exit 3.
-To preserve complete lines even on that error path, pipe records must fit the
-descriptor's `PIPE_BUF` atomic-write bound (4,096 bytes on the measured Linux host).
-Oversized records are rejected before any bytes of that record are written. Regular
-progress files and `--trials-file` have no such line-size limit. A broken destination
-is also an I/O error. After either failure, final counts may exceed delivered lines;
-only the successfully received progress lines are the billing record.
+The runner queries `fpathconf(fd, _PC_PIPE_BUF)` for each progress pipe, falling back
+to the platform's `PIPE_BUF` if no positive limit is available. Writes never exceed
+that limit. One writer owns the descriptor and finishes every record, including
+records larger than the atomic limit, before starting the next; workers cannot
+interleave records. The caller must not share the progress destination with another
+writer. There is no pipe record-size cap. Regular progress files and `--trials-file`
+are also unrestricted. A broken destination is an I/O error. After an I/O failure,
+final counts may exceed delivered lines and an oversized in-flight record may be
+incomplete; only complete, successfully received progress lines are the billing record.
 
 `schema_version` stays 1. Additive result fields are `trials_out`, `best_k`,
 `search_space_cardinality_overflow`, the conditional `summary` block, and

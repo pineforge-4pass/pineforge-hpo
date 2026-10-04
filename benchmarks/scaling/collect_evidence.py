@@ -25,18 +25,29 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     args.output.mkdir(parents=True, exist_ok=True)
-    sources = ["src/core/tpe_sampler.cpp", "src/core/pruner.cpp", "src/core/ordinal_set.hpp",
-               "src/cli/main.cpp", "src/cli/batch_executor.hpp",
-               "include/pineforge/hpo/sampler.hpp", "include/pineforge/hpo/pruner.hpp"]
-    sources.extend(str(path.relative_to(root)) for path in
-                   sorted((root / "benchmarks/scaling").glob("*")) if path.is_file())
+    sources = [
+        "src/core/tpe_sampler.cpp",
+        "src/core/pruner.cpp",
+        "src/core/ordinal_set.hpp",
+        "src/cli/main.cpp",
+        "src/cli/batch_executor.hpp",
+        "include/pineforge/hpo/sampler.hpp",
+        "include/pineforge/hpo/pruner.hpp",
+    ]
+    sources.extend(
+        str(path.relative_to(root))
+        for path in sorted((root / "benchmarks/scaling").glob("*"))
+        if path.is_file()
+    )
     common = {
         "schema": "pineforge-hpo.scaling-evidence.v1",
         "baseline_revision": "6ccb6d4",
         "version": "0.4.0",
         "platform": platform.platform(),
         "cpu": "Intel Xeon Platinum 8375C, 8 vCPU, 16 GiB",
-        "compiler": subprocess.check_output(["g++", "--version"], text=True).splitlines()[0],
+        "compiler": subprocess.check_output(
+            ["g++", "--version"], text=True
+        ).splitlines()[0],
         "build": "Release, C++17, -O3 -DNDEBUG",
         "source_sha256": {name: digest(root / name) for name in sources},
         "engine_revision": "5718c5dc05086fc5b66b4cb565617efe837131e3",
@@ -56,39 +67,71 @@ def main():
             writer.writeheader()
             writer.writerows(rows)
         sidecar = {**common, **metadata, "rows": len(rows), "csv_sha256": digest(path)}
-        path.with_suffix(".csv.metadata.json").write_text(json.dumps(sidecar, indent=2) + "\n")
+        path.with_suffix(".csv.metadata.json").write_text(
+            json.dumps(sidecar, indent=2) + "\n"
+        )
 
     asks = []
-    for phase, filename in (("before", "profile-before.ndjson"), ("after", "ask-final.ndjson")):
-        asks.extend({"phase": phase, **row} for row in read_lines(args.evidence / filename))
-    publish("ask", asks, {
-        "protocol": "random prefill, then timed ask; after uses 256 asks with batch8 feedback",
-        "limitations": "before is a snapshot probe, not a full million-trial adaptive run",
-    })
+    for phase, filename in (
+        ("before", "profile-before.ndjson"),
+        ("after", "ask-final.ndjson"),
+    ):
+        asks.extend(
+            {"phase": phase, **row} for row in read_lines(args.evidence / filename)
+        )
+    publish(
+        "ask",
+        asks,
+        {
+            "protocol": "random prefill, then timed ask; after uses 256 asks with batch8 feedback",
+            "limitations": "before is a snapshot probe, not a full million-trial adaptive run",
+        },
+    )
     profiles = []
     for directory in ("million-final", "real-final-v2", "real-slow", "output-final"):
-        profiles.extend({"suite": directory, **row} for row in
-                        read_lines(args.evidence / directory / "native-profiles.ndjson"))
-    profiles = list({(row["suite"], row["label"], row["trials_completed"]): row
-                     for row in profiles}.values())
-    publish("native", profiles, {
-        "protocol": "serial native runs; 8 workers; full fd billing strict-parsed when enabled",
-        "limitations": "one timing sample per shape; slow shape uses 16, not one million trials",
-    })
+        profiles.extend(
+            {"suite": directory, **row}
+            for row in read_lines(args.evidence / directory / "native-profiles.ndjson")
+        )
+    profiles = list(
+        {
+            (row["suite"], row["label"], row["trials_completed"]): row
+            for row in profiles
+        }.values()
+    )
+    publish(
+        "native",
+        profiles,
+        {
+            "protocol": "serial native runs; 8 workers; full fd billing strict-parsed when enabled",
+            "limitations": "one timing sample per shape; slow shape uses 16, not one million trials",
+        },
+    )
     quality = []
     summaries = {}
     for directory in ("quality-final", "quality-32"):
-        quality.extend({"suite": directory, **row} for row in
-                       json.loads((args.evidence / directory / "paired.json").read_text()))
+        quality.extend(
+            {"suite": directory, **row}
+            for row in json.loads(
+                (args.evidence / directory / "paired.json").read_text()
+            )
+        )
         summaries[directory] = json.loads(
-            (args.evidence / directory / "summary.json").read_text())
-    publish("quality", quality, {
-        "protocol": "paired pinned HPO-BENCH replica, instance1, seeds17/48/79, batch8",
-        "quality_summaries": summaries,
-        "limitations": "100/300/1000 trials only; no long-budget quality equivalence claim",
-    })
+            (args.evidence / directory / "summary.json").read_text()
+        )
+    publish(
+        "quality",
+        quality,
+        {
+            "protocol": "paired pinned HPO-BENCH replica, instance1, seeds17/48/79, batch8",
+            "quality_summaries": summaries,
+            "limitations": "100/300/1000 trials only; no long-budget quality equivalence claim",
+        },
+    )
     for path in sorted(args.output.glob("2026-10-03-scale-*.csv")):
-        expected = json.loads(path.with_suffix(".csv.metadata.json").read_text())["csv_sha256"]
+        expected = json.loads(path.with_suffix(".csv.metadata.json").read_text())[
+            "csv_sha256"
+        ]
         if expected != digest(path):
             raise RuntimeError("evidence hash mismatch")
         print(f"{path.name}: SHA-256 {expected}", flush=True)

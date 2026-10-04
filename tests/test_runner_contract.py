@@ -173,9 +173,11 @@ def main() -> int:
                 check_progress(result, [json.loads(line) for line in progress])
         elif case == "progress_nonblocking":
             read_fd, write_fd = os.pipe()
+            atomic_limit = os.fpathconf(write_fd, "PC_PIPE_BUF")
             os.set_blocking(write_fd, False)
             child = process(native, plugin, csv, write_fd,
-                            "--categorical-choice", "metadata", "x" * 1024, workers=12)
+                            "--categorical-choice", "metadata", "x" * (atomic_limit + 1),
+                            workers=12)
             os.close(write_fd)
             chunks = []
 
@@ -197,7 +199,12 @@ def main() -> int:
             require(child.returncode == 0, f"non-blocking progress cancelled the run: {stderr}")
             result = json.loads(stdout)
             require(result["trials_completed"] == 120, "non-blocking progress stopped candidates")
-            check_progress(result, [json.loads(line) for line in "".join(chunks).splitlines()])
+            content = "".join(chunks)
+            require(content.endswith("\n"), "non-blocking progress ended with a partial record")
+            lines = content.splitlines()
+            require(all(len(line.encode()) + 1 > atomic_limit for line in lines),
+                    "non-blocking progress did not exercise the actual pipe atomic limit")
+            check_progress(result, [json.loads(line) for line in lines])
         elif case == "progress_error":
             read_fd, write_fd = os.pipe()
             os.close(read_fd)

@@ -57,9 +57,18 @@
   native memory/time regression, worker replay, output parity, and stop-flush tests.
 - Keep timeout archive insertion and progress enqueue atomic under backpressure. Bound
   progress readiness waits to 50 ms and fail explicitly after a two-second stopped-reader
-  grace. Pipe records must fit `PIPE_BUF` and are rejected before writing otherwise;
-  regular progress files and trials files remain unrestricted. Billing still uses received
-  complete progress lines, never final-result counts following an I/O failure.
+  grace. Query each pipe's atomic limit with `fpathconf`, falling back to platform
+  `PIPE_BUF`, and write larger records in bounded chunks through the single ordered
+  writer instead of rejecting normal records on macOS. Complete cooperative-stop
+  delivery is unchanged; an I/O failure can leave an oversized record incomplete.
+  Billing still uses received complete progress lines, never incomplete records or
+  final-result counts following an I/O failure.
+- Exercise progress records larger than the platform's real pipe atomic limit under
+  nonblocking backpressure. Keep 3,000-trial output/pruner/worker replay tests and
+  their 1,000-observation switch, but disable artificial per-rung sleeps only in
+  the high-volume output fixture to avoid macOS timeouts. Smaller batching tests
+  retain variable delays to exercise out-of-order worker completion. Quality
+  thresholds and CTest timeouts are unchanged.
 - Extend worker replay past the sampler switch to 3,000 trials and give the native
   quality suite a 300-second timeout to avoid spurious failures under benchmark load.
 - Native `prepare` is reserved for a separately gated 0.4.x follow-up; the existing Python

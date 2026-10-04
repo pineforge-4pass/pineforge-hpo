@@ -23,8 +23,13 @@ def main():
     parser.add_argument("--jobs", type=int, default=4)
     args = parser.parse_args()
     normalizers = json.loads(args.normalizers.read_text())
-    problems = sorted({value["problem"] for value in normalizers.values()
-                       if value["problem"] != "rastrigin20_fidelity"})
+    problems = sorted(
+        {
+            value["problem"]
+            for value in normalizers.values()
+            if value["problem"] != "rastrigin20_fidelity"
+        }
+    )
     args.output.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
 
@@ -32,44 +37,86 @@ def main():
         problem, mode, seed = job
         runs = []
         for label, binary in (("before", args.baseline), ("after", args.native)):
-            command = [str(binary.resolve()), "--batch-study", "--problem", problem,
-                       "--mode", mode, "--seed", str(seed), "--trials", "1000"]
-            completed = subprocess.run(command, check=True, capture_output=True, text=True)
+            command = [
+                str(binary.resolve()),
+                "--batch-study",
+                "--problem",
+                problem,
+                "--mode",
+                mode,
+                "--seed",
+                str(seed),
+                "--trials",
+                "1000",
+            ]
+            completed = subprocess.run(
+                command, check=True, capture_output=True, text=True
+            )
             result = json.loads(completed.stdout)
-            (args.output / f"{label}-{problem}-{mode}-{seed}.json").write_text(completed.stdout)
+            (args.output / f"{label}-{problem}-{mode}-{seed}.json").write_text(
+                completed.stdout
+            )
             runs.append(result)
         scale = normalizers[f"{problem}:1"]["scale"]
         rows = []
         for budget in (100, 300, 1000):
-            regrets = [max(0, (result["trace"][budget - 1][1] - result["optimum"]) / scale)
-                       for result in runs]
-            rows.append({"problem": problem, "mode": mode, "seed": seed,
-                         "budget": budget, "before": regrets[0], "after": regrets[1],
-                         "difference": regrets[1] - regrets[0]})
+            regrets = [
+                max(0, (result["trace"][budget - 1][1] - result["optimum"]) / scale)
+                for result in runs
+            ]
+            rows.append(
+                {
+                    "problem": problem,
+                    "mode": mode,
+                    "seed": seed,
+                    "budget": budget,
+                    "before": regrets[0],
+                    "after": regrets[1],
+                    "difference": regrets[1] - regrets[0],
+                }
+            )
         return rows
 
-    jobs = [(problem, mode, seed) for problem in problems for mode in args.modes
-            for seed in args.seeds]
+    jobs = [
+        (problem, mode, seed)
+        for problem in problems
+        for mode in args.modes
+        for seed in args.seeds
+    ]
     rows = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as executor:
         for index, batch in enumerate(executor.map(run, jobs), 1):
             rows.extend(batch)
             print(f"quality {index}/{len(jobs)}", flush=True)
     summary = {
-        "problems": problems, "seeds": args.seeds, "modes": args.modes,
-        "paired_studies": len(jobs), "elapsed_seconds": time.monotonic() - started,
-        "budgets": {str(budget): {
-            "median_before": statistics.median(
-                row["before"] for row in rows if row["budget"] == budget),
-            "median_after": statistics.median(
-                row["after"] for row in rows if row["budget"] == budget),
-            "max_abs_difference": max(
-                abs(row["difference"]) for row in rows if row["budget"] == budget),
-        } for budget in (100, 300, 1000)},
-        "binary_sha256": {label: hashlib.sha256(binary.read_bytes()).hexdigest()
-                          for label, binary in (("before", args.baseline), ("after", args.native))},
-        "replica_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                           for path in sorted(args.replica.glob("*")) if path.is_file()},
+        "problems": problems,
+        "seeds": args.seeds,
+        "modes": args.modes,
+        "paired_studies": len(jobs),
+        "elapsed_seconds": time.monotonic() - started,
+        "budgets": {
+            str(budget): {
+                "median_before": statistics.median(
+                    row["before"] for row in rows if row["budget"] == budget
+                ),
+                "median_after": statistics.median(
+                    row["after"] for row in rows if row["budget"] == budget
+                ),
+                "max_abs_difference": max(
+                    abs(row["difference"]) for row in rows if row["budget"] == budget
+                ),
+            }
+            for budget in (100, 300, 1000)
+        },
+        "binary_sha256": {
+            label: hashlib.sha256(binary.read_bytes()).hexdigest()
+            for label, binary in (("before", args.baseline), ("after", args.native))
+        },
+        "replica_sha256": {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(args.replica.glob("*"))
+            if path.is_file()
+        },
         "normalizers_sha256": hashlib.sha256(args.normalizers.read_bytes()).hexdigest(),
     }
     (args.output / "paired.json").write_text(json.dumps(rows, indent=2) + "\n")

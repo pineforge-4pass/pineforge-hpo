@@ -80,7 +80,8 @@ class TrialOutputTests(unittest.TestCase):
         self.csv.write_text("timestamp,open,high,low,close,volume\n" + "".join(
             f"{1700000000000 + index * 60000},100,102,99,101,10\n"
             for index in range(64)))
-        flags = ("--chart-timezone", "Asia/Taipei", "--fixed-input", "BatchPrefixTest", "1")
+        flags = ("--chart-timezone", "Asia/Taipei", "--fixed-input", "BatchPrefixTest", "1",
+                 "--fixed-input", "BatchPrefixJitter", "0")
         for pruner in ("median", "halving"):
             _, sequential = self.run_mode("none", 1, "--pruner", pruner, *flags)
             _, parallel = self.run_mode("none", 8, "--pruner", pruner, *flags)
@@ -188,19 +189,90 @@ class TrialOutputTests(unittest.TestCase):
         self.assertEqual(result["trials"], lines)
         self.assertEqual(sum(line["status"] == "trial_timeout" for line in lines), 1)
 
-    def test_pipe_refuses_partial_oversized_lines(self):
+    def test_oversized_pipe_records_flush_on_stop(self):
+        for stop in ("deadline", "signal"):
+            read_fd, write_fd = os.pipe()
+            atomic_limit = os.fpathconf(write_fd, "PC_PIPE_BUF")
+            records = self.root / f"oversized-{stop}.ndjson"
+            command = self.command("--progress-fd", str(write_fd), "--trials-file", str(records),
+                                   "--max-wall-seconds", "0.15" if stop == "deadline" else "30",
+                                   "--categorical-choice", "Payload", "x" * (atomic_limit + 1),
+                                   trials=0)
+            chunks = []
+
+            def read():
+                time.sleep(0.3)
+                with os.fdopen(read_fd, "rb") as stream:
+                    chunks.append(stream.read())
+
+            process = subprocess.Popen(command, pass_fds=(write_fd,), stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True)
+            os.close(write_fd)
+            reader = threading.Thread(target=read)
+            reader.start()
+            try:
+                if stop == "signal":
+                    self.assertTrue(select.select([read_fd], [], [], 8)[0])
+                    process.send_signal(signal.SIGTERM)
+                output, errors = process.communicate(timeout=8)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                reader.join(timeout=8)
+            self.assertIn(process.returncode, (0, 2), errors)
+            self.assertFalse(reader.is_alive())
+            content = b"".join(chunks)
+            self.assertTrue(content.endswith(b"\n"))
+            self.assertEqual(content, records.read_bytes())
+            lines = content.splitlines()
+            self.assertTrue(all(len(line) + 1 > atomic_limit for line in lines))
+            trials = [json.loads(line) for line in lines]
+            result = json.loads(output)
+            self.assertEqual(result["stop_reason"],
+                             "deadline" if stop == "deadline" else "cancelled")
+            self.assertEqual(result["trials_completed"], len(trials))
+            self.assertEqual(result["trials"], trials)
+
+    def test_pipe_serializes_oversized_lines(self):
         read_fd, write_fd = os.pipe()
-        self.addCleanup(os.close, read_fd)
-        self.addCleanup(os.close, write_fd)
-        command = self.command("--progress-fd", str(write_fd), "--categorical-choice",
-                               "Payload", "x" * 8192, trials=8)
-        completed = subprocess.run(command, pass_fds=(write_fd,), capture_output=True,
-                                   text=True, timeout=8)
-        self.assertEqual(completed.returncode, 1, completed.stderr)
-        self.assertIn("atomic --progress-fd pipe limit", completed.stderr)
-        os.set_blocking(read_fd, False)
-        with self.assertRaises(BlockingIOError):
-            os.read(read_fd, 65536)
+        atomic_limit = os.fpathconf(write_fd, "PC_PIPE_BUF")
+        records = self.root / "oversized.ndjson"
+        payload = "x" * (2 * atomic_limit + 1)
+        command = self.command("--progress-fd", str(write_fd), "--trials-file", str(records),
+                               "--categorical-choice", "Payload", payload, trials=24)
+        chunks = []
+
+        def read():
+            time.sleep(0.05)
+            with os.fdopen(read_fd, "rb") as stream:
+                while chunk := stream.read(max(1, atomic_limit // 2)):
+                    chunks.append(chunk)
+                    time.sleep(0.001)
+
+        process = subprocess.Popen(command, pass_fds=(write_fd,), stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        os.close(write_fd)
+        reader = threading.Thread(target=read)
+        reader.start()
+        try:
+            output, errors = process.communicate(timeout=8)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            reader.join(timeout=8)
+        self.assertEqual(process.returncode, 0, errors)
+        self.assertFalse(reader.is_alive())
+        content = b"".join(chunks)
+        self.assertEqual(content, records.read_bytes())
+        self.assertTrue(content.endswith(b"\n"))
+        lines = content.splitlines()
+        self.assertTrue(all(len(line) + 1 > atomic_limit for line in lines))
+        trials = [json.loads(line) for line in lines]
+        self.assertEqual([trial["trial_id"] for trial in trials], list(range(24)))
+        self.assertEqual(trials, json.loads(output)["trials"])
+        self.assertTrue(all(trial["parameters"]["Payload"] == payload for trial in trials))
 
 
 if __name__ == "__main__":

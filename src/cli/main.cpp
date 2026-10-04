@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
@@ -862,8 +863,11 @@ public:
             struct stat descriptor {};
             if (::fstat(options_.progress_fd, &descriptor) != 0)
                 throw std::runtime_error("cannot inspect --progress-fd");
-            if (S_ISFIFO(descriptor.st_mode))
+            if (S_ISFIFO(descriptor.st_mode)) {
                 progress_atomic_limit_ = ::fpathconf(options_.progress_fd, _PC_PIPE_BUF);
+                if (progress_atomic_limit_ <= 0)
+                    progress_atomic_limit_ = PIPE_BUF;
+            }
             progress_flags_ = ::fcntl(options_.progress_fd, F_GETFL);
             if (progress_flags_ < 0 ||
                 ::fcntl(options_.progress_fd, F_SETFL, progress_flags_ | O_NONBLOCK) != 0)
@@ -974,14 +978,15 @@ private:
     void write_progress(const std::string& line) {
         if (line.empty())
             return;
-        if (progress_atomic_limit_ > 0 &&
-            line.size() > static_cast<std::size_t>(progress_atomic_limit_))
-            throw std::runtime_error("terminal trial exceeds atomic --progress-fd pipe limit");
         std::size_t written = 0;
         std::optional<Clock::time_point> stopped_at;
         while (options_.progress_fd >= 0 && written < line.size()) {
+            const auto remaining = line.size() - written;
+            const auto chunk_size = progress_atomic_limit_ > 0
+                ? std::min(remaining, static_cast<std::size_t>(progress_atomic_limit_))
+                : remaining;
             const auto count = ::write(options_.progress_fd, line.data() + written,
-                                       line.size() - written);
+                                       chunk_size);
             if (count < 0 && errno == EINTR)
                 continue;
             if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {

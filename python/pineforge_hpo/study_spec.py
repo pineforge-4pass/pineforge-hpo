@@ -707,7 +707,9 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
             not _is_int(history_switch) or not 0 < history_switch <= 2**64 - 1
         ):
             issues.append(
-                ValidationIssue(f"{config_path}.history_switch", "must be a positive uint64")
+                ValidationIssue(
+                    f"{config_path}.history_switch", "must be a positive uint64"
+                )
             )
             history_switch = None
 

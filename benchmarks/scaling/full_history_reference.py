@@ -15,11 +15,16 @@ def main():
     args = parser.parse_args()
     if args.output.exists():
         raise RuntimeError("reference destination must not exist")
-    shutil.copytree(args.source, args.output,
-                    ignore=shutil.ignore_patterns(".git", "build", "build-*", "__pycache__"))
+    shutil.copytree(
+        args.source,
+        args.output,
+        ignore=shutil.ignore_patterns(".git", "build", "build-*", "__pycache__"),
+    )
     path = args.output / "src/core/tpe_sampler.cpp"
     source = path.read_text()
-    start = source.index("    void compact_observations(const TpeSamplerConfig& config) {")
+    start = source.index(
+        "    void compact_observations(const TpeSamplerConfig& config) {"
+    )
     end = source.index("    bool register_pending(", start)
     replacement = """    void compact_observations(const TpeSamplerConfig& config) {
         if (completed_.load(std::memory_order_relaxed) >= config.history_switch)
@@ -28,13 +33,19 @@ def main():
 
 """
     path.write_text(source[:start] + replacement + source[end:])
-    metadata = {"purpose": "benchmark-only full-history 0.4.0 reference",
-                "window": "unbounded", "model_refit_completions": "inherited from source",
-                "post_warmup_ei_draws": 8, "numeric_density_points": 513,
-                "original_sampler_sha256": hashlib.sha256(source.encode()).hexdigest(),
-                "reference_sampler_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                "replacement": replacement}
-    (args.output / "reference.metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    metadata = {
+        "purpose": "benchmark-only full-history 0.4.0 reference",
+        "window": "unbounded",
+        "model_refit_completions": "inherited from source",
+        "post_warmup_ei_draws": 8,
+        "numeric_density_points": 513,
+        "original_sampler_sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "reference_sampler_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "replacement": replacement,
+    }
+    (args.output / "reference.metadata.json").write_text(
+        json.dumps(metadata, indent=2) + "\n"
+    )
 
 
 if __name__ == "__main__":
