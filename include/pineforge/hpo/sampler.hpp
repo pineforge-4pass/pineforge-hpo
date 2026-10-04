@@ -120,7 +120,7 @@ struct TpeSamplerConfig {
     bool constant_liar = true;
 
     /// Completed observations at which full-history acquisition switches to bounded models.
-    std::uint64_t history_switch = 8;
+    std::uint64_t history_switch = 1000;
 
     /// Acquisition draws after the history switch; never exceeds ei_candidates.
     std::uint64_t scale_ei_candidates = 8;

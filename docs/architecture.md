@@ -209,7 +209,7 @@ vectors. `without_replacement` validates `trials <= cardinality`;
 order. The two orders need not have the same intermediate best-so-far sequence.
 
 Version 0.4.0 bounds TPE history at `history_switch` completed usable observations
-(default 8). Below that count, it uses the exact 0.3.0 full-history estimator. The
+(default 1,000). Below that count, it uses the exact 0.3.0 full-history estimator. The
 retained set is the global best `gamma_cap` observations plus 64 recent
 non-elites plus a separately seeded reservoir of older non-elites (default 448).
 Each observation enters the older pool once when it leaves the recent window;

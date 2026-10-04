@@ -159,7 +159,7 @@ reports finite=true/cardinality=null/overflow=true without claiming exact unique
 coverage; grid and exact finite policies reject it.
 
 TPE's identity changes to `pineforge_product_tpe_v3_bounded` (`_finite` for exact
-finite policies). `--tpe-history-switch N` (default 8) keeps exact 0.3.0 full-history
+finite policies). `--tpe-history-switch N` (default 1000) keeps exact 0.3.0 full-history
 estimation below N completed usable observations. At N, 25 elites plus 64 recent
 non-elites and a seeded reservoir of 448 older
 non-elites, 513-point numeric density tables,
@@ -180,22 +180,21 @@ must allow this documented additive scalar; no metadata-only billing line is emi
 StudySpec forwards `sampler.config.history_switch`. A larger override increases
 full-history memory and ask cost before the switch.
 
-The selection budget is 5.859375 microseconds per dimension: 375 at 64D and 93.75
-at 16D. No fitted legacy model met that budget, even at one observation. N=8 is
-the largest qualifying power of two with the default ten-observation random startup;
-it is not a claim that a fitted full-history model costs only a few microseconds.
+The default is a fixed 1,000-observation exact prefix, not a per-dimension latency
+selection. Historical 16D legacy snapshot asks cost 27,652 microseconds at 1,024
+observations and 112,201 at 4,096; a larger override retains this growing cost.
 
-Use `--batch-lag 1` to overlap sampling and execution. The original recent-only
-64D profile used about 65% of the W=8, 3-ms trial budget (245/375 microseconds).
-That is not a guarantee for the reservoir estimator: its loaded review profile
-uses about 669 microseconds/ask, exceeding that budget. History cost is flat,
-but 64D sampling can still be the bottleneck; see the scaling review report.
+Use `--batch-lag 1` to overlap sampling and execution, but it does not erase
+serialized ask cost. The recent-only 64D result of 245 microseconds (about 65% of
+the 375-microsecond W=8, 3-ms budget) is superseded and does not describe the
+reservoir estimator. Its measured 64D ask limit and full billing throughput are
+in the [final switch report](../benchmarks/scaling/final-2026-10-04.md).
+The final 64D probe costs 656.450/663.061 microseconds at 100k/1M history, above
+the unchanged 375-microsecond budget; 64D can remain sampler-bound.
 
-The history-switch retry measures 612.889/625.503 microseconds per 64D ask at
-100k/1M history. It remains a known throughput limit. Its quality release gate is
-blocked: 3k geomean 1.164189/worst 3.222143 versus 0.3.0; 10k geomean 1.118446/worst
-1.410329 versus the full-history benchmark variant. See the
-[current switch measurements](../benchmarks/scaling/switch-2026-10-03.md).
+The completed-count switch remains quality-blocked: at 3k, geomean 1.036492/worst
+1.245558 versus 0.3.0; at 10k, geomean 1.031570/worst 1.091497 versus the full-history
+benchmark variant. Prefix identity is not evidence of long-budget parity.
 
 `--tpe-bad-reservoir-size N` selects the older non-elite bound (default 448,
 range 0–65,536). Its independent seeded RNG does not consume proposal RNG draws.

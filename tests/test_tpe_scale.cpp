@@ -55,7 +55,13 @@ int main() {
                 objective += value * value;
             }
             sampler.tell(candidate->id, objective);
-            if (trial >= 1000 && sampler.retained_observations() > 537)
+            if (trial < 999 && sampler.retained_observations() != trial + 1)
+                throw std::runtime_error(
+                    "TPE compacted the default history before 1000 completions");
+            if (trial == 999 && sampler.retained_observations() != 537)
+                throw std::runtime_error(
+                    "TPE did not switch the default history at 1000 completions");
+            if (trial >= 999 && sampler.retained_observations() > 537)
                 throw std::runtime_error("TPE retained unbounded history");
             if (trial == 2000) {
                 struct rusage usage {};

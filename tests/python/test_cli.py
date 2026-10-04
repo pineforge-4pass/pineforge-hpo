@@ -373,7 +373,7 @@ class CliTests(unittest.TestCase):
         expected = {
             "--tpe-startup-trials": "10",
             "--tpe-ei-candidates": "24",
-            "--tpe-history-switch": "8",
+            "--tpe-history-switch": "1000",
             "--tpe-gamma-fraction": "0.1",
             "--tpe-gamma-cap": "25",
             "--tpe-prior-weight": "1.0",

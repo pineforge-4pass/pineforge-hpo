@@ -19,7 +19,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     problems = ["rotated_rastrigin20", "ackley20", "bbob_f15_d20", "bbob_f21_d20",
                 "bbob_f24_d20", "mixed_irrelevant15", "rosenbrock20", "rotated_ellipsoid20"]
-    jobs = [(problem, 17 + 31 * index, 8, 8)
+    jobs = [(problem, 17 + 31 * index, 1000, 1000)
             for problem in problems for index in range(10)]
     jobs.extend((problem, seed, 256, 512) for problem in problems for seed in (17, 48))
 

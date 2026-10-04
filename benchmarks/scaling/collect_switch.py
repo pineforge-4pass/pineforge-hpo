@@ -41,8 +41,8 @@ def main():
                    if path.is_file() and not path.name.startswith("._"))
     common = {"schema": "pineforge-hpo.scaling-evidence.v1", "version": "0.4.0",
               "baseline_revision": "6ccb6d4", "rebased_main_revision": "13885b9",
-              "release_gate": "blocked", "history_switch": 8,
-              "ask_budget_us_per_dimension": 375 / 64,
+              "history_switch": 1000, "ask_budget_us_64d": 375,
+              "switch_policy": "owner-approved full-history prefix; no per-dimension selection budget",
               "platform": {"system": platform.system(), "machine": platform.machine()},
               "compiler": subprocess.check_output(["g++", "--version"], text=True).splitlines()[0],
               "build": "Release, C++17, -O3 -DNDEBUG; AWS c6i.2xlarge, 8 vCPU",
@@ -50,12 +50,12 @@ def main():
               "normalizers_sha256": digest(args.normalizers),
               "coco_repository": "numbbo/coco-experiment",
               "coco_revision": "dd4bd1f0cc7699a2b612448d85aafb94636fe947",
-              "coco_source_verification": "52 pinned files exact; generated version comments differ",
+              "coco_source_verification": "pinned revision; generated version 2.8.3-dev8+gdd4bd1f0",
               "engine_revision": "5718c5dc05086fc5b66b4cb565617efe837131e3",
               "codegen_revision": "5bf595b5e826562c131710b3e93e96e6f8e0a0e4"}
 
     def publish(name, rows, metadata):
-        path = args.output / f"2026-10-03-switch-{name}.csv"
+        path = args.output / f"2026-10-04-final-1000-{name}.csv"
         with path.open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=sorted({key for row in rows for key in row}))
             writer.writeheader()
@@ -71,13 +71,13 @@ def main():
     traces = {}
     binaries = {}
     summaries = {}
-    for budget, reference in ((3000, "baseline"), (10000, "full-switch8")):
+    for budget, reference in ((3000, "baseline"), (10000, "full-final1000")):
         metadata = json.loads((args.evidence / "long" /
-                               f"switch8-{budget}.metadata.json").read_text())
+                               f"final1000-{budget}.metadata.json").read_text())
         for problem in metadata["problems"]:
             for seed in metadata["seeds"]:
                 values = []
-                for label in (reference, "switch8"):
+                for label in (reference, "final1000"):
                     path = args.evidence / "long" / f"{label}-{problem}-{seed}-{budget}.json"
                     result = json.loads(path.read_text())
                     values.append(max(0, result["trace"][budget - 1][1] - result["optimum"]) /
@@ -91,7 +91,11 @@ def main():
                                 "switch_regret": values[1],
                                 "paired_ratio": values[1] / max(values[0], 1e-300)})
         summaries[str(budget)] = json.loads((args.evidence / "long" /
-                                            f"switch8-{budget}.summary.json").read_text())
+                                            f"final1000-{budget}.summary.json").read_text())
+    common["quality_gate"] = "passed" if all(
+        summary["geomean_ratio"] <= (1.02 if budget == "3000" else 1.03)
+        and summary["worst_problem_ratio"] <= 1.10
+        for budget, summary in summaries.items()) else "blocked"
     publish("quality", quality, {"binary_sha256": binaries, "trace_sha256": traces,
             "protocol": "pinned HPO-BENCH instance1 batch8/lag0, frozen 0.3 coordinator",
             "baseline_3000": "reused verified round-one traces for the same pinned binary",
@@ -99,13 +103,10 @@ def main():
             "summaries": summaries})
 
     asks = []
-    for label, filename in (("legacy-default", "legacy-default.ndjson"),
-                            ("legacy-forced-fit", "legacy-forced-fit.ndjson"),
-                            ("legacy-switch-cost", "legacy-switch.ndjson"),
-                            ("switch8", "switch-ask.ndjson")):
+    for label, filename in (("final1000", "switch-ask.ndjson"),):
         asks.extend({"sampler": label, **row} for row in
                     read_lines(args.measurements / filename))
-    publish("ask", asks, {"protocol": "random prefill; legacy snapshot; bounded 256 batch8-updated asks",
+    publish("ask", asks, {"protocol": "random prefill; bounded 256 batch8-updated asks; three repeats",
             "limitations": "shared host; random-prefill probes are not adaptive million-trial studies"})
     native = []
     for directory in ("million", "hundred-thousand"):
@@ -125,7 +126,7 @@ def main():
         print(f"geomean={summary['geomean_ratio']:.6f}, worst={summary['worst_problem_ratio']:.6f}")
     print("ASK: dims,1k,10k,100k,1M")
     for dimensions in (8, 16, 32, 64):
-        values = [statistics.median(row["ask_us"] for row in asks if row["sampler"] == "switch8"
+        values = [statistics.median(row["ask_us"] for row in asks if row["sampler"] == "final1000"
                   and row["dims"] == dimensions and row["history"] == history)
                   for history in (1000, 10000, 100000, 1000000)]
         print(dimensions, *(f"{value:.3f}" for value in values))

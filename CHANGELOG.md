@@ -2,7 +2,7 @@
 
 ## 0.4.0
 
-- Use exact 0.3.0 full-history TPE below a completed-observation switch (default 8),
+- Use exact 0.3.0 full-history TPE below a completed-observation switch (default 1,000),
   then bound native TPE history to 25 global elites,
   64 recent non-elites, and a seeded reservoir of 448 older non-elites. Cache numeric
   density tables, refit good models on elite changes and bad models every 32 completions,
@@ -17,19 +17,20 @@
 - Add `--tpe-bad-reservoir-size` (default 448, maximum 65,536) and the additive
   `sampler_config.bad_reservoir_size` result field. Exact proposals below the switch
   are an identity check, not evidence of long-budget quality equivalence.
-- The superseded round-one long-budget review gate was blocked: eight problems and ten seeds at
-  3,000 trials, median-regret ratios have geomean 1.015738 versus 0.3.0 (required <= 1.01),
-  with worst problem 1.099926. At 10,000 trials, four problems and five seeds versus the
-  benchmark-only full-history variant have geomean 1.020763 and worst ratio 1.091497.
-  See the round-two scaling report for current quality gates and performance limitations.
-- The history-switch retry also remains blocked: default N_s=8 is startup-only, because
-  no fitted legacy model meets the 93.75-us 16D selection budget. At 3k, eight problems
-  and ten seeds yield regret geomean 1.164189 and worst ratio 3.222143 versus 0.3.0.
-  At 10k, four problems and five seeds yield 1.118446 and worst ratio 1.410329 versus
-  the full-history benchmark variant. Prefix replay has zero differences across 4,736
-  proposal/value records; it is not a 3k identity claim. Flat 64D asks at 100k/1M cost
-  612.889/625.503 us, exceeding the unchanged 375-us budget. The native core and
-  Rastrigin quality assertions also fail; thresholds are not weakened.
+- Restore the 1,000-observation default without a per-dimension switch-selection budget.
+  The final completed-count switch remains quality-blocked: eight problems and ten seeds
+  at 3k give geomean 1.036492 versus 0.3.0 (required <= 1.02), with worst ratio 1.245558.
+  Four problems and five seeds at 10k give geomean 1.031570 (required <= 1.03), with worst
+  ratio 1.091497 versus the benchmark-only full-history variant. This is about 3.65%
+  worse per-problem median regret at 3k, not the superseded round-one 1.6% result.
+  The completed-only transition changes reservoir initialization relative to that run;
+  do not reuse its quality claims. Keep the reservoir, EI settings, and quality thresholds.
+  See `benchmarks/scaling/final-2026-10-04.md` for prefix identity, all suites, and the
+  measured 64D throughput limit. Larger switches preserve legacy behavior longer but
+  retain its history-growing ask cost.
+- Final 64D bounded asks cost 656.450/663.061 us at 100k/1M, above the 375-us budget.
+  The synthetic W8 million-trial run completes in 919.82 s with 21,152 KiB peak RSS
+  and every billing line strictly parsed. This is not a universal backtest throughput claim.
 - Generate grid/random candidates lazily, use all workers for deadline-only adaptive studies,
   and accept `--max-trials 0 --max-wall-seconds S` without imposing a trial cap.
 - Add native `--trials-out all|best-k|none`, `--best-k N` (default 10), and optional

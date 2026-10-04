@@ -234,7 +234,7 @@ class StudySpecTest(unittest.TestCase):
             assert defaults is not None
             self.assertEqual(defaults.startup_trials, 10)
             self.assertEqual(defaults.ei_candidates, 24)
-            self.assertEqual(defaults.history_switch, 8)
+            self.assertEqual(defaults.history_switch, 1000)
             self.assertEqual(defaults.gamma_fraction, 0.10)
             self.assertEqual(defaults.gamma_cap, 25)
             self.assertEqual(defaults.prior_weight, 1.0)
