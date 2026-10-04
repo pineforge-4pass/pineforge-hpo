@@ -717,8 +717,9 @@ workers, batch size, HPO version or engine/codegen pins does not change its spac
 This identity does **not** certify unchanged market data, fixed inputs or strategy
 behavior: the caller is responsible for keeping observations semantically comparable.
 
-The input is auto-detected as terminal-trial JSONL, a standalone trial array, or a
-complete result object. Result objects combine `warm_start_trials` with new `trials`.
+The input is auto-detected as binary v2 blocks (0.6.0), terminal-trial JSONL,
+a standalone trial array, or a complete result object. Result objects combine
+`warm_start_trials` with new `trials`.
 Space metadata is intentionally repeated on each new trial so a standalone trial
 array remains self-describing. Budget for that per-line storage/transport overhead;
 the 256 MiB input cap is a byte cap, not a constant-memory import guarantee.
@@ -814,6 +815,152 @@ count (excluding explicitly requested timing sidecars).
 The app may choose TPE `batch = clamp(floor((trials - exploration) / 20), 2, workers)`
 for worker counts 2..8, and random/grid `batch = workers`. Batch size is not part of
 space identity; matching it matters for TPE proposal equivalence, not compatibility.
+
+## Binary warm format v2 (0.6.0)
+
+This is a sampler observation format, not a backtest report or resumable execution
+checkpoint. Store **every earlier attempted trial**, including unsuccessful and
+duplicate-parameter trials. Each chunk is one independently self-describing block.
+A file is one or more complete blocks concatenated byte-for-byte, with **no** outer
+header, separators, alignment padding, compression or footer. Blocks can arrive in
+any order; IDs determine observation order. Every block must match the current study.
+
+### Block header
+
+All multibyte integers and IEEE-754 binary64 values are **little-endian**. Offsets
+are relative to the start of each block. The fixed header is exactly 80 bytes.
+
+| Offset | Bytes | Type/value |
+| --- | --- | --- |
+| 0 | 8 | Magic: hex `50 46 48 57 41 52 4d 00` (`PFHWARM\0`) |
+| 8 | 2 | uint16 format version: `2` |
+| 10 | 2 | uint16 flags: `0` |
+| 12 | 4 | uint32 header bytes: `80 + 4 * P` |
+| 16 | 8 | uint64 total block bytes, including header/descriptors/payload |
+| 24 | 8 | uint64 trial count `N`, strictly positive |
+| 32 | 4 | uint32 parameter column count `P`, equal to study input count |
+| 36 | 4 | uint32 objective column count `O`: exactly `1` in 0.6.0 |
+| 40 | 4 | uint32 constraint column count `C`, equal to study constraint count |
+| 44 | 4 | uint32 reserved: `0` |
+| 48 | 32 | Raw SHA-256 bytes of canonical space hash v1, not ASCII hex |
+| 80 | `4 * P` | Parameter descriptors, in lexicographic UTF-8 parameter-name order |
+
+Each descriptor is `uint8 kind, uint8 encoding, uint16 reserved=0`:
+
+| Kind | Domain | Encoding |
+| --- | --- | --- |
+| 1 | Integer (including log integer) | 1: int32 grid index |
+| 2 | Real with a step | 1: int32 grid index |
+| 2 | Real without a step (including log real and fixed bounds) | 2: float64 original value |
+| 3 | Boolean | 1: int32 choice index, false=0 and true=1 |
+| 4 | Categorical | 1: int32 zero-based index in declared typed choice order |
+
+Integer grid index `i` decodes to `low + i * step`. Stepped reals decode with
+binary64 fused multiply-add `fma(double(i), step, low)`; a last-grid value above
+the upper bound by permitted endpoint rounding is clamped to `high`, exactly as
+the native search space does. Indices must be nonnegative and less than the
+dimension cardinality; at most 2^31 values are supported per indexed dimension.
+Log parameters store original units/indices, never logarithmic model coordinates.
+The converter refuses noncanonical stepped-real values rather than losing bits.
+Continuous values must be finite and in range; signed zero is preserved and is
+distinct in the exact tried-vector index, as in the legacy canonical key.
+
+### Payload columns
+
+Starting at `header_bytes`, write these complete columns consecutively:
+
+1. `N` **uint64 trial IDs**. IDs are intentionally widened from the requested
+   int32: the existing API permits IDs above 2^31 and 2^53. Values must be unique
+   across all blocks and less than `UINT64_MAX`, leaving a continuation ID.
+2. `N` uint8 trial states.
+3. Each of the `P` parameter columns, using its descriptor, in descriptor order.
+4. `O=1` objective column: `N` float64 values in the original objective direction.
+5. Each of the `C` constraint columns: `N` float64 expression values, in stable
+   lexicographic UTF-8 constraint-expression order (duplicates retain their study
+   order). This matches the order-insensitive constraint identity in hash v1.
+
+No column has a name string, JSON, metrics, error text, timestamp, pruning rung or
+trial envelope. Names and categorical values are resolved from the matched study.
+Each null objective/constraint is the **only accepted nonfinite pattern**:
+canonical quiet NaN bits `0x7ff8000000000000` (bytes `00 00 00 00 00 00 f8 7f`).
+Finite values retain their exact bits, including negative zero. Infinities and other
+NaN patterns are refused. Missing legacy constraint arrays become null, not inferred
+numeric evaluations. New `constraint_values` arrays are stored in study order in
+JSON, then permuted into canonical binary order. State determines feasibility;
+numeric constraint columns do not retroactively change v0.5 TPE behavior.
+
+| State | Legacy status | Feasible | Trains TPE |
+| --- | --- | --- | --- |
+| 0 | `ok` | yes | only if the objective is finite |
+| 1 | `constraint_violation` | no | no |
+| 2 | `engine_error` | no | no |
+| 3 | `objective_error` | no | no |
+| 4 | `constraint_error` | no | no |
+| 5 | `trial_error` | no | no |
+| 6 | `trial_timeout` | no | no |
+| 7 | `pruned` | no | no |
+| 8 | `partial` | no | no |
+
+`block_bytes = header_bytes + N * (8 + 1 + sum(parameter_widths) + 8*O + 8*C)`.
+Reject unsupported versions/flags/reserved fields, inconsistent counts/descriptors,
+overflowing lengths, partial/trailing bytes, duplicate IDs, invalid states/scalars
+and any block hash mismatch with exit **4**, `warm-start incompatible: ...`, before
+compilation/plugin/data loading or billable output. Finite exhaustion remains exit
+**5**. `space-info` succeeds and reports zero remaining for exhausted histories.
+
+### Loading, integrity and ingest
+
+The native loader uses a read-only mmap and validates fixed-width columns directly;
+it does not parse or retain JSON. TPE holds shared row references, not one candidate
+map per trial. Preserve the mapped file unchanged until the run exits; upload/finalize
+objects before mapping, never append/truncate/rewrite an active input. Total rows are
+limited to `UINT32_MAX`; IDs are still uint64. Sorted uint32 row references provide
+collision-free exact tried-vector lookup, retaining all duplicate observations while
+counting each vector once. This costs at most 4 bytes/row, plus another 4 bytes/row
+only when ID sorting is needed. A Cartesian bitmap is unsuitable for continuous or
+huge spaces and cannot represent all those vectors; no separate tried bitmap is stored.
+
+The app keeps SHA-256 per immutable object and verifies objects before concatenation.
+There is no redundant per-block checksum. The result's `source_sha256` hashes the
+exact concatenated input bytes; native `--warm-digest` also requests this digest.
+`space-info` (including `--warm-details` preflight) performs load/validation/tried-index
+construction without payload
+hashing. At 1M rows, five float64 inputs need 57,000,100 bytes plus a 4-MB tried index;
+32 inputs with four indexed and 28 float64 columns need 257,000,208 bytes plus that
+index. All-float64 32-input blocks need 273,000,208 bytes. These are format sizes,
+not promises about OS RSS, TPE density work, replay, result rendering or provenance hashing.
+
+```bash
+pineforge-hpo warm-encode --spec study.json --input parent.jsonl \
+  --output parent.warm --block-trials 100000
+cat chunk-1.warm chunk-2.warm > history.warm
+pineforge-hpo space-info --spec study.json --warm-start history.warm
+pineforge-hpo run study.json --warm-start history.warm
+```
+
+```python
+from pineforge_hpo.study_spec import load_study_spec
+from pineforge_hpo.warm_binary import write_warm_block
+
+study = load_study_spec("study.json", continuation=True)
+with open("chunk.warm", "wb") as output:
+    write_warm_block(output, study, ingested_trials)
+```
+
+Golden vectors are `tests/fixtures/warm_v2_spec.json`, `warm_v2_trials.json` and
+`warm_v2_golden.json`: one 247-byte block and the same rows in two blocks, exact
+hex and SHA-256. They exercise every encoding, non-int32/non-exact-double IDs,
+nulls and signed zero. Native and Python writers must match these byte-for-byte.
+The release additionally compares actual v0.5 JSON suggestions with v0.6 JSON,
+single-block and reordered multi-block inputs, using packed binary64/uint64
+suggestion hashes. See `benchmarks/warm/README.md` for reproduction and boundaries.
+
+JSON/JSONL v0.5 inputs stay accepted for this release with the existing 256-MiB cap.
+Binary v2 currently supports grid/random/TPE with no active prefix pruner; use JSON
+when restoring pruning rungs. `dlib_global` warm start remains unsupported. Warm
+rows never go to fd 3. A final `trials_out=all` result reconstructs minimal ancestor
+records only at rendering time; summary/none users should retain the original
+binary plus independently encoded new-trial chunks for subsequent continuation.
 
 ## Resolution and validation rules
 

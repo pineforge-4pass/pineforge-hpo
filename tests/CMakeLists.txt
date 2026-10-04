@@ -9,6 +9,14 @@ target_link_libraries(pineforge_hpo_test_warm_start PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_warm_start PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_warm_start COMMAND pineforge_hpo_test_warm_start)
 
+add_executable(pineforge_hpo_test_warm_binary test_warm_binary.cpp)
+target_include_directories(pineforge_hpo_test_warm_binary PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
+target_compile_definitions(pineforge_hpo_test_warm_binary PRIVATE
+    PFH_WARM_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+target_link_libraries(pineforge_hpo_test_warm_binary PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_warm_binary PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_warm_binary COMMAND pineforge_hpo_test_warm_binary)
+
 add_executable(pineforge_hpo_test_finite_search_space test_finite_search_space.cpp)
 target_link_libraries(pineforge_hpo_test_finite_search_space PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_finite_search_space PRIVATE
@@ -166,6 +174,12 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         set_tests_properties(pineforge_hpo_warm_start_contract PROPERTIES TIMEOUT 600)
+        add_test(NAME pineforge_hpo_warm_binary_contract
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_warm_binary_contract.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_warm_binary_contract PROPERTIES TIMEOUT 600)
         foreach(contract syminfo progress final_write_signal progress_nonblocking progress_error
                          cancel deadline metrics magnifier timeout timeout_progress_error)
             add_test(NAME pineforge_hpo_runner_${contract}

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.0 — 2026-10-04
+
+- Add exact, sampler-only binary warm format v2: independently self-describing,
+  concatenable little-endian columnar blocks. Retain every earlier attempted trial,
+  uint64 IDs, typed grid/choice indices, float64 parameters/objectives/constraints
+  and uint8 states; omit metrics, text and JSON. Keep v0.5 JSON/JSONL inputs for
+  this release, exit codes 4/5, space identity and new-trials-only progress billing.
+- Map binary columns read-only and keep collision-free tried-vector row indices.
+  TPE retains shared observation references rather than per-trial candidate maps,
+  including exact batch replay, bounded reservoirs and full-history reconstruction.
+- Add `warm-encode --spec --input --output [--block-trials]`, a dependency-free
+  Python ingest writer, native/Python byte-for-byte golden vectors, corruption
+  tests, cross-version bitwise continuation and real-strategy gates. Binary input
+  currently requires `execution.pruner=none`; JSON retains pruning-rung history.
+- Add additive `constraint_values` to new terminal records, with null for unavailable
+  evaluations. Binary columns use canonical parameter-name and constraint-expression
+  order; legacy records without constraint values encode canonical nulls.
+- Add an 8-GiB-cgroup resource benchmark for 100k–2M histories at 5/32 inputs.
+
 ## 0.5.0 — 2026-10-04
 
 - Add `--warm-start FILE` study continuation from terminal-trial JSONL, complete

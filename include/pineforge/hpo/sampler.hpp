@@ -99,6 +99,23 @@ struct WarmStartObservation {
     std::optional<double> objective;
 };
 
+/// Immutable, ordered sampler observations, optionally backed by mapped binary columns.
+class WarmStartSource {
+public:
+    /// Releases the source and any resources retained by its implementation.
+    virtual ~WarmStartSource() = default;
+    /// Returns the number of attempted trials, including abandoned trials.
+    virtual std::uint64_t size() const noexcept = 0;
+    /// Returns a trial ID; rows must be ordered by strictly increasing ID.
+    virtual std::uint64_t id(std::uint64_t row) const = 0;
+    /// Returns a parameter in search-space declaration order and original units.
+    virtual ParameterValue parameter(std::uint64_t row, std::size_t dimension) const = 0;
+    /// Returns a finite feasible score, or no score for an abandoned observation.
+    virtual std::optional<double> objective(std::uint64_t row) const = 0;
+    /// Materializes one observation without retaining other candidate maps.
+    WarmStartObservation observation(const SearchSpace& space, std::uint64_t row) const;
+};
+
 /// Tuning parameters for the native product-density TPE implementation.
 struct TpeSamplerConfig {
     /// Number of completed trials required before fitting Parzen estimators.
@@ -200,6 +217,11 @@ public:
     /// @throws std::invalid_argument for invalid candidates, IDs, or non-finite objectives.
     /// @throws std::logic_error if the sampler is not pristine.
     bool warm_start(const std::vector<WarmStartObservation>& observations,
+                   std::uint64_t replay_batch_size = 0);
+
+    /// Restores exact ordered observations while retaining the immutable source by reference.
+    /// Import consumes every row; replay and configured compaction match the vector overload.
+    bool warm_start(std::shared_ptr<const WarmStartSource> source,
                     std::uint64_t replay_batch_size = 0);
 
     /// Restores the seeded initial state and clears finite-space reservations.

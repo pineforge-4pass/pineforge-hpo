@@ -116,6 +116,7 @@ struct TrialRecord {
     std::string error;
     bool feasible = false;
     std::optional<double> objective;
+    std::vector<std::optional<double>> constraint_values;
     int total_trades = 0;
     double net_profit = std::numeric_limits<double>::quiet_NaN();
     std::int64_t input_bars_processed = 0;
@@ -229,7 +230,15 @@ void print_help() {
     std::cout << "pineforge-hpo-native — native PineForge HPO runner\n\n"
               << "Usage:\n"
               << "  pineforge-hpo-native run --strategy FILE --ohlcv FILE "
-                 "--objective EXPR [options]\n\n"
+                 "--objective EXPR [options]\n"
+              << "  pineforge-hpo-native space-info --spec FILE [--warm-start FILE]\n"
+              << "  pineforge-hpo-native warm-encode --spec FILE --input FILE "
+                 "--output FILE [--block-trials N]\n\n"
+              << "Warm history options:\n"
+              << "  --warm-start FILE           binary v2 blocks or v0.5 JSON/JSONL\n"
+              << "  --warm-details              space-info: counts and next trial ID\n"
+              << "  --warm-digest               space-info: compute warm object SHA-256\n"
+              << "  --block-trials N            warm-encode: maximum rows per block\n\n"
               << "Search-space options (repeatable):\n"
               << "  --int-dim NAME LOW HIGH STEP\n"
               << "  --log-int-dim NAME LOW HIGH\n"
@@ -266,7 +275,6 @@ void print_help() {
               << "  --trial-timeout-seconds T   positive per-trial limit; exits 3 on timeout\n\n"
               << "TPE options:\n"
               << "  --tpe-startup-trials N      random observations before model fitting\n"
-              << "  --warm-start FILE          import parent fd-3 JSONL or complete result JSON\n"
               << "  --tpe-ei-candidates N       candidates scored by log l(x)/g(x)\n"
               << "  --tpe-history-switch N     completed observations before bounded TPE"
                  " (default unset: never switch; JSON null)\n"
@@ -718,6 +726,7 @@ TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& op
     }
     record.trial_id = candidate.id;
     record.candidate = candidate;
+    record.constraint_values.resize(options.constraints.size());
     record.pruning_enabled = options.pruner != pfh::PrunerKind::None;
     for (const auto& name : options.recorded_metrics)
         record.metrics.emplace(name, std::numeric_limits<double>::quiet_NaN());
@@ -773,7 +782,14 @@ std::string render_trial(const TrialRecord& trial) {
             out << ", ";
         out << "\"" << json_escape(name) << "\": " << parameter_json(value);
     }
-    out << "}, \"metrics\": {";
+    out << "}, \"constraint_values\": [";
+    for (std::size_t index = 0; index < trial.constraint_values.size(); ++index) {
+        if (index)
+            out << ',';
+        out << (trial.constraint_values[index] ? json_number(*trial.constraint_values[index]) :
+                "null");
+    }
+    out << "], \"metrics\": {";
     std::size_t metric_index = 0;
     for (const auto& [name, value] : trial.metrics) {
         if (metric_index++)
@@ -814,10 +830,10 @@ public:
           ordinals_(finite ? space.finite_cardinality().value_or(0) : 0) {
         if (options.warm_history) {
             objective_coverage = options.warm_history->completed ==
-                options.warm_history->observations.size();
+                options.warm_history->size();
             if (finite_) {
-                for (const auto& observation : options.warm_history->observations)
-                    ordinals_.insert(space.candidate_ordinal(observation.candidate));
+                for (std::uint64_t row = 0; row < options.warm_history->size(); ++row)
+                    ordinals_.insert(options.warm_history->ordinal(space, row));
             }
         }
     }
@@ -1264,8 +1280,8 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
                 continue;
             }
             record.feasible = true;
-            for (const auto& constraint : constraints) {
-                const auto result = constraint.evaluate(metric_map, constraint_policy);
+            for (std::size_t index = 0; index < constraints.size(); ++index) {
+                const auto result = constraints[index].evaluate(metric_map, constraint_policy);
                 if (!result.valid) {
                     record.status = "constraint_error";
                     record.error = result.diagnostic;
@@ -1280,6 +1296,7 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
                 }
                 if (result.value == 0.0)
                     record.feasible = false;
+                record.constraint_values[index] = result.value;
             }
             if (record.status == "pending")
                 record.status = record.feasible ? "ok" : "constraint_violation";
@@ -1480,8 +1497,8 @@ std::string render_results(const Options& options,
     }
     if (options.warm_history) {
         const auto& warm = *options.warm_history;
-        out << ",\n  \"warm_start\": {\"source_sha256\":\"" << warm.source_sha256
-            << "\",\"trials\":" << warm.observations.size()
+        out << ",\n  \"warm_start\": {\"source_sha256\":\"" << warm.source_digest()
+            << "\",\"trials\":" << warm.size()
             << ",\"completed\":" << warm.completed << ",\"feasible\":" << warm.feasible
             << ",\"space_hash\":\"" << options.space_hash << "\"}";
         if (options.sampler == "tpe")
@@ -1489,10 +1506,10 @@ std::string render_results(const Options& options,
                 << (options.tpe_warm_replayed ? "replayed_batches" : "rebuilt_history") << "\"";
         if (options.trials_out == "all") {
             out << ",\n  \"warm_start_trials\": [";
-            for (std::size_t index = 0; index < warm.records.size(); ++index) {
+            for (std::uint64_t index = 0; index < warm.size(); ++index) {
                 if (index)
                     out << ',';
-                out << pfh::detail::dump_json(warm.records[index]);
+                out << pfh::detail::dump_json(warm.record(space, index));
             }
             out << ']';
         }
@@ -1560,7 +1577,9 @@ int run(Options options) {
             throw pfh::detail::WarmStartError("dlib_global continuation is not supported");
         auto warm = std::make_shared<pfh::detail::WarmHistory>(
             pfh::detail::load_warm_history(options.warm_start, space, recorded));
-        if (finite_cardinality && warm->tried.size() == *finite_cardinality)
+        if (warm->binary && options.pruner != pfh::PrunerKind::None)
+            throw pfh::detail::WarmStartError("binary history has no pruning rungs");
+        if (finite_cardinality && warm->tried_count() == *finite_cardinality)
             throw pfh::detail::SpaceExhausted();
         if (warm->next_id == std::numeric_limits<std::uint64_t>::max() ||
             options.max_trials > std::numeric_limits<std::uint64_t>::max() - warm->next_id)
@@ -1575,7 +1594,7 @@ int run(Options options) {
                 "finite candidate policy requires a step on every varying real dimension");
         }
         const auto remaining = *finite_cardinality -
-            (options.warm_history ? options.warm_history->tried.size() : 0);
+            (options.warm_history ? options.warm_history->tried_count() : 0);
         if (options.warm_history && (options.max_trials > remaining ||
             (options.candidate_policy == pfh::CandidatePolicy::Exhaustive &&
                 options.max_trials != remaining)))
@@ -1742,9 +1761,12 @@ int run(Options options) {
             ? pfh::CandidatePolicy::WithoutReplacement : options.candidate_policy;
         pfh::TpeSampler sampler(space, options.seed, direction, options.max_trials,
                                 options.tpe_config, policy);
-        if (options.warm_history)
-            options.tpe_warm_replayed = sampler.warm_start(options.warm_history->observations,
-                options.batch_lag == 0 ? batch_size : 0);
+        if (options.warm_history) {
+            const auto replay_batch = options.batch_lag == 0 ? batch_size : 0;
+            options.tpe_warm_replayed = options.warm_history->binary
+                ? sampler.warm_start(options.warm_history->binary, replay_batch)
+                : sampler.warm_start(options.warm_history->observations, replay_batch);
+        }
         evaluate_adaptive(sampler);
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
     } else {
@@ -1754,7 +1776,7 @@ int run(Options options) {
         else
             sampler = std::make_unique<pfh::RandomSampler>(space,
                 pfh::continuation_seed(options.seed, options.warm_history ?
-                    options.warm_history->observations.size() : 0),
+                    options.warm_history->size() : 0),
                 options.warm_history ? 0 : options.max_trials);
         std::uint64_t next_id = options.warm_history ? options.warm_history->next_id : 0;
         std::uint64_t fallback_ordinal = 0;
@@ -1763,15 +1785,13 @@ int run(Options options) {
                 auto candidate = sampler->next();
                 if (!candidate)
                     return std::nullopt;
-                if (options.warm_history && options.warm_history->tried.count(
-                        pfh::detail::candidate_key(*candidate))) {
+                if (options.warm_history && options.warm_history->contains(*candidate)) {
                     if (options.sampler == "random" && finite_cardinality && attempt >= 63) {
                         do {
                             if (fallback_ordinal >= *finite_cardinality)
                                 return std::nullopt;
                             candidate = space.candidate_at(fallback_ordinal++, next_id);
-                        } while (options.warm_history->tried.count(
-                            pfh::detail::candidate_key(*candidate)));
+                        } while (options.warm_history->contains(*candidate));
                     } else {
                         continue;
                     }
@@ -1829,15 +1849,55 @@ int run(Options options) {
 
 int main(int argc, char** argv) {
     try {
+        if (argc > 1 && std::string(argv[1]) == "warm-encode") {
+            std::filesystem::path spec;
+            std::filesystem::path input;
+            std::filesystem::path output;
+            std::uint64_t block_trials = 0;
+            for (int index = 2; index < argc; ++index) {
+                const std::string option = argv[index];
+                if (option == "--spec")
+                    spec = require_value(argc, argv, index, option);
+                else if (option == "--input")
+                    input = require_value(argc, argv, index, option);
+                else if (option == "--output")
+                    output = require_value(argc, argv, index, option);
+                else if (option == "--block-trials") {
+                    const auto value = require_value(argc, argv, index, option);
+                    if (value.empty() || value.find_first_not_of("0123456789") !=
+                                             std::string::npos)
+                        usage_error("--block-trials must be positive");
+                    block_trials = std::stoull(value);
+                    if (!block_trials)
+                        usage_error("--block-trials must be positive");
+                }
+                else
+                    usage_error("unknown warm-encode option: " + option);
+            }
+            if (spec.empty() || input.empty() || output.empty())
+                usage_error("warm-encode requires --spec, --input and --output");
+            const auto recorded = pfh::detail::space_from_spec(
+                pfh::detail::parse_json(pfh::detail::read_document(spec)));
+            const auto space = pfh::detail::search_space_from_recorded(recorded);
+            const auto history = pfh::detail::load_warm_history(input, space, recorded);
+            pfh::detail::encode_warm_history(output, space, recorded, history, block_trials);
+            return 0;
+        }
         if (argc > 1 && std::string(argv[1]) == "space-info") {
             std::filesystem::path spec;
             std::filesystem::path warm;
+            bool warm_details = false;
+            bool warm_digest = false;
             for (int index = 2; index < argc; ++index) {
                 const std::string option = argv[index];
                 if (option == "--spec")
                     spec = require_value(argc, argv, index, option);
                 else if (option == "--warm-start")
                     warm = require_value(argc, argv, index, option);
+                else if (option == "--warm-details")
+                    warm_details = true;
+                else if (option == "--warm-digest")
+                    warm_digest = true;
                 else
                     usage_error("unknown space-info option: " + option);
             }
@@ -1852,12 +1912,19 @@ int main(int argc, char** argv) {
             } catch (const std::overflow_error&) {
             }
             const auto history = pfh::detail::load_warm_history(warm, space, recorded);
-            const auto tried = history.tried.size();
+            const auto tried = history.tried_count();
             std::cout << "{\"cardinality\":"
                       << (cardinality ? std::to_string(*cardinality) : "null")
                       << ",\"tried\":" << tried << ",\"remaining\":"
                       << (cardinality ? std::to_string(*cardinality - tried) : "null")
-                      << ",\"space_hash\":\"" << pfh::detail::space_hash(recorded) << "\"}\n";
+                      << ",\"space_hash\":\"" << pfh::detail::space_hash(recorded) << "\"";
+            if (warm_details)
+                std::cout << ",\"warm_trials\":" << history.size() << ",\"next_id\":"
+                          << history.next_id << ",\"completed\":" << history.completed
+                          << ",\"feasible\":" << history.feasible;
+            if (warm_digest)
+                std::cout << ",\"source_sha256\":\"" << history.source_digest() << "\"";
+            std::cout << "}\n";
             return 0;
         }
         struct sigaction action {};

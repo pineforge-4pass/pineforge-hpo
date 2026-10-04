@@ -25,6 +25,7 @@ def main():
     from pineforge_hpo.cli import prepare_run
     from pineforge_hpo.continuation import space_info
     from pineforge_hpo.study_spec import load_study_spec
+    from pineforge_hpo.warm_binary import encode_warm_block
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--native", type=Path, required=True)
@@ -224,6 +225,17 @@ def main():
             child_bytes, child, child_path, _ = run(
                 label + "-child", sampler, policy, batch, warm=parent_jsonl
             )
+            binary_path = directory / (label + ".bin")
+            binary_path.write_bytes(encode_warm_block(study, parent["trials"]))
+            multi_path = directory / (label + "-multi.bin")
+            multi_path.write_bytes(b"".join(
+                encode_warm_block(study, parent["trials"][begin:begin + 37])
+                for begin in range(0, 200, 37)))
+            for mode, warm_path in (("binary", binary_path), ("multi", multi_path)):
+                _, binary_child, _, _ = run(
+                    label + "-" + mode, sampler, policy, batch, warm=warm_path)
+                require(child["trials"] == binary_child["trials"],
+                        f"real strategy {mode} differs from JSON continuation")
             replay_bytes, _, _, _ = run(
                 label + "-replay", sampler, policy, batch, warm=parent_jsonl
             )

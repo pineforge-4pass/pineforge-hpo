@@ -8,6 +8,16 @@
 #include <utility>
 
 namespace pineforge::hpo {
+
+WarmStartObservation WarmStartSource::observation(const SearchSpace& space,
+                                                 std::uint64_t row) const {
+    Candidate candidate;
+    candidate.id = id(row);
+    for (std::size_t index = 0; index < space.dimensions().size(); ++index)
+        candidate.values.emplace(std::string(dimension_name(space.dimensions()[index])),
+                                 parameter(row, index));
+    return {std::move(candidate), objective(row)};
+}
 namespace {
 
 std::uint64_t integer_count(const IntegerDimension& dimension) {
