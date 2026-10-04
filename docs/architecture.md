@@ -208,8 +208,9 @@ vectors. `without_replacement` validates `trials <= cardinality`;
 `exhaustive` validates equality. Grid covers the same declared set in its stable
 order. The two orders need not have the same intermediate best-so-far sequence.
 
-Version 0.4.0 bounds TPE history at `history_switch` completed usable observations
-(default 1,000). Below that count, it uses the exact 0.3.0 full-history estimator. The
+Version 0.4.0 keeps exact 0.3.0 full-history TPE by default (`history_switch=null`,
+meaning never switch). Explicit `history_switch=N` opts into bounded models at N
+completed usable observations; below N the estimator remains exact. The
 retained set is the global best `gamma_cap` observations plus 64 recent
 non-elites plus a separately seeded reservoir of older non-elites (default 448).
 Each observation enters the older pool once when it leaves the recent window;
@@ -224,7 +225,7 @@ Pending constant-liar overlays update on every ask. Eight acquisition draws repl
 worker count, and wall time do not advance the switch. Only successful finite `tell()`
 calls increment the completed observation count; `reset()` restores exact-prefix mode.
 
-No SIMD or candidate-scoring threads are required: bounding observations, model
+In opted-in mode, no SIMD or candidate-scoring threads are required: bounding observations, model
 refits, and acquisition draws makes history cost flat while leaving execution
 cores available for backtests. See [scaling measurements](../benchmarks/scaling/README.md).
 Exact sparse finite reservation/coverage sets use temporary disk indexes with

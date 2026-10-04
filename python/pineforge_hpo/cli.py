@@ -486,14 +486,14 @@ def _native_command(
         if not isinstance(study.sampler.config, TpeSamplerConfig):
             raise CliError("sampler.kind=tpe requires a valid typed sampler.config")
         config = study.sampler.config
+        if config.history_switch is not None:
+            command.extend(("--tpe-history-switch", str(config.history_switch)))
         command.extend(
             (
                 "--tpe-startup-trials",
                 str(config.startup_trials),
                 "--tpe-ei-candidates",
                 str(config.ei_candidates),
-                "--tpe-history-switch",
-                str(config.history_switch),
                 "--tpe-gamma-fraction",
                 str(config.gamma_fraction),
                 "--tpe-gamma-cap",

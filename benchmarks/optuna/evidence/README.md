@@ -81,13 +81,15 @@ pins and protocol limitations. The historical 3k/10k geomeans are 1.164189/1.118
 **both quality gates fail**. Identity has zero differing proposal/value records;
 it is not a long-budget quality-equivalence claim.
 
-## Final 1,000-observation switch evidence (release blocked)
+## Final 1,000-observation switch evidence (bounded opt-in)
 
 The [final report](../../scaling/final-2026-10-04.md) records the completed-only
-1,000-observation default. `2026-10-04-final-1000-quality.csv` contains 100 per-seed
+1,000-observation model, now explicit opt-in rather than the default.
+`2026-10-04-final-1000-quality.csv` contains 100 per-seed
 comparisons: 80 at 3k versus pinned 0.3.0 and 20 at 10k versus the benchmark-only
 full-history variant. Final geomeans are 1.036492/1.031570; both revised geomean
-gates fail, and rotated ellipsoid 20D is 1.245558 at 3k. The earlier 1.6% tradeoff
+gates failed; these are accepted opt-in tradeoffs. Rotated ellipsoid 20D is 1.245558
+at 3k. The earlier 1.6% tradeoff
 must not be substituted for these measurements. Adjacent `ask`, `native`, `ordinal`,
 and `identity` CSVs have verified source/binary/trace/hash sidecars and record the
 flat-history, billing/memory, membership, and exact-prefix gates.

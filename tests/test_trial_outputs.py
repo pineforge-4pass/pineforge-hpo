@@ -31,6 +31,7 @@ class TrialOutputTests(unittest.TestCase):
     def command(self, *extra, workers=8, trials=1200):
         return [str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(self.csv),
                 "--objective", "metrics.all.net_profit", "--sampler", "tpe",
+                "--tpe-history-switch", "1000",
                 "--seed", "17", "--workers", str(workers), "--batch-size", "8",
                 "--max-trials", str(trials), "--input-tf", "1", "--script-tf", "5",
                 "--bar-magnifier", "true", "--magnifier-samples", "6",

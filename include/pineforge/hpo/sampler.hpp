@@ -119,8 +119,8 @@ struct TpeSamplerConfig {
     /// the same region.
     bool constant_liar = true;
 
-    /// Completed observations at which full-history acquisition switches to bounded models.
-    std::uint64_t history_switch = 1000;
+    /// Optional completed-observation threshold for bounded models; nullopt means never switch.
+    std::optional<std::uint64_t> history_switch = std::nullopt;
 
     /// Acquisition draws after the history switch; never exceeds ei_candidates.
     std::uint64_t scale_ei_candidates = 8;
@@ -140,7 +140,8 @@ struct TpeSamplerConfig {
 /// abandon() receives its ID. Public methods are thread-safe, although deterministic replay
 /// requires the same ordering of ask/tell/abandon calls.
 ///
-/// Below history_switch completed observations, proposals use the exact full-history estimator.
+/// By default, proposals use the exact full-history estimator for the entire study.
+/// An explicit history_switch opts into bounded models after that many completed observations.
 /// Thereafter the sampler retains at most gamma_cap elite observations and 64 recent non-elite
 /// observations plus bad_reservoir_size older non-elites from a separate seeded reservoir.
 /// Outstanding or abandoned proposals never advance the switch. Numeric density tables,

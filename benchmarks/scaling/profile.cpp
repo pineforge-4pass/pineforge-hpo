@@ -21,6 +21,9 @@ int main(int argc, char** argv) {
     for (unsigned dimension = 0; dimension < dimensions; ++dimension)
         descriptors.emplace_back(pfh::RealDimension("x" + std::to_string(dimension), -5, 5));
     pfh::TpeSamplerConfig config;
+#if !defined(PINEFORGE_HPO_LEGACY_TPE)
+    config.history_switch = 1000;
+#endif
     if (!default_startup)
         config.startup_trials = history;
     pfh::TpeSampler sampler(pfh::SearchSpace(std::move(descriptors)), 17,

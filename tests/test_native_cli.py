@@ -379,6 +379,14 @@ def main() -> int:
             length_high=20,
         )
         require(tpe_repeat.returncode == 0, "repeated native TPE study failed")
+        tpe_default = invoke(native, plugin, csv, sampler="tpe", max_trials=12)
+        require(tpe_default.returncode == 0, "default full-history TPE study failed")
+        tpe_default_json = json.loads(tpe_default.stdout)
+        require(tpe_default_json["tpe_history_switch"] is None and
+                tpe_default_json["sampler_config"]["history_switch"] is None and
+                all(trial["tpe_history_switch"] is None
+                    for trial in tpe_default_json["trials"]),
+                "unset TPE history switch must be recorded as null")
         tpe_repeat_trials = json.loads(tpe_repeat.stdout)["trials"]
         require(
             [trial["parameters"] for trial in tpe_trials]

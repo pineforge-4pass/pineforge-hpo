@@ -16,8 +16,22 @@ int main() {
         std::vector<pfh::Dimension> dimensions;
         for (unsigned index = 0; index < 8; ++index)
             dimensions.emplace_back(pfh::RealDimension("x" + std::to_string(index), -5, 5));
+        pfh::TpeSamplerConfig bounded_config;
+        bounded_config.history_switch = 1000;
         pfh::TpeSampler sampler(pfh::SearchSpace(dimensions), 17,
-                                pfh::ObjectiveDirection::Minimize);
+                                pfh::ObjectiveDirection::Minimize, 0, bounded_config);
+        pfh::TpeSamplerConfig exact_config;
+        exact_config.startup_trials = 2048;
+        if (exact_config.history_switch)
+            throw std::runtime_error("TPE default history switch must be unset");
+        pfh::TpeSampler exact(pfh::SearchSpace(dimensions), 17,
+                              pfh::ObjectiveDirection::Minimize, 0, exact_config);
+        for (std::uint64_t trial = 0; trial < 1024; ++trial) {
+            auto candidate = exact.ask();
+            exact.tell(candidate->id, static_cast<double>(trial));
+        }
+        if (exact.retained_observations() != 1024)
+            throw std::runtime_error("TPE default did not retain full history");
         pfh::TpeSamplerConfig switch_config;
         switch_config.history_switch = 128;
         switch_config.startup_trials = 200;
@@ -57,10 +71,10 @@ int main() {
             sampler.tell(candidate->id, objective);
             if (trial < 999 && sampler.retained_observations() != trial + 1)
                 throw std::runtime_error(
-                    "TPE compacted the default history before 1000 completions");
+                    "TPE compacted opted-in history before 1000 completions");
             if (trial == 999 && sampler.retained_observations() != 537)
                 throw std::runtime_error(
-                    "TPE did not switch the default history at 1000 completions");
+                    "TPE did not switch opted-in history at 1000 completions");
             if (trial >= 999 && sampler.retained_observations() > 537)
                 throw std::runtime_error("TPE retained unbounded history");
             if (trial == 2000) {

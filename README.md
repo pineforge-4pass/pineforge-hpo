@@ -410,30 +410,32 @@ With an explicit batch size, changing only workers leaves `trials[]` byte-identi
 completed studies on the same deterministic artifact, data, runtime, and native build.
 Wall-deadline, cancellation, and timeout truncation are intentionally outside this guarantee.
 See [batching and pruning measurements](docs/batching.md) for the replay proof, metering
-contract, quality tradeoffs, and opt-in flags. `--tpe-history-switch N` (default `1000`)
-uses the exact 0.3.0 full-history estimator below `N` completed usable observations,
-then switches to 25 elites, 64 recent non-elites, and 448 seeded older non-elites.
+contract, quality tradeoffs, and opt-in flags. By default `--tpe-history-switch` is
+unset: TPE never switches and uses the exact 0.3.0 full-history estimator throughout
+the study. `--tpe-history-switch N` explicitly opts into 25 elites, 64 recent
+non-elites, and 448 seeded older non-elites at `N` completed usable observations.
 The switch never depends on elapsed time, worker count, pending or abandoned proposals.
 StudySpec forwards `sampler.config.history_switch`; results and TPE terminal records
-persist `tpe_history_switch`. An override can preserve a longer exact prefix, at the
-cost of full-history startup memory and quadratic study work before the switch.
+persist `tpe_history_switch`, with `null` meaning never switch. Full-history mode
+retains all observations; its memory and ask cost grow with study length.
 
-The default preserves a 1,000-observation full-history prefix; it is not selected
-by a per-dimension latency budget. Larger overrides retain legacy behavior longer,
-but ask cost grows with history: historical 16D snapshot probes measured 27,652
+For very long studies (10,000–1,000,000 trials), `--tpe-history-switch 1000` is a
+reasonable opt-in when flat acquisition cost matters more than refinement quality.
+Larger thresholds retain legacy behavior longer. Historical 16D snapshot probes measured 27,652
 microseconds at 1,024 observations and 112,201 at 4,096. Identity below the switch
 is a replay guarantee, not evidence of long-budget quality parity.
 
-**The 0.4.0 release gate remains blocked.** At 3,000 trials (eight problems, ten seeds),
-the completed-count switch has median-regret-ratio geomean 1.036492 versus 0.3.0:
+**Measured bounded-mode tradeoff (`--tpe-history-switch 1000`).** At 3,000 trials
+(eight problems, ten seeds), its median-regret-ratio geomean is 1.036492 versus 0.3.0:
 about **3.65% worse**, with rotated ellipsoid 20D at 1.245558. At 10,000 (four
 problems, five seeds), the geomean is 1.031570 versus the full-history benchmark
-variant, with worst ratio 1.091497. These miss the required 1.02/1.03 geomeans.
+variant, with worst ratio 1.091497: about **3.16% worse**. These costs are accepted
+for explicit opt-in, not as default-quality parity.
 The earlier "about 1.6% worse median regret at 3k than 0.3.0 in exchange for flat
-ask cost" result describes the superseded issued-count transition, not this default.
+ask cost" result describes the superseded issued-count transition, not the shipped opt-in.
 The reservoir, EI draws, and test thresholds are not tuned to recover that number.
 The flat 64D ask probe measures 656.450/663.061 microseconds at 100k/1M history,
-above the 375-microsecond W=8 budget; 64D sampling remains a known bottleneck.
+above the 375-microsecond W=8 budget; opted-in 64D sampling remains a known bottleneck.
 See the [final switch evidence and all gates](benchmarks/scaling/final-2026-10-04.md).
 
 Generated strategies are compiled with the parity-critical

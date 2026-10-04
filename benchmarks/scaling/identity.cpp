@@ -10,7 +10,8 @@ int main(int argc, char** argv) {
     const std::uint64_t trials = std::stoull(argv[3]);
     pfh::TpeSamplerConfig config;
 #if !defined(PINEFORGE_HPO_LEGACY_TPE)
-    config.history_switch = std::stoull(argv[4]);
+    if (std::string(argv[4]) != "never")
+        config.history_switch = std::stoull(argv[4]);
 #endif
     pfh::TpeSampler sampler(problem.space, seed, pfh::ObjectiveDirection::Minimize, 0, config);
     for (std::uint64_t first = 0; first < trials; first += 8) {

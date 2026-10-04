@@ -481,13 +481,16 @@ Before `startup_trials` usable observations, proposals use the seeded random
 path. Failed and constraint-violating trials are abandoned and train neither
 estimator.
 
-`sampler.config.history_switch` maps to native `--tpe-history-switch N`. Below that
+`sampler.config.history_switch` is absent or `null` by default, meaning never switch:
+TPE uses exact 0.3.0 full history throughout the study. A positive uint64 maps to
+native `--tpe-history-switch N` and explicitly opts into bounded TPE. Below that
 completed usable observation count, TPE uses the exact 0.3.0 full-history estimator.
 At the count, it switches to bounded density tables with 25 elites, 64 recent
 non-elites, and 448 seeded older non-elites by default. This count is independent of
-worker count, issued/abandoned candidates, and wall time. The default is 1,000,
-preserving a full-history prefix before trading bounded-model refinement quality
-for history-flat acquisition. A larger override retains more history and has higher
+worker count, issued/abandoned candidates, and wall time. N=1,000 is a reasonable
+opt-in for 10k–1M studies, trading refinement quality for history-flat acquisition.
+Measured median-regret-ratio geomeans are 1.036492 at 3k versus 0.3.0 and 1.031570
+at 10k versus the full-history benchmark variant. A larger override has higher
 memory and acquisition cost before the switch: legacy 16D snapshot asks measured
 27,652 microseconds at 1,024 observations and 112,201 at 4,096.
 Results and TPE terminal records persist
@@ -511,7 +514,7 @@ TPE config fields are strict; unknown fields are rejected:
 | --- | ---: | --- |
 | `startup_trials` | `10` | Positive integer. |
 | `ei_candidates` | `24` | Integer in `[1, 1000000]`; the upper bound prevents an accidental near-infinite `ask()`. |
-| `history_switch` | `1000` | Positive uint64 completed-observation threshold; native `--tpe-history-switch N`. |
+| `history_switch` | `null` | Never switch when absent/null; positive uint64 opts into bounded models via native `--tpe-history-switch N`. |
 | `gamma_fraction` | `0.1` | Finite number in `(0, 1]`. |
 | `gamma_cap` | `25` | Positive integer. |
 | `prior_weight` | `1.0` | Finite number greater than zero. |

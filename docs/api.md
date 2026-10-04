@@ -159,8 +159,9 @@ reports finite=true/cardinality=null/overflow=true without claiming exact unique
 coverage; grid and exact finite policies reject it.
 
 TPE's identity changes to `pineforge_product_tpe_v3_bounded` (`_finite` for exact
-finite policies). `--tpe-history-switch N` (default 1000) keeps exact 0.3.0 full-history
-estimation below N completed usable observations. At N, 25 elites plus 64 recent
+finite policies). By default `--tpe-history-switch` is unset and TPE uses exact 0.3.0
+full-history estimation for the whole study. Explicit `--tpe-history-switch N` opts
+into bounded models at N completed usable observations: 25 elites plus 64 recent
 non-elites and a seeded reservoir of 448 older
 non-elites, 513-point numeric density tables,
 good-model refits when elite IDs change, 32-completion bad-model refit epochs, and eight EI
@@ -172,16 +173,18 @@ pruning remain deterministic across worker counts. Enabled pruners now retain
 the latest 1,024 values per rung.
 
 The switch uses only successful finite `tell()` calls, not generated/pending/abandoned
-candidates, wall time, or workers. Results add `tpe_history_switch` (integer for TPE,
-null otherwise) and `sampler_config.history_switch`; each TPE terminal record also
-adds integer `tpe_history_switch`, including in `--trials-file` and on the progress
+candidates, wall time, or workers. Results add `tpe_history_switch` (positive integer
+when opted in, null for never or non-TPE) and `sampler_config.history_switch`;
+each TPE terminal record also adds `tpe_history_switch` (integer or null), including
+in `--trials-file` and on the progress
 stream. All existing schema-version-1 fields/types remain unchanged. Strict consumers
 must allow this documented additive scalar; no metadata-only billing line is emitted.
 StudySpec forwards `sampler.config.history_switch`. A larger override increases
 full-history memory and ask cost before the switch.
 
-The default is a fixed 1,000-observation exact prefix, not a per-dimension latency
-selection. Historical 16D legacy snapshot asks cost 27,652 microseconds at 1,024
+The default retains every observation, with history-growing memory and ask cost.
+An explicit N=1,000 is reasonable for 10k–1M studies requiring flat ask cost.
+Historical 16D legacy snapshot asks cost 27,652 microseconds at 1,024
 observations and 112,201 at 4,096; a larger override retains this growing cost.
 
 Use `--batch-lag 1` to overlap sampling and execution, but it does not erase
@@ -189,19 +192,19 @@ serialized ask cost. The recent-only 64D result of 245 microseconds (about 65% o
 the 375-microsecond W=8, 3-ms budget) is superseded and does not describe the
 reservoir estimator. Its measured 64D ask limit and full billing throughput are
 in the [final switch report](../benchmarks/scaling/final-2026-10-04.md).
-The final 64D probe costs 656.450/663.061 microseconds at 100k/1M history, above
+The opted-in 64D probe costs 656.450/663.061 microseconds at 100k/1M history, above
 the unchanged 375-microsecond budget; 64D can remain sampler-bound.
 
-The completed-count switch remains quality-blocked: at 3k, geomean 1.036492/worst
+The opt-in's measured refinement cost is: at 3k, geomean 1.036492/worst
 1.245558 versus 0.3.0; at 10k, geomean 1.031570/worst 1.091497 versus the full-history
-benchmark variant. Prefix identity is not evidence of long-budget parity.
+benchmark variant. These are accepted opt-in tradeoffs, not evidence of quality parity.
 
 `--tpe-bad-reservoir-size N` selects the older non-elite bound (default 448,
 range 0–65,536). Its independent seeded RNG does not consume proposal RNG draws.
 Zero recreates the recent-only bad-model retention, not the recommended refinement
 configuration. Reservoir sampling happens as non-elites leave the recent window.
 
-Bounded modes retain fixed exact-prefix/model history, outstanding logical batches,
+Opted-in TPE with bounded outputs retains fixed exact-prefix/model history, logical batches,
 a bounded writer queue, and best-k, independent of total trials. Exact finite
 coverage uses a dense bitset for cardinalities up to 100,000,000 (at most 12.5 MB
 per index); larger spaces use a temporary disk index growing with unique attempts.

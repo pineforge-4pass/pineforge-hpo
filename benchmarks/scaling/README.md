@@ -1,12 +1,13 @@
 # Native scaling in 0.4.0
 
-**Current completed-count switch: BLOCKED.** The
-[final report](final-2026-10-04.md) supersedes both review-fix reports. The default
-N_s=1,000 preserves the legacy prefix, but 3k/10k geomeans 1.036492/1.031570
-miss the revised 1.02/1.03 gates; rotated ellipsoid 20D also misses the 1.10
-per-problem gate at 3k. This is about 3.65% worse median regret at 3k, not the
-earlier issued-count transition's approximately 1.6%. The final report contains
-prefix identity, the 64D known limit, million-trial billing/memory, and every gate.
+**Release decision: bounded TPE is opt-in.** The default never switches and keeps
+the exact 0.3.0 estimator throughout the study (`tpe_history_switch=null`).
+`--tpe-history-switch 1000` is a reasonable explicit opt-in for 10k–1M trials.
+The [bounded-model report](final-2026-10-04.md) measures 3k/10k median-regret-ratio
+geomeans 1.036492/1.031570: about 3.65%/3.16% worse, accepted as an opt-in tradeoff.
+The 3k rotated-ellipsoid ratio is 1.245558. Opted-in 64D asks cost 656.450/663.061 us
+at 100k/1M, above the 375-us budget. Its flat memory/ask evidence is not a claim
+about the default full-history mode. Output, dense-ordinal, and stop fixes apply to both.
 
 **Historical original implementation:** the [review-fix measurements](review-2026-10-03.md)
 supersede the estimator, acquisition, and quality claims below. The tables below

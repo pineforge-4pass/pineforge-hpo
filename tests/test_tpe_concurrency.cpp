@@ -46,6 +46,7 @@ void test_concurrent_lifecycle() {
     const SearchSpace space = make_space();
     TpeSamplerConfig config;
     config.startup_trials = 8;
+    config.history_switch = 128;
     config.ei_candidates = 16;
     config.constant_liar = true;
     TpeSampler sampler(space, 0xC0FFEEU, ObjectiveDirection::Maximize, kTrials, config);

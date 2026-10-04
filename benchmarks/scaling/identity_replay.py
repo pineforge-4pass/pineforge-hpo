@@ -15,13 +15,15 @@ def main():
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--trials", type=int, default=3000)
+    parser.add_argument("--seeds", type=int, default=3)
+    parser.add_argument("--history-switch", default="never")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     problems = ["rotated_rastrigin20", "ackley20", "bbob_f15_d20", "bbob_f21_d20",
                 "bbob_f24_d20", "mixed_irrelevant15", "rosenbrock20", "rotated_ellipsoid20"]
-    jobs = [(problem, 17 + 31 * index, 1000, 1000)
-            for problem in problems for index in range(10)]
-    jobs.extend((problem, seed, 256, 512) for problem in problems for seed in (17, 48))
+    jobs = [(problem, 17 + 31 * index, args.trials, args.history_switch)
+            for problem in problems for index in range(args.seeds)]
 
     def run(job):
         problem, seed, trials, switch = job
@@ -34,7 +36,8 @@ def main():
         before, after = [output.splitlines() for output in outputs]
         if len(before) != trials or len(after) != trials:
             raise RuntimeError(f"incomplete identity trace: {job}")
-        return {"problem": problem, "seed": seed, "trials": trials, "history_switch": switch,
+        return {"problem": problem, "seed": seed, "trials": trials,
+                "history_switch": None if switch == "never" else int(switch),
                 "diff_count": sum(previous != current for previous, current in zip(before, after)),
                 "baseline_sha256": hashlib.sha256(outputs[0]).hexdigest(),
                 "switch_sha256": hashlib.sha256(outputs[1]).hexdigest()}

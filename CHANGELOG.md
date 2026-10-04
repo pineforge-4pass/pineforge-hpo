@@ -2,8 +2,9 @@
 
 ## 0.4.0
 
-- Use exact 0.3.0 full-history TPE below a completed-observation switch (default 1,000),
-  then bound native TPE history to 25 global elites,
+- Keep exact 0.3.0 full-history TPE by default for the entire study. The default
+  history switch is unset (`null` in StudySpec/results means never switch).
+  Opt into `--tpe-history-switch N` to bound native TPE history to 25 global elites,
   64 recent non-elites, and a seeded reservoir of 448 older non-elites. Cache numeric
   density tables, refit good models on elite changes and bad models every 32 completions,
   skip split construction on cache hits, retain live constant-liar overlays, and use eight
@@ -17,12 +18,14 @@
 - Add `--tpe-bad-reservoir-size` (default 448, maximum 65,536) and the additive
   `sampler_config.bad_reservoir_size` result field. Exact proposals below the switch
   are an identity check, not evidence of long-budget quality equivalence.
-- Restore the 1,000-observation default without a per-dimension switch-selection budget.
-  The final completed-count switch remains quality-blocked: eight problems and ten seeds
-  at 3k give geomean 1.036492 versus 0.3.0 (required <= 1.02), with worst ratio 1.245558.
-  Four problems and five seeds at 10k give geomean 1.031570 (required <= 1.03), with worst
+- Make bounded TPE opt-in after measured long-budget refinement costs. With N=1,000,
+  eight problems and ten seeds at 3k give geomean 1.036492 versus 0.3.0,
+  with worst ratio 1.245558. Four problems and five seeds at 10k give geomean 1.031570,
+  with worst
   ratio 1.091497 versus the benchmark-only full-history variant. This is about 3.65%
   worse per-problem median regret at 3k, not the superseded round-one 1.6% result.
+  Recommend N=1,000 for 10k–1M studies when flat cost outweighs this quality tradeoff.
+  Full-history default memory and ask cost remain history-growing.
   The completed-only transition changes reservoir initialization relative to that run;
   do not reuse its quality claims. Keep the reservoir, EI settings, and quality thresholds.
   See `benchmarks/scaling/final-2026-10-04.md` for prefix identity, all suites, and the

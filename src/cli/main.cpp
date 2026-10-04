@@ -99,6 +99,7 @@ struct Options {
 };
 
 struct TrialRecord {
+    bool tpe_enabled = false;
     std::optional<std::uint64_t> tpe_history_switch;
     std::uint64_t trial_id = 0;
     pfh::Candidate candidate;
@@ -258,7 +259,7 @@ void print_help() {
               << "  --tpe-startup-trials N      random observations before model fitting\n"
               << "  --tpe-ei-candidates N       candidates scored by log l(x)/g(x)\n"
               << "  --tpe-history-switch N     completed observations before bounded TPE"
-                 " (default 1000)\n"
+                 " (default unset: never switch; JSON null)\n"
               << "  --tpe-scale-ei-candidates N acquisition draws after the history switch\n"
               << "  --tpe-bad-reservoir-size N  older non-elite reservoir (default 448)\n"
               << "  --tpe-gamma-fraction X      good-observation fraction in (0, 1]\n"
@@ -552,7 +553,7 @@ Options parse_options(int argc, char** argv) {
     if (out.tpe_config.scale_ei_candidates == 0 ||
         out.tpe_config.scale_ei_candidates > 1'000'000)
         usage_error("--tpe-scale-ei-candidates must be between 1 and 1000000");
-    if (out.tpe_config.history_switch == 0)
+    if (out.tpe_config.history_switch && *out.tpe_config.history_switch == 0)
         usage_error("--tpe-history-switch must be positive");
     if (out.tpe_config.bad_reservoir_size > 65536)
         usage_error("--tpe-bad-reservoir-size must be between 0 and 65536");
@@ -696,8 +697,10 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
 
 TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& options) {
     TrialRecord record;
-    if (options.sampler == "tpe")
+    if (options.sampler == "tpe") {
+        record.tpe_enabled = true;
         record.tpe_history_switch = options.tpe_config.history_switch;
+    }
     record.trial_id = candidate.id;
     record.candidate = candidate;
     record.pruning_enabled = options.pruner != pfh::PrunerKind::None;
@@ -726,8 +729,10 @@ void reset_pruning_report(TrialRecord& record) {
 
 std::string render_trial(const TrialRecord& trial) {
     std::ostringstream out;
-    if (trial.tpe_history_switch)
-        out << "{\"tpe_history_switch\": " << *trial.tpe_history_switch << ", ";
+    if (trial.tpe_enabled)
+        out << "{\"tpe_history_switch\": "
+            << (trial.tpe_history_switch ? std::to_string(*trial.tpe_history_switch) : "null")
+            << ", ";
     else
         out << "{";
     out << "\"trial_id\": " << trial.trial_id << ", \"status\": \""
@@ -1320,12 +1325,15 @@ std::string render_results(const Options& options,
         << "\",\n"
         << "  \"seed\": " << options.seed << ",\n"
         << "  \"tpe_history_switch\": "
-        << (options.sampler == "tpe" ? std::to_string(options.tpe_config.history_switch) : "null")
+        << (options.sampler == "tpe" && options.tpe_config.history_switch
+                ? std::to_string(*options.tpe_config.history_switch) : "null")
         << ",\n"
         << "  \"sampler_config\": ";
     if (options.sampler == "tpe") {
         out << "{\"startup_trials\": " << options.tpe_config.startup_trials
-            << ", \"history_switch\": " << options.tpe_config.history_switch
+            << ", \"history_switch\": "
+            << (options.tpe_config.history_switch
+                    ? std::to_string(*options.tpe_config.history_switch) : "null")
             << ", \"scale_ei_candidates\": " << options.tpe_config.scale_ei_candidates
             << ", \"bad_reservoir_size\": " << options.tpe_config.bad_reservoir_size
             << ", \"ei_candidates\": " << options.tpe_config.ei_candidates

@@ -534,7 +534,7 @@ private:
 };
 
 void validate_config(const TpeSamplerConfig& config) {
-    if (config.history_switch == 0)
+    if (config.history_switch && *config.history_switch == 0)
         throw std::invalid_argument("TPE history_switch must be positive");
     if (config.startup_trials == 0) {
         throw std::invalid_argument("TPE startup_trials must be positive");
@@ -974,10 +974,12 @@ public:
     }
 
     void compact_observations(const TpeSamplerConfig& config) {
+        if (!config.history_switch)
+            return;
         const std::size_t elite_count = static_cast<std::size_t>(config.gamma_cap);
         const std::size_t recent_count = 64;
         if (!compact_history_ &&
-            completed_.load(std::memory_order_relaxed) < config.history_switch)
+            completed_.load(std::memory_order_relaxed) < *config.history_switch)
             return;
         compact_history_ = true;
         if (history_.size() <= elite_count + recent_count)
