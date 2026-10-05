@@ -158,25 +158,44 @@ normal positive double through 2^1023; mixed includes every type.
 
 | Space | Proposal-stream SHA-256 | Linux Intel / AMD / aarch64 | macOS arm64 CI |
 |---|---|---|---|
-| Linear real | `23b846b458cbf212c45e19b0694e975a00a8c0a70f04e365313481c7e4ed3f19` | Match | Pending |
-| Log real | `9941da2c37a70a79b119931fed77bddd7efb8caec3ca800aa245d93c2ea06c0c` | Match | Pending |
-| Stepped real | `632b363541d0221bff48f63c2dc9d293e44f9e0d006d8f9e51d43223d5bd1004` | Match | Pending |
-| Linear int | `260fb38620390ba569a7936f61991249055e6624a5debc08112d1006b333af89` | Match | Pending |
-| Log int | `0b9c0fb78fda26bf85c63a9108d5af7da2981561f84f10d5b45e85a2610a00b2` | Match | Pending |
-| Categorical | `5e03af6d8bb5ba40f01c16a4b85cc61f1b5683444939d269c6c0bec138446761` | Match | Pending |
-| Bool | `f973ced11a4c71e747a7aefdf2bcd123784282b5ca3672a21378aa83ee1f7183` | Match | Pending |
-| Mixed | `c7360a846cd9d5c72c376b5bc7c4a62a8d4ce672ad17b9a732c956811694266c` | Match | Pending |
+| Linear real | `23b846b458cbf212c45e19b0694e975a00a8c0a70f04e365313481c7e4ed3f19` | Match | Match |
+| Log real | `9941da2c37a70a79b119931fed77bddd7efb8caec3ca800aa245d93c2ea06c0c` | Match | Match |
+| Stepped real | `632b363541d0221bff48f63c2dc9d293e44f9e0d006d8f9e51d43223d5bd1004` | Match | Match |
+| Linear int | `260fb38620390ba569a7936f61991249055e6624a5debc08112d1006b333af89` | Match | Match |
+| Log int | `0b9c0fb78fda26bf85c63a9108d5af7da2981561f84f10d5b45e85a2610a00b2` | Match | Match |
+| Categorical | `5e03af6d8bb5ba40f01c16a4b85cc61f1b5683444939d269c6c0bec138446761` | Match | Match |
+| Bool | `f973ced11a4c71e747a7aefdf2bcd123784282b5ca3672a21378aa83ee1f7183` | Match | Match |
+| Mixed | `c7360a846cd9d5c72c376b5bc7c4a62a8d4ce672ad17b9a732c956811694266c` | Match | Match |
 
 All eight numerical identities have SHA-256
 `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613`.
-The pre-release table is incomplete until macOS CI and Intel-child restore receipts
-are recorded; it is not a completed four-host release claim.
+The aggregate hashes include sorted space names, LF separators and exact proposal bytes.
+Both serial and eight-worker modes produce this same result on all four hosts:
+
+| Host | Aggregate proposal SHA-256 | Numeric identity SHA-256 |
+|---|---|---|
+| AWS c6i.2xlarge, Intel x86-64 | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
+| AWS c6a.2xlarge, AMD x86-64 | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
+| spark2, aarch64 Linux | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
+| GitHub macOS arm64 CI | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
+
+Verification receipts on October 5, 2026: Intel remote job
+`rj-20261005t140849-bca3a4`, AMD `rj-20261005t141008-892c20`, spark2
+`rj-20261005t141716-ae0c64`, and macOS CI run `37323502580`, job `111808264971`.
+The 24 Intel fixture files in `tests/fixtures/portable-math-intel/` were byte-checked
+against the Intel artifacts. AMD, spark2 and macOS each imported all eight actual Intel
+checkpoints, reported `restored_sampler_state` eight times and matched all 128 child
+proposals per space against the uninterrupted Intel run. These are cross-host restore
+receipts, not just same-host checkpoint tests.
 
 ## Reproducible verification
 
 `scripts/verify_portable_math.sh` supplies `release`, `proof`, `sanitizers`, `docs`,
 `contract`, `optuna` and `performance` profiles. Linux release requires the regenerated
-portable serial golden (SHA-256 `3e093fefd5c00f9241a115ef5be729e42729bff41a30d3253485c43110451810`).
+portable serial golden. The regenerated proposal-stream SHA-256 is
+`3e093fefd5c00f9241a115ef5be729e42729bff41a30d3253485c43110451810`;
+the fixture file SHA-256 is
+`aa8070c4a24abb5c03e7bff25a7cba7488267064cb9d7dd657c533887b3f2971`.
 The LD_PRELOAD differential retains all 22 function probes/eight spaces; replaced
 functions must change neither proposal bits nor identity. MPFR is test-only/optional;
 available builds run 104,962 exact binary64 primitive comparisons.
@@ -184,6 +203,10 @@ available builds run 104,962 exact binary64 primitive comparisons.
 Grid/random compatibility builds the same ten-space probe against v0.8.0 and 0.9.0
 and compares raw candidate bits, plus the CLI contract's result bytes after changing
 only the release-version field. Contract/E2E use the pinned canonical Pine harness.
+The ten-space grid/random stream SHA-256 is
+`5fc2113bfd59d669d570e21a27ceabbeba412f947784b6f9cc9797a7c9c57f47`
+for both releases. The Linux A1 differential runs 176 perturbations (22 functions
+times eight spaces), with unchanged proposal bits, numeric identities and warm restores.
 The `asan` test preset includes bounded quarantine settings without disabling leak,
 address or undefined-behavior checking; `ctest --preset asan` needs no extra shell flags.
 
@@ -196,3 +219,86 @@ variance and conservative 95% Student-t intervals (3 degrees of freedom). Raw CS
 binary hashes and the metadata sidecar are required, including failed experiments.
 The initial literal-kernel replacement failed the 5% regression gate; interval
 evaluation optimizations are measured separately, not disguised by a tolerance change.
+
+## Proposal performance results
+
+The final Intel job `rj-20261005t140849-bca3a4` uses four independent builds per arm,
+with ccache disabled. Ratios compare revision 2 against v0.8.0; lower is faster.
+Every individual space and the aggregate must have an upper 95% bound below 1.05.
+
+| Space | Portable / v0.8.0 | 95% build-random-effect interval |
+|---|---:|---|
+| Linear real | 1.016715 | [0.994876, 1.039033] |
+| Log real | 1.005209 | [0.984095, 1.026776] |
+| Stepped real | 0.874447 | [0.824836, 0.927042] |
+| Linear int | 0.860956 | [0.824190, 0.899362] |
+| Log int | 0.840828 | [0.798501, 0.885398] |
+| Categorical | 0.991938 | [0.986562, 0.997343] |
+| Bool | 0.989295 | [0.986495, 0.992102] |
+| Mixed | 0.835519 | [0.803053, 0.869298] |
+| Aggregate | 0.891249 | [0.879831, 0.902814] |
+
+Raw evidence is retained under the ignored remote-results directory:
+`build/hpo-remote-queue/results/rj-20261005t140849-bca3a4/a1/out/performance/build/evidence/performance/`.
+CSV SHA-256: `23f0498761f5a93a582197c5cd70e255dd81dbb5065b25763ea78bc0ef1680bf`.
+Metadata SHA-256: `0f1e50c3a7f77ee3c46d039be0c697b13a888fc556bc830432b2e56784c7bf86`.
+The sidecar records all eight binary hashes, build order, CPU and variance components.
+Earlier experiments remain retained: literal replacement ratio 1.5327
+[1.5093, 1.5565], first interval optimization 1.3484 [1.3240, 1.3733], and the
+first fast result 0.9196 aggregate but failing individual linear/log-real upper bounds
+1.06855/1.05648. The final wide-interval fast path was required to pass every space.
+
+## Native TPE versus Optuna
+
+The pinned Optuna 4.9.0 smoke and standard six-problem/five-seed profiles both pass
+on spark2 in `rj-20261005t141716-ae0c64`. The standard run uses seeds 17, 41, 73,
+109 and 149 and each problem's declared trial budget. It emits 60 rows and checks
+the declared optima in both implementations; all 1,000,000 discrete candidates are
+enumerated, confirming a unique minimum of zero and a second-best value of 17.
+The existing absolute optimum tolerance of 1e-12 and relative tie tolerance
+`1e-12 * max(1, abs(native_regret), abs(optuna_regret))` are unchanged.
+
+| Problem | Native median regret | Optuna median regret | Floor-adjusted median ratio | Wins native / Optuna / tie |
+|---|---:|---:|---:|---|
+| Branin-2 | 0.01112884 | 0.05180082 | 0.342 | 3 / 2 / 0 |
+| Hartmann-3 | 0.003242738 | 0.008050801 | 0.734 | 3 / 2 / 0 |
+| Rosenbrock-6 | 4.690910 | 5.828791 | 0.833 | 4 / 1 / 0 |
+| Rotated Rastrigin-6 | 20.43591 | 17.13027 | 1.182 | 2 / 3 / 0 |
+| Mixed log | 0.3561900 | 0.6045869 | 0.602 | 4 / 1 / 0 |
+| Million discrete | 8711 | 10552 | 0.826 | 3 / 2 / 0 |
+
+Aggregate paired wins are 19 / 11 / 0; the existing floor-adjusted, clipped
+geometric paired regret ratio is 0.825. These are optimizer-quality observations,
+not a promise of identical Optuna proposals or superiority on every problem.
+Optuna found the exact million-discrete optimum in one of five runs; native TPE
+found none. Smoke has 3 / 0 / 0 wins and a geometric ratio of 0.503; it is not the
+full quality proof. Public-API timing includes Optuna's Python/storage overhead
+and is distinct from the proposal-only regression experiment.
+
+Standard CSV SHA-256: `76ac5bdf569ecefa34484d35ad5950f22f34b2e49fbd248e1fce017234264123`.
+Metadata SHA-256: `ce2f09c8a5278b52408bfc187ccf8dbb373b741fc64fd0dea829d5d9c256ad7a`.
+Both are retained in
+`build/hpo-remote-queue/results/rj-20261005t141716-ae0c64/a1/out/optuna/build/evidence/`.
+
+## Release gate receipts
+
+The numerical implementation at `deb9b1167df7ccab61a0484c0b87434f6b939a18` has
+the following completed receipts; subsequent release-documentation and line-wrapping
+changes do not alter arithmetic or RNG consumption.
+
+- AMD and spark2 release: 40/40 CTests, required portable serial golden, 85/85 Python tests.
+- AMD and spark2 contract: v0.8.0 `--baseline` plus canonical `--harness`, ten-space
+  grid/random equality, and real-Pine input-kind/symbol-feed/metric/trade E2E equality.
+- Cloud Run ASan/UBSan: 39/39 CTests in `rj-20261005t142005-a193f3`; `ctest --preset asan`
+  uses only the checked-in quarantine environment (867.40 seconds).
+- AMD TSan: 39/39 CTests in `rj-20261005t142006-3874b3` (671.64 seconds).
+  The owned worker uses process-local `setarch -R`; no shared host sysctl is modified.
+  Earlier sanitizer startup failures from incompatible randomized memory mappings
+  are retained as failures, not called successful race checks.
+- Zero-warning Doxygen and generated-site validation: 276 HTML files, AMD/spark2 and CI.
+- Ruff 0.15.20: `check` and `format --check`, 26 Python files.
+- CI run `37323502580`, documentation `37323502218`, benchmark smoke `37323502489`
+  and PR code-quality checks all finish successfully for the numerical head.
+
+These receipts and raw artifacts are retained under `build/hpo-remote-queue/results/`.
+Final-head CI and remote receipts are also included in the lane completion report.

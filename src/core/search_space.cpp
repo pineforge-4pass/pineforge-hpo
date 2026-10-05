@@ -78,9 +78,11 @@ std::uint64_t real_grid_count(const RealDimension& dimension) {
 }
 
 double real_at(const RealDimension& dimension, std::uint64_t index, std::uint64_t count) {
-    double decoded = detail::math::fma(static_cast<double>(index), *dimension.step(), dimension.low());
+    double decoded =
+        detail::math::fma(static_cast<double>(index), *dimension.step(), dimension.low());
     if (index + 1 == count && decoded > dimension.high() &&
-        decoded <= detail::math::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
+        decoded <=
+            detail::math::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
         decoded = dimension.high();
     }
     if (!std::isfinite(decoded) || decoded < dimension.low() || decoded > dimension.high()) {
@@ -125,7 +127,8 @@ void validate_real_grid_injective(const RealDimension& dimension, std::uint64_t 
     const double last = real_at(dimension, count - 1, count);
     const double edge = std::abs(first) >= std::abs(last) ? first : last;
     const double next_up = detail::math::nextafter(edge, std::numeric_limits<double>::infinity());
-    const double next_down = detail::math::nextafter(edge, -std::numeric_limits<double>::infinity());
+    const double next_down =
+        detail::math::nextafter(edge, -std::numeric_limits<double>::infinity());
     const double gap_up =
         std::isfinite(next_up) ? static_cast<double>(next_up) - static_cast<double>(edge)
                                : 0.0;

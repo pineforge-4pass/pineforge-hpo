@@ -1553,7 +1553,8 @@ std::string render_results(const Options& options,
         if (options.sampler == "tpe" && !options.tpe_warm_restored &&
             !options.parent_numeric_build_identity.empty() &&
             options.parent_numeric_build_identity != options.numeric_build_identity) {
-            out << ",\n  \"warm_start_reason\":\"TPE numerical algorithm or build identity changed; "
+            out << ",\n  \"warm_start_reason\":\"TPE numerical algorithm or build identity "
+                   "changed; "
                 << "rebuilt from objective history without importing the old sampler state "
                 << "(v0.8.0 checkpoints are not bitwise continuations)\"";
         }

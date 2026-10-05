@@ -15,31 +15,29 @@ native draws, and restored on GCC/libstdc++ with the same future-word hash.
 
 `parallel_checkpoint_equivalence()` imports 4,200 deterministic mixed/log rows,
 then compares eight pending suggestions from explicitly serial and eight-worker
-samplers, including raw double bits. Its expected transcript hashes were derived
-from v0.6.0 serial source (`6fc5b1fe`) compiled with `-ffp-contract=off`, not the new
-threaded path. The source is unmodified but this contraction flag differs from the
-released v0.6.0 build, so arm64/FMA fresh-stream compatibility is not claimed:
+samplers, including raw double bits. Version 0.9.0 intentionally regenerates the
+serial oracle for TPE algorithm revision 2 after replacing host libm and extended
+precision. The portable stream is checked against the serial and threaded paths,
+not inherited as an assertion of v0.8.0 proposal compatibility.
 
-| Numerical build | Eight-suggestion SHA-256 |
+| Numerical contract | Eight-suggestion SHA-256 |
 | --- | --- |
-| Linux GCC/libstdc++/glibc | `f7a777464e1d8731c3db660bf1671c2bf884332705598253c88b0e1521c9d4bf` |
-| macOS Apple clang/libc++/libSystem | `3e093fefd5c00f9241a115ef5be729e42729bff41a30d3253485c43110451810` |
+| `portable-tpe-v2;binary64:53` | `3e093fefd5c00f9241a115ef5be729e42729bff41a30d3253485c43110451810` |
 
-Both use `-ffp-contract=off`. The math-library difference is why numerical-build
-identity is enforced for full sampler checkpoints: canonical RNG transport does
-not make different floating-point/math-library builds proposal-equivalent.
-
-`tpe-serial-goldens.txt` keys these hashes by double/long-double mantissa precision,
-not compiler versions, flags or host OS. The 53/64 key covers Linux x86-64; 53/53
-covers macOS arm64. This deliberately tests the independently derived proposal
-hash even after compiler/libm identity changes, rather than silently skipping CI.
-Every golden run prints its key and full numerical identity. Unknown precision
-keys return CTest skip code 77 only outside CI. Configure with
+`tpe-serial-goldens.txt` now keys the hash by portable algorithm revision and binary64
+precision, not host long-double precision. The fixture file SHA-256 is
+`aa8070c4a24abb5c03e7bff25a7cba7488267064cb9d7dd657c533887b3f2971`.
+Every golden run prints its key and full numerical identity. Unknown contract keys
+return CTest skip code 77 only outside CI. Configure with
 `-DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON` (both native CI jobs do) to make any
-missing golden a failure. Refresh proposal hashes only after independently
-verifying the legacy oracle; ordinary identity changes must not rebaseline them.
+missing golden a failure. Refresh proposal hashes only with an intentional numerical
+algorithm revision and independent serial/threaded verification; ordinary identity
+changes must not rebaseline them. The [eight-space cross-vendor proof](../../docs/portable-math.md)
+also checks Intel, AMD, aarch64 Linux and macOS arm64 over 256 newly proposed trials
+per space and imports actual Intel checkpoints on the other three hosts.
 
 `checkpoint_exchange` writes or imports a full bounded `PFHTPE2` checkpoint for
-201 deterministic rows and a seven-element reservoir. Exchanging macOS and Linux
-files must report `rebuilt_history` with exit zero; same-build round trips must
-report `restored_sampler_state`. Neither foreign build may return exit 4.
+201 deterministic rows and a seven-element reservoir. Exchanging matching revision-2
+macOS and Linux files must report `restored_sampler_state`, just like same-host round
+trips. Revision-1/v0.8.0 files instead rebuild ordered history with a clear numerical
+compatibility reason; their old sampler state is never mixed into revision 2.

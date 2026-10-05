@@ -229,9 +229,11 @@ std::uint64_t real_grid_count(const RealDimension& dimension) {
 
 double real_at(const RealDimension& dimension, std::uint64_t index) {
     const std::uint64_t count = real_grid_count(dimension);
-    double decoded = detail::math::fma(static_cast<double>(index), *dimension.step(), dimension.low());
+    double decoded =
+        detail::math::fma(static_cast<double>(index), *dimension.step(), dimension.low());
     if (index + 1 == count && decoded > dimension.high() &&
-        decoded <= detail::math::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
+        decoded <=
+            detail::math::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
         decoded = dimension.high();
     }
     return decoded;
@@ -281,7 +283,8 @@ double log_normal_cdf(double value) {
                        inverse_square *
                            (3.0 + inverse_square *
                                       (-15.0 + inverse_square * (105.0 - 945.0 * inverse_square))));
-        return -0.5 * value * value - detail::math::log(-value) - kLogSqrtTwoPi + detail::math::log(correction);
+        return -0.5 * value * value - detail::math::log(-value) - kLogSqrtTwoPi +
+               detail::math::log(correction);
     }
     if (value >= 0.0) {
         const double upper_tail = 0.5 * detail::math::erfc(value / kSqrtTwo);
@@ -446,7 +449,8 @@ public:
                 const double standardized =
                     (static_cast<double>(first) / (density_.size() - 1) - component.mean) /
                     component.sigma;
-                double term = component.amplitude * detail::math::exp(-0.5 * standardized * standardized);
+                double term =
+                    component.amplitude * detail::math::exp(-0.5 * standardized * standardized);
                 double ratio = detail::math::exp(-standardized * step - 0.5 * step * step);
                 const double ratio_step = detail::math::exp(-step * step);
                 for (auto index = first; index <= last; ++index) {
@@ -487,7 +491,8 @@ public:
             const double position = bounded * (density_.size() - 1);
             const auto index = std::min(static_cast<std::size_t>(position), density_.size() - 2);
             const double fraction = position - index;
-            return detail::math::log(density_[index] + fraction * (density_[index + 1] - density_[index]));
+            return detail::math::log(density_[index] +
+                                     fraction * (density_[index + 1] - density_[index]));
         }
         return mixture_log_density([&](const Component& component) {
             const double standardized = (bounded - component.mean) / component.sigma;
@@ -549,7 +554,8 @@ public:
         for (const double mean : values) {
             const double normalizer = log_normal_interval(-mean / sigma, (1.0 - mean) / sigma);
             result.push_back({mean, sigma,
-                              detail::math::exp(-kLogSqrtTwoPi - detail::math::log(sigma) - normalizer)});
+                              detail::math::exp(-kLogSqrtTwoPi - detail::math::log(sigma) -
+                                                normalizer)});
         }
         return result;
     }
@@ -570,12 +576,14 @@ public:
         if (pending.empty())
             return log_bin_mass(lower, upper);
         if (fast_density_ && upper - lower <= 1e-4 && upper > lower)
-            return pending_log_density((lower + upper) * 0.5, pending) + detail::math::log(upper - lower);
+            return pending_log_density((lower + upper) * 0.5, pending) +
+                   detail::math::log(upper - lower);
         double mass = detail::math::exp(log_bin_mass(lower, upper)) * total_weight_;
         for (const auto& component : pending) {
             const double normalizer = detail::math::exp(log_normal_interval(
                 -component.mean / component.sigma, (1.0 - component.mean) / component.sigma));
-            mass += detail::math::exp(log_normal_interval((lower - component.mean) / component.sigma,
+            mass += detail::math::exp(log_normal_interval(
+                                         (lower - component.mean) / component.sigma,
                 (upper - component.mean) / component.sigma)) / normalizer;
         }
         return detail::math::log(mass / (total_weight_ + pending.size()));
