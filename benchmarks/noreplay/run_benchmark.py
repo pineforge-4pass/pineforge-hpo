@@ -171,7 +171,7 @@ def main():
                 "src/core/sha256.hpp",
                 "src/core/mt19937_64.hpp",
                 "src/core/numeric_build.hpp",
-                "src/core/numeric_build_flags.hpp.in",
+                "cmake/GenerateNumericBuildFlags.cmake",
                 "src/core/dimension_workers.hpp",
                 "include/pineforge/hpo/sampler.hpp",
             )

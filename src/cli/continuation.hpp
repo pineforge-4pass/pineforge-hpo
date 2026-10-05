@@ -2,6 +2,7 @@
 
 #include "json.hpp"
 #include "sha256.hpp"
+#include "../core/sampler_checkpoint.hpp"
 
 #include <pineforge/hpo/sampler.hpp>
 #include <algorithm>
@@ -430,10 +431,7 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
             if (const auto* state = document->find("tpe_sampler_state")) {
                 history.sampler_state = state->text();
                 const auto& checkpoint = history.sampler_state;
-                if (checkpoint.size() > 16 * 1024 * 1024 || checkpoint.size() < 73 ||
-                    checkpoint.substr(0, 8) != "PFHTPE2\n" || checkpoint[72] != '\n' ||
-                    sha256(std::string_view(checkpoint).substr(73)) != checkpoint.substr(8, 64))
-                    throw std::runtime_error("invalid sampler-state checksum/version");
+                sampler_checkpoint_payload(checkpoint);
             }
             if (const auto* mode = document->find("trials_out"); mode && mode->text() != "all")
                 throw std::runtime_error("summary/none result is not a complete trial history");

@@ -214,10 +214,10 @@ public:
                 const std::string state(
                     reinterpret_cast<const char*>(mapping_.bytes + offset + 16),
                     static_cast<std::size_t>(bytes));
-                if (state.size() < 73 || state.substr(0, 8) != "PFHTPE2\n" ||
-                    state[72] != '\n' || sha256(std::string_view(state).substr(73)) !=
-                        state.substr(8, 64))
-                    throw std::runtime_error("invalid sampler-state checksum/version");
+                if (!current_sampler_checkpoint(state)) {
+                    offset += 16 + static_cast<std::size_t>(bytes);
+                    continue;
+                }
                 std::istringstream payload(state.substr(73));
                 payload.imbue(std::locale::classic());
                 std::string signature, numeric_build;

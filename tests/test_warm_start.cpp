@@ -1,8 +1,10 @@
 #include <pineforge/hpo/sampler.hpp>
 #include "../src/cli/continuation.hpp"
+#include "../src/core/tpe_test_hooks.hpp"
 
 #include <cmath>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <iostream>
@@ -14,6 +16,12 @@
 namespace pfh = pineforge::hpo;
 
 namespace {
+
+thread_local std::vector<double>* observed_log_ratios = nullptr;
+
+void observe_log_ratio(double value) {
+    observed_log_ratios->push_back(value);
+}
 
 void require(bool condition, const char* message) {
     if (!condition)
@@ -222,8 +230,22 @@ void parallel_checkpoint_equivalence() {
         }
         pending.push_back(actual);
     }
-    require(pfh::detail::sha256(bits.str()) == PFH_THREAD_GOLDEN_HASH,
-            "threaded/serial proposals differ from independent serial golden");
+    const auto identity = pfh::detail::sha256(pfh::detail::tpe_numeric_identity());
+    std::ifstream goldens(PFH_TPE_SERIAL_GOLDENS);
+    require(static_cast<bool>(goldens), "serial golden identity table missing");
+    std::string known_identity, golden_hash;
+    bool matched = false;
+    while (goldens >> known_identity >> golden_hash) {
+        if (known_identity != identity)
+            continue;
+        require(pfh::detail::sha256(bits.str()) == golden_hash,
+                "threaded/serial proposals differ from independent serial golden");
+        matched = true;
+        break;
+    }
+    if (!matched)
+        std::cout << "SKIP independent serial golden: unknown numerical identity "
+                  << identity << '\n';
     for (const auto& candidate : pending) {
         parent.tell(candidate.id, static_cast<double>(candidate.id % 101));
         child.tell(candidate.id, static_cast<double>(candidate.id % 101));
@@ -236,7 +258,7 @@ void eight_worker_equivalence() {
         dimensions.emplace_back(pfh::RealDimension("P" + std::to_string(column), 0.0, 1.0));
     const pfh::SearchSpace space(std::move(dimensions));
     std::vector<pfh::WarmStartObservation> warm;
-    for (std::uint64_t row = 0; row < 4096; ++row) {
+    for (std::uint64_t row = 0; row < 4200; ++row) {
         pfh::Candidate candidate;
         candidate.id = row;
         for (std::uint64_t column = 0; column < 32; ++column)
@@ -253,8 +275,19 @@ void eight_worker_equivalence() {
     reference.warm_start(warm);
     actual.warm_start(warm);
     for (std::size_t proposal = 0; proposal < 8; ++proposal) {
+        std::vector<double> serial_ratios, threaded_ratios;
+        observed_log_ratios = &serial_ratios;
+        pfh::detail::set_tpe_log_ratio_observer(observe_log_ratio);
         const auto expected = *reference.ask();
+        observed_log_ratios = &threaded_ratios;
         const auto observed = *actual.ask();
+        pfh::detail::set_tpe_log_ratio_observer(nullptr);
+        observed_log_ratios = nullptr;
+        require(!serial_ratios.empty() && serial_ratios.size() == threaded_ratios.size(),
+                "acquisition log-ratio test hook did not observe all candidates");
+        require(std::memcmp(serial_ratios.data(), threaded_ratios.data(),
+                            serial_ratios.size() * sizeof(double)) == 0,
+                "threaded log-ratio reduction bits differ");
         for (const auto& item : observed.values) {
             const auto expected_value = std::get<double>(expected.values.at(item.first));
             const auto observed_value = std::get<double>(item.second);
@@ -262,6 +295,27 @@ void eight_worker_equivalence() {
                     "one/eight-worker 32-input double bits differ");
         }
     }
+}
+
+void numeric_identity_validation() {
+    const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0)});
+    std::vector<pfh::WarmStartObservation> warm;
+    pfh::detail::set_tpe_contraction_override(0.0);
+    pfh::TpeSampler parent(space, 17);
+    parent.warm_start(warm);
+    const auto state = parent.sampler_state();
+    pfh::detail::set_tpe_contraction_override(-0x1p-104);
+    pfh::TpeSampler foreign(space, 17);
+    require(!foreign.warm_start(warm, 1, state),
+            "contraction canary mismatch falsely restored checkpoint");
+    pfh::detail::set_tpe_contraction_override(0.0);
+    for (const std::string version : {"PFHTPE1\n", "PFHTPE3\n", "PFHTPE12\n"}) {
+        pfh::TpeSampler different_version(space, 17);
+        require(!different_version.warm_start(warm, 1, version + state.substr(8)),
+                "other checkpoint version did not rebuild");
+    }
+    pfh::detail::set_tpe_contraction_override(std::nullopt);
+    std::cout << "PASS contraction-mismatch and other-version rebuilds\n";
 }
 
 void linear_history_import() {
@@ -362,6 +416,17 @@ void invalid_imports() {
 int main(int argc, char** argv) {
     try {
         if (argc == 2) {
+            if (std::string(argv[1]) == "--numeric-identity") {
+                std::cout << pfh::detail::sha256(pfh::detail::tpe_numeric_identity()) << '\n'
+                          << pfh::detail::tpe_numeric_identity() << '\n';
+                numeric_identity_validation();
+                return 0;
+            }
+            if (std::string(argv[1]) == "--reduction") {
+                eight_worker_equivalence();
+                std::cout << "PASS all serial/threaded acquisition log-ratio bits\n";
+                return 0;
+            }
             checkpoint_equivalence(std::stoull(argv[1]), true,
                 pfh::CandidatePolicy::SamplerDefault, 201, 7, 300);
             std::cout << "PASS reservoir r7 parent201 + new300 batch " << argv[1] << '\n';
@@ -401,6 +466,7 @@ int main(int argc, char** argv) {
         for (const auto batch : {1, 5, 8})
             checkpoint_equivalence(batch, true, pfh::CandidatePolicy::SamplerDefault, 201, 7, 300);
         checkpoint_validation();
+        numeric_identity_validation();
         state_mismatch_and_transition();
         parallel_checkpoint_equivalence();
         eight_worker_equivalence();

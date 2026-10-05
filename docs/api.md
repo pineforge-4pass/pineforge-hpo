@@ -247,8 +247,16 @@ files/checkpoints must come from trusted sources.
 Keep the complete history alongside this checkpoint; a checkpoint is not a trial store.
 Matching configuration, seed, direction, typed history and numerical-build identity
 restore exact RNG and bounded model state. The enforced identity includes compiler
-and standard-library family/version, target architecture, floating-point contraction,
-fast/finite math, double format and rounding mode. A foreign numerical build rebuilds
+and standard-library family/version, target architecture, fast/finite math macros,
+floating-point formats and rounding mode. Contraction is measured by a canary
+compiled inside the sampler; runtime libm behavior is fingerprinted using fixed
+double and long-double calls (log/log1p, exp/expm1, sqrt, cos, erfc, fma and rounding).
+Generated configuration, directory/target compile options and definitions are hashed;
+the sampler algorithm revision is also enforced. These finite probes are not proof
+of every libm result or arbitrary compiler transformation; manual non-CMake builds
+report flags unavailable, and later runtime library/environment changes are not monitored.
+Treat exactness as same numerical build, not universal cross-build equivalence.
+A foreign numerical build or well-formed other checkpoint version rebuilds
 history instead of returning exit 4. A changed seed/configuration/history falls back to deterministic
 reconstruction; malformed checkpoint bytes fail closed. Lag-one runner continuation
 also reconstructs, as before. New batch sizes are accepted but only matching future

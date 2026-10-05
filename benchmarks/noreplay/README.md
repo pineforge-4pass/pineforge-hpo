@@ -14,7 +14,7 @@ From the current source, with the baseline at `../baseline`:
 ```bash
 mkdir -p build/noreplay
 for variant in before after; do
-  tree=.; define=-DPFH_FP_CONTRACT_OFF=1
+  tree=.; flags=-ffp-contract=off
   if [ "$variant" = before ]; then
     tree=../baseline; define=-DPFH_NOREPLAY_BASELINE
   fi

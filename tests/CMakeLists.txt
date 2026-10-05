@@ -8,15 +8,8 @@ add_executable(pineforge_hpo_test_warm_start test_warm_start.cpp)
 target_link_libraries(pineforge_hpo_test_warm_start PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_warm_start PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_warm_start COMMAND pineforge_hpo_test_warm_start)
-if(APPLE)
-    set(PFH_THREAD_GOLDEN_HASH
-        "3e093fefd5c00f9241a115ef5be729e42729bff41a30d3253485c43110451810")
-else()
-    set(PFH_THREAD_GOLDEN_HASH
-        "f7a777464e1d8731c3db660bf1671c2bf884332705598253c88b0e1521c9d4bf")
-endif()
 target_compile_definitions(pineforge_hpo_test_warm_start PRIVATE
-    PFH_THREAD_GOLDEN_HASH="${PFH_THREAD_GOLDEN_HASH}")
+    PFH_TPE_SERIAL_GOLDENS="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tpe-serial-goldens.txt")
 
 add_executable(pineforge_hpo_checkpoint_exchange checkpoint_exchange.cpp)
 target_link_libraries(pineforge_hpo_checkpoint_exchange PRIVATE PineForgeHPO::core)

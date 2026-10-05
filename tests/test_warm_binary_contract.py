@@ -141,6 +141,14 @@ def check(directory, native, baseline, plugin):
 def check_bounded_checkpoint(directory, native, baseline, plugin, csv):
     dimensions = ("--int-dim", "Length", "0", "19999", "1")
     extra = ("--tpe-history-switch", "32", "--tpe-bad-reservoir-size", "7")
+    spec = json.loads((ROOT / "examples/single_strategy/study.json").read_text())
+    spec["strategies"][0].update(
+        source="missing.pine", search_space={"Length": {"kind": "integer", "low": 0,
+                                                      "high": 19999}})
+    spec["objective"].update(expression="metrics.all.net_profit", constraints=[])
+    spec_path = directory / "bounded.spec.json"
+    spec_path.write_text(json.dumps(spec))
+    study = load_study_spec(spec_path)
     evidence = []
     for batch in (1, 5, 8):
         count = ((201 + batch - 1) // batch) * batch
@@ -178,6 +186,23 @@ def check_bounded_checkpoint(directory, native, baseline, plugin, csv):
             native, plugin, csv, directory, "tpe", batch, trials=8, warm=foreign_path,
             dimensions=dimensions, extra=extra, label=label + "-foreign-rebuild")
         require(rebuilt["warm_start_model"] == "rebuilt_history", "foreign token did not rebuild")
+        for version in (1, 3, 12):
+            changed = copy.deepcopy(parent)
+            changed["tpe_sampler_state"] = f"PFHTPE{version}\n" + state[8:]
+            for binary in (False, True):
+                suffix = "warm" if binary else "json"
+                path = directory / f"{label}-version{version}.{suffix}"
+                if binary:
+                    path.write_bytes(encode_warm_block(
+                        study, changed["trials"], sampler_state=changed["tpe_sampler_state"]))
+                else:
+                    path.write_text(json.dumps(changed))
+                _, rebuilt, _, _ = run(
+                    native, plugin, csv, directory, "tpe", batch, trials=8, warm=path,
+                    dimensions=dimensions, extra=extra,
+                    label=f"{label}-version{version}-{suffix}")
+                require(rebuilt["warm_start_model"] == "rebuilt_history",
+                        "other-version checkpoint did not rebuild")
         shorter = copy.deepcopy(parent)
         shorter["trials"] = shorter["trials"][:12]
         shorter["trials_completed"] = 12

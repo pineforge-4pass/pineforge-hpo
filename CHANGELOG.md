@@ -2,6 +2,13 @@
 
 ## 0.7.0 — 2026-10-05
 
+- Derive checkpoint numerical identity from an in-sampler contraction canary,
+  runtime double/long-double libm probe hash, sampler algorithm revision and a
+  hash of generated compilation options/definitions, rather than declaring contraction.
+  Valid other checkpoint versions rebuild; malformed envelopes remain rejected.
+- TPE now compiles with `-ffp-contract=off`: fresh streams change versus 0.6.0 on
+  arm64/FMA targets; x86-64 builds without FMA retain the previous stream.
+
 - Remove historical TPE proposal replay from all continuation paths. Imported
   observations never generate historical proposals, for any history count/batch/seed.
 - Add checksummed `tpe_sampler_state` and optional `PFHSTATE` warm-v2 blocks.

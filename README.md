@@ -297,7 +297,9 @@ Python ingest writers accept `sampler_state=`. Legacy row-only v0.5/v0.6 parents
 valid but use deterministic reconstruction, not the previous matching-batch TPE replay
 promise. Grid/random continuation is unchanged. Older binary readers reject the optional
 state extension; omit it for those readers. Full-history TPE fit/scoring reuses up to
-eight workers with unchanged suggestion arithmetic. `sampler.config.max_threads`
+eight workers with serial-equivalent arithmetic for the same numerical build.
+TPE now uses `-ffp-contract=off`, so fresh streams change versus 0.6.0 on arm64/FMA
+targets; x86-64 builds without FMA retain their previous stream. `sampler.config.max_threads`
 (`--tpe-max-threads`) controls the resource limit, not model behavior; the default
 is `min(8, available CPUs)`, respecting affinity and Linux cgroup v1/v2 quotas.
 `history_switch` is still opt-in. Warm files are trusted input: the checkpoint

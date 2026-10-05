@@ -4,6 +4,8 @@
 #include "mt19937_64.hpp"
 #include "numeric_build.hpp"
 #include "dimension_workers.hpp"
+#include "sampler_checkpoint.hpp"
+#include "tpe_test_hooks.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,8 +27,32 @@
 #include <vector>
 
 namespace pineforge::hpo {
+namespace detail {
+
+thread_local TpeLogRatioObserver tpe_log_ratio_observer = nullptr;
+thread_local std::optional<double> tpe_contraction_override;
+
+void set_tpe_log_ratio_observer(TpeLogRatioObserver observer) noexcept {
+    tpe_log_ratio_observer = observer;
+}
+
+void set_tpe_contraction_override(std::optional<double> value) noexcept {
+    tpe_contraction_override = value;
+}
+
+std::string tpe_numeric_identity() {
+    volatile double first = 0x1.0000000000001p0;
+    volatile double second = 0x1.ffffffffffffep-1;
+    volatile double third = -1.0;
+    const double arithmetic = first * second + third;
+    const double fused = std::fma(first, second, third);
+    return numeric_build_identity(tpe_contraction_override.value_or(arithmetic), fused);
+}
+
+}
 namespace {
 
+constexpr std::uint32_t kTpeAlgorithmRevision = 1;
 constexpr double kInverse53 = 1.0 / 9007199254740992.0;
 constexpr double kLogSqrtTwoPi = 0.91893853320467274178;
 constexpr double kSqrtTwo = 1.41421356237309504880;
@@ -56,16 +82,17 @@ void state_value(std::ostream& output, const ParameterValue& value) {
 
 std::string state_signature(const SearchSpace& space, std::uint64_t seed,
                             ObjectiveDirection direction, CandidatePolicy policy,
-                            const TpeSamplerConfig& config) {
+                            const TpeSamplerConfig& config, const std::string& numeric_build) {
     std::ostringstream output;
     output.imbue(std::locale::classic());
-    output << seed << ' ' << static_cast<int>(direction) << ' '
+    output << "tpe_revision:" << kTpeAlgorithmRevision << ' ' << seed << ' '
+           << static_cast<int>(direction) << ' '
            << static_cast<int>(policy) << ' ' << config.startup_trials << ' '
            << config.ei_candidates << ' ' << double_bits(config.gamma_fraction) << ' '
            << config.gamma_cap << ' ' << double_bits(config.prior_weight) << ' '
            << config.constant_liar << ' ' << config.history_switch.value_or(0) << ' '
            << config.scale_ei_candidates << ' ' << config.bad_reservoir_size << ' '
-           << std::quoted(detail::numeric_build_identity()) << ' ';
+           << std::quoted(numeric_build) << ' ';
     for (const auto& dimension : space.dimensions()) {
         output << dimension.index() << ' ' << std::quoted(std::string(dimension_name(dimension)))
                << ' ';
@@ -789,6 +816,8 @@ public:
         std::shared_ptr<CategoricalModel> bad_categorical;
     };
 
+    const std::string numeric_build_ = detail::tpe_numeric_identity();
+
     Impl(const SearchSpace& space,
          std::uint64_t seed,
          std::optional<std::uint64_t> finite_cardinality)
@@ -1072,6 +1101,8 @@ public:
                 if (!std::isfinite(log_ratio))
                     throw std::logic_error("TPE acquisition log ratio is non-finite");
             }
+            if (detail::tpe_log_ratio_observer)
+                detail::tpe_log_ratio_observer(log_ratio);
             if (reservations_.has_value()) {
                 for (std::size_t index = 0; index < values.size(); ++index)
                     candidate.values.emplace(std::string(dimension_name(space.dimensions()[index])),
@@ -1233,7 +1264,7 @@ public:
         std::ostringstream output;
         output.imbue(std::locale::classic());
         output << std::quoted(signature) << '\n'
-               << std::quoted(detail::numeric_build_identity()) << '\n'
+               << std::quoted(numeric_build_) << '\n'
                << attempted_ << ' ' << next_id_ << ' '
                << completed_.load(std::memory_order_relaxed) << ' ' << fallback_cursor_ << ' '
                << compact_history_ << ' ' << cached_compact_ << ' ' << cached_epoch_ << ' '
@@ -1269,10 +1300,8 @@ public:
                     const SearchSpace& space, const TpeSamplerConfig& config) {
         if (state.empty())
             return false;
-        if (state.size() > 16 * 1024 * 1024 || state.size() < 73 ||
-            state.substr(0, 8) != "PFHTPE2\n" || state[72] != '\n' ||
-            detail::sha256(std::string_view(state).substr(73)) != state.substr(8, 64))
-            throw std::invalid_argument("invalid TPE sampler-state checksum/version");
+        if (!detail::current_sampler_checkpoint(state))
+            return false;
         std::istringstream input(state.substr(73));
         input.imbue(std::locale::classic());
         std::string stored_signature;
@@ -1283,7 +1312,7 @@ public:
         std::string stored_build;
         if (!(input >> std::quoted(stored_build)))
             throw std::invalid_argument("invalid TPE sampler-state build identity");
-        if (stored_build != detail::numeric_build_identity())
+        if (stored_build != numeric_build_)
             return false;
         std::uint64_t attempts, next_id, completed, fallback, epoch, older_seen;
         unsigned compact, cached_compact;
@@ -2081,7 +2110,8 @@ bool TpeSampler::warm_start(std::shared_ptr<const WarmStartSource> source,
     restored.impl_->next_id_ = next_id;
     restored.impl_->attempted_ = source->size();
     const bool checkpoint_restored = restored.impl_->read_state(sampler_state,
-        state_signature(space_, seed_, direction_, policy, config_), space_, config_);
+        state_signature(space_, seed_, direction_, policy, config_, restored.impl_->numeric_build_),
+        space_, config_);
     restored.impl_->generated_ = 0;
     restored.impl_->duplicate_proposals_skipped_.store(0, std::memory_order_relaxed);
     restored.impl_->next_id_ = next_id;
@@ -2096,7 +2126,8 @@ std::string TpeSampler::sampler_state() const {
         throw std::logic_error("TPE sampler state requires no outstanding candidates");
     const auto policy = candidate_policy_ == CandidatePolicy::Exhaustive
         ? CandidatePolicy::WithoutReplacement : candidate_policy_;
-    return impl_->write_state(state_signature(space_, seed_, direction_, policy, config_));
+    return impl_->write_state(
+        state_signature(space_, seed_, direction_, policy, config_, impl_->numeric_build_));
 }
 
 void TpeSampler::reset() {

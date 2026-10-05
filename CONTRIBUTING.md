@@ -58,6 +58,10 @@ setup and smoke commands are maintained separately in
 
 ## Architecture boundaries
 
+Any change to TPE numerical arithmetic or RNG consumption must bump
+`kTpeAlgorithmRevision` in `src/core/tpe_sampler.cpp`. Revalidate the numerical
+identity keyed serial goldens and checkpoint compatibility after such a change.
+
 - HPO is a consumer of strategy plugins and the public PineForge C ABI; it is
   not a `BacktestEngine` subclass.
 - Transpilation happens once during artifact initialization, outside the native

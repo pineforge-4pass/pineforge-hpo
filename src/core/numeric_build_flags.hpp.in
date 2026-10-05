@@ -1,3 +1,0 @@
-#pragma once
-
-#define PFH_NUMERIC_BUILD_FLAGS R"pfh(@PFH_NUMERIC_FLAGS@)pfh"

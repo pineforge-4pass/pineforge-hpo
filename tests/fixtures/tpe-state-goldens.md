@@ -16,7 +16,9 @@ native draws, and restored on GCC/libstdc++ with the same future-word hash.
 `parallel_checkpoint_equivalence()` imports 4,200 deterministic mixed/log rows,
 then compares eight pending suggestions from explicitly serial and eight-worker
 samplers, including raw double bits. Its expected transcript hashes were derived
-from the unmodified v0.6.0 serial source (`6fc5b1fe`), not the new threaded path:
+from v0.6.0 serial source (`6fc5b1fe`) compiled with `-ffp-contract=off`, not the new
+threaded path. The source is unmodified but this contraction flag differs from the
+released v0.6.0 build, so arm64/FMA fresh-stream compatibility is not claimed:
 
 | Numerical build | Eight-suggestion SHA-256 |
 | --- | --- |
@@ -26,6 +28,11 @@ from the unmodified v0.6.0 serial source (`6fc5b1fe`), not the new threaded path
 Both use `-ffp-contract=off`. The math-library difference is why numerical-build
 identity is enforced for full sampler checkpoints: canonical RNG transport does
 not make different floating-point/math-library builds proposal-equivalent.
+
+`tpe-serial-goldens.txt` keys these hashes by SHA-256 of the derived numerical
+identity, not the host OS. Unknown identities print a clear SKIP message for the
+independent golden only; serial/threaded proposal and acquisition-bit comparisons
+still run. Refresh identities only after independently verifying the legacy oracle.
 
 `checkpoint_exchange` writes or imports a full bounded `PFHTPE2` checkpoint for
 201 deterministic rows and a seven-element reservoir. Exchanging macOS and Linux
