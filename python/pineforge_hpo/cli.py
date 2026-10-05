@@ -287,20 +287,19 @@ def _validate_strategy_overrides(study: StudySpec) -> None:
             raise CliError(f"strategy_overrides.{name} has an unsupported value")
 
 
-def _symbol_kinds_supported(version: str | None) -> bool:
-    try:
-        return tuple(int(part) for part in (version or "").split(".")[:2]) >= (1, 1)
-    except ValueError:
-        return False
-
-
-def _artifact_codegen_version(path: Path) -> str | None:
+def _artifact_input_metadata(path: Path) -> tuple[str | None, bool]:
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
-        version = manifest["request_identity"]["codegen"]["version"]
-        return version if isinstance(version, str) else None
+        if not isinstance(manifest, dict):
+            return None, False
+        marker = manifest.get("input_kind_schema")
+        kinds_emitted = type(marker) is int and marker == 1
+        identity = manifest.get("request_identity")
+        codegen = identity.get("codegen") if isinstance(identity, dict) else None
+        version = codegen.get("version") if isinstance(codegen, dict) else None
+        return version if isinstance(version, str) else None, kinds_emitted
     except (OSError, UnicodeError, ValueError, KeyError, TypeError):
-        return None
+        return None, False
 
 
 def _validate_manifest_inputs(
@@ -308,18 +307,20 @@ def _validate_manifest_inputs(
     inputs: Sequence[Mapping[str, Any]],
     *,
     codegen_version: str | None = None,
+    input_kinds_emitted: bool = False,
 ) -> None:
+    requested = set(study.strategy.search_space) | set(study.strategy.fixed_inputs)
+    kinds_emitted = input_kinds_emitted or any("kind" in item for item in inputs)
     by_title: dict[str, Mapping[str, Any]] = {}
     for item in inputs:
         title = item.get("title")
         if not isinstance(title, str) or not title:
             raise CliError("artifact input manifest contains an invalid title")
-        if title in by_title:
+        if title in by_title and title in requested:
             raise CliError(
                 f"artifact input manifest contains duplicate title {title!r}"
             )
         by_title[title] = item
-    requested = set(study.strategy.search_space) | set(study.strategy.fixed_inputs)
     unknown = sorted(requested - set(by_title))
     if unknown:
         raise CliError(
@@ -335,19 +336,19 @@ def _validate_manifest_inputs(
             )
         input_type = manifest.get("type")
         input_kind = manifest.get("kind")
-        if input_type not in ("int", "float", "bool", "string") or (
-            input_type == "string"
-            and (
-                input_kind not in (None, "string")
-                or (
-                    input_kind != "string"
-                    and not _symbol_kinds_supported(codegen_version)
-                )
-            )
+        if input_type == "string" and (
+            input_kind
+            not in (None, "string", "color", "timeframe", "session", "text_area")
+            or (input_kind is None and not kinds_emitted)
         ):
+            cause = (
+                "input kinds absent"
+                if input_kind is None
+                else f"unrecognized input kind {input_kind!r}"
+            )
             raise CliError(
                 f"search_space.{name}: manifest cannot rule out input.symbol (D7); "
-                "engine/codegen >= 1.1.0 input metadata is required"
+                f"{cause}; codegen version {codegen_version or 'unknown'}"
             )
         if parameter.kind == "categorical":
             for index, choice in enumerate(parameter.choices):
@@ -688,19 +689,27 @@ def prepare_run(
             compiler=compiler,
             eigen_include=eigen_include,
         ).build(source, filename=str(source_path))
+        codegen_version, input_kinds_emitted = _artifact_input_metadata(
+            built.manifest_path
+        )
         _validate_manifest_inputs(
             study,
             built.inputs,
-            codegen_version=_artifact_codegen_version(built.manifest_path),
+            codegen_version=codegen_version,
+            input_kinds_emitted=input_kinds_emitted,
         )
         artifact = _artifact_json(built)
     else:
         assert study.strategy.artifact is not None
         artifact, inputs = _precompiled_artifact(study.strategy.artifact)
+        codegen_version, input_kinds_emitted = _artifact_input_metadata(
+            Path(artifact["manifest"])
+        )
         _validate_manifest_inputs(
             study,
             inputs,
-            codegen_version=_artifact_codegen_version(Path(artifact["manifest"])),
+            codegen_version=codegen_version,
+            input_kinds_emitted=input_kinds_emitted,
         )
 
     native_path = _resolve_native(None if native is None else str(native))

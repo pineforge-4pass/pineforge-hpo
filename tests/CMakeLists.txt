@@ -192,6 +192,18 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT PINEFORGE_HPO_ENABLE_SANITIZERS
+                AND NOT PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+            add_library(pineforge_hpo_libm_identity_shim SHARED libm_identity_shim.cpp)
+            target_link_libraries(pineforge_hpo_libm_identity_shim PRIVATE ${CMAKE_DL_LIBS} m)
+            target_compile_options(pineforge_hpo_libm_identity_shim PRIVATE
+                -Wall -Wextra -Wpedantic -fno-builtin)
+            add_test(NAME pineforge_hpo_libm_identity
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_libm_identity.py"
+                    $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                    $<TARGET_FILE:pineforge_hpo_libm_identity_shim>)
+            set_tests_properties(pineforge_hpo_libm_identity PROPERTIES TIMEOUT 600)
+        endif()
         if(dlib_SOURCE_DIR)
             add_test(NAME pineforge_hpo_numeric_flags
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_numeric_flags.py"

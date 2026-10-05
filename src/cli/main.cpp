@@ -1618,15 +1618,16 @@ void validate_search_input_kinds(const Options& options) {
         throw std::invalid_argument(manifest_path.string() + ": cannot rule out input.symbol "
             "(D7): " + error.what() + "; engine/codegen >= 1.1.0 metadata is required");
     }
-    bool symbol_kinds = false;
+    const auto* kind_schema = manifest->find("input_kind_schema");
+    const bool symbol_kinds = (kind_schema && kind_schema->kind == pfh::detail::Json::Kind::Number &&
+        kind_schema->value == "1") || std::any_of(manifest->find("inputs")->items.begin(),
+        manifest->find("inputs")->items.end(), [](const auto& input) {
+            return input.kind == pfh::detail::Json::Kind::Object && input.find("kind");
+        });
+    std::string codegen_version = "unknown";
     try {
-        const auto& version = pfh::detail::field(pfh::detail::field(pfh::detail::field(
+        codegen_version = pfh::detail::field(pfh::detail::field(pfh::detail::field(
             *manifest, "request_identity"), "codegen"), "version").text();
-        std::istringstream input(version);
-        unsigned major = 0, minor = 0;
-        char separator = 0;
-        symbol_kinds = (input >> major >> separator >> minor) && separator == '.' &&
-                       (major > 1 || (major == 1 && minor >= 1));
     } catch (const std::exception&) {
     }
     for (const auto& dimension : options.dimensions) {
@@ -1643,7 +1644,7 @@ void validate_search_input_kinds(const Options& options) {
             if (title && title->value == pfh::dimension_name(dimension)) {
                 if (selected)
                     throw std::invalid_argument(manifest_path.string() + ": duplicate input " +
-                                                title->value);
+                                                title->value + " used by search dimension");
                 selected = &input;
             }
         }
@@ -1654,18 +1655,19 @@ void validate_search_input_kinds(const Options& options) {
                 std::string(pfh::dimension_name(dimension)) + "' is refused (D7); "
                 "only fixed other-symbol reads are supported");
         const bool ordinary_string = kind && kind->kind == pfh::detail::Json::Kind::String &&
-                                     kind->value == "string";
+            (kind->value == "string" || kind->value == "color" || kind->value == "timeframe" ||
+             kind->value == "session" || kind->value == "text_area");
         const bool unknown_kind = kind && kind->kind != pfh::detail::Json::Kind::Null &&
                                   !ordinary_string;
-        if ((type && type->value == "string" &&
-             (unknown_kind || (!symbol_kinds && !ordinary_string))) ||
-            (needs_kind && (!type || type->kind != pfh::detail::Json::Kind::String ||
-                (type->value != "int" && type->value != "float" &&
-                 type->value != "bool" && type->value != "string"))))
+        if (needs_kind && (!type || type->kind != pfh::detail::Json::Kind::String))
+            throw std::invalid_argument(manifest_path.string() + ": missing input type for " +
+                                        std::string(pfh::dimension_name(dimension)));
+        if (type && type->value == "string" &&
+            (unknown_kind || (!symbol_kinds && !ordinary_string)))
             throw std::invalid_argument(manifest_path.string() +
                 ": cannot rule out input.symbol '" + std::string(pfh::dimension_name(dimension)) +
-                "' (D7); "
-                "engine/codegen >= 1.1.0 input metadata is required");
+                "' (D7); " + (unknown_kind ? "unrecognized input kind" : "input kinds absent") +
+                "; codegen version " + codegen_version);
     }
 }
 

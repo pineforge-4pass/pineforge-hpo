@@ -235,9 +235,15 @@ Index/CSV/setter refusal is exit 1 with `--symbol-feeds:`, before any terminal t
 **`input.symbol` search dimensions are refused (D7)**; such inputs may be fixed only.
 This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.2.0).
 Direct native artifact users must keep the adjacent codegen `manifest.json` when searching
-string-valued inputs; ambiguous legacy string metadata fails closed. The Python frontend
+string-valued inputs. `input.source` and `input.enum` dimensions are supported; only a
+`type: "string"` input without trustworthy kind metadata is ambiguous. Kind capability
+is established by any input carrying a `kind` field, or the manifest's explicit
+`"input_kind_schema": 1` marker (symbol inputs must carry `kind: "symbol"`). An unknown
+codegen package version does not invalidate that capability. If kinds are genuinely
+absent, both frontends fail closed and name the cause and codegen version. The Python frontend
 validates generated/precompiled metadata automatically. An unreadable optional manifest
-does not break a numeric-only native study.
+does not break a numeric-only native study. Duplicate titles unrelated to searched/fixed
+inputs do not invalidate Python studies; native rejects duplicates only for searched inputs.
 
 Results record `applied_runtime.symbol_feeds` and `runtime_sha256`. Warm JSON/JSONL/v2
 refuse changed/added/removed feeds or facts; relocating identical files is safe. Empty/omitted

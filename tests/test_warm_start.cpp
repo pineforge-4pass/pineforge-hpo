@@ -185,7 +185,28 @@ std::string serial_golden_identity() {
            ";long_double:" + std::to_string(std::numeric_limits<long double>::digits);
 }
 
+void check_serial_golden(const std::string& identity, const std::string& expected,
+                         const std::string& actual) {
+    if (actual != expected)
+        throw std::runtime_error("serial golden mismatch for key " + identity +
+                                 ": expected " + expected + ", got " + actual);
+}
+
+void serial_golden_mismatch_diagnostic() {
+    const auto identity = serial_golden_identity();
+    bool rejected = false;
+    try {
+        check_serial_golden(identity, "expected-hash", "actual-hash");
+    } catch (const std::runtime_error& error) {
+        rejected = std::string(error.what()) == "serial golden mismatch for key " + identity +
+                   ": expected expected-hash, got actual-hash";
+    }
+    require(rejected, "serial golden mismatch did not identify its precision key and hashes");
+    std::cout << "PASS serial golden mismatch names key " << identity << '\n';
+}
+
 bool parallel_checkpoint_equivalence() {
+    serial_golden_mismatch_diagnostic();
     const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0),
         pfh::RealDimension("y", 0.01, 10.0, std::nullopt, true),
         pfh::IntegerDimension("period", 1, 10000),
@@ -245,8 +266,8 @@ bool parallel_checkpoint_equivalence() {
     while (goldens >> known_identity >> golden_hash) {
         if (known_identity != identity)
             continue;
-        require(pfh::detail::sha256(bits.str()) == golden_hash,
-                "threaded/serial proposals differ from independent serial golden");
+        const auto actual_hash = pfh::detail::sha256(bits.str());
+        check_serial_golden(identity, golden_hash, actual_hash);
         matched = true;
         break;
     }

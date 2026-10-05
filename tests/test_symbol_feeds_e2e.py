@@ -6,6 +6,7 @@ import argparse
 import copy
 import ctypes
 import hashlib
+from importlib import metadata
 import importlib.util
 import json
 import math
@@ -13,6 +14,7 @@ from pathlib import Path
 import struct
 import subprocess
 import sys
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
@@ -70,6 +72,121 @@ def oracle_probe():
     oracle.build_report_dict = capture
     sys.argv = [str(harness), *sys.argv[4:]]
     return oracle.main()
+
+
+def input_metadata_probe(args, directory, document):
+    from pineforge_hpo.cli import CliError, prepare_run
+
+    source = directory / "input-kinds.pine"
+    source.write_text("""//@version=6
+strategy("Input metadata HPO", initial_capital=100000)
+enum Side
+    long
+    short
+selected = input.source(close, "Source")
+side = input.enum(Side.long, "Side")
+mode = input.string("fast", "Mode", options=["fast", "slow"])
+other = input.symbol("BINANCE:ETHUSDT", "Other")
+if selected > open and mode == "fast"
+    if side == Side.long
+        strategy.entry("Long", strategy.long)
+    else
+        strategy.entry("Short", strategy.short)
+if selected <= open
+    strategy.close_all()
+""")
+    work = copy.deepcopy(document)
+    work.pop("symbol_feeds", None)
+    work["strategies"][0].update(
+        source=str(source),
+        fixed_inputs={"Other": "BINANCE:ETHUSDT"},
+        search_space={
+            "Source": {"kind": "categorical", "choices": ["close", "open", "hl2"]},
+            "Side": {"kind": "categorical", "choices": [0, 1]},
+            "Mode": {"kind": "categorical", "choices": ["fast", "slow"]},
+        },
+    )
+    work["sampler"].update(kind="grid", trials=12)
+    spec = directory / "input-kinds.json"
+    spec.write_text(json.dumps(work))
+    with mock.patch(
+        "pineforge_hpo.transpile.metadata.version",
+        side_effect=metadata.PackageNotFoundError("pineforge-codegen"),
+    ):
+        command, artifact = prepare_run(
+            spec,
+            ROOT / "external/pineforge-engine",
+            directory / "cache",
+            native=args.native,
+        )
+    manifest_path = Path(artifact["manifest"])
+    manifest = json.loads(manifest_path.read_text())
+    require(
+        manifest["request_identity"]["codegen"]["version"] == "unknown",
+        "missing source-checkout package metadata did not produce unknown version",
+    )
+    (directory / "input-kinds-manifest.json").write_text(json.dumps(manifest, indent=2))
+    types = {item["title"]: item["type"] for item in manifest["inputs"]}
+    require(types["Source"] == "source" and types["Side"] == "enum", types)
+    result = subprocess.run(command, capture_output=True, timeout=180)
+    require(result.returncode == 0, result.stderr.decode())
+    trials = json.loads(result.stdout)["trials"]
+    require(
+        len(trials) == 12 and all(trial["status"] == "ok" for trial in trials), trials
+    )
+    require(
+        {trial["parameters"]["Source"] for trial in trials} == {"close", "open", "hl2"},
+        trials,
+    )
+    require({trial["parameters"]["Side"] for trial in trials} == {0, 1}, trials)
+    (directory / "input-kinds-result.json").write_bytes(result.stdout)
+    print(
+        "PASS input.source/input.enum: real v1.2.0 artifact, Python + native, 12 trials",
+        flush=True,
+    )
+
+    work["strategies"][0].pop("source")
+    work["strategies"][0]["artifact"] = artifact["plugin"]
+    spec.write_text(json.dumps(work))
+    unknown_command, _ = prepare_run(
+        spec,
+        ROOT / "external/pineforge-engine",
+        directory / "cache",
+        native=args.native,
+    )
+    unknown = subprocess.run(unknown_command, capture_output=True, timeout=180)
+    require(
+        unknown.returncode == 0 and unknown.stdout == result.stdout,
+        unknown.stderr.decode(),
+    )
+    manifest["inputs"] = [
+        item for item in manifest["inputs"] if item["title"] != "Other"
+    ]
+    manifest_path.write_text(json.dumps(manifest))
+    work["strategies"][0]["fixed_inputs"] = {}
+    spec.write_text(json.dumps(work))
+    try:
+        prepare_run(
+            spec,
+            ROOT / "external/pineforge-engine",
+            directory / "cache",
+            native=args.native,
+        )
+    except CliError as error:
+        require("input kinds absent; codegen version unknown" in str(error), str(error))
+    else:
+        raise AssertionError("Python accepted genuinely absent input-kind metadata")
+    refused = subprocess.run(unknown_command, capture_output=True, timeout=30)
+    require(
+        refused.returncode == 1
+        and b"input kinds absent; codegen version unknown" in refused.stderr
+        and not refused.stdout,
+        refused.stderr.decode(),
+    )
+    print(
+        "PASS unknown codegen: kind-capable artifact accepted; absent kinds refused in both frontends",
+        flush=True,
+    )
 
 
 def main():
@@ -184,6 +301,7 @@ if eth4 < threshold or eth4 <= ethD
         directory / "cache",
         native=args.native,
     )
+    input_metadata_probe(args, directory, document)
     command += ["--syminfo", str(syminfo)]
     manifest = json.loads(Path(artifact["manifest"]).read_text())
     require(

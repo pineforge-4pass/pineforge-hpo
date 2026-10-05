@@ -161,7 +161,13 @@ errors use `--symbol-feeds:` and identify the symbol/timeframe before terminal t
 Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted).
 `input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
 Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.2.0).
-Ambiguous legacy string metadata is refused rather than treated as ordinary strings.
+`input.source` and `input.enum` search dimensions are supported and cannot be symbols.
+Only `type: "string"` without trustworthy input-kind capability is ambiguous. Any input
+with a `kind` field establishes capability, as does a manifest-level `"input_kind_schema": 1`
+marker promising that every symbol input carries `kind: "symbol"`. Codegen package version
+is diagnostic only: `unknown` does not reject a kind-capable artifact. Genuinely absent
+kinds fail closed with the cause and version in the error. Unrelated duplicate titles are
+ignored; duplicates for searched inputs (or Python fixed inputs) remain refused.
 Direct native users need the adjacent `manifest.json` for string-valued search inputs;
 unreadable optional manifests do not change numeric-only native runs. Required manifest
 errors name the file; manifests up to 256 MiB are supported.

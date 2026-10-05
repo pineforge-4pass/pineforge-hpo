@@ -15,11 +15,17 @@
   Require engine/codegen >= 1.1.0, pin both optional submodules to v1.2.0, and fail closed
   for ambiguous string-input metadata. Add real-artifact D7 refusal and BTCUSDT 4h /
   BINANCE:ETHUSDT 240 + 1D compiled-strategy C-ABI equality gates to Linux CI.
+- Preserve `input.source`/`input.enum` search dimensions. Detect input-kind capability from
+  manifest metadata, not package version; accept kind-capable source-checkout artifacts with
+  an unknown version and diagnose genuinely absent kinds. Ignore unrelated duplicate titles.
 - Key independent serial goldens by double/long-double precision and require a matching
   golden in both CI jobs; print the full identity. Non-CI unavailable goldens remain visible
   CTest skips. Matching checkpoints with an unavailable flags hash
   always rebuild. Probe 4,096 inputs per libm function, cached once per process with
   floating-point environment/errno preserved. Hash custom CMake configuration flags too.
+- Pin the Linux aarch64 serial golden and name the precision key on golden mismatches.
+  Differentially interpose all 22 probed libm functions across eight search-space shapes,
+  requiring every proposal-changing perturbation to change the numeric identity.
 - Scope runtime-libm identity to functions used by the configured search space, excluding
   long-double log1p for non-log dimensions. Expose `numeric_build_identity` and compared
   `parent_numeric_build_identity` in TPE results and warm provenance.

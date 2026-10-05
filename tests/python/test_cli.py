@@ -14,6 +14,7 @@ from pineforge_hpo.artifact import StrategyArtifact
 from pineforge_hpo import __version__
 from pineforge_hpo.cli import (
     CliError,
+    _artifact_input_metadata,
     _parser,
     _native_command,
     _resolve_engine_root,
@@ -118,7 +119,7 @@ class CliTests(unittest.TestCase):
             {"title": "Threshold", "type": "float"},
             {"title": "Enabled", "type": "bool"},
         ]
-        for version in (None, "1.0.0", "invalid"):
+        for version in (None, "unknown", "1.0.0", "1.2.0", "invalid"):
             with self.assertRaisesRegex(CliError, "cannot rule out input.symbol.*D7"):
                 _validate_manifest_inputs(study, inputs, codegen_version=version)
         document = json.loads(self.study_path.read_text())
@@ -128,13 +129,52 @@ class CliTests(unittest.TestCase):
         }
         self.study_path.write_text(json.dumps(document))
         study = load_study_spec(self.study_path)
-        _validate_manifest_inputs(study, inputs, codegen_version="1.2.0")
+        with self.assertRaisesRegex(
+            CliError, "input kinds absent; codegen version unknown"
+        ):
+            _validate_manifest_inputs(study, inputs)
+        _validate_manifest_inputs(study, inputs, input_kinds_emitted=True)
+        inputs.append({"title": "Other", "type": "string", "kind": "symbol"})
+        _validate_manifest_inputs(study, inputs, codegen_version="unknown")
         inputs[0]["kind"] = "string"
         _validate_manifest_inputs(study, inputs)
         for kind in ("unknown", [], {}):
             inputs[0]["kind"] = kind
             with self.assertRaisesRegex(CliError, "cannot rule out input.symbol.*D7"):
                 _validate_manifest_inputs(study, inputs, codegen_version="1.2.0")
+
+    def test_source_enum_and_unrelated_duplicates_are_not_symbols(self) -> None:
+        document = json.loads(self.study_path.read_text())
+        document["strategies"][0]["search_space"]["Length"] = {
+            "kind": "categorical",
+            "choices": ["close", "open", "hl2"],
+        }
+        self.study_path.write_text(json.dumps(document))
+        study = load_study_spec(self.study_path)
+        inputs = [
+            {"title": "Length", "type": "source"},
+            {"title": "Threshold", "type": "float"},
+            {"title": "Enabled", "type": "bool"},
+            {"title": "Unused", "type": "string"},
+            {"title": "Unused", "type": "string"},
+        ]
+        _validate_manifest_inputs(study, inputs, codegen_version="unknown")
+        inputs[0]["type"] = "enum"
+        _validate_manifest_inputs(study, inputs)
+        inputs.append(dict(inputs[0]))
+        with self.assertRaisesRegex(CliError, "duplicate title 'Length'"):
+            _validate_manifest_inputs(study, inputs)
+
+    def test_input_metadata_capability_marker_and_malformed_identity(self) -> None:
+        manifest = self.root / "manifest.json"
+        for identity in (None, [], {"codegen": []}):
+            manifest.write_text(
+                json.dumps({"input_kind_schema": 1, "request_identity": identity})
+            )
+            self.assertEqual(_artifact_input_metadata(manifest), (None, True))
+        for marker in (True, "1", 2):
+            manifest.write_text(json.dumps({"input_kind_schema": marker}))
+            self.assertEqual(_artifact_input_metadata(manifest), (None, False))
 
     def test_version_comes_from_package_metadata(self) -> None:
         output = io.StringIO()

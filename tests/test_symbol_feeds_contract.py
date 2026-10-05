@@ -634,8 +634,24 @@ def main():
         )
         modern_manifest = {
             "inputs": [{"title": "Other", "type": "string"}],
-            "request_identity": {"codegen": {"version": "1.2.0"}},
+            "request_identity": {"codegen": {"version": "unknown"}},
         }
+        manifest_path.write_text(json.dumps(modern_manifest))
+        run(
+            "--categorical-choice",
+            "Other",
+            "ETH",
+            feeds=False,
+            plugin=symbol_plugin,
+            refused="input kinds absent; codegen version unknown",
+        )
+        modern_manifest["inputs"].append(
+            {"title": "UnusedSymbol", "type": "string", "kind": "symbol"}
+        )
+        manifest_path.write_text(json.dumps(modern_manifest))
+        run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
+        modern_manifest["inputs"].pop()
+        modern_manifest["input_kind_schema"] = 1
         manifest_path.write_text(json.dumps(modern_manifest))
         run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
         for kind in ("unknown", [], {}):
@@ -649,6 +665,47 @@ def main():
                 plugin=symbol_plugin,
                 refused="cannot rule out input.symbol",
             )
+        for input_type in ("source", "enum"):
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "inputs": [{"title": "Other", "type": input_type}],
+                    }
+                )
+            )
+            run(
+                "--categorical-choice",
+                "Other",
+                "ETH",
+                feeds=False,
+                plugin=symbol_plugin,
+            )
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "inputs": [{"title": "Unused", "type": "int"}] * 2,
+                }
+            )
+        )
+        duplicate_unused, _ = run(feeds=False, plugin=symbol_plugin)
+        require(
+            duplicate_unused.stdout == plain.stdout, "unrelated duplicate changed study"
+        )
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "inputs": [{"title": "Length", "type": "int"}] * 2,
+                }
+            )
+        )
+        run(
+            feeds=False,
+            plugin=symbol_plugin,
+            refused="duplicate input Length used by search",
+        )
+        print(
+            "PASS metadata: source/enum accepted; capabilities, unknown version, duplicates checked"
+        )
         large_manifest = {
             "inputs": [{"title": "Other", "type": "string", "kind": "string"}],
             "padding": "x" * (1024 * 1024 + 1),
