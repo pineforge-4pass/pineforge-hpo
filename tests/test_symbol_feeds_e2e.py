@@ -125,6 +125,7 @@ if selected <= open
         manifest["request_identity"]["codegen"]["version"] == "unknown",
         "missing source-checkout package metadata did not produce unknown version",
     )
+    require(manifest.get("input_kind_schema") == 1, "builder did not stamp capability")
     (directory / "input-kinds-manifest.json").write_text(json.dumps(manifest, indent=2))
     types = {item["title"]: item["type"] for item in manifest["inputs"]}
     require(types["Source"] == "source" and types["Side"] == "enum", types)
@@ -165,6 +166,16 @@ if selected <= open
     manifest_path.write_text(json.dumps(manifest))
     work["strategies"][0]["fixed_inputs"] = {}
     spec.write_text(json.dumps(work))
+    symbol_free_command, _ = prepare_run(
+        spec,
+        ROOT / "external/pineforge-engine",
+        directory / "cache",
+        native=args.native,
+    )
+    symbol_free = subprocess.run(symbol_free_command, capture_output=True, timeout=180)
+    require(symbol_free.returncode == 0, symbol_free.stderr.decode())
+    manifest.pop("input_kind_schema")
+    manifest_path.write_text(json.dumps(manifest))
     try:
         prepare_run(
             spec,
@@ -173,18 +184,150 @@ if selected <= open
             native=args.native,
         )
     except CliError as error:
-        require("input kinds absent; codegen version unknown" in str(error), str(error))
+        require("manifest not stamped kind-capable" in str(error), str(error))
+        require("codegen version unknown" in str(error), str(error))
     else:
-        raise AssertionError("Python accepted genuinely absent input-kind metadata")
-    refused = subprocess.run(unknown_command, capture_output=True, timeout=30)
+        raise AssertionError("Python accepted an unstamped manifest")
+    refused = subprocess.run(symbol_free_command, capture_output=True, timeout=30)
     require(
         refused.returncode == 1
-        and b"input kinds absent; codegen version unknown" in refused.stderr
+        and b"manifest not stamped kind-capable" in refused.stderr
+        and b"codegen version unknown" in refused.stderr
         and not refused.stdout,
         refused.stderr.decode(),
     )
     print(
-        "PASS unknown codegen: kind-capable artifact accepted; absent kinds refused in both frontends",
+        "PASS unknown codegen: stamped symbol-free metadata accepted; "
+        "unstamped manifest refused in both frontends",
+        flush=True,
+    )
+
+
+def symbol_free_string_probe(args, directory, document):
+    from pineforge_hpo.cli import CliError, prepare_run
+
+    source = directory / "symbol-free-strings.pine"
+    source.write_text("""//@version=6
+strategy("Symbol-free string HPO", initial_capital=100000)
+selected = input.source(close, "Source")
+mode = input.string("fast", "Mode", options=["fast", "slow"])
+period = input.timeframe("240", "Timeframe", options=["240", "1D"])
+length = input.int(1, "Length", minval=1, maxval=2)
+if selected > open and mode == "fast" and period == "240" and bar_index >= length
+    strategy.entry("Long", strategy.long)
+if selected <= open
+    strategy.close_all()
+""")
+    work = copy.deepcopy(document)
+    work.pop("symbol_feeds", None)
+    work["strategies"][0].update(
+        source=str(source),
+        fixed_inputs={"Source": "close"},
+        search_space={
+            "Mode": {"kind": "categorical", "choices": ["fast", "slow"]},
+            "Timeframe": {"kind": "categorical", "choices": ["240", "1D"]},
+            "Length": {"kind": "integer", "low": 1, "high": 2, "step": 1},
+        },
+    )
+    work["sampler"].update(kind="grid", trials=8)
+    spec = directory / "symbol-free-strings.json"
+    spec.write_text(json.dumps(work))
+    command, artifact = prepare_run(
+        spec,
+        ROOT / "external/pineforge-engine",
+        directory / "cache",
+        native=args.native,
+    )
+    manifest_path = Path(artifact["manifest"])
+    manifest = json.loads(manifest_path.read_text())
+    require(manifest.get("input_kind_schema") == 1, "symbol-free artifact lacks marker")
+    require(all("kind" not in item for item in manifest["inputs"]), manifest["inputs"])
+    (directory / "symbol-free-strings-manifest.json").write_text(
+        json.dumps(manifest, indent=2)
+    )
+    result = subprocess.run(command, capture_output=True, timeout=180)
+    require(result.returncode == 0, result.stderr.decode())
+    trials = json.loads(result.stdout)["trials"]
+    require(
+        len(trials) == 8 and all(trial["status"] == "ok" for trial in trials), trials
+    )
+    require(
+        {trial["parameters"]["Mode"] for trial in trials} == {"fast", "slow"}, trials
+    )
+    require(
+        {trial["parameters"]["Timeframe"] for trial in trials} == {"240", "1D"}, trials
+    )
+    (directory / "symbol-free-strings-result.json").write_bytes(result.stdout)
+    print(
+        "PASS symbol-free input.string/input.timeframe: real v1.2.0 artifact, "
+        "Python + native, 8 trials, no input kinds",
+        flush=True,
+    )
+
+    work["strategies"][0].pop("source")
+    work["strategies"][0]["artifact"] = artifact["plugin"]
+    spec.write_text(json.dumps(work))
+    refusal = (
+        "manifest not stamped kind-capable by pineforge-hpo's builder; "
+        "rebuild the artifact with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0"
+    )
+    manifest.pop("input_kind_schema")
+    for unrelated_kind in (None, 42, "symbol", "string"):
+        manifest["inputs"].append(
+            {"title": "Unrelated", "type": "int", "kind": unrelated_kind}
+        )
+        manifest_path.write_text(json.dumps(manifest))
+        try:
+            prepare_run(
+                spec,
+                ROOT / "external/pineforge-engine",
+                directory / "cache",
+                native=args.native,
+            )
+        except CliError as error:
+            require(refusal in str(error), str(error))
+        else:
+            raise AssertionError(
+                "Python let an unrelated kind vouch for a string input"
+            )
+        refused = subprocess.run(command, capture_output=True, timeout=30)
+        require(
+            refused.returncode == 1
+            and refusal.encode() in refused.stderr
+            and not refused.stdout,
+            refused.stderr.decode(),
+        )
+        manifest["inputs"].pop()
+    print(
+        "PASS unstamped real artifact: rebuild cause in both frontends; "
+        "unrelated null/numeric/string/symbol kinds never vouch",
+        flush=True,
+    )
+    manifest["input_kind_schema"] = 1
+    mode = next(item for item in manifest["inputs"] if item["title"] == "Mode")
+    mode["type"] = "foo"
+    manifest_path.write_text(json.dumps(manifest))
+    message = "search_space.Mode.choices[0] is incompatible with Pine input type 'foo'"
+    try:
+        prepare_run(
+            spec,
+            ROOT / "external/pineforge-engine",
+            directory / "cache",
+            native=args.native,
+        )
+    except CliError as error:
+        require(str(error) == message, str(error))
+    else:
+        raise AssertionError("Python accepted an unknown manifest input type")
+    refused = subprocess.run(command, capture_output=True, timeout=30)
+    require(
+        refused.returncode == 1
+        and message.encode() in refused.stderr
+        and not refused.stdout,
+        refused.stderr.decode(),
+    )
+    print(
+        "PASS unknown manifest type: Python/native error-text parity, before trials",
         flush=True,
     )
 
@@ -302,6 +445,7 @@ if eth4 < threshold or eth4 <= ethD
         native=args.native,
     )
     input_metadata_probe(args, directory, document)
+    symbol_free_string_probe(args, directory, document)
     command += ["--syminfo", str(syminfo)]
     manifest = json.loads(Path(artifact["manifest"]).read_text())
     require(

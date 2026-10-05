@@ -1,4 +1,5 @@
 {
+  "input_kind_schema": 1,
   "inputs": [
     {"title": "Payload", "type": "string", "kind": "string"},
     {"title": "Choice", "type": "string", "kind": "string"},

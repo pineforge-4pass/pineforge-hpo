@@ -53,6 +53,7 @@ class TranspileResult:
     inputs: tuple[dict[str, Any], ...] = ()
     strategy_params: Mapping[str, Any] = field(default_factory=dict)
     diagnostics: tuple[TranspileDiagnostic, ...] = ()
+    input_kind_schema: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -236,6 +237,12 @@ def transpile_source(pine_source: str, *, filename: str = "<input>") -> Transpil
         inputs=tuple(normalized_inputs),
         strategy_params=dict(strategy_params),
         diagnostics=_diagnostics_from_payload(payload),
+        input_kind_schema=(
+            1
+            if isinstance(payload.get("requests"), list)
+            and all(isinstance(item, Mapping) for item in payload["requests"])
+            else None
+        ),
     )
 
 

@@ -236,11 +236,14 @@ Index/CSV/setter refusal is exit 1 with `--symbol-feeds:`, before any terminal t
 This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.2.0).
 Direct native artifact users must keep the adjacent codegen `manifest.json` when searching
 string-valued inputs. `input.source` and `input.enum` dimensions are supported; only a
-`type: "string"` input without trustworthy kind metadata is ambiguous. Kind capability
-is established by any input carrying a `kind` field, or the manifest's explicit
-`"input_kind_schema": 1` marker (symbol inputs must carry `kind: "symbol"`). An unknown
-codegen package version does not invalidate that capability. If kinds are genuinely
-absent, both frontends fail closed and name the cause and codegen version. The Python frontend
+`type: "string"` input requires the manifest's explicit `"input_kind_schema": 1` marker.
+PineForge HPO's artifact builder writes it when its one-pass codegen result contains the
+modern `requests` list (including an empty list), the capability introduced with symbol
+input kinds in codegen 1.1.0. Individual input `kind` fields never vouch for other inputs.
+This supports symbol-free string/timeframe searches and codegen source checkouts whose
+package version is unknown. Unstamped manifests fail closed with a rebuild instruction;
+rebuild with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0. Pre-stamp caches rebuild once
+because their artifact identity lacks the builder's input-metadata revision. The Python frontend
 validates generated/precompiled metadata automatically. An unreadable optional manifest
 does not break a numeric-only native study. Duplicate titles unrelated to searched/fixed
 inputs do not invalidate Python studies; native rejects duplicates only for searched inputs.
@@ -628,9 +631,16 @@ CMake 3.21+ also supports the `release`, `asan` (ASan/UBSan), and `tsan`
 (ThreadSanitizer) presets. Use separate sanitizer builds:
 
 ```bash
-cmake --preset asan && cmake --build --preset asan -j4 && ctest --preset asan
+cmake --preset asan && cmake --build --preset asan -j4
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:quarantine_size_mb=16 \
+  UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --preset asan
 cmake --preset tsan && cmake --build --preset tsan -j4 && ctest --preset tsan
 ```
+
+The 16 MiB ASan quarantine bounds instrumentation's retained freed allocations so the
+`tpe_scale` test's 64 MiB RSS-growth assertion measures sampler retention rather than
+ASan's default quarantine. This is test sensitivity, not a sampler-memory regression;
+address/undefined-behavior checks and leak detection remain enabled.
 
 To include the installed-prefix gate, configure with
 `-DPINEFORGE_HPO_TEST_ENGINE_BUILD="$PWD/external/pineforge-engine/build"`

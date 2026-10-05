@@ -1620,10 +1620,7 @@ void validate_search_input_kinds(const Options& options) {
     }
     const auto* kind_schema = manifest->find("input_kind_schema");
     const bool symbol_kinds = (kind_schema && kind_schema->kind == pfh::detail::Json::Kind::Number &&
-        kind_schema->value == "1") || std::any_of(manifest->find("inputs")->items.begin(),
-        manifest->find("inputs")->items.end(), [](const auto& input) {
-            return input.kind == pfh::detail::Json::Kind::Object && input.find("kind");
-        });
+                               kind_schema->value == "1");
     std::string codegen_version = "unknown";
     try {
         codegen_version = pfh::detail::field(pfh::detail::field(pfh::detail::field(
@@ -1650,6 +1647,12 @@ void validate_search_input_kinds(const Options& options) {
         }
         const auto* type = selected ? selected->find("type") : nullptr;
         const auto* kind = selected ? selected->find("kind") : nullptr;
+        if (type && type->value == "string" && !symbol_kinds)
+            throw std::invalid_argument(manifest_path.string() +
+                ": cannot rule out input.symbol '" + std::string(pfh::dimension_name(dimension)) +
+                "' (D7); manifest not stamped kind-capable by pineforge-hpo's builder; "
+                "rebuild the artifact with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0; "
+                "codegen version " + codegen_version);
         if ((kind && kind->value == "symbol") || (type && type->value == "symbol"))
             throw std::invalid_argument("HPO over input.symbol '" +
                 std::string(pfh::dimension_name(dimension)) + "' is refused (D7); "
@@ -1662,11 +1665,16 @@ void validate_search_input_kinds(const Options& options) {
         if (needs_kind && (!type || type->kind != pfh::detail::Json::Kind::String))
             throw std::invalid_argument(manifest_path.string() + ": missing input type for " +
                                         std::string(pfh::dimension_name(dimension)));
-        if (type && type->value == "string" &&
-            (unknown_kind || (!symbol_kinds && !ordinary_string)))
+        if (needs_kind && type->value != "int" && type->value != "float" &&
+            type->value != "bool" && type->value != "string" &&
+            type->value != "source" && type->value != "enum")
+            throw std::invalid_argument("search_space." +
+                std::string(pfh::dimension_name(dimension)) +
+                ".choices[0] is incompatible with Pine input type '" + type->value + "'");
+        if (type && type->value == "string" && unknown_kind)
             throw std::invalid_argument(manifest_path.string() +
                 ": cannot rule out input.symbol '" + std::string(pfh::dimension_name(dimension)) +
-                "' (D7); " + (unknown_kind ? "unrecognized input kind" : "input kinds absent") +
+                "' (D7); unrecognized input kind" +
                 "; codegen version " + codegen_version);
     }
 }

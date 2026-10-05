@@ -15,9 +15,11 @@
   Require engine/codegen >= 1.1.0, pin both optional submodules to v1.2.0, and fail closed
   for ambiguous string-input metadata. Add real-artifact D7 refusal and BTCUSDT 4h /
   BINANCE:ETHUSDT 240 + 1D compiled-strategy C-ABI equality gates to Linux CI.
-- Preserve `input.source`/`input.enum` search dimensions. Detect input-kind capability from
-  manifest metadata, not package version; accept kind-capable source-checkout artifacts with
-  an unknown version and diagnose genuinely absent kinds. Ignore unrelated duplicate titles.
+- Preserve `input.source`/`input.enum` and symbol-free string/timeframe search dimensions.
+  The artifact builder stamps `input_kind_schema: 1` from codegen's modern `requests` result;
+  both frontends trust only that marker, never another input's kind or package version.
+  Unstamped string searches require rebuilding; pre-stamp artifact caches rebuild once.
+  Ignore unrelated duplicate titles and refuse unknown manifest input types consistently.
 - Key independent serial goldens by double/long-double precision and require a matching
   golden in both CI jobs; print the full identity. Non-CI unavailable goldens remain visible
   CTest skips. Matching checkpoints with an unavailable flags hash

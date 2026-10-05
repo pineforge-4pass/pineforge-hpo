@@ -310,7 +310,6 @@ def _validate_manifest_inputs(
     input_kinds_emitted: bool = False,
 ) -> None:
     requested = set(study.strategy.search_space) | set(study.strategy.fixed_inputs)
-    kinds_emitted = input_kinds_emitted or any("kind" in item for item in inputs)
     by_title: dict[str, Mapping[str, Any]] = {}
     for item in inputs:
         title = item.get("title")
@@ -329,26 +328,32 @@ def _validate_manifest_inputs(
         )
     for name, parameter in study.strategy.search_space.items():
         manifest = by_title[name]
+        input_type = manifest.get("type")
+        if input_type == "string" and not input_kinds_emitted:
+            raise CliError(
+                f"search_space.{name}: manifest cannot rule out input.symbol (D7); "
+                "manifest not stamped kind-capable by pineforge-hpo's builder; "
+                "rebuild the artifact with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0; "
+                f"codegen version {codegen_version or 'unknown'}"
+            )
         if manifest.get("kind") == "symbol" or manifest.get("type") == "symbol":
             raise CliError(
                 f"search_space.{name}: HPO over input.symbol is refused (D7); "
                 "only fixed other-symbol reads are supported"
             )
-        input_type = manifest.get("type")
         input_kind = manifest.get("kind")
-        if input_type == "string" and (
-            input_kind
-            not in (None, "string", "color", "timeframe", "session", "text_area")
-            or (input_kind is None and not kinds_emitted)
+        if input_type == "string" and input_kind not in (
+            None,
+            "string",
+            "color",
+            "timeframe",
+            "session",
+            "text_area",
         ):
-            cause = (
-                "input kinds absent"
-                if input_kind is None
-                else f"unrecognized input kind {input_kind!r}"
-            )
             raise CliError(
                 f"search_space.{name}: manifest cannot rule out input.symbol (D7); "
-                f"{cause}; codegen version {codegen_version or 'unknown'}"
+                f"unrecognized input kind {input_kind!r}; "
+                f"codegen version {codegen_version or 'unknown'}"
             )
         if parameter.kind == "categorical":
             for index, choice in enumerate(parameter.choices):

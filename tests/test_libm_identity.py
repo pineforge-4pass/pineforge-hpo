@@ -41,6 +41,11 @@ def main():
         "fma",
         "fmal",
     ]
+    inlined_functions = {
+        function + suffix
+        for function in ("sqrt", "floor", "ceil", "round", "trunc", "fma")
+        for suffix in ("", "f", "l")
+    }
     spaces = {
         "linear-real": ["--real-dim", "X", "0", "1", "continuous"],
         "stepped-real": ["--real-dim", "X", "0", "1", "0.01"],
@@ -171,6 +176,11 @@ def main():
                         f"{name}/{function}: excluded function changed identity",
                     )
                 elif mask & (1 << index):
+                    require(
+                        function in inlined_functions,
+                        f"{name}/{function}: included function perturbation left identity "
+                        "unchanged and is not an allowed compiler intrinsic",
+                    )
                     unchanged_probe_functions.append(function)
                 if proposals(perturbed) != proposals(baseline):
                     require(

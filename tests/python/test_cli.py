@@ -96,6 +96,7 @@ class CliTests(unittest.TestCase):
                         {"title": "Threshold", "type": "float"},
                         {"title": "Enabled", "type": "bool"},
                     ],
+                    input_kinds_emitted=True,
                 )
 
     def test_fixed_input_symbol_is_allowed(self) -> None:
@@ -130,18 +131,26 @@ class CliTests(unittest.TestCase):
         self.study_path.write_text(json.dumps(document))
         study = load_study_spec(self.study_path)
         with self.assertRaisesRegex(
-            CliError, "input kinds absent; codegen version unknown"
+            CliError,
+            "manifest not stamped kind-capable.*rebuild the artifact.*codegen version unknown",
         ):
             _validate_manifest_inputs(study, inputs)
         _validate_manifest_inputs(study, inputs, input_kinds_emitted=True)
-        inputs.append({"title": "Other", "type": "string", "kind": "symbol"})
-        _validate_manifest_inputs(study, inputs, codegen_version="unknown")
+        inputs.append({"title": "Unrelated", "type": "int", "kind": "symbol"})
+        for kind in (None, 42, "symbol", "string"):
+            inputs[-1]["kind"] = kind
+            with self.assertRaisesRegex(CliError, "manifest not stamped kind-capable"):
+                _validate_manifest_inputs(study, inputs, codegen_version="unknown")
         inputs[0]["kind"] = "string"
-        _validate_manifest_inputs(study, inputs)
+        with self.assertRaisesRegex(CliError, "manifest not stamped kind-capable"):
+            _validate_manifest_inputs(study, inputs)
+        _validate_manifest_inputs(study, inputs, input_kinds_emitted=True)
         for kind in ("unknown", [], {}):
             inputs[0]["kind"] = kind
             with self.assertRaisesRegex(CliError, "cannot rule out input.symbol.*D7"):
-                _validate_manifest_inputs(study, inputs, codegen_version="1.2.0")
+                _validate_manifest_inputs(
+                    study, inputs, codegen_version="1.2.0", input_kinds_emitted=True
+                )
 
     def test_source_enum_and_unrelated_duplicates_are_not_symbols(self) -> None:
         document = json.loads(self.study_path.read_text())

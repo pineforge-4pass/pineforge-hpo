@@ -162,11 +162,14 @@ Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted)
 `input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
 Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.2.0).
 `input.source` and `input.enum` search dimensions are supported and cannot be symbols.
-Only `type: "string"` without trustworthy input-kind capability is ambiguous. Any input
-with a `kind` field establishes capability, as does a manifest-level `"input_kind_schema": 1`
-marker promising that every symbol input carries `kind: "symbol"`. Codegen package version
-is diagnostic only: `unknown` does not reject a kind-capable artifact. Genuinely absent
-kinds fail closed with the cause and version in the error. Unrelated duplicate titles are
+String dimensions require the manifest-level `"input_kind_schema": 1` marker, written by
+PineForge HPO's artifact builder after observing the modern codegen `requests` list in
+its one-pass transpile result. The list is present even for symbol-free scripts; codegen
+1.1.0 introduced it alongside `kind: "symbol"` metadata. Individual input `kind` fields
+are not a capability signal. Package version is diagnostic only, so `unknown` does not
+reject a stamped artifact. Unstamped string dimensions fail closed and instruct rebuilding
+with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0. The artifact-cache identity includes the
+builder's input-metadata revision so pre-stamp caches rebuild once. Unrelated duplicate titles are
 ignored; duplicates for searched inputs (or Python fixed inputs) remain refused.
 Direct native users need the adjacent `manifest.json` for string-valued search inputs;
 unreadable optional manifests do not change numeric-only native runs. Required manifest

@@ -586,7 +586,10 @@ def main():
         shutil.copy(args.plugin, symbol_plugin)
         (symbol_artifact / "manifest.json").write_text(
             json.dumps(
-                {"inputs": [{"title": "Other", "type": "string", "kind": "symbol"}]}
+                {
+                    "input_kind_schema": 1,
+                    "inputs": [{"title": "Other", "type": "string", "kind": "symbol"}],
+                }
             )
         )
         run(
@@ -643,14 +646,46 @@ def main():
             "ETH",
             feeds=False,
             plugin=symbol_plugin,
-            refused="input kinds absent; codegen version unknown",
+            refused="manifest not stamped kind-capable by pineforge-hpo's builder",
         )
         modern_manifest["inputs"].append(
             {"title": "UnusedSymbol", "type": "string", "kind": "symbol"}
         )
         manifest_path.write_text(json.dumps(modern_manifest))
-        run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
+        run(
+            "--categorical-choice",
+            "Other",
+            "ETH",
+            feeds=False,
+            plugin=symbol_plugin,
+            refused="manifest not stamped kind-capable",
+        )
         modern_manifest["inputs"].pop()
+        for unrelated_kind in (None, 42, "string", "symbol"):
+            modern_manifest["inputs"].append(
+                {"title": "Unrelated", "type": "int", "kind": unrelated_kind}
+            )
+            manifest_path.write_text(json.dumps(modern_manifest))
+            run(
+                "--categorical-choice",
+                "Other",
+                "ETH",
+                feeds=False,
+                plugin=symbol_plugin,
+                refused="manifest not stamped kind-capable",
+            )
+            modern_manifest["inputs"].pop()
+        for marker in (True, "1", 1.0, 2, None):
+            modern_manifest["input_kind_schema"] = marker
+            manifest_path.write_text(json.dumps(modern_manifest))
+            run(
+                "--categorical-choice",
+                "Other",
+                "ETH",
+                feeds=False,
+                plugin=symbol_plugin,
+                refused="manifest not stamped kind-capable",
+            )
         modern_manifest["input_kind_schema"] = 1
         manifest_path.write_text(json.dumps(modern_manifest))
         run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
@@ -665,6 +700,16 @@ def main():
                 plugin=symbol_plugin,
                 refused="cannot rule out input.symbol",
             )
+        modern_manifest["inputs"][0] = {"title": "Other", "type": "foo"}
+        manifest_path.write_text(json.dumps(modern_manifest))
+        run(
+            "--categorical-choice",
+            "Other",
+            "ETH",
+            feeds=False,
+            plugin=symbol_plugin,
+            refused="search_space.Other.choices[0] is incompatible with Pine input type 'foo'",
+        )
         for input_type in ("source", "enum"):
             manifest_path.write_text(
                 json.dumps(
@@ -704,9 +749,11 @@ def main():
             refused="duplicate input Length used by search",
         )
         print(
-            "PASS metadata: source/enum accepted; capabilities, unknown version, duplicates checked"
+            "PASS metadata: marker-only capability; unrelated kinds cannot vouch; "
+            "unknown types refused; source/enum and duplicates checked"
         )
         large_manifest = {
+            "input_kind_schema": 1,
             "inputs": [{"title": "Other", "type": "string", "kind": "string"}],
             "padding": "x" * (1024 * 1024 + 1),
         }
