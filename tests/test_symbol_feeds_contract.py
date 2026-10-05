@@ -138,11 +138,22 @@ def main():
             old, _ = run(feeds=False, native=args.baseline)
             require(
                 old.stdout.replace(
-                    b'"pineforge_hpo_version": "0.7.0"',
                     b'"pineforge_hpo_version": "0.8.0"',
+                    b'"pineforge_hpo_version": "0.9.0"',
                 )
                 == plain.stdout,
-                "no-feed result differs from v0.7 beyond release version",
+                "no-feed result differs from v0.8 beyond release version",
+            )
+            random_now, _ = run("--sampler", "random", "--seed", "170905", feeds=False)
+            random_old, _ = run(
+                "--sampler", "random", "--seed", "170905", feeds=False, native=args.baseline
+            )
+            require(
+                random_old.stdout.replace(
+                    b'"pineforge_hpo_version": "0.8.0"',
+                    b'"pineforge_hpo_version": "0.9.0"',
+                ) == random_now.stdout,
+                "random result differs from v0.8 beyond release version",
             )
         index.write_text(json.dumps(document))
         parent_process, parent_trials = run()
@@ -336,6 +347,18 @@ def main():
         )
         tpe_path = directory / "tpe-parent.json"
         tpe_path.write_bytes(tpe_process.stdout)
+        if args.baseline:
+            legacy_process, _ = run("--sampler", "tpe", native=args.baseline)
+            legacy_path = directory / "v080-tpe-parent.json"
+            legacy_path.write_bytes(legacy_process.stdout)
+            rebuilt_process, _ = run("--sampler", "tpe", "--warm-start", str(legacy_path))
+            rebuilt = json.loads(rebuilt_process.stdout)
+            require(
+                rebuilt["warm_start_model"] == "rebuilt_history"
+                and "without importing the old sampler state" in rebuilt["warm_start_reason"]
+                and rebuilt["parent_numeric_build_identity"] != rebuilt["numeric_build_identity"],
+                "v0.8 checkpoint must rebuild, never mix numerical state",
+            )
         restored_process, _ = run("--sampler", "tpe", "--warm-start", str(tpe_path))
         restored = json.loads(restored_process.stdout)
         require(
@@ -378,8 +401,8 @@ def main():
         foreign = copy.deepcopy(tpe_parent)
         version, checksum, payload = foreign["tpe_sampler_state"].split("\n", 2)
         payload = re.sub(
-            r";libm_probe_sha256:[0-9a-f]{64}",
-            ";libm_probe_sha256:" + "0" * 64,
+            r";(?:portable|libm)_probe_sha256:[0-9a-f]{64}",
+            ";portable_probe_sha256:" + "0" * 64,
             payload,
         )
         foreign["tpe_sampler_state"] = (
@@ -397,7 +420,7 @@ def main():
             rebuilt["warm_start_model"] == "rebuilt_history"
             and rebuilt["numeric_build_identity"] == identity
             and rebuilt["parent_numeric_build_identity"] != identity
-            and ";libm_probe_sha256:" + "0" * 64
+            and ";portable_probe_sha256:" + "0" * 64
             in rebuilt["parent_numeric_build_identity"],
             "foreign checkpoint identity was not exposed before rebuilding",
         )
@@ -689,6 +712,40 @@ def main():
         modern_manifest["input_kind_schema"] = 1
         manifest_path.write_text(json.dumps(modern_manifest))
         run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
+        for version in ("0.9.0", "1.0.0", "1.0.9", "v1.0.0", "1.1.0-rc.1", "1.1.0rc1"):
+            modern_manifest["request_identity"] = {"codegen": {"version": version}}
+            manifest_path.write_text(json.dumps(modern_manifest))
+            run(
+                "--categorical-choice", "Other", "ETH", feeds=False,
+                plugin=symbol_plugin,
+                refused="input_kind_schema: 1 contradicts recorded codegen version",
+            )
+        modern_manifest["request_identity"] = {"codegen": {"version": "1.1.0"}}
+        modern_manifest["artifact_key"] = "a" * 64
+        modern_manifest["plugin_sha256"] = hashlib.sha256(symbol_plugin.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(modern_manifest))
+        provenance_path = manifest_path.with_name("provenance.json")
+        provenance_path.write_text(json.dumps(modern_manifest))
+        run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
+        for field, changed in (
+            ("input_kind_schema", None), ("artifact_key", "b" * 64),
+            ("plugin_sha256", "c" * 64),
+        ):
+            forged = copy.deepcopy(modern_manifest)
+            forged[field] = changed
+            provenance_path.write_text(json.dumps(forged))
+            run(
+                "--categorical-choice", "Other", "ETH", feeds=False,
+                plugin=symbol_plugin, refused="artifact manifest disagrees with provenance",
+            )
+        forged = copy.deepcopy(modern_manifest)
+        forged["request_identity"]["codegen"]["version"] = "1.2.0"
+        provenance_path.write_text(json.dumps(forged))
+        run(
+            "--categorical-choice", "Other", "ETH", feeds=False,
+            plugin=symbol_plugin, refused="artifact codegen version disagrees with provenance",
+        )
+        provenance_path.unlink()
         for kind in ("unknown", [], {}):
             modern_manifest["inputs"][0]["kind"] = kind
             manifest_path.write_text(json.dumps(modern_manifest))
@@ -787,7 +844,7 @@ def main():
             "PASS: feed hash/reference, pretrial refusals, D7, JSON/JSONL/v2 mismatch, "
             "relocation, empty-index byte identity, manifest compatibility, "
             "CLI feed overrides, clear header errors, numeric identity provenance"
-            + (", v0.7 byte identity" if args.baseline else "")
+            + (", v0.8 byte identity" if args.baseline else "")
         )
 
 

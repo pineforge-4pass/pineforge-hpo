@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.0 — 2026-10-05
+
+- Vendor MIT-licensed CORE-MATH binary64 `log`, `log1p`, `exp`, `expm1`, `cos` and `erfc`.
+  TPE proposal arithmetic no longer calls host transcendental functions or uses long double.
+  Use compensated binary64 pairs for finite-grid coordinates; retain the contraction canary,
+  disabled fast math/contraction and explicit correctly-rounded IEEE FMA/square root.
+- Bump TPE's numerical algorithm revision to 2 and replace host-libm identity with a
+  portable-kernel self-probe. Revision-1/v0.8.0 checkpoints rebuild ordered objective history
+  with an explicit reason, never import or mix old sampler state. Regenerate serial goldens
+  for the portable revision; preserve grid/random release compatibility.
+- Add eight-space serial/threaded cross-vendor and Intel warm-restore proof tooling,
+  MPFR accuracy checks and independent-build proposal-only performance measurements.
+  Document the supported arithmetic environment, numerical bounds and proof receipts.
+- Harden trusted input-kind metadata: require an actual symbol-kind transpile canary,
+  refuse markers contradicting known pre-1.1.0 codegen versions, and cross-check precompiled
+  manifests against adjacent provenance. Document external builders' trust obligations.
+- Include bounded ASan quarantine options in the `asan` test preset so it works as-is.
+
 ## 0.8.0 — 2026-10-05
 
 - Add fixed other-symbol `request.security` feeds: CLI `--symbol-feeds` and

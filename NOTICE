@@ -8,3 +8,8 @@ This product is licensed under the Apache License, Version 2.0.
 This product uses dlib, Copyright (C) 2003 Davis E. King, under the Boost
 Software License 1.0. See THIRD_PARTY_LICENSES/dlib.txt for the license text
 and LEGAL.md for the dependency and source location.
+
+The TPE sampler uses CORE-MATH binary64 log, log1p, exp, expm1, cos and erfc,
+Copyright (c) 2022-2026 the CORE-MATH contributors, under the MIT license.
+Sources, individual author notices and the full license are retained under
+third_party/core_math; pinned upstream commit aa66f20b0118453890acb29b98b51c9c8dd92118.

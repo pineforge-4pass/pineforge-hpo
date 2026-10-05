@@ -21,6 +21,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <filesystem>
@@ -1548,6 +1549,13 @@ std::string render_results(const Options& options,
             out << ",\n  \"warm_start_model\":\""
                 << (options.tpe_warm_restored ? "restored_sampler_state" : "rebuilt_history")
                 << "\"";
+        if (options.sampler == "tpe" && !options.tpe_warm_restored &&
+            !options.parent_numeric_build_identity.empty() &&
+            options.parent_numeric_build_identity != options.numeric_build_identity) {
+            out << ",\n  \"warm_start_reason\":\"TPE numerical algorithm or build identity changed; "
+                << "rebuilt from objective history without importing the old sampler state "
+                << "(v0.8.0 checkpoints are not bitwise continuations)\"";
+        }
         if (options.trials_out == "all") {
             out << ",\n  \"warm_start_trials\": [";
             for (std::uint64_t index = 0; index < warm.size(); ++index) {
@@ -1626,6 +1634,44 @@ void validate_search_input_kinds(const Options& options) {
         codegen_version = pfh::detail::field(pfh::detail::field(pfh::detail::field(
             *manifest, "request_identity"), "codegen"), "version").text();
     } catch (const std::exception&) {
+    }
+    unsigned codegen_major, codegen_minor, codegen_patch;
+    int version_end = 0;
+    const char* version_start = codegen_version.c_str();
+    if (*version_start == 'v' || *version_start == 'V')
+        ++version_start;
+    const bool known_version = std::sscanf(version_start, "%u.%u.%u%n",
+        &codegen_major, &codegen_minor, &codegen_patch, &version_end) == 3;
+    const std::string version_suffix = known_version ? version_start + version_end : "";
+    const bool initial_prerelease = known_version && codegen_major == 1 &&
+        codegen_minor == 1 && codegen_patch == 0 &&
+        (version_suffix.find('-') == 0 || version_suffix.find('a') == 0 ||
+         version_suffix.find('b') == 0 || version_suffix.find("rc") == 0 ||
+         version_suffix.find("dev") == 0 || version_suffix.find(".dev") == 0);
+    if (symbol_kinds && known_version &&
+        (codegen_major < 1 || (codegen_major == 1 && codegen_minor < 1) || initial_prerelease)) {
+        throw std::invalid_argument("input_kind_schema: 1 contradicts recorded codegen version " +
+            codegen_version + "; codegen >= 1.1.0 is required");
+    }
+    const auto provenance_path = options.strategy.parent_path() / "provenance.json";
+    if (std::filesystem::is_regular_file(provenance_path)) {
+        const auto provenance = pfh::detail::parse_json(
+            pfh::detail::read_document(provenance_path), 256 * 1024 * 1024);
+        for (const std::string field : {"input_kind_schema", "plugin_sha256", "artifact_key"}) {
+            const auto* recorded = manifest->find(field);
+            const auto* verified = provenance.find(field);
+            if ((recorded == nullptr) != (verified == nullptr) ||
+                (recorded && (recorded->kind != verified->kind ||
+                              recorded->value != verified->value))) {
+                throw std::invalid_argument("artifact manifest disagrees with provenance: " +
+                                            field);
+            }
+        }
+        const auto* identity = provenance.find("request_identity");
+        const auto* codegen = identity ? identity->find("codegen") : nullptr;
+        const auto* version = codegen ? codegen->find("version") : nullptr;
+        if (version && version->text() != codegen_version)
+            throw std::invalid_argument("artifact codegen version disagrees with provenance");
     }
     for (const auto& dimension : options.dimensions) {
         const auto* categorical = std::get_if<pfh::CategoricalDimension>(&dimension);

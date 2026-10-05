@@ -4,6 +4,31 @@ target_compile_options(pineforge_hpo_test_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_core COMMAND pineforge_hpo_test_core)
 
+add_executable(pineforge_hpo_test_portable_math test_portable_math.cpp)
+target_link_libraries(pineforge_hpo_test_portable_math PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_portable_math PRIVATE -ffp-contract=off)
+find_path(PFH_MPFR_INCLUDE mpfr.h)
+find_library(PFH_MPFR_LIBRARY mpfr)
+if(PFH_MPFR_INCLUDE AND PFH_MPFR_LIBRARY)
+    target_include_directories(pineforge_hpo_test_portable_math PRIVATE "${PFH_MPFR_INCLUDE}")
+    target_link_libraries(pineforge_hpo_test_portable_math PRIVATE "${PFH_MPFR_LIBRARY}")
+    target_compile_definitions(pineforge_hpo_test_portable_math PRIVATE PFH_HAVE_MPFR=1)
+endif()
+add_test(NAME pineforge_hpo_portable_math_accuracy COMMAND pineforge_hpo_test_portable_math)
+
+add_executable(pineforge_hpo_portable_math_proof portable_math_proof.cpp)
+target_link_libraries(pineforge_hpo_portable_math_proof PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_portable_math_proof PRIVATE -ffp-contract=off)
+add_test(NAME pineforge_hpo_portable_math_serial COMMAND pineforge_hpo_portable_math_proof
+    "${CMAKE_CURRENT_BINARY_DIR}/portable-proof/serial" 1)
+add_test(NAME pineforge_hpo_portable_math_threaded COMMAND pineforge_hpo_portable_math_proof
+    "${CMAKE_CURRENT_BINARY_DIR}/portable-proof/threaded" 8
+    "${CMAKE_CURRENT_BINARY_DIR}/portable-proof/serial")
+set_tests_properties(pineforge_hpo_portable_math_serial PROPERTIES
+    FIXTURES_SETUP portable_checkpoint)
+set_tests_properties(pineforge_hpo_portable_math_threaded PROPERTIES
+    FIXTURES_REQUIRED portable_checkpoint)
+
 add_executable(pineforge_hpo_test_numeric_unavailable test_numeric_unavailable.cpp
     "${PROJECT_SOURCE_DIR}/src/core/tpe_sampler.cpp")
 target_link_libraries(pineforge_hpo_test_numeric_unavailable PRIVATE PineForgeHPO::core)

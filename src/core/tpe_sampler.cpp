@@ -6,6 +6,7 @@
 #include "dimension_workers.hpp"
 #include "sampler_checkpoint.hpp"
 #include "tpe_test_hooks.hpp"
+#include "portable_grid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -31,7 +32,6 @@ namespace detail {
 
 thread_local TpeLogRatioObserver tpe_log_ratio_observer = nullptr;
 thread_local std::optional<double> tpe_contraction_override;
-thread_local std::optional<std::string> tpe_long_log1p_override;
 
 void set_tpe_log_ratio_observer(TpeLogRatioObserver observer) noexcept {
     tpe_log_ratio_observer = observer;
@@ -42,49 +42,19 @@ void set_tpe_contraction_override(std::optional<double> value) noexcept {
 }
 
 void set_tpe_long_log1p_probe(long double (*function)(long double)) {
-    tpe_long_log1p_override = function ? std::optional<std::string>(long_log1p_probe(function)) :
-                                       std::nullopt;
+    (void)function;
 }
 
 std::string tpe_numeric_identity(const SearchSpace& space) {
-    std::uint32_t functions = (std::uint32_t{1} << 7) | (std::uint32_t{1} << 8) |
-                              (std::uint32_t{1} << 20);
-    for (const auto& dimension : space.dimensions()) {
-        std::visit([&](const auto& item) {
-            using Item = std::decay_t<decltype(item)>;
-            if constexpr (std::is_same_v<Item, IntegerDimension> ||
-                          std::is_same_v<Item, RealDimension>) {
-                if (item.low() != item.high()) {
-                    functions |= (std::uint32_t{1} << 10) - 1;
-                    if constexpr (std::is_same_v<Item, IntegerDimension>)
-                        functions |= std::uint32_t{1} << 17;
-                }
-                if constexpr (std::is_same_v<Item, RealDimension>)
-                    if (item.step())
-                        functions |= (std::uint32_t{1} << 17) | (std::uint32_t{1} << 19);
-                if (item.log()) {
-                    functions |= (std::uint32_t{1} << 10) | (std::uint32_t{1} << 11) |
-                                 (std::uint32_t{1} << 13);
-                    if constexpr (std::is_same_v<Item, RealDimension>)
-                        functions |= std::uint32_t{1} << 12;
-                    else
-                        functions |= std::uint32_t{1} << 17;
-                }
-            } else if constexpr (std::is_same_v<Item, CategoricalDimension>) {
-                if (item.choices().size() > 1)
-                    functions |= std::uint32_t{1};
-            } else {
-                functions |= std::uint32_t{1};
-            }
-        }, dimension);
-    }
+    (void)space;
+    require_portable_environment();
     volatile double first = 0x1.0000000000001p0;
     volatile double second = 0x1.ffffffffffffep-1;
     volatile double third = -1.0;
     const double arithmetic = first * second + third;
-    const double fused = std::fma(first, second, third);
+    const double fused = detail::math::fma(first, second, third);
     return numeric_build_identity(tpe_contraction_override.value_or(arithmetic), fused,
-                                  functions, tpe_long_log1p_override);
+                                  0, std::nullopt);
 }
 
 std::string tpe_numeric_identity() {
@@ -94,13 +64,24 @@ std::string tpe_numeric_identity() {
 }
 namespace {
 
-constexpr std::uint32_t kTpeAlgorithmRevision = 1;
+constexpr std::uint32_t kTpeAlgorithmRevision = 2;
 constexpr double kInverse53 = 1.0 / 9007199254740992.0;
 constexpr double kLogSqrtTwoPi = 0.91893853320467274178;
 constexpr double kSqrtTwo = 1.41421356237309504880;
 constexpr double kTwoPi = 6.28318530717958647693;
 constexpr std::uint64_t kMaxExactlyRepresentableBins = std::uint64_t{1} << 53U;
 constexpr std::uint64_t kMaxEiCandidates = 1'000'000;
+constexpr std::array<double, 26> kReciprocalIntegers = {
+    0.0, 0x1.0000000000000p+0, 0x1.0000000000000p-1,
+    0x1.5555555555555p-2, 0x1.0000000000000p-2, 0x1.999999999999ap-3,
+    0x1.5555555555555p-3, 0x1.2492492492492p-3, 0x1.0000000000000p-3,
+    0x1.c71c71c71c71cp-4, 0x1.999999999999ap-4, 0x1.745d1745d1746p-4,
+    0x1.5555555555555p-4, 0x1.3b13b13b13b14p-4, 0x1.2492492492492p-4,
+    0x1.1111111111111p-4, 0x1.0000000000000p-4, 0x1.e1e1e1e1e1e1ep-5,
+    0x1.c71c71c71c71cp-5, 0x1.af286bca1af28p-5, 0x1.999999999999ap-5,
+    0x1.8618618618618p-5, 0x1.745d1745d1746p-5, 0x1.642c8590b2164p-5,
+    0x1.5555555555555p-5, 0x1.47ae147ae147bp-5
+};
 
 std::uint64_t double_bits(double value) {
     std::uint64_t bits;
@@ -205,8 +186,8 @@ double open_unit_random(detail::Mt19937_64& engine) {
 double standard_normal(detail::Mt19937_64& engine) {
     // Do not cache the second Box-Muller variate: every call consumes exactly
     // two engine values, which makes reset/replay behavior straightforward.
-    const double radius = std::sqrt(-2.0 * std::log(open_unit_random(engine)));
-    return radius * std::cos(kTwoPi * open_unit_random(engine));
+    const double radius = detail::math::sqrt(-2.0 * detail::math::log(open_unit_random(engine)));
+    return radius * detail::math::cos(kTwoPi * open_unit_random(engine));
 }
 
 std::uint64_t integer_count(const IntegerDimension& dimension) {
@@ -243,47 +224,26 @@ std::uint64_t integer_ordinal(const IntegerDimension& dimension, std::int64_t va
 }
 
 std::uint64_t real_grid_count(const RealDimension& dimension) {
-    const long double low = static_cast<long double>(dimension.low());
-    const long double high = static_cast<long double>(dimension.high());
-    const long double step = *dimension.step();
-    const long double span = high - low;
-    const long double scaled = std::isfinite(span) ? span / step : high / step - low / step;
-    const long double floored = std::floor(scaled);
-    if (floored >= static_cast<long double>(std::numeric_limits<std::uint64_t>::max())) {
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t");
-    }
-    std::uint64_t last_index = static_cast<std::uint64_t>(floored);
-    const std::uint64_t next_index = last_index + 1;
-    const double decoded_next =
-        std::fma(static_cast<double>(next_index), *dimension.step(), dimension.low());
-    if (std::isfinite(decoded_next) &&
-        decoded_next <= std::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
-        last_index = next_index;
-    }
-    if (last_index == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t");
-    }
-    return last_index + 1;
+    return detail::portable_grid_count(dimension.low(), dimension.high(), *dimension.step());
 }
 
 double real_at(const RealDimension& dimension, std::uint64_t index) {
     const std::uint64_t count = real_grid_count(dimension);
-    double decoded = std::fma(static_cast<double>(index), *dimension.step(), dimension.low());
+    double decoded = detail::math::fma(static_cast<double>(index), *dimension.step(), dimension.low());
     if (index + 1 == count && decoded > dimension.high() &&
-        decoded <= std::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
+        decoded <= detail::math::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
         decoded = dimension.high();
     }
     return decoded;
 }
 
 std::uint64_t real_ordinal(const RealDimension& dimension, double value, std::uint64_t count) {
-    const long double scaled =
-        (static_cast<long double>(value) - dimension.low()) / *dimension.step();
-    const long double rounded = std::round(scaled);
-    if (rounded <= 0.0L) {
+    const double rounded = detail::pair_round(
+        detail::grid_coordinate(value, dimension.low(), *dimension.step()));
+    if (rounded <= 0.0) {
         return 0;
     }
-    if (rounded >= static_cast<long double>(count - 1)) {
+    if (rounded >= static_cast<double>(count - 1)) {
         return count - 1;
     }
     return static_cast<std::uint64_t>(rounded);
@@ -293,26 +253,20 @@ double normalized_ordinal(std::uint64_t ordinal, std::uint64_t count) {
     if (count <= 1) {
         return 0.5;
     }
-    return static_cast<double>((static_cast<long double>(ordinal) + 0.5L) /
-                               static_cast<long double>(count));
+    return detail::center_coordinate(ordinal, count);
 }
 
 std::uint64_t decoded_ordinal(double normalized, std::uint64_t count) {
     if (count <= 1) {
         return 0;
     }
-    const long double bounded = std::clamp(static_cast<long double>(normalized), 0.0L, 1.0L);
-    const long double rounded = std::floor(bounded * count);
-    if (rounded >= static_cast<long double>(count - 1)) {
-        return count - 1;
-    }
-    return static_cast<std::uint64_t>(rounded);
+    return detail::coordinate_ordinal(normalized, count);
 }
 
 std::pair<double, double> normalized_bin(std::uint64_t ordinal, std::uint64_t count) {
-    const long double denominator = static_cast<long double>(count);
-    const double lower = static_cast<double>(static_cast<long double>(ordinal) / denominator);
-    const double upper = static_cast<double>(static_cast<long double>(ordinal + 1) / denominator);
+    const double denominator = static_cast<double>(count);
+    const double lower = static_cast<double>(static_cast<double>(ordinal) / denominator);
+    const double upper = static_cast<double>(static_cast<double>(ordinal + 1) / denominator);
     return {std::clamp(lower, 0.0, 1.0), std::clamp(upper, 0.0, 1.0)};
 }
 
@@ -327,13 +281,13 @@ double log_normal_cdf(double value) {
                        inverse_square *
                            (3.0 + inverse_square *
                                       (-15.0 + inverse_square * (105.0 - 945.0 * inverse_square))));
-        return -0.5 * value * value - std::log(-value) - kLogSqrtTwoPi + std::log(correction);
+        return -0.5 * value * value - detail::math::log(-value) - kLogSqrtTwoPi + detail::math::log(correction);
     }
     if (value >= 0.0) {
-        const double upper_tail = 0.5 * std::erfc(value / kSqrtTwo);
-        return std::log1p(-upper_tail);
+        const double upper_tail = 0.5 * detail::math::erfc(value / kSqrtTwo);
+        return detail::math::log1p(-upper_tail);
     }
-    return std::log(0.5 * std::erfc(-value / kSqrtTwo));
+    return detail::math::log(0.5 * detail::math::erfc(-value / kSqrtTwo));
 }
 
 double log_difference(double larger_log, double smaller_log) {
@@ -344,7 +298,7 @@ double log_difference(double larger_log, double smaller_log) {
     if (delta >= 0.0) {
         return -std::numeric_limits<double>::infinity();
     }
-    return larger_log + std::log(-std::expm1(delta));
+    return larger_log + detail::math::log(-detail::math::expm1(delta));
 }
 
 double log_normal_interval(double lower, double upper) {
@@ -358,8 +312,42 @@ double log_normal_interval(double lower, double upper) {
         // The midpoint rule is tail-stable for narrow intervals.  The second
         // order correction keeps its relative error O(width^4).
         const double correction = (midpoint * midpoint - 1.0) * width * width / 24.0;
-        return -0.5 * midpoint * midpoint - kLogSqrtTwoPi + std::log(width) +
-               std::log1p(correction);
+        return -0.5 * midpoint * midpoint - kLogSqrtTwoPi + detail::math::log(width) +
+               detail::math::log1p(correction);
+    }
+
+    if (std::isfinite(width) && width * std::max(1.0, std::abs(midpoint)) < 0.25) {
+        const double half_width = width * 0.5;
+        const double linear = -midpoint * half_width;
+        const double quadratic = -half_width * half_width;
+        double previous = 1.0;
+        double current = linear;
+        double correction = 0.0;
+        for (unsigned degree = 2; degree <= 24; ++degree) {
+            const double next = (linear * current + quadratic * previous) *
+                                kReciprocalIntegers[degree];
+            if (degree % 2 == 0)
+                correction += next * kReciprocalIntegers[degree + 1];
+            previous = current;
+            current = next;
+        }
+        return -0.5 * midpoint * midpoint - kLogSqrtTwoPi + detail::math::log(width) +
+               detail::math::log1p(correction);
+    }
+
+    if (lower < 0.0 && upper > 0.0) {
+        const double mass = 1.0 - 0.5 * (detail::math::erfc(-lower / kSqrtTwo) +
+                                       detail::math::erfc(upper / kSqrtTwo));
+        if (mass > 0x1p-20)
+            return detail::math::log(mass);
+    } else if ((lower >= 0.0 ? lower : -upper) < 10.0) {
+        const double near_tail = 0.5 * detail::math::erfc(
+            (lower >= 0.0 ? lower : -upper) / kSqrtTwo);
+        const double far_tail = 0.5 * detail::math::erfc(
+            (lower >= 0.0 ? upper : -lower) / kSqrtTwo);
+        const double mass = near_tail - far_tail;
+        if (mass > near_tail * 0x1p-20)
+            return detail::math::log(mass);
     }
 
     if (lower >= 0.0) {
@@ -431,29 +419,34 @@ public:
             add_component(sorted[i].value, sigma, sorted[i].weight);
         }
         add_component(0.5, 1.0, prior_weight);
+        const double minimum_log_sigma = detail::math::log(minimum_sigma);
+        const double unit_log_weight = detail::math::log(1.0 / total_weight_);
         for (auto& component : components_) {
-            component.log_weight = std::log(component.weight / total_weight_);
+            component.log_weight = component.weight == 1.0 ? unit_log_weight :
+                detail::math::log(component.weight / total_weight_);
             component.log_normalizer = truncated_log_normalizer(component);
-            component.log_sigma = std::log(component.sigma);
-            component.amplitude = std::exp(component.log_weight - kLogSqrtTwoPi -
-                                           component.log_sigma - component.log_normalizer);
+            component.log_sigma = component.sigma == minimum_sigma ? minimum_log_sigma :
+                detail::math::log(component.sigma);
+            if (fast_density_)
+                component.amplitude = detail::math::exp(component.log_weight - kLogSqrtTwoPi -
+                    component.log_sigma - component.log_normalizer);
         }
         if (fast_density_) {
             for (const auto& component : components_) {
                 const double step = 1.0 / (density_.size() - 1) / component.sigma;
                 const auto first = static_cast<std::size_t>(std::max(0.0,
-                    std::floor((component.mean - 8.0 * component.sigma) *
+                    detail::math::floor((component.mean - 8.0 * component.sigma) *
                                (density_.size() - 1))));
                 const auto last = static_cast<std::size_t>(std::min(
                     static_cast<double>(density_.size() - 1),
-                    std::ceil((component.mean + 8.0 * component.sigma) *
+                    detail::math::ceil((component.mean + 8.0 * component.sigma) *
                               (density_.size() - 1))));
                 const double standardized =
                     (static_cast<double>(first) / (density_.size() - 1) - component.mean) /
                     component.sigma;
-                double term = component.amplitude * std::exp(-0.5 * standardized * standardized);
-                double ratio = std::exp(-standardized * step - 0.5 * step * step);
-                const double ratio_step = std::exp(-step * step);
+                double term = component.amplitude * detail::math::exp(-0.5 * standardized * standardized);
+                double ratio = detail::math::exp(-standardized * step - 0.5 * step * step);
+                const double ratio_step = detail::math::exp(-step * step);
                 for (auto index = first; index <= last; ++index) {
                     density_[index] += term;
                     term *= ratio;
@@ -492,7 +485,7 @@ public:
             const double position = bounded * (density_.size() - 1);
             const auto index = std::min(static_cast<std::size_t>(position), density_.size() - 2);
             const double fraction = position - index;
-            return std::log(density_[index] + fraction * (density_[index + 1] - density_[index]));
+            return detail::math::log(density_[index] + fraction * (density_[index + 1] - density_[index]));
         }
         return mixture_log_density([&](const Component& component) {
             const double standardized = (bounded - component.mean) / component.sigma;
@@ -504,14 +497,37 @@ public:
     double log_bin_mass(double lower, double upper) const {
         const double bounded_lower = std::clamp(lower, 0.0, 1.0);
         const double bounded_upper = std::clamp(upper, bounded_lower, 1.0);
+        for (std::size_t index = 0; index < bin_cache_count_; ++index) {
+            const auto& cached = bin_cache_[index];
+            if (cached.lower == bounded_lower && cached.upper == bounded_upper)
+                return cached.log_mass;
+        }
+        const double result = calculate_bin_mass(bounded_lower, bounded_upper);
+        if (bin_cache_count_ < bin_cache_.size())
+            bin_cache_[bin_cache_count_++] = {bounded_lower, bounded_upper, result};
+        return result;
+    }
+
+    double calculate_bin_mass(double bounded_lower, double bounded_upper) const {
+        if (!(bounded_lower < bounded_upper))
+            return -std::numeric_limits<double>::infinity();
         if (fast_density_ && bounded_upper - bounded_lower <= 1e-4 &&
             bounded_upper > bounded_lower) {
             return log_density((bounded_lower + bounded_upper) * 0.5) +
-                   std::log(bounded_upper - bounded_lower);
+                   detail::math::log(bounded_upper - bounded_lower);
         }
+        const double log_width = detail::math::log(bounded_upper - bounded_lower);
+        const auto& prior = components_.back();
+        const double negligible = prior.log_weight - kLogSqrtTwoPi - prior.log_normalizer -
+                                  0.125 + log_width - 129.0;
         return mixture_log_density([&](const Component& component) {
             const double standardized_lower = (bounded_lower - component.mean) / component.sigma;
             const double standardized_upper = (bounded_upper - component.mean) / component.sigma;
+            const double distance = std::max({standardized_lower, -standardized_upper, 0.0});
+            const double bound = component.log_weight + log_width - component.log_sigma -
+                kLogSqrtTwoPi - 0.5 * distance * distance - component.log_normalizer;
+            if (bound < negligible)
+                return -std::numeric_limits<double>::infinity();
             return log_normal_interval(standardized_lower, standardized_upper) -
                    component.log_normalizer;
         });
@@ -531,7 +547,7 @@ public:
         for (const double mean : values) {
             const double normalizer = log_normal_interval(-mean / sigma, (1.0 - mean) / sigma);
             result.push_back({mean, sigma,
-                              std::exp(-kLogSqrtTwoPi - std::log(sigma) - normalizer)});
+                              detail::math::exp(-kLogSqrtTwoPi - detail::math::log(sigma) - normalizer)});
         }
         return result;
     }
@@ -539,12 +555,12 @@ public:
     double pending_log_density(double value, const std::vector<PendingComponent>& pending) const {
         if (pending.empty())
             return log_density(value);
-        double density = std::exp(log_density(value)) * total_weight_;
+        double density = detail::math::exp(log_density(value)) * total_weight_;
         for (const auto& component : pending) {
             const double standardized = (value - component.mean) / component.sigma;
-            density += component.amplitude * std::exp(-0.5 * standardized * standardized);
+            density += component.amplitude * detail::math::exp(-0.5 * standardized * standardized);
         }
-        return std::log(density / (total_weight_ + pending.size()));
+        return detail::math::log(density / (total_weight_ + pending.size()));
     }
 
     double pending_log_bin_mass(double lower, double upper,
@@ -552,15 +568,15 @@ public:
         if (pending.empty())
             return log_bin_mass(lower, upper);
         if (fast_density_ && upper - lower <= 1e-4 && upper > lower)
-            return pending_log_density((lower + upper) * 0.5, pending) + std::log(upper - lower);
-        double mass = std::exp(log_bin_mass(lower, upper)) * total_weight_;
+            return pending_log_density((lower + upper) * 0.5, pending) + detail::math::log(upper - lower);
+        double mass = detail::math::exp(log_bin_mass(lower, upper)) * total_weight_;
         for (const auto& component : pending) {
-            const double normalizer = std::exp(log_normal_interval(
+            const double normalizer = detail::math::exp(log_normal_interval(
                 -component.mean / component.sigma, (1.0 - component.mean) / component.sigma));
-            mass += std::exp(log_normal_interval((lower - component.mean) / component.sigma,
+            mass += detail::math::exp(log_normal_interval((lower - component.mean) / component.sigma,
                 (upper - component.mean) / component.sigma)) / normalizer;
         }
-        return std::log(mass / (total_weight_ + pending.size()));
+        return detail::math::log(mass / (total_weight_ + pending.size()));
     }
 
 private:
@@ -595,9 +611,11 @@ private:
 
         double scaled_sum = 0.0;
         for (const double term : terms_) {
-            scaled_sum += std::exp(term - largest);
+            const double difference = term - largest;
+            if (difference >= -128.0)
+                scaled_sum += detail::math::exp(difference);
         }
-        return largest + std::log(scaled_sum);
+        return largest + detail::math::log(scaled_sum);
     }
 
     void add_component(double mean, double sigma, double weight) {
@@ -610,6 +628,13 @@ private:
     }
 
     std::vector<Component> components_;
+    struct BinMassCacheEntry {
+        double lower;
+        double upper;
+        double log_mass;
+    };
+    mutable std::array<BinMassCacheEntry, 64> bin_cache_{};
+    mutable std::size_t bin_cache_count_ = 0;
     std::array<double, 513> density_{};
     // Shared model scratch is accessed only while the owning sampler holds Impl::mutex_.
     mutable std::vector<double> terms_;
@@ -669,7 +694,7 @@ public:
     }
 
     double log_density(std::size_t value) const {
-        return std::log(masses_.at(value) / total_mass_);
+        return detail::math::log(masses_.at(value) / total_mass_);
     }
 
     double pending_log_density(std::size_t value, const std::vector<double>& pending) const {
@@ -679,7 +704,7 @@ public:
         const double alpha = 1.0 / (mixture_weight_ + pending.size());
         for (const double observed : pending)
             mass += (alpha + (observed == value ? 1.0 : 0.0)) / (1.0 + alpha * masses_.size());
-        return std::log(mass / (mixture_weight_ + pending.size()));
+        return detail::math::log(mass / (mixture_weight_ + pending.size()));
     }
 
 private:
@@ -802,8 +827,8 @@ public:
         // Logarithmic coordinates are represented relative to a positive
         // reference instead of as two large absolute logarithms.  This avoids
         // losing a narrow multiplicative interval to cancellation.
-        long double reference;
-        long double span;
+        double reference;
+        double span;
     };
 
     struct CompletedObservation {
@@ -1523,11 +1548,11 @@ private:
         }
         // gamma_fraction is a double-valued public setting, so evaluate the
         // product in that same domain.  Promoting its already-rounded value to
-        // a wider long double first makes ceil(0.10 * 10) platform-dependent:
-        // it is 1 on targets where long double == double and can become 2 on
+        // a wider double first makes ceil(0.10 * 10) platform-dependent:
+        // it is 1 on targets where double == double and can become 2 on
         // targets with extended precision.
         const double requested =
-            std::ceil(config.gamma_fraction * static_cast<double>(completed));
+            detail::math::ceil(config.gamma_fraction * static_cast<double>(completed));
         const std::uint64_t requested_u64 =
             requested >= static_cast<double>(std::numeric_limits<std::uint64_t>::max())
                 ? std::numeric_limits<std::uint64_t>::max()
@@ -1558,7 +1583,7 @@ private:
         }
 
         // Scale before interpolation so this remains finite even on platforms
-        // where long double has the same exponent range as double and
+        // where double has the same exponent range as double and
         // high-low would overflow.
         const double scale = std::max(std::abs(dimension.low()), std::abs(dimension.high()));
         const double scaled_low = dimension.low() / scale;
@@ -1590,47 +1615,44 @@ private:
         return std::clamp((scaled_value - scaled_low) / (scaled_high - scaled_low), 0.0, 1.0);
     }
 
-    static long double stable_relative_log(long double value, long double reference) {
-        const long double relative = (value - reference) / reference;
+    static double stable_relative_log(double value, double reference) {
+        const double relative = (value - reference) / reference;
         if (std::isfinite(relative)) {
-            return std::log1p(relative);
+            return detail::math::log1p(relative);
         }
-        // A ratio can overflow when long double has the same range as double.
-        // In that case the operands are far apart, so subtracting their logs
-        // does not suffer the narrow-interval cancellation avoided above.
-        return std::log(value) - std::log(reference);
+        return detail::math::log(value) - detail::math::log(reference);
     }
 
     static RelativeLogDomain log_integer_domain(const IntegerDimension& dimension) {
-        const long double reference = static_cast<long double>(dimension.low()) - 0.5L;
-        const long double count = static_cast<long double>(integer_count(dimension));
-        return {reference, std::log1p(count / reference)};
+        const double reference = static_cast<double>(dimension.low()) - 0.5;
+        const double count = static_cast<double>(integer_count(dimension));
+        return {reference, detail::math::log1p(count / reference)};
     }
 
     static RelativeLogDomain log_real_domain(const RealDimension& dimension) {
-        const long double reference = static_cast<long double>(dimension.low());
+        const double reference = static_cast<double>(dimension.low());
         return {reference,
-                stable_relative_log(static_cast<long double>(dimension.high()), reference)};
+                stable_relative_log(static_cast<double>(dimension.high()), reference)};
     }
 
     static void validate_log_domain(const RelativeLogDomain& domain, const std::string& name) {
-        if (!std::isfinite(domain.reference) || domain.reference <= 0.0L ||
-            !std::isfinite(domain.span) || domain.span <= 0.0L) {
+        if (!std::isfinite(domain.reference) || domain.reference <= 0.0 ||
+            !std::isfinite(domain.span) || domain.span <= 0.0) {
             throw std::invalid_argument("TPE log transform is not representable for dimension: " +
                                         name);
         }
     }
 
-    static double normalize_log_offset(long double offset, const RelativeLogDomain& domain) {
-        const long double normalized = std::log1p(offset / domain.reference) / domain.span;
+    static double normalize_log_offset(double offset, const RelativeLogDomain& domain) {
+        const double normalized = detail::math::log1p(offset / domain.reference) / domain.span;
         if (!std::isfinite(normalized)) {
             throw std::logic_error("TPE produced a non-finite relative log coordinate");
         }
         return std::clamp(static_cast<double>(normalized), 0.0, 1.0);
     }
 
-    static double normalize_log_value(long double value, const RelativeLogDomain& domain) {
-        const long double normalized = stable_relative_log(value, domain.reference) / domain.span;
+    static double normalize_log_value(double value, const RelativeLogDomain& domain) {
+        const double normalized = stable_relative_log(value, domain.reference) / domain.span;
         if (!std::isfinite(normalized)) {
             throw std::logic_error("TPE produced a non-finite log coordinate");
         }
@@ -1645,20 +1667,20 @@ private:
             return;
         }
 
-        auto valid_bin = [&](long double lower_offset, long double center_offset,
-                             long double upper_offset) {
+        auto valid_bin = [&](double lower_offset, double center_offset,
+                             double upper_offset) {
             const double lower = normalize_log_offset(lower_offset, domain);
             const double center = normalize_log_offset(center_offset, domain);
             const double upper = normalize_log_offset(upper_offset, domain);
             return lower < center && center < upper;
         };
 
-        const long double count_ld = static_cast<long double>(count);
+        const double count_ld = static_cast<double>(count);
         const std::uint64_t middle = count / 2;
-        const long double middle_ld = static_cast<long double>(middle);
-        if (!valid_bin(0.0L, 0.5L, 1.0L) ||
-            !valid_bin(middle_ld, middle_ld + 0.5L, middle_ld + 1.0L) ||
-            !valid_bin(count_ld - 1.0L, count_ld - 0.5L, count_ld)) {
+        const double middle_ld = static_cast<double>(middle);
+        if (!valid_bin(0.0, 0.5, 1.0) ||
+            !valid_bin(middle_ld, middle_ld + 0.5, middle_ld + 1.0) ||
+            !valid_bin(count_ld - 1.0, count_ld - 0.5, count_ld)) {
             throw std::invalid_argument(
                 "TPE log integer transform cannot represent every discrete bin: " +
                 dimension.name());
@@ -1671,46 +1693,48 @@ private:
     }
 
     static std::int64_t decode_log_integer(const IntegerDimension& dimension, double normalized) {
-        const long double unit = std::clamp(static_cast<long double>(normalized), 0.0L, 1.0L);
-        if (unit <= 0.0L) {
+        const double unit = std::clamp(static_cast<double>(normalized), 0.0, 1.0);
+        if (unit <= 0.0) {
             return dimension.low();
         }
-        if (unit >= 1.0L) {
+        if (unit >= 1.0) {
             return dimension.high();
         }
 
         const RelativeLogDomain domain = log_integer_domain(dimension);
-        const long double offset = domain.reference * std::expm1(domain.span * unit);
+        const double offset = domain.reference * detail::math::expm1(domain.span * unit);
         if (!std::isfinite(offset)) {
             throw std::logic_error("TPE produced a non-finite log-integer offset");
         }
         const std::uint64_t count = integer_count(dimension);
-        if (offset <= 0.0L) {
+        if (offset <= 0.0) {
             return dimension.low();
         }
-        if (offset >= static_cast<long double>(count)) {
+        if (offset >= static_cast<double>(count)) {
             return dimension.high();
         }
-        const auto ordinal = static_cast<std::uint64_t>(std::floor(offset));
+        const auto ordinal = static_cast<std::uint64_t>(detail::math::floor(offset));
         return integer_at(dimension, std::min(ordinal, count - 1));
     }
 
     static double decode_log_real(const RealDimension& dimension, double normalized) {
-        const long double unit = std::clamp(static_cast<long double>(normalized), 0.0L, 1.0L);
-        if (unit <= 0.0L) {
+        const double unit = std::clamp(static_cast<double>(normalized), 0.0, 1.0);
+        if (unit <= 0.0) {
             return dimension.low();
         }
-        if (unit >= 1.0L) {
+        if (unit >= 1.0) {
             return dimension.high();
         }
 
         const RelativeLogDomain domain = log_real_domain(dimension);
-        const long double delta = domain.span * unit;
-        long double value;
-        if (delta <= 0.5L) {
-            value = domain.reference + domain.reference * std::expm1(delta);
+        const double delta = domain.span * unit;
+        double value;
+        if (delta <= 0.5) {
+            value = domain.reference + domain.reference * detail::math::expm1(delta);
         } else {
-            value = std::exp(std::log(domain.reference) + delta);
+            const double exponent = detail::math::log(domain.reference) + delta;
+            value = exponent >= detail::math::log(std::numeric_limits<double>::max()) ?
+                dimension.high() : detail::math::exp(exponent);
         }
         const double decoded = static_cast<double>(value);
         if (!std::isfinite(decoded)) {
@@ -1729,14 +1753,14 @@ private:
                     const auto integer = std::get<std::int64_t>(value);
                     if (encoding.kind == EncodingKind::LogInteger) {
                         const std::uint64_t ordinal = integer_ordinal(item, integer);
-                        return normalize_log_offset(static_cast<long double>(ordinal) + 0.5L,
+                        return normalize_log_offset(static_cast<double>(ordinal) + 0.5,
                                                     log_integer_domain(item));
                     }
                     return normalized_ordinal(integer_ordinal(item, integer), encoding.count);
                 } else if constexpr (std::is_same_v<T, RealDimension>) {
                     const double real = std::get<double>(value);
                     if (encoding.kind == EncodingKind::LogContinuousReal) {
-                        return normalize_log_value(static_cast<long double>(real),
+                        return normalize_log_value(static_cast<double>(real),
                                                    log_real_domain(item));
                     }
                     if (encoding.kind == EncodingKind::ContinuousReal) {
@@ -1788,10 +1812,10 @@ private:
                     if (encoding.kind == EncodingKind::LogInteger) {
                         const auto domain = log_integer_domain(item);
                         const std::uint64_t ordinal = integer_ordinal(item, integer);
-                        const long double lower = static_cast<long double>(ordinal);
+                        const double lower = static_cast<double>(ordinal);
                         return {
                             normalize_log_offset(lower, domain),
-                            normalize_log_offset(lower + 1.0L, domain),
+                            normalize_log_offset(lower + 1.0, domain),
                         };
                     }
                     return normalized_bin(integer_ordinal(item, integer), encoding.count);
@@ -1923,6 +1947,10 @@ private:
     }
 };
 
+double detail::tpe_log_normal_interval(double lower, double upper) {
+    return log_normal_interval(lower, upper);
+}
+
 TpeSampler::TpeSampler(SearchSpace space,
                        std::uint64_t seed,
                        ObjectiveDirection direction,
@@ -1974,6 +2002,7 @@ std::optional<Candidate> TpeSampler::next() {
 }
 
 std::optional<Candidate> TpeSampler::ask() {
+    detail::require_portable_environment();
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     const std::uint64_t generated = impl_->generated_.load(std::memory_order_relaxed);
     const std::uint64_t candidate_id = impl_->next_id_;

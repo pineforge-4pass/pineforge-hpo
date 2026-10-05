@@ -22,12 +22,13 @@ from .transpile import (
     TranspileDiagnostic,
     TranspileFailure,
     codegen_identity,
+    legacy_input_kind_version,
     transpile_source,
 )
 
 CACHE_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
-INPUT_METADATA_REVISION = 1
+INPUT_METADATA_REVISION = 2
 CANONICAL_COMPILE_FLAGS = (
     "-std=c++17",
     "-O2",
@@ -368,6 +369,15 @@ class ArtifactBuilder:
                     str(error),
                     diagnostics=transpile_result.diagnostics,
                 ) from error
+
+            if transpile_result.input_kind_schema == 1 and legacy_input_kind_version(
+                request_identity["codegen"]["version"]
+            ):
+                raise ArtifactBuildError(
+                    "transpile",
+                    "input_kind_schema: 1 contradicts recorded codegen version; "
+                    "codegen >= 1.1.0 is required",
+                )
 
             generated_cpp_sha256 = hashlib.sha256(
                 generated_cpp.encode("utf-8")

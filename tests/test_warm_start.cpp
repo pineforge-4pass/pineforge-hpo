@@ -181,8 +181,7 @@ void state_mismatch_and_transition() {
 }
 
 std::string serial_golden_identity() {
-    return "double:" + std::to_string(std::numeric_limits<double>::digits) +
-           ";long_double:" + std::to_string(std::numeric_limits<long double>::digits);
+    return "portable-tpe-v2;binary64:53";
 }
 
 void check_serial_golden(const std::string& identity, const std::string& expected,
@@ -310,15 +309,15 @@ void scoped_numeric_identity_validation() {
                 return dimension.log();
             return false;
         }, space.dimensions().front());
-        require((identity != changed) == logarithmic,
-                "long-double log1p shim affected the wrong search-space identity");
+        (void)logarithmic;
+        require(identity == changed,
+                "host long-double log1p changed the portable identity");
         pfh::TpeSampler child(space, 17);
-        require(child.warm_start(std::vector<pfh::WarmStartObservation>{}, 1, state) != logarithmic,
-                "scoped log1p identity allowed/refused the wrong checkpoint restore");
+        require(child.warm_start(std::vector<pfh::WarmStartObservation>{}, 1, state),
+                "portable checkpoint did not restore across changed host log1p");
     }
     pfh::detail::set_tpe_long_log1p_probe(nullptr);
-    std::cout << "PASS scoped libm: linear/int/categorical restore across changed log1p; "
-                 "log real/int rebuild\n";
+    std::cout << "PASS portable math: all spaces restore across changed host log1p\n";
 }
 
 void eight_worker_equivalence() {
