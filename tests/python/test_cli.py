@@ -111,6 +111,31 @@ class CliTests(unittest.TestCase):
             ],
         )
 
+    def test_ambiguous_string_input_metadata_fails_closed(self) -> None:
+        study = load_study_spec(self.study_path)
+        inputs = [
+            {"title": "Length", "type": "string"},
+            {"title": "Threshold", "type": "float"},
+            {"title": "Enabled", "type": "bool"},
+        ]
+        for version in (None, "1.0.0", "invalid"):
+            with self.assertRaisesRegex(CliError, "cannot rule out input.symbol.*D7"):
+                _validate_manifest_inputs(study, inputs, codegen_version=version)
+        document = json.loads(self.study_path.read_text())
+        document["strategies"][0]["search_space"]["Length"] = {
+            "kind": "categorical",
+            "choices": ["fast", "slow"],
+        }
+        self.study_path.write_text(json.dumps(document))
+        study = load_study_spec(self.study_path)
+        _validate_manifest_inputs(study, inputs, codegen_version="1.2.0")
+        inputs[0]["kind"] = "string"
+        _validate_manifest_inputs(study, inputs)
+        for kind in ("unknown", [], {}):
+            inputs[0]["kind"] = kind
+            with self.assertRaisesRegex(CliError, "cannot rule out input.symbol.*D7"):
+                _validate_manifest_inputs(study, inputs, codegen_version="1.2.0")
+
     def test_version_comes_from_package_metadata(self) -> None:
         output = io.StringIO()
         with (

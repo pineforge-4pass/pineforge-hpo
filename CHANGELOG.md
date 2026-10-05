@@ -11,11 +11,20 @@
   JSONL and v2 block headers refuse changed/added/removed feeds. Feedless v2 bytes remain
   unchanged; feedless result content remains unchanged except the release version marker.
 - Refuse search dimensions naming `input.symbol` (D7); fixed symbol inputs remain supported.
-  Add BTCUSDT 4h / BINANCE:ETHUSDT 240 + 1D compiled-strategy C-ABI equality tests.
-- Exclude compilation-flags hashes from independent serial-golden lookup keys and expose
-  unavailable goldens as CTest skips. Matching checkpoints with an unavailable flags hash
+  Require engine/codegen >= 1.1.0, pin both optional submodules to v1.2.0, and fail closed
+  for ambiguous string-input metadata. Add real-artifact D7 refusal and BTCUSDT 4h /
+  BINANCE:ETHUSDT 240 + 1D compiled-strategy C-ABI equality gates to Linux CI.
+- Key independent serial goldens by double/long-double precision and require a matching
+  golden in both CI jobs; print the full identity. Non-CI unavailable goldens remain visible
+  CTest skips. Matching checkpoints with an unavailable flags hash
   always rebuild. Probe 4,096 inputs per libm function, cached once per process with
   floating-point environment/errno preserved. Hash custom CMake configuration flags too.
+- Scope runtime-libm identity to functions used by the configured search space, excluding
+  long-double log1p for non-log dimensions. Expose `numeric_build_identity` and compared
+  `parent_numeric_build_identity` in TPE results and warm provenance.
+- Tolerate unreadable optional native input manifests; support large required manifests
+  with clear file diagnostics. Accept `--symbol-feeds` in `warm-encode`/`space-info`,
+  clarify malformed warm headers, and align common feed errors with the engine harness.
 - Repair the no-replay manual build recipe and clarify that other checkpoint versions rebuild.
 
 Feed-extended warm-v2 headers use flags bit 0 and are refused by readers before 0.8.0.

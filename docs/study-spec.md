@@ -160,6 +160,13 @@ strategy receives identical immutable facts/bars/closes before running. Index/CS
 errors use `--symbol-feeds:` and identify the symbol/timeframe before terminal trial output.
 Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted).
 `input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
+Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.2.0).
+Ambiguous legacy string metadata is refused rather than treated as ordinary strings.
+Direct native users need the adjacent `manifest.json` for string-valued search inputs;
+unreadable optional manifests do not change numeric-only native runs. Required manifest
+errors name the file; manifests up to 256 MiB are supported.
+Native `warm-encode` and `space-info` accept `--symbol-feeds <index.json>` as an override
+of the work file's path/inline index, using the same relative CSV resolution rules.
 
 Results expose `applied_runtime.symbol_feeds` and `runtime_sha256`; terminal rows retain
 the record in `space.symbol_feeds`. Its canonicalization is `pf-symbol-feed-barc-close-le-v1`;
@@ -862,6 +869,22 @@ the exact suggestion RNG, reservoir RNG, finite fallback cursor, retained observ
 and bounded cache membership when configuration, seed, complete typed history and
 numerical-build identity match. Compiler/stdlib versions, target architecture and
 floating-point configuration/rounding are enforced; foreign builds reconstruct.
+Since 0.8.0 the runtime-libm fingerprint includes only the double/long-double functions
+used by the configured space, with 4,096 inputs per function cached once per process.
+In particular, long-double `log1p` is included for log-scale real/integer dimensions but
+not for linear/integer/categorical spaces. An Intel/AMD difference in that function alone
+therefore preserves non-log checkpoint compatibility; other numeric-build components
+still must match. Older identities and other checkpoint versions rebuild without replay.
+
+TPE result JSON records `numeric_build_identity` (the child computed identity) and
+`parent_numeric_build_identity` (the identity extracted from the checkpoint actually
+compared). Warm runs repeat both fields in `warm_start` provenance. Parent identity is
+null for a fresh run, history without a checkpoint, an unknown checkpoint version, or
+lag-one continuation (which deliberately ignores checkpoints). It is recorded even when
+a valid foreign checkpoint rebuilds; it is not copied from untrusted parent JSON fields.
+The app may assert that `warm_start_model == "restored_sampler_state"` implies a non-null
+parent identity exactly equal to the child identity. Grid/random results omit these fields.
+
 The checkpoint is checksummed and contains a typed-history fingerprint. Full-history
 models rebuild from the same chronological rows; bounded caches rebuild from their
 recorded fitting IDs. Matching future lag-zero ask/tell schedules reproduce the

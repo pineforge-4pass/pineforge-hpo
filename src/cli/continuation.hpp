@@ -293,8 +293,19 @@ inline std::string symbol_feeds_identity(const Json* record) {
     if (!record)
         return {};
     auto normalized = *record;
-    for (auto& symbol : normalized.members.at("symbols").members) {
-        auto& facts = symbol.second.members.at("facts");
+    const auto* symbols = normalized.kind == Json::Kind::Object ? normalized.find("symbols") : nullptr;
+    if (!symbols || symbols->kind != Json::Kind::Object)
+        throw std::runtime_error("invalid symbol feeds header record: symbols must be an object");
+    for (auto& symbol : normalized.members.find("symbols")->second.members) {
+        const auto* facts_record = symbol.second.kind == Json::Kind::Object ?
+            symbol.second.find("facts") : nullptr;
+        const auto* feeds_record = symbol.second.kind == Json::Kind::Object ?
+            symbol.second.find("feeds") : nullptr;
+        if (!facts_record || facts_record->kind != Json::Kind::Object ||
+            !feeds_record || feeds_record->kind != Json::Kind::Object)
+            throw std::runtime_error("invalid symbol feeds header record for " + symbol.first +
+                                     ": facts and feeds must be objects");
+        auto& facts = symbol.second.members.find("facts")->second;
         const auto mintick = facts.members.find("mintick");
         if (mintick != facts.members.end())
             mintick->second = Json::string(real_bits(symbol_mintick(mintick->second)));

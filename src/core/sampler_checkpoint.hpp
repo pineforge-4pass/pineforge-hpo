@@ -3,6 +3,9 @@
 #include "sha256.hpp"
 
 #include <algorithm>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 
@@ -25,6 +28,17 @@ inline std::string_view sampler_checkpoint_payload(std::string_view state) {
 inline bool current_sampler_checkpoint(std::string_view state) {
     sampler_checkpoint_payload(state);
     return state.substr(0, 8) == "PFHTPE2\n";
+}
+
+inline std::string sampler_checkpoint_numeric_identity(const std::string& state) {
+    if (state.empty() || !current_sampler_checkpoint(state))
+        return {};
+    std::istringstream input(std::string(sampler_checkpoint_payload(state)));
+    input.imbue(std::locale::classic());
+    std::string signature, identity;
+    if (!(input >> std::quoted(signature) >> std::quoted(identity)))
+        throw std::invalid_argument("invalid TPE sampler-state build identity");
+    return identity;
 }
 
 }

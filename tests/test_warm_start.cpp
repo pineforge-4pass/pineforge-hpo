@@ -181,11 +181,8 @@ void state_mismatch_and_transition() {
 }
 
 std::string serial_golden_identity() {
-    auto identity = pfh::detail::tpe_numeric_identity();
-    const auto begin = identity.find(";flags_sha256:");
-    if (begin != std::string::npos)
-        identity.erase(begin, identity.find(';', begin + 1) - begin);
-    return pfh::detail::sha256(identity);
+    return "double:" + std::to_string(std::numeric_limits<double>::digits) +
+           ";long_double:" + std::to_string(std::numeric_limits<long double>::digits);
 }
 
 bool parallel_checkpoint_equivalence() {
@@ -239,6 +236,8 @@ bool parallel_checkpoint_equivalence() {
         pending.push_back(actual);
     }
     const auto identity = serial_golden_identity();
+    std::cout << "Serial golden numeric identity: "
+              << pfh::detail::tpe_numeric_identity(space) << "; golden key: " << identity << '\n';
     std::ifstream goldens(PFH_TPE_SERIAL_GOLDENS);
     require(static_cast<bool>(goldens), "serial golden identity table missing");
     std::string known_identity, golden_hash;
@@ -260,7 +259,45 @@ bool parallel_checkpoint_equivalence() {
         parent.tell(candidate.id, static_cast<double>(candidate.id % 101));
         child.tell(candidate.id, static_cast<double>(candidate.id % 101));
     }
+    require(matched || !std::getenv("PFH_REQUIRE_SERIAL_GOLDEN"),
+            "independent serial golden is required for this CI build");
     return matched;
+}
+
+long double changed_log1p(long double value) {
+    return std::nextafter(std::log1p(value), std::numeric_limits<long double>::infinity());
+}
+
+void scoped_numeric_identity_validation() {
+    for (const pfh::SearchSpace space : {
+        pfh::SearchSpace({pfh::RealDimension("value", 0.0, 1.0)}),
+        pfh::SearchSpace({pfh::IntegerDimension("value", 1, 99)}),
+        pfh::SearchSpace({pfh::CategoricalDimension("value", {std::string("a"),
+                                                           std::string("b")})}),
+        pfh::SearchSpace({pfh::RealDimension("value", 0.1, 99.0, std::nullopt, true)}),
+        pfh::SearchSpace({pfh::IntegerDimension("value", 1, 99, 1, true)})}) {
+        pfh::detail::set_tpe_long_log1p_probe(nullptr);
+        const auto identity = pfh::detail::tpe_numeric_identity(space);
+        pfh::TpeSampler parent(space, 17);
+        const auto state = parent.sampler_state();
+        pfh::detail::set_tpe_long_log1p_probe(changed_log1p);
+        const auto changed = pfh::detail::tpe_numeric_identity(space);
+        const bool logarithmic = std::visit([](const auto& dimension) {
+            using Item = std::decay_t<decltype(dimension)>;
+            if constexpr (std::is_same_v<Item, pfh::RealDimension> ||
+                          std::is_same_v<Item, pfh::IntegerDimension>)
+                return dimension.log();
+            return false;
+        }, space.dimensions().front());
+        require((identity != changed) == logarithmic,
+                "long-double log1p shim affected the wrong search-space identity");
+        pfh::TpeSampler child(space, 17);
+        require(child.warm_start(std::vector<pfh::WarmStartObservation>{}, 1, state) != logarithmic,
+                "scoped log1p identity allowed/refused the wrong checkpoint restore");
+    }
+    pfh::detail::set_tpe_long_log1p_probe(nullptr);
+    std::cout << "PASS scoped libm: linear/int/categorical restore across changed log1p; "
+                 "log real/int rebuild\n";
 }
 
 void eight_worker_equivalence() {
@@ -480,6 +517,7 @@ int main(int argc, char** argv) {
             checkpoint_equivalence(batch, true, pfh::CandidatePolicy::SamplerDefault, 201, 7, 300);
         checkpoint_validation();
         numeric_identity_validation();
+        scoped_numeric_identity_validation();
         state_mismatch_and_transition();
         parallel_checkpoint_equivalence();
         eight_worker_equivalence();

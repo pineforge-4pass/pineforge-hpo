@@ -68,23 +68,24 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-The gitlinks pin the releases this HPO revision is tested with: engine v1.0.0 (`5718c5d`,
-C ABI 4) and codegen v1.0.0 (`5bf595b`). With them, all eight `ctest` suites and the
-nine-trial example below pass (checked on Linux arm64 and macOS arm64, 2026-09-30).
+The gitlinks pin the releases this HPO revision targets: engine v1.2.0 (`792a6b5`,
+C ABI 4) and codegen v1.2.0 (`3954537`). Linux CI gates the nine-trial example,
+real multi-symbol C-ABI equality and real-artifact D7 refusal; both native CI runners
+require the independently pinned serial golden rather than silently skipping it.
 From 1.0.0 on, codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may
 still compile, but equal `PF_ABI_VERSION` values do not guarantee a compatible C++ source
-layout or the same behavior. The optional `transpile` extra admits any `pineforge-codegen`
-1.x, so install the release that matches your engine (`pineforge-codegen==1.0.0` for the
+layout or the same behavior. The optional `transpile` extra requires `pineforge-codegen`
+>= 1.1.0 and < 2, so install the release that matches your engine (`pineforge-codegen==1.2.0` for the
 gitlinks). The native adapter reads the equity statistics by their engine 1.0 names, so it
 needs engine 1.x headers. Regenerate a precompiled plugin referenced from a StudySpec with
-codegen 1.0.0 and rebuild it against engine v1.0.0: plugins from engine v0.13.x or earlier
+codegen 1.2.0 and rebuild it against engine v1.2.0: plugins from engine v0.13.x or earlier
 (ABI 3 or lower) are refused with an ABI mismatch, while plugins from 1.0 prereleases or
 development builds also report ABI 4 and load without an error although they do not pair
-with v1.0.0. C++ code that reads
+with the pinned releases. C++ code that reads
 `ReportSnapshot::metrics.equity.sharpe_tv` or `sortino_tv` must use `sharpe_monthly` or
 `sortino_monthly`.
 
-Compared with the previous gitlinks (engine `7bff706`, codegen `cefeec8`), 3 of the 9
+When upgrading to v1.0.0 from the old gitlinks (engine `7bff706`, codegen `cefeec8`), 3 of the 9
 example trials report different metrics: since v0.13.0 the engine reports a position still
 open after the final bar as a range-end close, which counts as a trade. The best trial is
 unchanged.
@@ -195,7 +196,7 @@ For example, append these controls to a native `run` command:
 Numeric symbol values must be finite and positive; timezone/session values must
 be strings without embedded NULs. Empty strings and omitted fields are no-ops;
 other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
-The four setters mirror the pinned engine 1.0.0 release harness.
+The four setters mirror the pinned engine 1.2.0 release harness.
 
 ### Fixed other-symbol feeds (0.8.0)
 
@@ -232,12 +233,23 @@ sufficient history; there is no network fetching. Initialization validates/hashe
 then every fresh trial installs facts/bars/closes through the public C ABI with no file I/O.
 Index/CSV/setter refusal is exit 1 with `--symbol-feeds:`, before any terminal trial output.
 **`input.symbol` search dimensions are refused (D7)**; such inputs may be fixed only.
-Direct native artifact users must keep the adjacent codegen `manifest.json` for input-kind
-validation; the Python frontend validates it automatically.
+This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.2.0).
+Direct native artifact users must keep the adjacent codegen `manifest.json` when searching
+string-valued inputs; ambiguous legacy string metadata fails closed. The Python frontend
+validates generated/precompiled metadata automatically. An unreadable optional manifest
+does not break a numeric-only native study.
 
 Results record `applied_runtime.symbol_feeds` and `runtime_sha256`. Warm JSON/JSONL/v2
 refuse changed/added/removed feeds or facts; relocating identical files is safe. Empty/omitted
-feeds preserve prior result content and warm-v2 bytes, except the release-version marker.
+feeds preserve prior grid/random result content and warm-v2 bytes, except the release-version
+marker. TPE additionally exposes `numeric_build_identity` and `parent_numeric_build_identity`
+(also in `warm_start` provenance); the parent is null when no compatible-version checkpoint
+was compared. `restored_sampler_state` requires equal, non-null parent/child identities.
+The runtime-libm fingerprint covers only functions used by the configured space: a
+long-double `log1p` difference cannot block linear/integer/categorical continuation, but
+does block log-scale checkpoint restoration. Other compiler/flags/platform checks remain.
+Native `space-info` and `warm-encode` also accept `--symbol-feeds <index.json>` to override
+the work file's feed index.
 See [StudySpec](docs/study-spec.md) for validation and header details.
 
 The real compiled-Pine equality gate compares three candidates' complete C-ABI metrics
@@ -266,7 +278,7 @@ range such as `1e999` or `1e-400`) is an initialization error with the message
 `invalid JSON at byte N`, which does not name the key).
 
 Applying the grid needs the plugin to export `strategy_set_syminfo_metadata`, which the
-pinned engine v1.0.0 and v1.0.1 both do (declared in `pineforge.h`; the engine honours the
+pinned engine v1.2.0 does (declared in `pineforge.h`; the engine honours the
 `qty_step` key). A plugin without it keeps working for every syminfo that has no
 `mincontract`; with one, each trial fails with a `trial_error` that names the key and the
 run exits 2 because no trial is feasible, instead of running without the grid.

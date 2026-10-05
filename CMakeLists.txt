@@ -43,6 +43,7 @@ option(PINEFORGE_HPO_BUILD_NATIVE_CLI
     "Build the native study runner" ${PINEFORGE_HPO_IS_TOP_LEVEL})
 option(PINEFORGE_HPO_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" OFF)
 option(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER "Build with ThreadSanitizer" OFF)
+option(PINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN "Fail instead of skipping unknown serial goldens" OFF)
 if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
 endif()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import ctypes
 import hashlib
 import importlib.util
@@ -184,6 +185,65 @@ if eth4 < threshold or eth4 <= ethD
         native=args.native,
     )
     command += ["--syminfo", str(syminfo)]
+    manifest = json.loads(Path(artifact["manifest"]).read_text())
+    require(
+        any(
+            item["title"] == "Other" and item.get("kind") == "symbol"
+            for item in manifest["inputs"]
+        ),
+        "real codegen artifact does not identify input.symbol",
+    )
+    symbol_search = copy.deepcopy(document)
+    symbol_search["strategies"][0]["fixed_inputs"] = {}
+    symbol_search["strategies"][0]["search_space"]["Other"] = {
+        "kind": "categorical",
+        "choices": ["BINANCE:ETHUSDT", "BINANCE:BTCUSDT"],
+    }
+    refused_spec = directory / "symbol-search.json"
+    refused_spec.write_text(json.dumps(symbol_search))
+    from pineforge_hpo.cli import CliError
+
+    try:
+        prepare_run(
+            refused_spec,
+            ROOT / "external/pineforge-engine",
+            directory / "cache",
+            native=args.native,
+        )
+    except CliError as error:
+        require("input.symbol" in str(error) and "D7" in str(error), str(error))
+    else:
+        raise AssertionError(
+            "real input.symbol artifact accepted as a search dimension"
+        )
+    refused_trials = directory / "d7-trials.jsonl"
+    refused = subprocess.run(
+        command
+        + [
+            "--categorical-choice",
+            "Other",
+            "BINANCE:ETHUSDT",
+            "--categorical-choice",
+            "Other",
+            "BINANCE:BTCUSDT",
+            "--trials-file",
+            str(refused_trials),
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    require(
+        refused.returncode == 1
+        and b"input.symbol" in refused.stderr
+        and b"D7" in refused.stderr
+        and not refused.stdout
+        and not refused_trials.exists(),
+        refused.stderr.decode(),
+    )
+    print(
+        "PASS D7: real codegen v1.2.0 input.symbol artifact refused by Python and native",
+        flush=True,
+    )
     run = subprocess.run(command, capture_output=True, timeout=180)
     require(run.returncode == 0, run.stderr.decode())
     (directory / "hpo.json").write_bytes(run.stdout)
@@ -278,6 +338,7 @@ if eth4 < threshold or eth4 <= ethD
         "fixture": "deterministic synthetic BTCUSDT 4h / ETHUSDT 240 + 1D",
         "comparison": "all C-ABI field bytes unchanged; only unspecified struct padding zeroed",
         "artifact": artifact,
+        "d7_real_artifact_refused": True,
         "harness_sha256": hashlib.sha256(args.harness.read_bytes()).hexdigest(),
         "candidates": evidence,
         "files": {},

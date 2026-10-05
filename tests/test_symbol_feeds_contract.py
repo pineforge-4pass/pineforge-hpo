@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -110,7 +111,13 @@ def main():
                 command + list(extra), capture_output=True, timeout=30
             )
             if refused:
-                expected_exit = 4 if refused.startswith("symbol feeds differ") else 1
+                expected_exit = (
+                    4
+                    if refused.startswith(
+                        ("symbol feeds differ", "invalid symbol feeds header record")
+                    )
+                    else 1
+                )
                 require(
                     process.returncode == expected_exit and not process.stdout,
                     f"refusal did not fail before trials: {process.stderr!r}",
@@ -264,6 +271,149 @@ def main():
         )
         require(encoded.returncode == 0, encoded.stderr.decode())
         run("--warm-start", str(native_binary))
+        override_spec = copy.deepcopy(spec)
+        override_spec.pop("symbol_feeds")
+        override_path = directory / "override-work.json"
+        override_path.write_text(json.dumps(override_spec))
+        override_binary = directory / "override.bin"
+        override_encoded = subprocess.run(
+            [
+                str(args.native),
+                "warm-encode",
+                "--spec",
+                str(override_path),
+                "--symbol-feeds",
+                str(index),
+                "--input",
+                str(parent_path),
+                "--output",
+                str(override_binary),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        require(override_encoded.returncode == 0, override_encoded.stderr.decode())
+        require(
+            override_binary.read_bytes() == native_binary.read_bytes(),
+            "warm-encode CLI feed override changed header bytes",
+        )
+        info = subprocess.run(
+            [
+                str(args.native),
+                "space-info",
+                "--spec",
+                str(override_path),
+                "--symbol-feeds",
+                str(index),
+                "--warm-start",
+                str(parent_path),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        require(info.returncode == 0, info.stderr.decode())
+        require(
+            json.loads(info.stdout)["space_hash"] == parent["space_hash"],
+            "space-info CLI feed override changed space identity",
+        )
+        malformed_parent = copy.deepcopy(parent)
+        malformed_parent["space"]["symbol_feeds"]["symbols"]["BINANCE:ETHUSDT"].pop(
+            "facts"
+        )
+        malformed_path = directory / "malformed-header.json"
+        malformed_path.write_text(json.dumps(malformed_parent))
+        run(
+            "--warm-start",
+            str(malformed_path),
+            refused="invalid symbol feeds header record for BINANCE:ETHUSDT",
+        )
+        tpe_process, _ = run("--sampler", "tpe")
+        tpe_parent = json.loads(tpe_process.stdout)
+        identity = tpe_parent["numeric_build_identity"]
+        require(
+            identity and tpe_parent["parent_numeric_build_identity"] is None,
+            "fresh TPE identity provenance is missing",
+        )
+        tpe_path = directory / "tpe-parent.json"
+        tpe_path.write_bytes(tpe_process.stdout)
+        restored_process, _ = run("--sampler", "tpe", "--warm-start", str(tpe_path))
+        restored = json.loads(restored_process.stdout)
+        require(
+            restored["warm_start_model"] == "restored_sampler_state"
+            and restored["numeric_build_identity"] == identity
+            and restored["parent_numeric_build_identity"] == identity,
+            "restored TPE identity provenance differs",
+        )
+        require(
+            restored["warm_start"]["numeric_build_identity"] == identity
+            and restored["warm_start"]["parent_numeric_build_identity"] == identity,
+            "warm provenance does not expose both identities",
+        )
+        tpe_binary = directory / "tpe-parent.bin"
+        tpe_encoded = subprocess.run(
+            [
+                str(args.native),
+                "warm-encode",
+                "--spec",
+                str(spec_path),
+                "--input",
+                str(tpe_path),
+                "--output",
+                str(tpe_binary),
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        require(tpe_encoded.returncode == 0, tpe_encoded.stderr.decode())
+        binary_process, _ = run("--sampler", "tpe", "--warm-start", str(tpe_binary))
+        binary_restored = json.loads(binary_process.stdout)
+        require(
+            binary_restored["warm_start_model"] == "restored_sampler_state"
+            and binary_restored["numeric_build_identity"] == identity
+            and binary_restored["parent_numeric_build_identity"] == identity
+            and binary_restored["warm_start"]["parent_numeric_build_identity"]
+            == identity,
+            "binary warm provenance lost the compared checkpoint identity",
+        )
+        foreign = copy.deepcopy(tpe_parent)
+        version, checksum, payload = foreign["tpe_sampler_state"].split("\n", 2)
+        payload = re.sub(
+            r";libm_probe_sha256:[0-9a-f]{64}",
+            ";libm_probe_sha256:" + "0" * 64,
+            payload,
+        )
+        foreign["tpe_sampler_state"] = (
+            version
+            + "\n"
+            + hashlib.sha256(payload.encode()).hexdigest()
+            + "\n"
+            + payload
+        )
+        foreign_path = directory / "foreign-tpe-parent.json"
+        foreign_path.write_text(json.dumps(foreign))
+        foreign_process, _ = run("--sampler", "tpe", "--warm-start", str(foreign_path))
+        rebuilt = json.loads(foreign_process.stdout)
+        require(
+            rebuilt["warm_start_model"] == "rebuilt_history"
+            and rebuilt["numeric_build_identity"] == identity
+            and rebuilt["parent_numeric_build_identity"] != identity
+            and ";libm_probe_sha256:" + "0" * 64
+            in rebuilt["parent_numeric_build_identity"],
+            "foreign checkpoint identity was not exposed before rebuilding",
+        )
+        future = copy.deepcopy(tpe_parent)
+        future["tpe_sampler_state"] = future["tpe_sampler_state"].replace(
+            "PFHTPE2\n", "PFHTPE3\n", 1
+        )
+        future_path = directory / "future-tpe-parent.json"
+        future_path.write_text(json.dumps(future))
+        future_process, _ = run("--sampler", "tpe", "--warm-start", str(future_path))
+        future_result = json.loads(future_process.stdout)
+        require(
+            future_result["warm_start_model"] == "rebuilt_history"
+            and future_result["parent_numeric_build_identity"] is None,
+            "other checkpoint version did not rebuild with unknown parent identity",
+        )
         for change in ("facts", "values", "closes", "removed", "key", "added"):
             changed = copy.deepcopy(document)
             if change == "facts":
@@ -447,9 +597,92 @@ def main():
             plugin=symbol_plugin,
             refused="input.symbol",
         )
+        manifest_path = symbol_artifact / "manifest.json"
+        manifest_path.write_text("not JSON")
+        optional, _ = run(feeds=False, plugin=symbol_plugin)
+        require(
+            optional.stdout == plain.stdout,
+            "optional malformed manifest changed no-feed bytes",
+        )
+        run(
+            "--categorical-choice",
+            "Other",
+            "ETH",
+            feeds=False,
+            plugin=symbol_plugin,
+            refused=str(manifest_path),
+        )
+        manifest_path.unlink()
+        run(
+            "--categorical-choice",
+            "Other",
+            "ETH",
+            feeds=False,
+            plugin=symbol_plugin,
+            refused="cannot rule out input.symbol",
+        )
+        manifest_path.write_text(
+            json.dumps({"inputs": [{"title": "Other", "type": "string"}]})
+        )
+        run(
+            "--categorical-choice",
+            "Other",
+            "ETH",
+            feeds=False,
+            plugin=symbol_plugin,
+            refused="cannot rule out input.symbol",
+        )
+        modern_manifest = {
+            "inputs": [{"title": "Other", "type": "string"}],
+            "request_identity": {"codegen": {"version": "1.2.0"}},
+        }
+        manifest_path.write_text(json.dumps(modern_manifest))
+        run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
+        for kind in ("unknown", [], {}):
+            modern_manifest["inputs"][0]["kind"] = kind
+            manifest_path.write_text(json.dumps(modern_manifest))
+            run(
+                "--categorical-choice",
+                "Other",
+                "ETH",
+                feeds=False,
+                plugin=symbol_plugin,
+                refused="cannot rule out input.symbol",
+            )
+        large_manifest = {
+            "inputs": [{"title": "Other", "type": "string", "kind": "string"}],
+            "padding": "x" * (1024 * 1024 + 1),
+        }
+        manifest_path.write_text(json.dumps(large_manifest))
+        optional, _ = run(feeds=False, plugin=symbol_plugin)
+        require(
+            optional.stdout == plain.stdout,
+            "large optional manifest changed no-feed bytes",
+        )
+        run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
+        if oracle:
+            index.write_text(json.dumps(document))
+            for csv in (
+                "unused\n",
+                valid_csv.replace("1700000060000", "1700000030000"),
+            ):
+                feed.write_text(csv)
+                try:
+                    oracle.load_symbol_feeds(index)
+                except oracle.SymbolFeedsError as error:
+                    run(refused=str(error))
+                else:
+                    raise AssertionError("error-parity fixture unexpectedly accepted")
+            feed.write_text(valid_csv)
+            missing_index = directory / "missing-index.json"
+            try:
+                oracle.load_symbol_feeds(missing_index)
+            except oracle.SymbolFeedsError as error:
+                run("--symbol-feeds", str(missing_index), refused=str(error))
         print(
             "PASS: feed hash/reference, pretrial refusals, D7, JSON/JSONL/v2 mismatch, "
-            "relocation, empty-index byte identity"
+            "relocation, empty-index byte identity, manifest compatibility, "
+            "CLI feed overrides, clear header errors, numeric identity provenance"
             + (", v0.7 byte identity" if args.baseline else "")
         )
 

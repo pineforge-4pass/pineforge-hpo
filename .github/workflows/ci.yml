@@ -28,6 +28,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           submodules: true
+          fetch-depth: 0
 
       - name: Install native dependencies (Linux)
         if: runner.os == 'Linux'
@@ -56,12 +57,15 @@ jobs:
           -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine
           -DPINEFORGE_HPO_BUILD_TESTS=ON
           -DPINEFORGE_HPO_BUILD_EXAMPLES=ON
+          -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON
 
       - name: Build
         run: cmake --build build -j4
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: |
+          ctest --test-dir build -V -R '^pineforge_hpo_serial_golden$'
+          ctest --test-dir build --output-on-failure
 
       - name: Run public C++ API example
         run: ./build/bin/pineforge_hpo_example_ask_tell
@@ -98,6 +102,28 @@ jobs:
           assert result["trials_completed"] == 9
           assert result["full_parameter_coverage"] is True
           PY
+
+      - name: Real symbol-feed and D7 equality gate
+        if: runner.os == 'Linux'
+        run: |
+          python tests/test_symbol_feeds_e2e.py \
+            --native build/bin/pineforge-hpo-native \
+            --probe build/bin/pineforge_hpo_symbol_feed_report \
+            --harness external/pineforge-engine/docker/run_json.py \
+            --output build/feeds-e2e
+
+      - name: v0.7.0 no-feed and canonical harness contract gate
+        if: runner.os == 'Linux'
+        run: |
+          git worktree add --detach build/baseline-source aa5899013024e4918a8fd403bcdd5cb508108959
+          cmake -S build/baseline-source -B build/baseline \
+            -DCMAKE_BUILD_TYPE=Release -DPINEFORGE_HPO_BUILD_TESTS=OFF \
+            -DFETCHCONTENT_SOURCE_DIR_DLIB="${{ github.workspace }}/build/_deps/dlib-src" \
+            -DPINEFORGE_ENGINE_ROOT="${{ github.workspace }}/external/pineforge-engine"
+          cmake --build build/baseline -j4
+          python tests/test_symbol_feeds_contract.py build/bin/pineforge-hpo-native \
+            build/lib/fake_strategy.so --baseline build/baseline/bin/pineforge-hpo-native \
+            --harness external/pineforge-engine/docker/run_json.py
 
   python:
     name: Python ${{ matrix.python }}

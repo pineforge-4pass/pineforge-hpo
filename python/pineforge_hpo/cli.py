@@ -287,8 +287,27 @@ def _validate_strategy_overrides(study: StudySpec) -> None:
             raise CliError(f"strategy_overrides.{name} has an unsupported value")
 
 
+def _symbol_kinds_supported(version: str | None) -> bool:
+    try:
+        return tuple(int(part) for part in (version or "").split(".")[:2]) >= (1, 1)
+    except ValueError:
+        return False
+
+
+def _artifact_codegen_version(path: Path) -> str | None:
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        version = manifest["request_identity"]["codegen"]["version"]
+        return version if isinstance(version, str) else None
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _validate_manifest_inputs(
-    study: StudySpec, inputs: Sequence[Mapping[str, Any]]
+    study: StudySpec,
+    inputs: Sequence[Mapping[str, Any]],
+    *,
+    codegen_version: str | None = None,
 ) -> None:
     by_title: dict[str, Mapping[str, Any]] = {}
     for item in inputs:
@@ -315,6 +334,21 @@ def _validate_manifest_inputs(
                 "only fixed other-symbol reads are supported"
             )
         input_type = manifest.get("type")
+        input_kind = manifest.get("kind")
+        if input_type not in ("int", "float", "bool", "string") or (
+            input_type == "string"
+            and (
+                input_kind not in (None, "string")
+                or (
+                    input_kind != "string"
+                    and not _symbol_kinds_supported(codegen_version)
+                )
+            )
+        ):
+            raise CliError(
+                f"search_space.{name}: manifest cannot rule out input.symbol (D7); "
+                "engine/codegen >= 1.1.0 input metadata is required"
+            )
         if parameter.kind == "categorical":
             for index, choice in enumerate(parameter.choices):
                 _validate_value_against_manifest(
@@ -654,12 +688,20 @@ def prepare_run(
             compiler=compiler,
             eigen_include=eigen_include,
         ).build(source, filename=str(source_path))
-        _validate_manifest_inputs(study, built.inputs)
+        _validate_manifest_inputs(
+            study,
+            built.inputs,
+            codegen_version=_artifact_codegen_version(built.manifest_path),
+        )
         artifact = _artifact_json(built)
     else:
         assert study.strategy.artifact is not None
         artifact, inputs = _precompiled_artifact(study.strategy.artifact)
-        _validate_manifest_inputs(study, inputs)
+        _validate_manifest_inputs(
+            study,
+            inputs,
+            codegen_version=_artifact_codegen_version(Path(artifact["manifest"])),
+        )
 
     native_path = _resolve_native(None if native is None else str(native))
     command = _native_command(

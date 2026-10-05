@@ -15,6 +15,10 @@ target_compile_options(pineforge_hpo_test_warm_start PRIVATE -Wall -Wextra -Wped
 add_test(NAME pineforge_hpo_warm_start COMMAND pineforge_hpo_test_warm_start)
 add_test(NAME pineforge_hpo_serial_golden COMMAND pineforge_hpo_test_warm_start --serial-golden)
 set_tests_properties(pineforge_hpo_serial_golden PROPERTIES SKIP_RETURN_CODE 77)
+if(PINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN)
+    set_tests_properties(pineforge_hpo_serial_golden PROPERTIES
+        ENVIRONMENT "PFH_REQUIRE_SERIAL_GOLDEN=1")
+endif()
 target_compile_definitions(pineforge_hpo_test_warm_start PRIVATE
     PFH_TPE_SERIAL_GOLDENS="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tpe-serial-goldens.txt")
 
@@ -97,6 +101,9 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     #   4. a legacy plugin without the optional syminfo-metadata export.
     # $<TARGET_FILE:...> keeps the test independent of .dylib/.so naming.
     add_library(pineforge_hpo_fake_strategy SHARED test_engine_adapter.cpp)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fake-input-manifest.json" fake_input_manifest)
+    file(GENERATE OUTPUT "$<TARGET_FILE_DIR:pineforge_hpo_fake_strategy>/manifest.json"
+        CONTENT "${fake_input_manifest}")
     target_compile_definitions(pineforge_hpo_fake_strategy PRIVATE
         PINEFORGE_HPO_FAKE_PLUGIN=1)
     target_include_directories(pineforge_hpo_fake_strategy PRIVATE

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <ctime>
 #include <cstring>
@@ -62,7 +63,7 @@ inline std::string symbol_text(const Json& value, const std::string& where) {
             return character < 32;
         }))
         symbol_feed_error(where + " must be a non-empty string of at most 256 characters "
-                          "without control characters");
+                          "without control characters, got " + dump_json(value).substr(0, 80));
     return value.value;
 }
 
@@ -83,7 +84,8 @@ inline std::string symbol_timeframe(std::string timeframe, const std::string& wh
     static const std::regex spelling("(?:[1-9][0-9]{0,4}|[1-9][0-9]{0,3}[DWMS])");
     if (!std::regex_match(timeframe, spelling))
         symbol_feed_error(where + ": a timeframe is whole minutes (\"15\", \"240\") or "
-                          "<n>D|W|M|S (\"1D\", \"1W\"), got " + timeframe);
+                          "<n>D|W|M|S (\"1D\", \"1W\"), got " +
+                          dump_json(Json::string(timeframe)).substr(0, 80));
     return timeframe;
 }
 
@@ -280,10 +282,12 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
     std::map<std::string, std::size_t> columns;
     for (std::size_t index = 0; index < cells.size(); ++index)
         columns[cells[index]] = index;
-    for (const auto* name : {"timestamp", "open", "high", "low", "close"}) {
+    std::string missing;
+    for (const auto* name : {"timestamp", "open", "high", "low", "close"})
         if (!columns.count(name))
-            symbol_feed_error(where + ": no column " + name);
-    }
+            missing += (missing.empty() ? "" : ", ") + std::string(name);
+    if (!missing.empty())
+        symbol_feed_error(where + ": no column " + missing);
     SymbolFeed feed;
     feed.timeframe = timeframe;
     const auto field_cell = [&](const std::string& name) -> std::string {
@@ -292,6 +296,7 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
     };
     const char prefix[] = "pineforge:symbol-feed:barc-close-le:v1\0";
     std::string hashed(prefix, sizeof(prefix) - 1);
+    std::string previous_at;
     while (symbol_csv_row(input, cells, line, where)) {
         if (cells.empty())
             continue;
@@ -326,10 +331,16 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
                               std::to_string(symbol_stamp_max));
         if (!feed.bars.empty() && feed.bars.back().timestamp >= bar.timestamp)
             symbol_feed_error(at + ": timestamps must increase");
-        if (close <= bar.timestamp ||
-            (!feed.close_ms.empty() && feed.close_ms.back() > bar.timestamp))
-            symbol_feed_error(at + ": close must be after open and at or before the next "
-                              "bar's open (is the timeframe right?)");
+        const auto bad_close = [&](const std::string& location, std::int64_t open_ms,
+                                   std::int64_t close_ms) {
+            symbol_feed_error(location + ": its close " + std::to_string(close_ms) +
+                " is not after its open " + std::to_string(open_ms) +
+                " and at or before the next bar's open (is the timeframe right?)");
+        };
+        if (!feed.close_ms.empty() && feed.close_ms.back() > bar.timestamp)
+            bad_close(previous_at, feed.bars.back().timestamp, feed.close_ms.back());
+        if (close <= bar.timestamp)
+            bad_close(at, bar.timestamp, close);
         for (const auto value : {bar.open, bar.high, bar.low, bar.close, bar.volume}) {
             std::uint64_t bits = 0;
             std::memcpy(&bits, &value, sizeof(bits));
@@ -339,6 +350,7 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
         symbol_hash_integer(hashed, static_cast<std::uint64_t>(close));
         feed.bars.push_back(bar);
         feed.close_ms.push_back(close);
+        previous_at = at;
         if (feed.bars.size() > static_cast<std::size_t>(INT32_MAX))
             symbol_feed_error(where + ": exceeds the C ABI bar-count limit");
     }
@@ -387,7 +399,8 @@ inline SymbolFeeds load_symbol_feeds(const Json& document, const std::filesystem
                     if (value->kind != Json::Kind::Number || !(number > 0) ||
                         !std::isfinite(number))
                         symbol_feed_error(symbol.symbol +
-                            ": syminfo.mintick must be a positive finite number");
+                            ": syminfo.mintick must be a positive finite number, got " +
+                            dump_json(*value).substr(0, 80));
                     symbol.facts.push_back({"mintick", number});
                 } else {
                     symbol.facts.push_back({std::string(name) == "tickerid" ? "canonical" : name,
@@ -424,9 +437,14 @@ inline SymbolFeeds load_symbol_feeds(const Json& document, const std::filesystem
 }
 
 inline SymbolFeeds load_symbol_feeds(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        symbol_feed_error(path.string() + ": " + std::strerror(errno));
+    std::ostringstream text;
+    text << input.rdbuf();
     Json document;
     try {
-        document = parse_json(read_document(path), std::numeric_limits<std::size_t>::max());
+        document = parse_json(text.str(), std::numeric_limits<std::size_t>::max());
     } catch (const std::exception& error) {
         symbol_feed_error(path.string() + " is not JSON: " + error.what());
     }
@@ -480,10 +498,12 @@ inline SymbolFeeds load_symbol_feeds_spec(const std::filesystem::path& spec) {
     return symbol_feeds_from_spec(parse_json(read_document(spec), 256 * 1024 * 1024), spec);
 }
 
-inline Json space_with_symbol_feeds(const std::filesystem::path& spec) {
+inline Json space_with_symbol_feeds(const std::filesystem::path& spec,
+                                   const std::filesystem::path& override_index = {}) {
     const auto document = parse_json(read_document(spec), 256 * 1024 * 1024);
     auto recorded = space_from_spec(document);
-    const auto symbols = symbol_feeds_from_spec(document, spec);
+    const auto symbols = override_index.empty() ? symbol_feeds_from_spec(document, spec) :
+                                                 load_symbol_feeds(override_index);
     if (!symbols.empty())
         recorded.members["symbol_feeds"] = symbol_feeds_record(symbols);
     return recorded;

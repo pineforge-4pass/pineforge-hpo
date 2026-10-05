@@ -1,0 +1,10 @@
+{
+  "inputs": [
+    {"title": "Payload", "type": "string", "kind": "string"},
+    {"title": "Choice", "type": "string", "kind": "string"},
+    {"title": "choice", "type": "string", "kind": "string"},
+    {"title": "Mode", "type": "string", "kind": "string"},
+    {"title": "long_metadata", "type": "string", "kind": "string"},
+    {"title": "metadata", "type": "string", "kind": "string"}
+  ]
+}
