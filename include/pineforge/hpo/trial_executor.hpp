@@ -39,8 +39,12 @@ struct BacktestConfiguration {
     /// Scalar-only HPO can disable this copy. The default retains it for portfolio and custom
     /// objective consumers.
     bool capture_equity_curve = true;
+    /// Whether ReportSnapshot owns the complete C-ABI trade records (off in the HPO hot loop).
+    bool capture_trades = false;
     /// Optional instrument metadata, applied after inputs and overrides.
     std::optional<SymbolInfo> symbol_info;
+    /// Fixed other-symbol bars loaded once, validated before trials, and shared read-only.
+    std::shared_ptr<const SymbolFeeds> symbol_feeds;
 };
 
 /// @brief Owning report snapshot detached from strategy and C-ABI report lifetimes.
@@ -84,6 +88,8 @@ struct ReportSnapshot {
     pf_metrics_t metrics{};
     /// Optional owned copy controlled by BacktestConfiguration::capture_equity_curve.
     std::vector<pf_equity_point_t> equity_curve;
+    /// Optional owned trade records controlled by BacktestConfiguration::capture_trades.
+    std::vector<pf_trade_t> trades;
 
     /// Resolves a canonical objective path without allocating a string map.
     ///

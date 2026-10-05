@@ -107,9 +107,85 @@ pineforge-hpo run path/to/study.json \
 | `objective` | Must use `kind="expression"`. |
 | `sampler` | `grid`, `random`, `dlib_global`, or `tpe`, plus its candidate policy. |
 | `execution` | Sequential or threaded native execution. |
+| `symbol_feeds` | Optional index path or inline index; fixed other-symbol reads only. |
 
 Unknown fields, duplicate JSON keys, and JSON `NaN`/`Infinity` constants are
 rejected.
+
+## Symbol feeds
+
+Since 0.8.0, the root field accepts a path (`"symbol_feeds": "data/feeds/index.json"`)
+or an inline index:
+
+```json
+{
+  "symbol_feeds": {
+    "symbols": {
+      "BINANCE:ETHUSDT": {
+        "syminfo": {
+          "tickerid": "BINANCE:ETHUSDT", "type": "crypto", "currency": "USDT",
+          "mintick": 0.01, "timezone": "UTC", "session": "24x7"
+        },
+        "feeds": {"240": "data/eth-240.csv", "1D": "data/eth-1D.csv"}
+      }
+    }
+  }
+}
+```
+
+Resolve index paths against work.json, CSVs against the index directory, and inline CSVs
+against work.json. CLI `--symbol-feeds FILE` overrides either form (FILE relative to cwd).
+Keys are exact script request strings, including exchange prefixes/suffixes. No alias
+resolution, aggregation or network fetching occurs. `D/W/M/S` fold to `1D/1W/1M/1S`;
+other timeframes are 1–5 digits of whole minutes or 1–4 digits followed by `D/W/M/S`,
+without leading zeros. Caps: 256 symbols and 256 feeds globally.
+
+Entries contain only `syminfo` and/or `feeds`. Installed facts: `tickerid` (as `canonical`),
+`type`, `timezone`, `session`, `currency`, `mintick`; unknown fact keys are ignored.
+Absent/null/empty facts set nothing. Text must be nonempty valid UTF-8, at most 256 Unicode
+characters, without U+0000–U+001F controls. `mintick` is a positive finite JSON number, not
+a boolean. Nested `syminfo` catalog objects are supported.
+
+CSV requires `timestamp,open,high,low,close`; optional `volume` and `time_close`; other
+columns are ignored. UTF-8/BOM, Unicode decimal digits and whitespace follow the release
+harness; a CSV field is at most 131072 characters. Prices are finite; volume is
+nonnegative finite or empty/NaN. Opens
+strictly increase; times are Unix milliseconds within ±9007199254740991. Closes are after
+open and at/before the next open. Missing closes default to open plus timeframe (UTC
+calendar months clamp to the month's last day). Session-bound feeds should provide closes.
+Header-only empty feeds are allowed.
+
+Native initialization checks/hashes once, including engine setter validation. Every fresh
+strategy receives identical immutable facts/bars/closes before running. Index/CSV/setter
+errors use `--symbol-feeds:` and identify the symbol/timeframe before terminal trial output.
+Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted).
+`input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
+Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.2.0).
+`input.source` and `input.enum` search dimensions are supported and cannot be symbols.
+String dimensions require the manifest-level `"input_kind_schema": 1` marker, written by
+PineForge HPO's artifact builder after observing the modern codegen `requests` list in
+its one-pass transpile result. The list is present even for symbol-free scripts; codegen
+1.1.0 introduced it alongside `kind: "symbol"` metadata. Individual input `kind` fields
+are not a capability signal. Package version is diagnostic only, so `unknown` does not
+reject a stamped artifact. Unstamped string dimensions fail closed and instruct rebuilding
+with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0. The artifact-cache identity includes the
+builder's input-metadata revision so pre-stamp caches rebuild once. Unrelated duplicate titles are
+ignored; duplicates for searched inputs (or Python fixed inputs) remain refused.
+Direct native users need the adjacent `manifest.json` for string-valued search inputs;
+unreadable optional manifests do not change numeric-only native runs. Required manifest
+errors name the file; manifests up to 256 MiB are supported.
+Native `warm-encode` and `space-info` accept `--symbol-feeds <index.json>` as an override
+of the work file's path/inline index, using the same relative CSV resolution rules.
+
+Results expose `applied_runtime.symbol_feeds` and `runtime_sha256`; terminal rows retain
+the record in `space.symbol_feeds`. Its canonicalization is `pf-symbol-feed-barc-close-le-v1`;
+the `symbols` object records each symbol's `facts` and `feeds`. Each feed records `bars`,
+`first_ts`, `last_ts` and `source_values_sha256` (empty feeds omit bounds). Value hash:
+SHA-256 of `pineforge:symbol-feed:barc-close-le:v1` plus NUL, then rows packed little-endian
+as five binary64 OHLCV values and two int64 open/close times (`<5dqq`). Paths do not affect
+identity. Warm continuation refuses changed/added/removed feeds/facts before any new trial.
+`space_hash` remains parameters/objective-only; feed identity is separate. No feeds add no
+feed-specific fields; TPE's numeric-identity provenance is independent of symbol feeds.
 
 ## Strategy
 
@@ -803,6 +879,22 @@ the exact suggestion RNG, reservoir RNG, finite fallback cursor, retained observ
 and bounded cache membership when configuration, seed, complete typed history and
 numerical-build identity match. Compiler/stdlib versions, target architecture and
 floating-point configuration/rounding are enforced; foreign builds reconstruct.
+Since 0.8.0 the runtime-libm fingerprint includes only the double/long-double functions
+used by the configured space, with 4,096 inputs per function cached once per process.
+In particular, long-double `log1p` is included for log-scale real/integer dimensions but
+not for linear/integer/categorical spaces. An Intel/AMD difference in that function alone
+therefore preserves non-log checkpoint compatibility; other numeric-build components
+still must match. Older identities and other checkpoint versions rebuild without replay.
+
+TPE result JSON records `numeric_build_identity` (the child computed identity) and
+`parent_numeric_build_identity` (the identity extracted from the checkpoint actually
+compared). Warm runs repeat both fields in `warm_start` provenance. Parent identity is
+null for a fresh run, history without a checkpoint, an unknown checkpoint version, or
+lag-one continuation (which deliberately ignores checkpoints). It is recorded even when
+a valid foreign checkpoint rebuilds; it is not copied from untrusted parent JSON fields.
+The app may assert that `warm_start_model == "restored_sampler_state"` implies a non-null
+parent identity exactly equal to the child identity. Grid/random results omit these fields.
+
 The checkpoint is checksummed and contains a typed-history fingerprint. Full-history
 models rebuild from the same chronological rows; bounded caches rebuild from their
 recorded fitting IDs. Matching future lag-zero ask/tell schedules reproduce the
@@ -837,7 +929,9 @@ any order; IDs determine observation order. Every block must match the current s
 
 An independent extension block starts with the eight ASCII bytes `PFHSTATE`, followed
 by a little-endian uint64 payload length and that many UTF-8 checkpoint bytes. There
-is no padding. The payload is `PFHTPE2\n`, a 64-character lowercase SHA-256 digest,
+is no padding. Valid other checkpoint versions rebuild history without proposal replay;
+they do not restore or fail merely for a different version. Malformed/checksum-invalid
+envelopes remain errors. The current payload is `PFHTPE2\n`, a 64-character lowercase SHA-256 digest,
 `\n`, and the versioned state. The digest covers the state after the second newline. It checks integrity, not
 authenticity: warm files are trusted input. The payload contains a configuration/build
 signature, explicit numerical-build token, counters/history fingerprint, and two
@@ -867,8 +961,8 @@ are relative to the start of each block. The fixed header is exactly 80 bytes.
 | --- | --- | --- |
 | 0 | 8 | Magic: hex `50 46 48 57 41 52 4d 00` (`PFHWARM\0`) |
 | 8 | 2 | uint16 format version: `2` |
-| 10 | 2 | uint16 flags: `0` |
-| 12 | 4 | uint32 header bytes: `80 + 4 * P` |
+| 10 | 2 | uint16 flags: `0`, or bit 0 (`1`) for symbol-feed metadata (0.8.0) |
+| 12 | 4 | uint32 header bytes: `80 + 4 * P`, plus optional extension bytes |
 | 16 | 8 | uint64 total block bytes, including header/descriptors/payload |
 | 24 | 8 | uint64 trial count `N`, strictly positive |
 | 32 | 4 | uint32 parameter column count `P`, equal to study input count |
@@ -877,6 +971,11 @@ are relative to the start of each block. The fixed header is exactly 80 bytes.
 | 44 | 4 | uint32 reserved: `0` |
 | 48 | 32 | Raw SHA-256 bytes of canonical space hash v1, not ASCII hex |
 | 80 | `4 * P` | Parameter descriptors, in lexicographic UTF-8 parameter-name order |
+
+When flags bit 0 is set, descriptors are followed by a uint32 little-endian UTF-8 JSON
+byte count and the complete `applied_runtime.symbol_feeds` record (at most 8 MiB), with no padding.
+`header_bytes` includes this extension; every block must agree with the current feed
+identity. Readers before 0.8.0 refuse it. Flags-zero header bytes remain unchanged.
 
 Each descriptor is `uint8 kind, uint8 encoding, uint16 reserved=0`:
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import json
 import os
 from pathlib import Path
@@ -171,6 +173,58 @@ class ArtifactBuilderTest(unittest.TestCase):
         self.assertEqual(
             provenance["request_identity"]["compile"]["flags"],
             list(CANONICAL_COMPILE_FLAGS),
+        )
+
+    def test_builder_stamps_capability_and_preserves_it_on_cache_hits(self) -> None:
+        capable = replace(self.transpiled, input_kind_schema=1)
+        with (
+            patch("pineforge_hpo.artifact.codegen_identity", return_value=self.codegen),
+            patch(
+                "pineforge_hpo.artifact.transpile_source", return_value=capable
+            ) as transpile,
+        ):
+            first = self.builder().build("symbol-free source")
+            second = self.builder().build("symbol-free source")
+            self.assertTrue(second.cache_hit)
+            self.assertEqual(transpile.call_count, 1)
+            manifest = json.loads(first.manifest_path.read_text())
+            provenance = json.loads(first.provenance_path.read_text())
+            self.assertEqual(manifest["input_kind_schema"], 1)
+            self.assertEqual(provenance["input_kind_schema"], 1)
+            manifest.pop("input_kind_schema")
+            first.manifest_path.write_text(json.dumps(manifest))
+            repaired = self.builder().build("symbol-free source")
+            self.assertFalse(repaired.cache_hit)
+            self.assertEqual(transpile.call_count, 2)
+            self.assertEqual(
+                json.loads(repaired.manifest_path.read_text())["input_kind_schema"], 1
+            )
+
+    def test_old_metadata_cache_is_not_reused_or_stamped_without_capability(
+        self,
+    ) -> None:
+        with (
+            patch("pineforge_hpo.artifact.codegen_identity", return_value=self.codegen),
+            patch(
+                "pineforge_hpo.artifact.transpile_source", return_value=self.transpiled
+            ),
+            patch("pineforge_hpo.artifact.INPUT_METADATA_REVISION", 0),
+        ):
+            old = self.builder().build("same source")
+        self.assertNotIn("input_kind_schema", json.loads(old.manifest_path.read_text()))
+        with (
+            patch("pineforge_hpo.artifact.codegen_identity", return_value=self.codegen),
+            patch(
+                "pineforge_hpo.artifact.transpile_source",
+                return_value=replace(self.transpiled, input_kind_schema=1),
+            ),
+        ):
+            rebuilt = self.builder().build("same source")
+        self.assertFalse(rebuilt.cache_hit)
+        self.assertNotEqual(old.request_key, rebuilt.request_key)
+        self.assertNotEqual(old.artifact_key, rebuilt.artifact_key)
+        self.assertEqual(
+            json.loads(rebuilt.manifest_path.read_text())["input_kind_schema"], 1
         )
 
     def test_clang_compile_lifts_the_bracket_depth_limit(self) -> None:

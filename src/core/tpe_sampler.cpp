@@ -31,6 +31,7 @@ namespace detail {
 
 thread_local TpeLogRatioObserver tpe_log_ratio_observer = nullptr;
 thread_local std::optional<double> tpe_contraction_override;
+thread_local std::optional<std::string> tpe_long_log1p_override;
 
 void set_tpe_log_ratio_observer(TpeLogRatioObserver observer) noexcept {
     tpe_log_ratio_observer = observer;
@@ -40,13 +41,54 @@ void set_tpe_contraction_override(std::optional<double> value) noexcept {
     tpe_contraction_override = value;
 }
 
-std::string tpe_numeric_identity() {
+void set_tpe_long_log1p_probe(long double (*function)(long double)) {
+    tpe_long_log1p_override = function ? std::optional<std::string>(long_log1p_probe(function)) :
+                                       std::nullopt;
+}
+
+std::string tpe_numeric_identity(const SearchSpace& space) {
+    std::uint32_t functions = (std::uint32_t{1} << 7) | (std::uint32_t{1} << 8) |
+                              (std::uint32_t{1} << 20);
+    for (const auto& dimension : space.dimensions()) {
+        std::visit([&](const auto& item) {
+            using Item = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<Item, IntegerDimension> ||
+                          std::is_same_v<Item, RealDimension>) {
+                if (item.low() != item.high()) {
+                    functions |= (std::uint32_t{1} << 10) - 1;
+                    if constexpr (std::is_same_v<Item, IntegerDimension>)
+                        functions |= std::uint32_t{1} << 17;
+                }
+                if constexpr (std::is_same_v<Item, RealDimension>)
+                    if (item.step())
+                        functions |= (std::uint32_t{1} << 17) | (std::uint32_t{1} << 19);
+                if (item.log()) {
+                    functions |= (std::uint32_t{1} << 10) | (std::uint32_t{1} << 11) |
+                                 (std::uint32_t{1} << 13);
+                    if constexpr (std::is_same_v<Item, RealDimension>)
+                        functions |= std::uint32_t{1} << 12;
+                    else
+                        functions |= std::uint32_t{1} << 17;
+                }
+            } else if constexpr (std::is_same_v<Item, CategoricalDimension>) {
+                if (item.choices().size() > 1)
+                    functions |= std::uint32_t{1};
+            } else {
+                functions |= std::uint32_t{1};
+            }
+        }, dimension);
+    }
     volatile double first = 0x1.0000000000001p0;
     volatile double second = 0x1.ffffffffffffep-1;
     volatile double third = -1.0;
     const double arithmetic = first * second + third;
     const double fused = std::fma(first, second, third);
-    return numeric_build_identity(tpe_contraction_override.value_or(arithmetic), fused);
+    return numeric_build_identity(tpe_contraction_override.value_or(arithmetic), fused,
+                                  functions, tpe_long_log1p_override);
+}
+
+std::string tpe_numeric_identity() {
+    return tpe_numeric_identity(SearchSpace({RealDimension("probe", 0.0, 1.0)}));
 }
 
 }
@@ -816,12 +858,13 @@ public:
         std::shared_ptr<CategoricalModel> bad_categorical;
     };
 
-    const std::string numeric_build_ = detail::tpe_numeric_identity();
+    const std::string numeric_build_;
 
     Impl(const SearchSpace& space,
          std::uint64_t seed,
          std::optional<std::uint64_t> finite_cardinality)
-        : engine_(seed), reservoir_engine_(seed ^ 0xd1b54a32d192ed03ULL),
+        : numeric_build_(detail::tpe_numeric_identity(space)),
+          engine_(seed), reservoir_engine_(seed ^ 0xd1b54a32d192ed03ULL),
           finite_cardinality_(finite_cardinality) {
         if (finite_cardinality_.has_value()) {
             reservations_.emplace(*finite_cardinality_);
@@ -1312,7 +1355,8 @@ public:
         std::string stored_build;
         if (!(input >> std::quoted(stored_build)))
             throw std::invalid_argument("invalid TPE sampler-state build identity");
-        if (stored_build != numeric_build_)
+        if (stored_build != numeric_build_ ||
+            stored_build.find(";flags_sha256:unavailable") != std::string::npos)
             return false;
         std::uint64_t attempts, next_id, completed, fallback, epoch, older_seen;
         unsigned compact, cached_compact;

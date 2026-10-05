@@ -396,7 +396,11 @@ def is_binary_warm(path: str | Path) -> bool:
 
 
 def warm_start_metadata(
-    study: StudySpec, path: str | Path, *, native: str | Path | None = None
+    study: StudySpec,
+    path: str | Path,
+    *,
+    native: str | Path | None = None,
+    defer_symbol_feeds: bool = False,
 ) -> dict[str, Any]:
     """Inspect sampler history; binary validation stays in the native mmap loader."""
     try:
@@ -412,6 +416,7 @@ def warm_start_metadata(
                     "--warm-start",
                     str(Path(path).expanduser().resolve()),
                     "--warm-details",
+                    *(["--defer-symbol-feeds"] if defer_symbol_feeds else []),
                 ],
                 capture_output=True,
                 text=True,

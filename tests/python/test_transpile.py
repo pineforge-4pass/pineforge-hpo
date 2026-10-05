@@ -35,7 +35,32 @@ class TranspileBridgeTest(unittest.TestCase):
         self.assertEqual(result.require_success(), payload["cpp"])
         self.assertEqual(result.inputs[0]["title"], "Length")
         self.assertEqual(result.strategy_params["initial_capital"], 10000)
+        self.assertIsNone(result.input_kind_schema)
         call.assert_called_once_with("strategy('x')", filename="trend.pine")
+
+    def test_input_kind_capability_uses_requests_payload_not_inputs(self) -> None:
+        for requests, expected in (
+            ([], 1),
+            ([{"line": 1}], 1),
+            (None, None),
+            ({}, None),
+            ([42], None),
+        ):
+            payload = {
+                "cpp": "int strategy = 1;\n",
+                "inputs": [{"title": "Mode", "type": "string"}],
+                "strategyParams": {},
+                "requests": requests,
+            }
+            with patch("pineforge_hpo.transpile.transpile_full", return_value=payload):
+                result = transpile_source("strategy('x')")
+            self.assertTrue(result.ok)
+            self.assertEqual(result.input_kind_schema, expected)
+        payload.pop("requests")
+        payload["inputs"].append({"title": "Other", "type": "string", "kind": "symbol"})
+        with patch("pineforge_hpo.transpile.transpile_full", return_value=payload):
+            result = transpile_source("strategy('x')")
+        self.assertIsNone(result.input_kind_schema)
 
     def test_compile_error_becomes_structured_diagnostic(self) -> None:
         error = CompileError(

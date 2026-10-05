@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from array import array
+import json
 import math
 import struct
 import sys
@@ -51,6 +52,7 @@ def encode_warm_block(
     trials: Sequence[Mapping[str, Any]],
     *,
     sampler_state: str | None = None,
+    symbol_feeds_record: Mapping[str, Any] | None = None,
 ) -> bytes:
     """Encode every attempted trial in one chunk, sorting rows by uint64 trial ID.
 
@@ -148,12 +150,47 @@ def encode_warm_block(
             columns.append(
                 b"".join(_score(values[column]) for values in constraint_rows)
             )
-        header_bytes = HEADER.size + len(descriptors)
+        records = [
+            trial["space"].get("symbol_feeds") for trial in ordered if "space" in trial
+        ]
+        if symbol_feeds_record is None and records:
+            symbol_feeds_record = records[0]
+        if any(record != symbol_feeds_record for record in records):
+            raise ValueError("symbol feeds differ between trial records")
+        empty_index = (
+            isinstance(study.symbol_feeds, Mapping)
+            and study.symbol_feeds.get("symbols") == {}
+        )
+        if (
+            study.symbol_feeds is not None
+            and not empty_index
+            and symbol_feeds_record is None
+        ):
+            raise ValueError(
+                "symbol feeds record is required for this study's warm header"
+            )
+        runtime = b""
+        if symbol_feeds_record is not None and not isinstance(
+            symbol_feeds_record, Mapping
+        ):
+            raise ValueError("symbol feeds record must be an object")
+        if symbol_feeds_record is not None and symbol_feeds_record.get("symbols") != {}:
+            encoded = json.dumps(
+                symbol_feeds_record,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+            if len(encoded) > 8 * 1024 * 1024:
+                raise ValueError("symbol feeds header exceeds 8 MiB")
+            runtime = struct.pack("<I", len(encoded)) + encoded
+        header_bytes = HEADER.size + len(descriptors) + len(runtime)
         payload = b"".join(columns)
         header = HEADER.pack(
             MAGIC,
             VERSION,
-            0,
+            int(bool(runtime)),
             header_bytes,
             header_bytes + len(payload),
             len(ordered),
@@ -163,7 +200,7 @@ def encode_warm_block(
             0,
             bytes.fromhex(space_hash(study)),
         )
-        block = header + descriptors + payload
+        block = header + descriptors + runtime + payload
         if sampler_state is not None:
             if not isinstance(sampler_state, str) or not sampler_state:
                 raise ValueError("sampler_state must be a nonempty string")
@@ -182,9 +219,15 @@ def write_warm_block(
     trials: Sequence[Mapping[str, Any]],
     *,
     sampler_state: str | None = None,
+    symbol_feeds_record: Mapping[str, Any] | None = None,
 ) -> int:
     """Write one validated chunk to a binary stream; return its byte count."""
-    block = encode_warm_block(study, trials, sampler_state=sampler_state)
+    block = encode_warm_block(
+        study,
+        trials,
+        sampler_state=sampler_state,
+        symbol_feeds_record=symbol_feeds_record,
+    )
     written = output.write(block)
     if written != len(block):
         raise OSError("short write of binary warm block")

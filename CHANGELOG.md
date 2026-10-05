@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.8.0 — 2026-10-05
+
+- Add fixed other-symbol `request.security` feeds: CLI `--symbol-feeds` and
+  StudySpec `symbol_feeds` accept the release harness's JSON index. Native initialization
+  validates/hashes CSV values once; every fresh trial installs the same immutable facts,
+  bars and close times through the public C ABI. Refusals occur before any trial output.
+- Record `applied_runtime.symbol_feeds` and `runtime_sha256`, including exact symbol
+  keys, installed facts, timeframe, bar count, first/last open and value hash. Warm JSON,
+  JSONL and v2 block headers refuse changed/added/removed feeds. Feedless v2 bytes remain
+  unchanged; feedless grid/random result content remains unchanged except the release
+  version marker. TPE additionally gains the numeric-identity provenance fields below.
+- Refuse search dimensions naming `input.symbol` (D7); fixed symbol inputs remain supported.
+  Require engine/codegen >= 1.1.0, pin both optional submodules to v1.2.0, and fail closed
+  for ambiguous string-input metadata. Add real-artifact D7 refusal and BTCUSDT 4h /
+  BINANCE:ETHUSDT 240 + 1D compiled-strategy C-ABI equality gates to Linux CI.
+- Preserve `input.source`/`input.enum` and symbol-free string/timeframe search dimensions.
+  The artifact builder stamps `input_kind_schema: 1` from codegen's modern `requests` result;
+  both frontends trust only that marker, never another input's kind or package version.
+  Unstamped string searches require rebuilding; pre-stamp artifact caches rebuild once.
+  Ignore unrelated duplicate titles and refuse unknown manifest input types consistently.
+- Key independent serial goldens by double/long-double precision and require a matching
+  golden in both CI jobs; print the full identity. Non-CI unavailable goldens remain visible
+  CTest skips. Matching checkpoints with an unavailable flags hash
+  always rebuild. Probe 4,096 inputs per libm function, cached once per process with
+  floating-point environment/errno preserved. Hash custom CMake configuration flags too.
+- Pin the Linux aarch64 serial golden and name the precision key on golden mismatches.
+  Differentially interpose all 22 probed libm functions across eight search-space shapes,
+  requiring every proposal-changing perturbation to change the numeric identity.
+- Scope runtime-libm identity to functions used by the configured search space, excluding
+  long-double log1p for non-log dimensions. Expose `numeric_build_identity` and compared
+  `parent_numeric_build_identity` in TPE results and warm provenance.
+- Tolerate unreadable optional native input manifests; support large required manifests
+  with clear file diagnostics. Accept `--symbol-feeds` in `warm-encode`/`space-info`,
+  clarify malformed warm headers, and align common feed errors with the engine harness.
+- Repair the no-replay manual build recipe and clarify that other checkpoint versions rebuild.
+
+Feed-extended warm-v2 headers use flags bit 0 and are refused by readers before 0.8.0.
+The sampler algorithm and RNG consumption do not change; the expanded numerical-build
+identity intentionally rebuilds older sampler checkpoints without historical proposal replay.
+
 ## 0.7.0 — 2026-10-05
 
 - Derive checkpoint numerical identity from an in-sampler contraction canary,

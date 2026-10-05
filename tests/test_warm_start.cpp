@@ -180,7 +180,33 @@ void state_mismatch_and_transition() {
     require(rejected && corrupt.completed() == 0, "forged zero MT state accepted/mutated sampler");
 }
 
-void parallel_checkpoint_equivalence() {
+std::string serial_golden_identity() {
+    return "double:" + std::to_string(std::numeric_limits<double>::digits) +
+           ";long_double:" + std::to_string(std::numeric_limits<long double>::digits);
+}
+
+void check_serial_golden(const std::string& identity, const std::string& expected,
+                         const std::string& actual) {
+    if (actual != expected)
+        throw std::runtime_error("serial golden mismatch for key " + identity +
+                                 ": expected " + expected + ", got " + actual);
+}
+
+void serial_golden_mismatch_diagnostic() {
+    const auto identity = serial_golden_identity();
+    bool rejected = false;
+    try {
+        check_serial_golden(identity, "expected-hash", "actual-hash");
+    } catch (const std::runtime_error& error) {
+        rejected = std::string(error.what()) == "serial golden mismatch for key " + identity +
+                   ": expected expected-hash, got actual-hash";
+    }
+    require(rejected, "serial golden mismatch did not identify its precision key and hashes");
+    std::cout << "PASS serial golden mismatch names key " << identity << '\n';
+}
+
+bool parallel_checkpoint_equivalence() {
+    serial_golden_mismatch_diagnostic();
     const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0),
         pfh::RealDimension("y", 0.01, 10.0, std::nullopt, true),
         pfh::IntegerDimension("period", 1, 10000),
@@ -230,7 +256,9 @@ void parallel_checkpoint_equivalence() {
         }
         pending.push_back(actual);
     }
-    const auto identity = pfh::detail::sha256(pfh::detail::tpe_numeric_identity());
+    const auto identity = serial_golden_identity();
+    std::cout << "Serial golden numeric identity: "
+              << pfh::detail::tpe_numeric_identity(space) << "; golden key: " << identity << '\n';
     std::ifstream goldens(PFH_TPE_SERIAL_GOLDENS);
     require(static_cast<bool>(goldens), "serial golden identity table missing");
     std::string known_identity, golden_hash;
@@ -238,18 +266,59 @@ void parallel_checkpoint_equivalence() {
     while (goldens >> known_identity >> golden_hash) {
         if (known_identity != identity)
             continue;
-        require(pfh::detail::sha256(bits.str()) == golden_hash,
-                "threaded/serial proposals differ from independent serial golden");
+        const auto actual_hash = pfh::detail::sha256(bits.str());
+        check_serial_golden(identity, golden_hash, actual_hash);
         matched = true;
         break;
     }
     if (!matched)
         std::cout << "SKIP independent serial golden: unknown numerical identity "
-                  << identity << '\n';
+                  << identity << "; proposal SHA-256 " << pfh::detail::sha256(bits.str()) << '\n';
+    else
+        std::cout << "PASS independent serial golden " << identity << '\n';
     for (const auto& candidate : pending) {
         parent.tell(candidate.id, static_cast<double>(candidate.id % 101));
         child.tell(candidate.id, static_cast<double>(candidate.id % 101));
     }
+    require(matched || !std::getenv("PFH_REQUIRE_SERIAL_GOLDEN"),
+            "independent serial golden is required for this CI build");
+    return matched;
+}
+
+long double changed_log1p(long double value) {
+    return std::nextafter(std::log1p(value), std::numeric_limits<long double>::infinity());
+}
+
+void scoped_numeric_identity_validation() {
+    for (const pfh::SearchSpace space : {
+        pfh::SearchSpace({pfh::RealDimension("value", 0.0, 1.0)}),
+        pfh::SearchSpace({pfh::IntegerDimension("value", 1, 99)}),
+        pfh::SearchSpace({pfh::CategoricalDimension("value", {std::string("a"),
+                                                           std::string("b")})}),
+        pfh::SearchSpace({pfh::RealDimension("value", 0.1, 99.0, std::nullopt, true)}),
+        pfh::SearchSpace({pfh::IntegerDimension("value", 1, 99, 1, true)})}) {
+        pfh::detail::set_tpe_long_log1p_probe(nullptr);
+        const auto identity = pfh::detail::tpe_numeric_identity(space);
+        pfh::TpeSampler parent(space, 17);
+        const auto state = parent.sampler_state();
+        pfh::detail::set_tpe_long_log1p_probe(changed_log1p);
+        const auto changed = pfh::detail::tpe_numeric_identity(space);
+        const bool logarithmic = std::visit([](const auto& dimension) {
+            using Item = std::decay_t<decltype(dimension)>;
+            if constexpr (std::is_same_v<Item, pfh::RealDimension> ||
+                          std::is_same_v<Item, pfh::IntegerDimension>)
+                return dimension.log();
+            return false;
+        }, space.dimensions().front());
+        require((identity != changed) == logarithmic,
+                "long-double log1p shim affected the wrong search-space identity");
+        pfh::TpeSampler child(space, 17);
+        require(child.warm_start(std::vector<pfh::WarmStartObservation>{}, 1, state) != logarithmic,
+                "scoped log1p identity allowed/refused the wrong checkpoint restore");
+    }
+    pfh::detail::set_tpe_long_log1p_probe(nullptr);
+    std::cout << "PASS scoped libm: linear/int/categorical restore across changed log1p; "
+                 "log real/int rebuild\n";
 }
 
 void eight_worker_equivalence() {
@@ -422,6 +491,8 @@ int main(int argc, char** argv) {
                 numeric_identity_validation();
                 return 0;
             }
+            if (std::string(argv[1]) == "--serial-golden")
+                return parallel_checkpoint_equivalence() ? 0 : 77;
             if (std::string(argv[1]) == "--reduction") {
                 eight_worker_equivalence();
                 std::cout << "PASS all serial/threaded acquisition log-ratio bits\n";
@@ -467,6 +538,7 @@ int main(int argc, char** argv) {
             checkpoint_equivalence(batch, true, pfh::CandidatePolicy::SamplerDefault, 201, 7, 300);
         checkpoint_validation();
         numeric_identity_validation();
+        scoped_numeric_identity_validation();
         state_mismatch_and_transition();
         parallel_checkpoint_equivalence();
         eight_worker_equivalence();

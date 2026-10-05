@@ -14,11 +14,14 @@ From the current source, with the baseline at `../baseline`:
 ```bash
 mkdir -p build/noreplay
 for variant in before after; do
-  tree=.; flags=-ffp-contract=off
+  tree=.; define=
   if [ "$variant" = before ]; then
     tree=../baseline; define=-DPFH_NOREPLAY_BASELINE
   fi
-  g++ -std=c++17 -O3 -ffp-contract=off -pthread $define -I"$tree/include" \
+  numeric_flags=$(printf '%s' "-std=c++17 -O3 -ffp-contract=off -pthread $define" |
+    sha256sum | cut -d' ' -f1)
+  g++ -std=c++17 -O3 -ffp-contract=off -pthread $define \
+    -DPFH_NUMERIC_BUILD_FLAGS_HASH=\"$numeric_flags\" -I"$tree/include" \
     benchmarks/noreplay/profile.cpp "$tree/src/core/types.cpp" \
     "$tree/src/core/search_space.cpp" "$tree/src/core/sampler.cpp" \
     "$tree/src/core/tpe_sampler.cpp" -o "build/noreplay/profile-$variant"

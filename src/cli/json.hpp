@@ -212,8 +212,9 @@ class JsonParser {
                 if (!take(':'))
                     fail();
                 auto value = parse(depth + 1);
-                if (!json.members.emplace(std::move(key), std::move(value)).second)
-                    fail();
+                if (!json.members.emplace(key, std::move(value)).second)
+                    throw std::invalid_argument("invalid JSON at byte " +
+                        std::to_string(position_) + " (duplicate key " + key + ")");
                 skip_whitespace();
                 if (take('}'))
                     return json;

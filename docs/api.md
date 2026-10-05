@@ -66,6 +66,7 @@ or Python CLI pass-throughs:
 | Flag | Semantics |
 | --- | --- |
 | `--syminfo FILE` | Flat or wrapped instrument JSON. Optional positive finite `mintick`/`pointvalue` and NUL-free `timezone`/`session` strings are applied after inputs and overrides, in harness order. Empty strings keep defaults; unrelated catalog keys are ignored. |
+| `--symbol-feeds FILE` | Release-harness JSON index for fixed other-symbol reads. CSV paths are relative to the index; values are validated/hashed once and installed into each fresh trial. Also accepted by `space-info` and `warm-encode`; overrides work.json's `symbol_feeds`. String-input search requires engine/codegen >= 1.1.0 metadata; `input.symbol` dimensions are refused (D7). |
 | `--progress-fd N` | An inherited writable descriptor receives one complete, flushed JSONL object per terminal trial, serialized by one writer in increasing trial-ID order. Objects use the unchanged terminal-trial schema regardless of final retention mode. Consumers must drain a pipe concurrently. |
 | `--max-wall-seconds S` | Positive finite study wall cap, measured from native initialization. SIGTERM/SIGINT and the cap stop new worker claims and adaptive batches; in-flight trials can finish. |
 | `--record-metric PATH` | Repeatable extra metric path, validated before the first trial. Keys preserve expression spelling, including aliases, and unavailable values are `null`. |

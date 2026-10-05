@@ -9,6 +9,7 @@
 
 #include "json.hpp"
 #include "continuation.hpp"
+#include "symbol_feeds.hpp"
 #include "batch_executor.hpp"
 #include "../core/ordinal_set.hpp"
 
@@ -68,9 +69,15 @@ struct Options {
     std::string space_hash;
     bool tpe_warm_restored = false;
     std::string tpe_sampler_state;
+    std::string numeric_build_identity;
+    std::string parent_numeric_build_identity;
     std::string trials_out = "all";
     std::uint64_t best_k = 10;
     std::filesystem::path syminfo;
+    std::filesystem::path symbol_feeds_path;
+    std::filesystem::path symbol_feeds_spec;
+    std::shared_ptr<const pfh::SymbolFeeds> symbol_feeds;
+    std::optional<pfh::detail::Json> symbol_feeds_record;
     std::string objective;
     std::vector<std::string> constraints;
     std::vector<std::string> recorded_metrics;
@@ -232,9 +239,10 @@ void print_help() {
               << "Usage:\n"
               << "  pineforge-hpo-native run --strategy FILE --ohlcv FILE "
                  "--objective EXPR [options]\n"
-              << "  pineforge-hpo-native space-info --spec FILE [--warm-start FILE]\n"
+              << "  pineforge-hpo-native space-info --spec FILE [--warm-start FILE] "
+              << "[--symbol-feeds FILE]\n"
               << "  pineforge-hpo-native warm-encode --spec FILE --input FILE "
-                 "--output FILE [--block-trials N]\n\n"
+                 "--output FILE [--block-trials N] [--symbol-feeds FILE]\n\n"
               << "Warm history options:\n"
               << "  --warm-start FILE           binary v2 blocks or v0.5 JSON/JSONL\n"
               << "  --warm-details              space-info: counts and next trial ID\n"
@@ -251,6 +259,7 @@ void print_help() {
               << "  --categorical-real-choice NAME VALUE     real choice\n"
               << "  --categorical-bool-choice NAME VALUE     boolean choice\n"
               << "  --fixed-input NAME VALUE\n"
+              << "  --symbol-feeds FILE        fixed other-symbol feed index (loaded once)\n"
               << "  --strategy-override NAME VALUE\n\n"
               << "Study options:\n"
               << "  --sampler grid|random|tpe|dlib_global  default: grid\n"
@@ -333,6 +342,10 @@ Options parse_options(int argc, char** argv) {
             out.artifact_key = require_value(argc, argv, i, option);
         } else if (option == "--syminfo") {
             out.syminfo = require_value(argc, argv, i, option);
+        } else if (option == "--symbol-feeds") {
+            out.symbol_feeds_path = require_value(argc, argv, i, option);
+        } else if (option == "--symbol-feeds-spec") {
+            out.symbol_feeds_spec = require_value(argc, argv, i, option);
         } else if (option == "--progress-fd") {
             const auto descriptor = parse_i64(require_value(argc, argv, i, option), option);
             if (descriptor < 0 || descriptor > std::numeric_limits<int>::max())
@@ -1382,7 +1395,14 @@ std::string render_results(const Options& options,
         << "  \"space_hash\": \"" << options.space_hash << "\",\n"
         << "  \"space\": " << *options.space_json << ",\n"
         << "  \"pineforge_hpo_version\": \"" << PINEFORGE_HPO_VERSION << "\",\n"
-        << "  \"sampler_implementation\": \"" << sampler_implementation << "\",\n"
+        << "  \"sampler_implementation\": \"" << sampler_implementation << "\",\n";
+    if (options.symbol_feeds_record) {
+        out << "  \"applied_runtime\": {\"symbol_feeds\": "
+            << pfh::detail::dump_json(*options.symbol_feeds_record) << "},\n"
+            << "  \"runtime_sha256\": \""
+            << pfh::detail::symbol_feeds_identity(&*options.symbol_feeds_record) << "\",\n";
+    }
+    out
         << "  \"ok\": " << (best_index ? "true" : "false") << ",\n"
         << "  \"artifact_key\": \"" << json_escape(options.artifact_key) << "\",\n"
         << "  \"sampler\": \"" << json_escape(options.sampler) << "\",\n"
@@ -1509,12 +1529,21 @@ std::string render_results(const Options& options,
     }
     if (!options.tpe_sampler_state.empty())
         out << ",\n  \"tpe_sampler_state\": \"" << json_escape(options.tpe_sampler_state) << "\"";
+    const auto parent_identity_json = options.parent_numeric_build_identity.empty() ? "null" :
+        "\"" + json_escape(options.parent_numeric_build_identity) + "\"";
+    if (!options.numeric_build_identity.empty())
+        out << ",\n  \"numeric_build_identity\": \"" << json_escape(options.numeric_build_identity)
+            << "\",\n  \"parent_numeric_build_identity\": " << parent_identity_json;
     if (options.warm_history) {
         const auto& warm = *options.warm_history;
         out << ",\n  \"warm_start\": {\"source_sha256\":\"" << warm.source_digest()
             << "\",\"trials\":" << warm.size()
             << ",\"completed\":" << warm.completed << ",\"feasible\":" << warm.feasible
-            << ",\"space_hash\":\"" << options.space_hash << "\"}";
+            << ",\"space_hash\":\"" << options.space_hash << "\"";
+        if (!options.numeric_build_identity.empty())
+            out << ",\"numeric_build_identity\":\"" << json_escape(options.numeric_build_identity)
+                << "\",\"parent_numeric_build_identity\":" << parent_identity_json;
+        out << '}';
         if (options.sampler == "tpe")
             out << ",\n  \"warm_start_model\":\""
                 << (options.tpe_warm_restored ? "restored_sampler_state" : "rebuilt_history")
@@ -1564,8 +1593,95 @@ void write_results(const Options& options, const std::string& json) {
     }
 }
 
+void validate_search_input_kinds(const Options& options) {
+    const bool required = std::any_of(options.dimensions.begin(), options.dimensions.end(),
+        [](const auto& dimension) {
+            const auto* categorical = std::get_if<pfh::CategoricalDimension>(&dimension);
+            return categorical && std::any_of(categorical->choices().begin(),
+                categorical->choices().end(), [](const auto& choice) {
+                    return std::holds_alternative<std::string>(choice);
+                });
+        });
+    const auto manifest_path = options.strategy.parent_path() / "manifest.json";
+    std::optional<pfh::detail::Json> manifest;
+    try {
+        manifest = pfh::detail::parse_json(pfh::detail::read_document(manifest_path),
+                                         256 * 1024 * 1024);
+        if (manifest->kind != pfh::detail::Json::Kind::Object)
+            throw std::runtime_error("expected an object");
+        const auto* inputs = manifest->find("inputs");
+        if (!inputs || inputs->kind != pfh::detail::Json::Kind::Array)
+            throw std::runtime_error("missing input metadata");
+    } catch (const std::exception& error) {
+        if (!required)
+            return;
+        throw std::invalid_argument(manifest_path.string() + ": cannot rule out input.symbol "
+            "(D7): " + error.what() + "; engine/codegen >= 1.1.0 metadata is required");
+    }
+    const auto* kind_schema = manifest->find("input_kind_schema");
+    const bool symbol_kinds = (kind_schema && kind_schema->kind == pfh::detail::Json::Kind::Number &&
+                               kind_schema->value == "1");
+    std::string codegen_version = "unknown";
+    try {
+        codegen_version = pfh::detail::field(pfh::detail::field(pfh::detail::field(
+            *manifest, "request_identity"), "codegen"), "version").text();
+    } catch (const std::exception&) {
+    }
+    for (const auto& dimension : options.dimensions) {
+        const auto* categorical = std::get_if<pfh::CategoricalDimension>(&dimension);
+        const bool needs_kind = categorical && std::any_of(categorical->choices().begin(),
+            categorical->choices().end(), [](const auto& choice) {
+                return std::holds_alternative<std::string>(choice);
+            });
+        const pfh::detail::Json* selected = nullptr;
+        for (const auto& input : manifest->find("inputs")->items) {
+            if (input.kind != pfh::detail::Json::Kind::Object)
+                continue;
+            const auto* title = input.find("title");
+            if (title && title->value == pfh::dimension_name(dimension)) {
+                if (selected)
+                    throw std::invalid_argument(manifest_path.string() + ": duplicate input " +
+                                                title->value + " used by search dimension");
+                selected = &input;
+            }
+        }
+        const auto* type = selected ? selected->find("type") : nullptr;
+        const auto* kind = selected ? selected->find("kind") : nullptr;
+        if (type && type->value == "string" && !symbol_kinds)
+            throw std::invalid_argument(manifest_path.string() +
+                ": cannot rule out input.symbol '" + std::string(pfh::dimension_name(dimension)) +
+                "' (D7); manifest not stamped kind-capable by pineforge-hpo's builder; "
+                "rebuild the artifact with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0; "
+                "codegen version " + codegen_version);
+        if ((kind && kind->value == "symbol") || (type && type->value == "symbol"))
+            throw std::invalid_argument("HPO over input.symbol '" +
+                std::string(pfh::dimension_name(dimension)) + "' is refused (D7); "
+                "only fixed other-symbol reads are supported");
+        const bool ordinary_string = kind && kind->kind == pfh::detail::Json::Kind::String &&
+            (kind->value == "string" || kind->value == "color" || kind->value == "timeframe" ||
+             kind->value == "session" || kind->value == "text_area");
+        const bool unknown_kind = kind && kind->kind != pfh::detail::Json::Kind::Null &&
+                                  !ordinary_string;
+        if (needs_kind && (!type || type->kind != pfh::detail::Json::Kind::String))
+            throw std::invalid_argument(manifest_path.string() + ": missing input type for " +
+                                        std::string(pfh::dimension_name(dimension)));
+        if (needs_kind && type->value != "int" && type->value != "float" &&
+            type->value != "bool" && type->value != "string" &&
+            type->value != "source" && type->value != "enum")
+            throw std::invalid_argument("search_space." +
+                std::string(pfh::dimension_name(dimension)) +
+                ".choices[0] is incompatible with Pine input type '" + type->value + "'");
+        if (type && type->value == "string" && unknown_kind)
+            throw std::invalid_argument(manifest_path.string() +
+                ": cannot rule out input.symbol '" + std::string(pfh::dimension_name(dimension)) +
+                "' (D7); unrecognized input kind" +
+                "; codegen version " + codegen_version);
+    }
+}
+
 int run(Options options) {
     const auto started = RunState::Clock::now();
+    validate_search_input_kinds(options);
     pfh::Pruner pruner(options.pruner, options.pruner_rungs, options.pruner_eta,
                        options.direction == Direction::kMinimize);
     if (options.batch_lag && options.sampler == "tpe" && !options.tpe_config.constant_liar)
@@ -1583,8 +1699,24 @@ int run(Options options) {
         throw std::invalid_argument(
             "grid sampling requires a step on every varying real dimension");
     }
-    const auto recorded = pfh::detail::recorded_space(space, options.objective,
+    const unsigned symbol_sources = static_cast<unsigned>(!options.symbol_feeds_path.empty()) +
+        static_cast<unsigned>(!options.symbol_feeds_spec.empty());
+    if (symbol_sources > 1)
+        pfh::detail::symbol_feed_error("use a file or an inline index, not both");
+    if (symbol_sources) {
+        auto feeds = std::make_shared<const pfh::SymbolFeeds>(
+            !options.symbol_feeds_spec.empty() ?
+                pfh::detail::load_symbol_feeds_spec(options.symbol_feeds_spec) :
+                pfh::detail::load_symbol_feeds(options.symbol_feeds_path));
+        if (!feeds->empty()) {
+            options.symbol_feeds_record = pfh::detail::symbol_feeds_record(*feeds);
+            options.symbol_feeds = std::move(feeds);
+        }
+    }
+    auto recorded = pfh::detail::recorded_space(space, options.objective,
         options.direction == Direction::kMaximize ? "maximize" : "minimize", options.constraints);
+    if (options.symbol_feeds_record)
+        recorded.members["symbol_feeds"] = *options.symbol_feeds_record;
     options.space_json = std::make_shared<const std::string>(pfh::detail::dump_json(recorded));
     options.space_hash = pfh::detail::space_hash(recorded);
     if (!options.warm_start.empty()) {
@@ -1655,6 +1787,7 @@ int run(Options options) {
     configuration.magnifier_samples = options.magnifier_samples;
     configuration.magnifier_distribution = options.magnifier_distribution;
     configuration.capture_equity_curve = false;
+    configuration.symbol_feeds = options.symbol_feeds;
     if (!options.syminfo.empty())
         configuration.symbol_info = read_symbol_info(options.syminfo);
     const pfh::TrialExecutor executor(plugin, dataset, configuration);
@@ -1776,11 +1909,15 @@ int run(Options options) {
             ? pfh::CandidatePolicy::WithoutReplacement : options.candidate_policy;
         pfh::TpeSampler sampler(space, options.seed, direction, options.max_trials,
                                 options.tpe_config, policy);
+        options.numeric_build_identity =
+            pfh::detail::sampler_checkpoint_numeric_identity(sampler.sampler_state());
         if (options.warm_history) {
             const auto replay_batch = options.batch_lag == 0 ? batch_size : 0;
             const auto state = options.batch_lag == 0 ? options.warm_history->sampler_state :
                                                        std::string{};
             try {
+                options.parent_numeric_build_identity =
+                    pfh::detail::sampler_checkpoint_numeric_identity(state);
                 options.tpe_warm_restored = options.warm_history->binary
                     ? sampler.warm_start(options.warm_history->binary, replay_batch, state)
                     : sampler.warm_start(options.warm_history->observations, replay_batch, state);
@@ -1874,6 +2011,7 @@ int main(int argc, char** argv) {
     try {
         if (argc > 1 && std::string(argv[1]) == "warm-encode") {
             std::filesystem::path spec;
+            std::filesystem::path symbol_feeds;
             std::filesystem::path input;
             std::filesystem::path output;
             std::uint64_t block_trials = 0;
@@ -1881,6 +2019,8 @@ int main(int argc, char** argv) {
                 const std::string option = argv[index];
                 if (option == "--spec")
                     spec = require_value(argc, argv, index, option);
+                else if (option == "--symbol-feeds")
+                    symbol_feeds = require_value(argc, argv, index, option);
                 else if (option == "--input")
                     input = require_value(argc, argv, index, option);
                 else if (option == "--output")
@@ -1899,8 +2039,7 @@ int main(int argc, char** argv) {
             }
             if (spec.empty() || input.empty() || output.empty())
                 usage_error("warm-encode requires --spec, --input and --output");
-            const auto recorded = pfh::detail::space_from_spec(
-                pfh::detail::parse_json(pfh::detail::read_document(spec)));
+            const auto recorded = pfh::detail::space_with_symbol_feeds(spec, symbol_feeds);
             const auto space = pfh::detail::search_space_from_recorded(recorded);
             const auto history = pfh::detail::load_warm_history(input, space, recorded);
             pfh::detail::encode_warm_history(output, space, recorded, history, block_trials);
@@ -1908,26 +2047,36 @@ int main(int argc, char** argv) {
         }
         if (argc > 1 && std::string(argv[1]) == "space-info") {
             std::filesystem::path spec;
+            std::filesystem::path symbol_feeds;
             std::filesystem::path warm;
             bool warm_details = false;
             bool warm_digest = false;
+            bool defer_symbol_feeds = false;
             for (int index = 2; index < argc; ++index) {
                 const std::string option = argv[index];
                 if (option == "--spec")
                     spec = require_value(argc, argv, index, option);
+                else if (option == "--symbol-feeds")
+                    symbol_feeds = require_value(argc, argv, index, option);
                 else if (option == "--warm-start")
                     warm = require_value(argc, argv, index, option);
                 else if (option == "--warm-details")
                     warm_details = true;
                 else if (option == "--warm-digest")
                     warm_digest = true;
+                else if (option == "--defer-symbol-feeds")
+                    defer_symbol_feeds = true;
                 else
                     usage_error("unknown space-info option: " + option);
             }
             if (spec.empty())
                 usage_error("space-info requires --spec");
-            const auto recorded = pfh::detail::space_from_spec(
-                pfh::detail::parse_json(pfh::detail::read_document(spec)));
+            defer_symbol_feeds = defer_symbol_feeds && symbol_feeds.empty();
+            auto recorded = defer_symbol_feeds ? pfh::detail::space_from_spec(
+                pfh::detail::parse_json(pfh::detail::read_document(spec), 256 * 1024 * 1024)) :
+                pfh::detail::space_with_symbol_feeds(spec, symbol_feeds);
+            if (defer_symbol_feeds)
+                recorded.members["_defer_symbol_feeds"] = pfh::detail::Json::boolean(true);
             const auto space = pfh::detail::search_space_from_recorded(recorded);
             std::optional<std::uint64_t> cardinality;
             try {

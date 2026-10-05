@@ -1,6 +1,7 @@
 #pragma once
 
 #include <pineforge/pineforge.h>
+#include <pineforge/hpo/symbol_feeds.hpp>
 
 #include <filesystem>
 #include <optional>
@@ -79,6 +80,10 @@ public:
     /// @throws std::invalid_argument for a null handle, non-positive numbers, or embedded NUL.
     void set_symbol_info(pf_strategy_t strategy, const SymbolInfo& info) const;
 
+    /// Installs fixed other-symbol facts and bars into a fresh strategy handle.
+    /// @throws std::runtime_error naming a missing setter or refused symbol/timeframe.
+    void set_symbol_feeds(pf_strategy_t strategy, const SymbolFeeds& symbols) const;
+
     /// Invokes the plugin's full backtest entry point using immutable OHLCV input.
     ///
     /// The report remains caller-owned and must later be released with free_report().
@@ -108,6 +113,9 @@ private:
     using StrategySetSymbolDoubleFn = void (*)(pf_strategy_t, double);
     using StrategySetSymbolMetadataFn = void (*)(pf_strategy_t, const char*, double);
     using StrategySetSymbolStringFn = void (*)(pf_strategy_t, const char*);
+    using StrategySetSymbolFactsFn = int (*)(pf_strategy_t, const char*, const char*, const char*);
+    using StrategySetSymbolFeedFn = int (*)(pf_strategy_t, const char*, const char*,
+                                           const pf_bar_t*, const std::int64_t*, std::int32_t);
     using RunBacktestFullFn = void (*)(pf_strategy_t,
                                        pf_bar_t*,
                                        int,
@@ -136,6 +144,8 @@ private:
     StrategySetSymbolMetadataFn strategy_set_syminfo_metadata_ = nullptr;
     StrategySetSymbolStringFn strategy_set_syminfo_timezone_ = nullptr;
     StrategySetSymbolStringFn strategy_set_syminfo_session_ = nullptr;
+    StrategySetSymbolFactsFn strategy_set_symbol_facts_ = nullptr;
+    StrategySetSymbolFeedFn strategy_set_symbol_feed_ = nullptr;
     RunBacktestFullFn run_backtest_full_ = nullptr;
     StrategyGetLastErrorFn strategy_get_last_error_ = nullptr;
     ReportFreeFn report_free_ = nullptr;

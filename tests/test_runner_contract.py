@@ -88,7 +88,8 @@ def main() -> int:
                             and node.name == "apply_syminfo")
             setters = [node.func.attr for node in ast.walk(function)
                        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                       and node.func.attr.startswith("strategy_set_syminfo_")]
+                       and node.func.attr.startswith("strategy_set_syminfo_")
+                       and node.func.attr != "strategy_set_syminfo_metadata"]
             require(setters == ["strategy_set_syminfo_mintick", "strategy_set_syminfo_pointvalue",
                                 "strategy_set_syminfo_timezone", "strategy_set_syminfo_session"],
                     "pinned harness changed the four-setter order")

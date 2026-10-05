@@ -68,23 +68,24 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-The gitlinks pin the releases this HPO revision is tested with: engine v1.0.0 (`5718c5d`,
-C ABI 4) and codegen v1.0.0 (`5bf595b`). With them, all eight `ctest` suites and the
-nine-trial example below pass (checked on Linux arm64 and macOS arm64, 2026-09-30).
+The gitlinks pin the releases this HPO revision targets: engine v1.2.0 (`792a6b5`,
+C ABI 4) and codegen v1.2.0 (`3954537`). Linux CI gates the nine-trial example,
+real multi-symbol C-ABI equality and real-artifact D7 refusal; both native CI runners
+require the independently pinned serial golden rather than silently skipping it.
 From 1.0.0 on, codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may
 still compile, but equal `PF_ABI_VERSION` values do not guarantee a compatible C++ source
-layout or the same behavior. The optional `transpile` extra admits any `pineforge-codegen`
-1.x, so install the release that matches your engine (`pineforge-codegen==1.0.0` for the
+layout or the same behavior. The optional `transpile` extra requires `pineforge-codegen`
+>= 1.1.0 and < 2, so install the release that matches your engine (`pineforge-codegen==1.2.0` for the
 gitlinks). The native adapter reads the equity statistics by their engine 1.0 names, so it
 needs engine 1.x headers. Regenerate a precompiled plugin referenced from a StudySpec with
-codegen 1.0.0 and rebuild it against engine v1.0.0: plugins from engine v0.13.x or earlier
+codegen 1.2.0 and rebuild it against engine v1.2.0: plugins from engine v0.13.x or earlier
 (ABI 3 or lower) are refused with an ABI mismatch, while plugins from 1.0 prereleases or
 development builds also report ABI 4 and load without an error although they do not pair
-with v1.0.0. C++ code that reads
+with the pinned releases. C++ code that reads
 `ReportSnapshot::metrics.equity.sharpe_tv` or `sortino_tv` must use `sharpe_monthly` or
 `sortino_monthly`.
 
-Compared with the previous gitlinks (engine `7bff706`, codegen `cefeec8`), 3 of the 9
+When upgrading to v1.0.0 from the old gitlinks (engine `7bff706`, codegen `cefeec8`), 3 of the 9
 example trials report different metrics: since v0.13.0 the engine reports a position still
 open after the final bar as a range-end close, which counts as a trade. The best trial is
 unchanged.
@@ -195,7 +196,83 @@ For example, append these controls to a native `run` command:
 Numeric symbol values must be finite and positive; timezone/session values must
 be strings without embedded NULs. Empty strings and omitted fields are no-ops;
 other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
-The four setters mirror the pinned engine 1.0.0 release harness.
+The four setters mirror the pinned engine 1.2.0 release harness.
+
+### Fixed other-symbol feeds (0.8.0)
+
+Optimize scripts reading other symbols with `request.security`, keeping those symbols fixed:
+
+```bash
+pineforge-hpo run work.json --symbol-feeds data/feeds/index.json \
+  --native ./build/bin/pineforge-hpo-native
+# Native: pineforge-hpo-native run ... --symbol-feeds data/feeds/index.json
+```
+
+Alternatively add `"symbol_feeds": "data/feeds/index.json"` to work.json, or supply an
+inline index. The CLI option overrides work.json. Index example:
+
+```json
+{
+  "symbols": {
+    "BINANCE:ETHUSDT": {
+      "syminfo": {
+        "tickerid": "BINANCE:ETHUSDT", "type": "crypto", "currency": "USDT",
+        "mintick": 0.01, "timezone": "UTC", "session": "24x7"
+      },
+      "feeds": {"240": "ethusdt-240.csv", "1D": "ethusdt-1D.csv"}
+    }
+  }
+}
+```
+
+Keys are exact script request strings, including exchange prefixes and suffixes.
+CSV paths resolve against the index directory (work.json's directory for an inline index).
+For BTCUSDT 4h pass the chart's own bars with `input_tf` and `script_tf` both `"240"`;
+do not aggregate lower-timeframe input into the chart. Include each requested feed and
+sufficient history; there is no network fetching. Initialization validates/hashes once,
+then every fresh trial installs facts/bars/closes through the public C ABI with no file I/O.
+Index/CSV/setter refusal is exit 1 with `--symbol-feeds:`, before any terminal trial output.
+**`input.symbol` search dimensions are refused (D7)**; such inputs may be fixed only.
+This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.2.0).
+Direct native artifact users must keep the adjacent codegen `manifest.json` when searching
+string-valued inputs. `input.source` and `input.enum` dimensions are supported; only a
+`type: "string"` input requires the manifest's explicit `"input_kind_schema": 1` marker.
+PineForge HPO's artifact builder writes it when its one-pass codegen result contains the
+modern `requests` list (including an empty list), the capability introduced with symbol
+input kinds in codegen 1.1.0. Individual input `kind` fields never vouch for other inputs.
+This supports symbol-free string/timeframe searches and codegen source checkouts whose
+package version is unknown. Unstamped manifests fail closed with a rebuild instruction;
+rebuild with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0. Pre-stamp caches rebuild once
+because their artifact identity lacks the builder's input-metadata revision. The Python frontend
+validates generated/precompiled metadata automatically. An unreadable optional manifest
+does not break a numeric-only native study. Duplicate titles unrelated to searched/fixed
+inputs do not invalidate Python studies; native rejects duplicates only for searched inputs.
+
+Results record `applied_runtime.symbol_feeds` and `runtime_sha256`. Warm JSON/JSONL/v2
+refuse changed/added/removed feeds or facts; relocating identical files is safe. Empty/omitted
+feeds preserve prior grid/random result content and warm-v2 bytes, except the release-version
+marker. TPE additionally exposes `numeric_build_identity` and `parent_numeric_build_identity`
+(also in `warm_start` provenance); the parent is null when no compatible-version checkpoint
+was compared. `restored_sampler_state` requires equal, non-null parent/child identities.
+The runtime-libm fingerprint covers only functions used by the configured space: a
+long-double `log1p` difference cannot block linear/integer/categorical continuation, but
+does block log-scale checkpoint restoration. Other compiler/flags/platform checks remain.
+Native `space-info` and `warm-encode` also accept `--symbol-feeds <index.json>` to override
+the work file's feed index.
+See [StudySpec](docs/study-spec.md) for validation and header details.
+
+The real compiled-Pine equality gate compares three candidates' complete C-ABI metrics
+and trades (field bytes unchanged, unspecified ABI padding zeroed) against a release
+harness supporting `--symbol-feeds`, using deterministic
+synthetic BTCUSDT 4h / ETHUSDT 240 + 1D fixtures:
+
+```bash
+python3 tests/test_symbol_feeds_e2e.py --native build/bin/pineforge-hpo-native \
+  --probe build/bin/pineforge_hpo_symbol_feed_report \
+  --harness /path/to/pineforge-engine/docker/run_json.py --output build/feeds-e2e
+```
+
+Runtime/plugin gitlinks remain pinned. Evidence and fixture/artifact hashes stay under build.
 
 `mincontract` (since 0.3.1) is the instrument's lot-size grid (TradingView
 `syminfo.mincontract`). Pass the catalog object as is: a number is applied to the
@@ -210,7 +287,7 @@ range such as `1e999` or `1e-400`) is an initialization error with the message
 `invalid JSON at byte N`, which does not name the key).
 
 Applying the grid needs the plugin to export `strategy_set_syminfo_metadata`, which the
-pinned engine v1.0.0 and v1.0.1 both do (declared in `pineforge.h`; the engine honours the
+pinned engine v1.2.0 does (declared in `pineforge.h`; the engine honours the
 `qty_step` key). A plugin without it keeps working for every syminfo that has no
 `mincontract`; with one, each trial fails with a `trial_error` that names the key and the
 run exits 2 because no trial is feasible, instead of running without the grid.
@@ -554,9 +631,16 @@ CMake 3.21+ also supports the `release`, `asan` (ASan/UBSan), and `tsan`
 (ThreadSanitizer) presets. Use separate sanitizer builds:
 
 ```bash
-cmake --preset asan && cmake --build --preset asan -j4 && ctest --preset asan
+cmake --preset asan && cmake --build --preset asan -j4
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:quarantine_size_mb=16 \
+  UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ctest --preset asan
 cmake --preset tsan && cmake --build --preset tsan -j4 && ctest --preset tsan
 ```
+
+The 16 MiB ASan quarantine bounds instrumentation's retained freed allocations so the
+`tpe_scale` test's 64 MiB RSS-growth assertion measures sampler retention rather than
+ASan's default quarantine. This is test sensitivity, not a sampler-memory regression;
+address/undefined-behavior checks and leak detection remain enabled.
 
 To include the installed-prefix gate, configure with
 `-DPINEFORGE_HPO_TEST_ENGINE_BUILD="$PWD/external/pineforge-engine/build"`

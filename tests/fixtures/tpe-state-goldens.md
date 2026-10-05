@@ -29,10 +29,15 @@ Both use `-ffp-contract=off`. The math-library difference is why numerical-build
 identity is enforced for full sampler checkpoints: canonical RNG transport does
 not make different floating-point/math-library builds proposal-equivalent.
 
-`tpe-serial-goldens.txt` keys these hashes by SHA-256 of the derived numerical
-identity, not the host OS. Unknown identities print a clear SKIP message for the
-independent golden only; serial/threaded proposal and acquisition-bit comparisons
-still run. Refresh identities only after independently verifying the legacy oracle.
+`tpe-serial-goldens.txt` keys these hashes by double/long-double mantissa precision,
+not compiler versions, flags or host OS. The 53/64 key covers Linux x86-64; 53/53
+covers macOS arm64. This deliberately tests the independently derived proposal
+hash even after compiler/libm identity changes, rather than silently skipping CI.
+Every golden run prints its key and full numerical identity. Unknown precision
+keys return CTest skip code 77 only outside CI. Configure with
+`-DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON` (both native CI jobs do) to make any
+missing golden a failure. Refresh proposal hashes only after independently
+verifying the legacy oracle; ordinary identity changes must not rebaseline them.
 
 `checkpoint_exchange` writes or imports a full bounded `PFHTPE2` checkpoint for
 201 deterministic rows and a seven-element reservoir. Exchanging macOS and Linux

@@ -1,6 +1,9 @@
 #include <pineforge/hpo/strategy_plugin.hpp>
 
 #include <cmath>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -86,6 +89,10 @@ StrategyPlugin::StrategyPlugin(std::filesystem::path path) : path_(std::move(pat
             library_handle_, "strategy_set_syminfo_timezone");
         strategy_set_syminfo_session_ = load_optional_symbol<StrategySetSymbolStringFn>(
             library_handle_, "strategy_set_syminfo_session");
+        strategy_set_symbol_facts_ = load_optional_symbol<StrategySetSymbolFactsFn>(
+            library_handle_, "strategy_set_symbol_facts");
+        strategy_set_symbol_feed_ = load_optional_symbol<StrategySetSymbolFeedFn>(
+            library_handle_, "strategy_set_symbol_feed");
         run_backtest_full_ =
             load_required_symbol<RunBacktestFullFn>(library_handle_, path_, "run_backtest_full");
         strategy_get_last_error_ = load_required_symbol<StrategyGetLastErrorFn>(
@@ -129,6 +136,8 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
       strategy_set_syminfo_metadata_(other.strategy_set_syminfo_metadata_),
       strategy_set_syminfo_timezone_(other.strategy_set_syminfo_timezone_),
       strategy_set_syminfo_session_(other.strategy_set_syminfo_session_),
+      strategy_set_symbol_facts_(other.strategy_set_symbol_facts_),
+      strategy_set_symbol_feed_(other.strategy_set_symbol_feed_),
       run_backtest_full_(other.run_backtest_full_),
       strategy_get_last_error_(other.strategy_get_last_error_),
       report_free_(other.report_free_),
@@ -145,6 +154,8 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
     other.strategy_set_syminfo_metadata_ = nullptr;
     other.strategy_set_syminfo_timezone_ = nullptr;
     other.strategy_set_syminfo_session_ = nullptr;
+    other.strategy_set_symbol_facts_ = nullptr;
+    other.strategy_set_symbol_feed_ = nullptr;
     other.run_backtest_full_ = nullptr;
     other.strategy_get_last_error_ = nullptr;
     other.report_free_ = nullptr;
@@ -169,6 +180,8 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     strategy_set_syminfo_metadata_ = other.strategy_set_syminfo_metadata_;
     strategy_set_syminfo_timezone_ = other.strategy_set_syminfo_timezone_;
     strategy_set_syminfo_session_ = other.strategy_set_syminfo_session_;
+    strategy_set_symbol_facts_ = other.strategy_set_symbol_facts_;
+    strategy_set_symbol_feed_ = other.strategy_set_symbol_feed_;
     run_backtest_full_ = other.run_backtest_full_;
     strategy_get_last_error_ = other.strategy_get_last_error_;
     report_free_ = other.report_free_;
@@ -186,6 +199,8 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     other.strategy_set_syminfo_metadata_ = nullptr;
     other.strategy_set_syminfo_timezone_ = nullptr;
     other.strategy_set_syminfo_session_ = nullptr;
+    other.strategy_set_symbol_facts_ = nullptr;
+    other.strategy_set_symbol_feed_ = nullptr;
     other.run_backtest_full_ = nullptr;
     other.strategy_get_last_error_ = nullptr;
     other.report_free_ = nullptr;
@@ -305,6 +320,53 @@ void StrategyPlugin::run_backtest_full(pf_strategy_t strategy,
     run_backtest_full_(strategy, const_cast<pf_bar_t*>(bars), bar_count, input_timeframe.c_str(),
                        script_timeframe.c_str(), bar_magnifier ? 1 : 0, magnifier_samples,
                        magnifier_distribution, report);
+}
+
+void StrategyPlugin::set_symbol_feeds(pf_strategy_t strategy, const SymbolFeeds& symbols) const {
+    if (symbols.empty())
+        return;
+    if (!strategy_set_symbol_facts_ || !strategy_set_symbol_feed_)
+        throw std::runtime_error("--symbol-feeds: strategy library has no " +
+            std::string(!strategy_set_symbol_facts_ ? "strategy_set_symbol_facts " : "") +
+            (!strategy_set_symbol_feed_ ? "strategy_set_symbol_feed" : "") +
+            "; other symbols' bars cannot be installed (engine 1.0.0 or later)");
+    if (!strategy)
+        throw std::invalid_argument("--symbol-feeds: null strategy handle");
+    const auto refused = [&](const std::string& what) {
+        const auto error = last_error(strategy);
+        throw std::runtime_error("--symbol-feeds: the engine refused " + what +
+                                 (error.empty() ? "" : ": " + error));
+    };
+    for (const auto& symbol : symbols) {
+        reject_embedded_null(symbol.symbol, "symbol key");
+        for (const auto& fact : symbol.facts) {
+            std::string value;
+            if (const auto* number = std::get_if<double>(&fact.value)) {
+                std::ostringstream text;
+                text.imbue(std::locale::classic());
+                text << std::setprecision(17) << *number;
+                value = text.str();
+            } else {
+                value = std::get<std::string>(fact.value);
+            }
+            reject_embedded_null(fact.field, "symbol fact");
+            reject_embedded_null(value, "symbol fact value");
+            if (strategy_set_symbol_facts_(strategy, symbol.symbol.c_str(), fact.field.c_str(),
+                                           value.c_str()) != 0)
+                refused("the " + fact.field + " of " + symbol.symbol);
+        }
+        for (const auto& feed : symbol.feeds) {
+            if (feed.bars.size() != feed.close_ms.size() ||
+                feed.bars.size() > static_cast<std::size_t>(INT32_MAX))
+                refused("the feed " + symbol.symbol + "@" + feed.timeframe +
+                        " (invalid bar/close count)");
+            reject_embedded_null(feed.timeframe, "symbol timeframe");
+            if (strategy_set_symbol_feed_(strategy, symbol.symbol.c_str(), feed.timeframe.c_str(),
+                    feed.bars.data(), feed.close_ms.data(),
+                    static_cast<std::int32_t>(feed.bars.size())) != 0)
+                refused("the feed " + symbol.symbol + "@" + feed.timeframe);
+        }
+    }
 }
 
 std::string StrategyPlugin::last_error(pf_strategy_t strategy) const {

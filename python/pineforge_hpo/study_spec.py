@@ -134,6 +134,7 @@ class StudySpec:
     sampler: SamplerSpec
     execution: ExecutionSpec
     spec_path: Path
+    symbol_feeds: Path | Mapping[str, Any] | None = None
 
     @property
     def search_space(self) -> Mapping[str, ParameterSpec]:
@@ -1054,6 +1055,7 @@ def load_study_spec(
             "objective",
             "sampler",
             "execution",
+            "symbol_feeds",
         },
         "$",
         issues,
@@ -1078,6 +1080,16 @@ def load_study_spec(
     else:
         strategy_raw = strategies[0]
     strategy = _parse_strategy(strategy_raw, spec_path.parent, issues)
+
+    symbol_feeds = root.get("symbol_feeds")
+    if isinstance(symbol_feeds, str) and symbol_feeds:
+        symbol_feeds = (spec_path.parent / Path(symbol_feeds).expanduser()).resolve()
+    elif symbol_feeds is not None and not isinstance(symbol_feeds, dict):
+        issues.append(
+            ValidationIssue(
+                "$.symbol_feeds", "must be an index path or inline index object"
+            )
+        )
 
     datasets_raw = root.get("datasets")
     datasets: list[DatasetSpec] = []
@@ -1146,6 +1158,7 @@ def load_study_spec(
         sampler=sampler,
         execution=execution,
         spec_path=spec_path,
+        symbol_feeds=symbol_feeds,
     )
 
 

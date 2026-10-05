@@ -27,6 +27,7 @@ from .transpile import (
 
 CACHE_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
+INPUT_METADATA_REVISION = 1
 CANONICAL_COMPILE_FLAGS = (
     "-std=c++17",
     "-O2",
@@ -327,6 +328,7 @@ class ArtifactBuilder:
             "output_extension": output_extension,
         }
         request_identity = {
+            "input_metadata_revision": INPUT_METADATA_REVISION,
             "source_sha256": hashlib.sha256(pine_source.encode("utf-8")).hexdigest(),
             "codegen": codegen.to_dict(),
             "engine": engine.identity_dict(),
@@ -394,6 +396,7 @@ class ArtifactBuilder:
                 generated_cpp=generated_cpp,
                 generated_cpp_sha256=generated_cpp_sha256,
                 inputs=transpile_result.inputs,
+                input_kind_schema=transpile_result.input_kind_schema,
                 strategy_params=transpile_result.strategy_params,
                 diagnostics=transpile_result.diagnostics,
                 source_name=filename,
@@ -689,6 +692,8 @@ class ArtifactBuilder:
             return None
         if provenance.get("plugin_validation") != plugin_validation:
             return None
+        if manifest.get("input_kind_schema") != provenance.get("input_kind_schema"):
+            return None
         inputs = manifest.get("inputs", [])
         strategy_params = manifest.get("strategy_params", {})
         if not isinstance(inputs, list) or not isinstance(strategy_params, Mapping):
@@ -717,6 +722,7 @@ class ArtifactBuilder:
         generated_cpp: str,
         generated_cpp_sha256: str,
         inputs: Sequence[Mapping[str, Any]],
+        input_kind_schema: int | None,
         strategy_params: Mapping[str, Any],
         diagnostics: Sequence[TranspileDiagnostic],
         source_name: str,
@@ -807,6 +813,9 @@ class ArtifactBuilder:
                 "plugin_validation": plugin_validation,
                 "compile": request_identity["compile"],
             }
+            if input_kind_schema == 1:
+                manifest["input_kind_schema"] = 1
+                provenance["input_kind_schema"] = 1
             (staging / "manifest.json").write_text(
                 _canonical_json(manifest) + "\n", encoding="utf-8"
             )
