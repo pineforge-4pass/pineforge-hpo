@@ -14,7 +14,8 @@ template <typename Value>
 Value perturb(Value result, const char* function) {
     if (!selected(function))
         return result;
-    if (std::getenv("PFH_SHIM_ULP") || std::strstr(function, "floor") ||
+    if (std::getenv("PFH_SHIM_ULP") || std::strstr(function, "fma") ||
+        std::strstr(function, "floor") ||
         std::strstr(function, "ceil") || std::strstr(function, "round"))
         return std::nextafter(result, static_cast<Value>(INFINITY));
     return result * (static_cast<Value>(1) + static_cast<Value>(1e-9L));

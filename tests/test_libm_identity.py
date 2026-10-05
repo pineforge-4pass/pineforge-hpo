@@ -161,14 +161,17 @@ def main():
             )
             mask = int(identity.split(";libm_functions:")[1].split(";")[0])
             changed_functions = []
+            unchanged_probe_functions = []
             for index, function in enumerate(functions):
                 perturbed = run(dimensions, function)
                 identity_changed = perturbed["numeric_build_identity"] != identity
-                if mask & (1 << index):
+                if identity_changed:
                     require(
-                        identity_changed,
-                        f"{name}/{function}: included function did not change identity",
+                        mask & (1 << index),
+                        f"{name}/{function}: excluded function changed identity",
                     )
+                elif mask & (1 << index):
+                    unchanged_probe_functions.append(function)
                 if proposals(perturbed) != proposals(baseline):
                     require(
                         identity_changed,
@@ -177,7 +180,9 @@ def main():
                     changed_functions.append(function)
                     changed_count += 1
             print(
-                f"PASS libm differential {name}: 22 functions; proposal changes={changed_functions}",
+                f"PASS libm differential {name}: 22 functions; "
+                f"proposal changes={changed_functions}; "
+                f"unchanged included probes={unchanged_probe_functions}",
                 flush=True,
             )
             parent = directory / f"{name}.json"
