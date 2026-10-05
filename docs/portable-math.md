@@ -140,6 +140,10 @@ Only similarly negligible tails avoid CDF evaluation. A fixed 64-entry immutable
 bin-mass memo retains exact previously computed values; it neither consumes RNG bits
 nor changes score arithmetic. Full-history models no longer compute unused density-table
 amplitudes. These optimizations do not relax primitive accuracy or parity tolerances.
+For intervals containing [-9, 9], the sum of the normal tails is below 2.3e-19,
+less than half the binary64 spacing below one. The existing `1 - tails` therefore
+rounds exactly to one and its logarithm to positive zero; returning that same zero
+avoids two erfc evaluations without changing any proposal bits.
 
 ## Cross-vendor proof protocol
 

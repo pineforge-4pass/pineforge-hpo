@@ -59,6 +59,9 @@ optuna)
     build/optuna-venv/bin/python benchmarks/optuna/run_benchmark.py \
         --native build/optuna/pineforge_hpo_optuna_native --smoke \
         --output build/evidence/optuna-smoke.csv
+    build/optuna-venv/bin/python benchmarks/optuna/run_benchmark.py \
+        --native build/optuna/pineforge_hpo_optuna_native \
+        --output build/evidence/optuna-full.csv
     ;;
 sanitizers|asan|tsan)
     configure_engine

@@ -186,7 +186,16 @@ class CliTests(unittest.TestCase):
         for marker in (True, "1", 2):
             manifest.write_text(json.dumps({"input_kind_schema": marker}))
             self.assertEqual(_artifact_input_metadata(manifest), (None, False))
-        for version in ("1.0.9", "v1.0.0", "1.1.0-rc.1", "1.1.0rc1", "1.1.0.dev1"):
+        for version in (
+            "1",
+            "1.0",
+            "1.0.9",
+            "v1.0.0",
+            "1.1rc1",
+            "1.1.0-rc.1",
+            "1.1.0rc1",
+            "1.1.0.dev1",
+        ):
             manifest.write_text(
                 json.dumps(
                     {

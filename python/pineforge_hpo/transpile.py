@@ -140,11 +140,14 @@ def _diagnostics_from_payload(
 
 def legacy_input_kind_version(version: str | None) -> bool:
     """Whether a recorded, parseable codegen version predates input-kind metadata."""
-    match = re.match(r"^[vV]?(\d+)\.(\d+)\.(\d+)(.*)$", (version or "").strip())
+    match = re.fullmatch(
+        r"[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?([-+a-zA-Z.].*)?",
+        (version or "").strip(),
+    )
     if not match:
         return False
-    core = tuple(map(int, match.groups()[:3]))
-    suffix = match.group(4)
+    core = tuple(int(component or "0") for component in match.groups()[:3])
+    suffix = match.group(4) or ""
     return core < (1, 1, 0) or (
         core == (1, 1, 0) and suffix.startswith(("-", "a", "b", "rc", "dev", ".dev"))
     )

@@ -34,6 +34,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -1635,14 +1636,18 @@ void validate_search_input_kinds(const Options& options) {
             *manifest, "request_identity"), "codegen"), "version").text();
     } catch (const std::exception&) {
     }
-    unsigned codegen_major, codegen_minor, codegen_patch;
-    int version_end = 0;
-    const char* version_start = codegen_version.c_str();
-    if (*version_start == 'v' || *version_start == 'V')
-        ++version_start;
-    const bool known_version = std::sscanf(version_start, "%u.%u.%u%n",
-        &codegen_major, &codegen_minor, &codegen_patch, &version_end) == 3;
-    const std::string version_suffix = known_version ? version_start + version_end : "";
+    const std::regex version_pattern(
+        R"(^\s*[vV]?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?([-+a-zA-Z.].*)?\s*$)");
+    std::smatch version_match;
+    const bool known_version = std::regex_match(codegen_version, version_match, version_pattern);
+    const auto version_component = [&](unsigned index) {
+        return known_version && version_match[index].matched ?
+            std::stoull(version_match[index].str()) : 0ULL;
+    };
+    const auto codegen_major = version_component(1);
+    const auto codegen_minor = version_component(2);
+    const auto codegen_patch = version_component(3);
+    const std::string version_suffix = known_version ? version_match[4].str() : "";
     const bool initial_prerelease = known_version && codegen_major == 1 &&
         codegen_minor == 1 && codegen_patch == 0 &&
         (version_suffix.find('-') == 0 || version_suffix.find('a') == 0 ||

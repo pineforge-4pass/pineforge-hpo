@@ -1,3 +1,5 @@
 # Benchmark evidence hashes cover the original CRLF bytes. Preserve them while
 # teaching Git's whitespace checker that CR at end-of-line is intentional.
 benchmarks/optuna/evidence/*.csv -text whitespace=cr-at-eol
+third_party/core_math/** whitespace=-trailing-space
+tests/fixtures/portable-math-intel/*.state whitespace=-trailing-space

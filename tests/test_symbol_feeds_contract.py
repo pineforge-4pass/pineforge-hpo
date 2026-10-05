@@ -712,7 +712,8 @@ def main():
         modern_manifest["input_kind_schema"] = 1
         manifest_path.write_text(json.dumps(modern_manifest))
         run("--categorical-choice", "Other", "ETH", feeds=False, plugin=symbol_plugin)
-        for version in ("0.9.0", "1.0.0", "1.0.9", "v1.0.0", "1.1.0-rc.1", "1.1.0rc1"):
+        for version in ("0.9.0", "1", "1.0", "1.0.0", "1.0.9", "v1.0.0",
+                        "1.1rc1", "1.1.0-rc.1", "1.1.0rc1"):
             modern_manifest["request_identity"] = {"codegen": {"version": version}}
             manifest_path.write_text(json.dumps(modern_manifest))
             run(

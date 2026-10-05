@@ -305,6 +305,8 @@ double log_normal_interval(double lower, double upper) {
     if (!(lower < upper)) {
         return -std::numeric_limits<double>::infinity();
     }
+    if (lower <= -9.0 && upper >= 9.0)
+        return 0.0;
 
     const double width = upper - lower;
     const double midpoint = lower + 0.5 * width;

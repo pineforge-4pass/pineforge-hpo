@@ -112,6 +112,12 @@ int main() {
         require(detail::math::exp(0.0) == 1.0 && detail::math::cos(0.0) == 1.0,
                 "exp/cos zero");
         require(detail::math::erfc(0.0) == 1.0, "erfc zero");
+        for (double limit : {9.0, 10.0, 20.0, 100.0}) {
+            const double tail = detail::math::erfc(limit / 0x1.6a09e667f3bcdp0);
+            const double evaluated = detail::math::log(1.0 - tail);
+            require(pfh_math_bits(detail::tpe_log_normal_interval(-limit, limit)) ==
+                    pfh_math_bits(evaluated), "wide interval exact shortcut");
+        }
         require(detail::math::sqrt(0x1p-1074) == 0x1p-537, "subnormal sqrt");
         require(detail::pair_floor_unsigned({0x1p64, -1.0}) == UINT64_MAX,
                 "uint64 upper endpoint");

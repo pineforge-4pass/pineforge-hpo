@@ -152,9 +152,14 @@ def main() -> None:
         json.dumps(metadata, indent=2)
     )
     print(json.dumps(intervals, indent=2))
-    if intervals["combined"]["upper95"] > 1.05:
-        raise SystemExit("FAIL proposal regression upper95 exceeds 5%")
-    print("PASS proposal regression upper95 <= 5%")
+    regressions = [
+        space for space, interval in intervals.items() if interval["upper95"] > 1.05
+    ]
+    if regressions:
+        raise SystemExit(
+            "FAIL proposal regression upper95 exceeds 5%: " + ", ".join(regressions)
+        )
+    print("PASS every space and aggregate proposal regression upper95 <= 5%")
 
 
 if __name__ == "__main__":
