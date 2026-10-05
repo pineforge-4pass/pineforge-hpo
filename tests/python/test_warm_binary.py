@@ -68,6 +68,81 @@ class WarmBinaryTests(unittest.TestCase):
             with self.assertRaises(WarmStartError):
                 encode_warm_block(self.study, self.trials, sampler_state=invalid)
 
+    def test_symbol_feeds_header_and_inference(self):
+        record = {
+            "canonicalization": "pf-symbol-feed-barc-close-le-v1",
+            "symbols": {
+                "BINANCE:ETHUSDT": {
+                    "facts": {"mintick": 0.01},
+                    "feeds": {
+                        "240": {
+                            "bars": 2,
+                            "first_ts": 1700000000000,
+                            "last_ts": 1700014400000,
+                            "source_values_sha256": "a" * 64,
+                        }
+                    },
+                }
+            },
+        }
+        study = replace(
+            self.study,
+            symbol_feeds={
+                "symbols": {"BINANCE:ETHUSDT": {"feeds": {"240": "eth.csv"}}}
+            },
+        )
+        encoded_record = json.dumps(
+            record, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+        plain = encode_warm_block(self.study, self.trials)
+        block = encode_warm_block(study, self.trials, symbol_feeds_record=record)
+        header = HEADER.unpack_from(block)
+        self.assertEqual(header[2], 1)
+        self.assertEqual(header[3], 100 + 4 + len(encoded_record))
+        self.assertEqual(header[4], len(block))
+        self.assertEqual(struct.unpack_from("<I", block, 100)[0], len(encoded_record))
+        self.assertEqual(block[104 : header[3]], encoded_record)
+        self.assertEqual(block[header[3] :], plain[100:])
+        rows = copy.deepcopy(self.trials)
+        for row in rows:
+            row["space"] = {"symbol_feeds": record}
+        self.assertEqual(encode_warm_block(study, rows), block)
+        stream = io.BytesIO()
+        self.assertEqual(
+            write_warm_block(stream, study, self.trials, symbol_feeds_record=record),
+            len(block),
+        )
+        self.assertEqual(stream.getvalue(), block)
+        with self.assertRaisesRegex(WarmStartError, "record is required"):
+            encode_warm_block(study, self.trials)
+        rows[0]["space"]["symbol_feeds"] = {"symbols": {}}
+        with self.assertRaisesRegex(WarmStartError, "differ between trial records"):
+            encode_warm_block(study, rows)
+        rows[0]["space"]["symbol_feeds"] = None
+        with self.assertRaisesRegex(WarmStartError, "differ between trial records"):
+            encode_warm_block(study, rows, symbol_feeds_record=record)
+        with self.assertRaisesRegex(WarmStartError, "header exceeds 8 MiB"):
+            encode_warm_block(
+                study,
+                self.trials,
+                symbol_feeds_record={
+                    "symbols": {"E": {"facts": "x" * (8 * 1024 * 1024)}}
+                },
+            )
+
+    def test_empty_symbol_feeds_preserve_header_bytes(self):
+        plain = encode_warm_block(self.study, self.trials)
+        empty = replace(self.study, symbol_feeds={"symbols": {}})
+        self.assertEqual(encode_warm_block(empty, self.trials), plain)
+        empty_record = {
+            "canonicalization": "pf-symbol-feed-barc-close-le-v1",
+            "symbols": {},
+        }
+        self.assertEqual(
+            encode_warm_block(empty, self.trials, symbol_feeds_record=empty_record),
+            plain,
+        )
+
     def test_other_checkpoint_versions_and_corruption(self):
         payload = "future opaque checkpoint\n"
         checksum = hashlib.sha256(payload.encode()).hexdigest()

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.0 — 2026-10-05
+
+- Add fixed other-symbol `request.security` feeds: CLI `--symbol-feeds` and
+  StudySpec `symbol_feeds` accept the release harness's JSON index. Native initialization
+  validates/hashes CSV values once; every fresh trial installs the same immutable facts,
+  bars and close times through the public C ABI. Refusals occur before any trial output.
+- Record `applied_runtime.symbol_feeds` and `runtime_sha256`, including exact symbol
+  keys, installed facts, timeframe, bar count, first/last open and value hash. Warm JSON,
+  JSONL and v2 block headers refuse changed/added/removed feeds. Feedless v2 bytes remain
+  unchanged; feedless result content remains unchanged except the release version marker.
+- Refuse search dimensions naming `input.symbol` (D7); fixed symbol inputs remain supported.
+  Add BTCUSDT 4h / BINANCE:ETHUSDT 240 + 1D compiled-strategy C-ABI equality tests.
+- Exclude compilation-flags hashes from independent serial-golden lookup keys and expose
+  unavailable goldens as CTest skips. Matching checkpoints with an unavailable flags hash
+  always rebuild. Probe 4,096 inputs per libm function, cached once per process with
+  floating-point environment/errno preserved. Hash custom CMake configuration flags too.
+- Repair the no-replay manual build recipe and clarify that other checkpoint versions rebuild.
+
+Feed-extended warm-v2 headers use flags bit 0 and are refused by readers before 0.8.0.
+The sampler algorithm and RNG consumption do not change; the expanded numerical-build
+identity intentionally rebuilds older sampler checkpoints without historical proposal replay.
+
 ## 0.7.0 — 2026-10-05
 
 - Derive checkpoint numerical identity from an in-sampler contraction canary,

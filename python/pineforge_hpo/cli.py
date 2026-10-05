@@ -198,7 +198,7 @@ def _value_matches_input_type(value: object, input_type: str) -> bool:
         return _is_number(value)
     if input_type == "bool":
         return isinstance(value, bool)
-    if input_type in {"string", "source"}:
+    if input_type in {"string", "source", "symbol"}:
         return isinstance(value, str)
     if input_type == "enum":
         return value is not None and isinstance(value, (str, int, float, bool))
@@ -309,6 +309,11 @@ def _validate_manifest_inputs(
         )
     for name, parameter in study.strategy.search_space.items():
         manifest = by_title[name]
+        if manifest.get("kind") == "symbol" or manifest.get("type") == "symbol":
+            raise CliError(
+                f"search_space.{name}: HPO over input.symbol is refused (D7); "
+                "only fixed other-symbol reads are supported"
+            )
         input_type = manifest.get("type")
         if parameter.kind == "categorical":
             for index, choice in enumerate(parameter.choices):
@@ -477,6 +482,10 @@ def _native_command(
         "--non-finite",
         "allow" if study.objective.nan_policy == "propagate" else "reject",
     ]
+    if isinstance(study.symbol_feeds, Path):
+        command.extend(("--symbol-feeds", str(study.symbol_feeds)))
+    elif study.symbol_feeds is not None:
+        command.extend(("--symbol-feeds-spec", str(study.spec_path)))
     if study.execution.batch_size is not None:
         command.extend(("--batch-size", str(study.execution.batch_size)))
     if study.execution.batch_lag:
@@ -591,6 +600,7 @@ def prepare_run(
     compiler: str | None = None,
     eigen_include: str | Path | None = None,
     warm_start: str | Path | None = None,
+    symbol_feeds: str | Path | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """Validate/build once and return native argv and artifact JSON without launching."""
     if warm_start is not None:
@@ -599,7 +609,9 @@ def prepare_run(
             raise WarmStartError(
                 "warm-start incompatible: dlib_global is not supported"
             )
-        history = warm_start_metadata(preflight, warm_start, native=native)
+        history = warm_start_metadata(
+            preflight, warm_start, native=native, defer_symbol_feeds=True
+        )
         if preflight.execution.pruner != "none" and is_binary_warm(warm_start):
             raise WarmStartError(
                 "warm-start incompatible: binary history has no pruning rungs"
@@ -656,6 +668,16 @@ def prepare_run(
         plugin=Path(artifact["plugin"]),
         artifact_key=str(artifact["artifact_key"]),
     )
+    if symbol_feeds is not None:
+        if isinstance(study.symbol_feeds, Path):
+            offset = command.index("--symbol-feeds")
+            del command[offset : offset + 2]
+        elif study.symbol_feeds is not None:
+            offset = command.index("--symbol-feeds-spec")
+            del command[offset : offset + 2]
+        command.extend(
+            ("--symbol-feeds", str(Path(symbol_feeds).expanduser().resolve()))
+        )
     if warm_start is not None:
         command.extend(("--warm-start", str(Path(warm_start).expanduser().resolve())))
     return command, artifact
@@ -671,6 +693,7 @@ def _run(args: argparse.Namespace) -> int:
         compiler=args.compiler,
         eigen_include=args.eigen_include,
         warm_start=args.warm_start,
+        symbol_feeds=args.symbol_feeds,
     )
     if args.progress_fd is not None:
         command.extend(("--progress-fd", str(args.progress_fd)))
@@ -782,6 +805,10 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("study", help="StudySpec JSON path")
     run_parser.add_argument("--native", help="pineforge-hpo-native executable")
     run_parser.add_argument("--output", help="write the final JSON result atomically")
+    run_parser.add_argument(
+        "--symbol-feeds",
+        help="other-symbol CSV index (overrides work.json symbol_feeds)",
+    )
     run_parser.add_argument(
         "--warm-start",
         help="binary v2 blocks, parent fd-3 JSONL or complete result JSON",

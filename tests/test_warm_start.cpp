@@ -180,7 +180,15 @@ void state_mismatch_and_transition() {
     require(rejected && corrupt.completed() == 0, "forged zero MT state accepted/mutated sampler");
 }
 
-void parallel_checkpoint_equivalence() {
+std::string serial_golden_identity() {
+    auto identity = pfh::detail::tpe_numeric_identity();
+    const auto begin = identity.find(";flags_sha256:");
+    if (begin != std::string::npos)
+        identity.erase(begin, identity.find(';', begin + 1) - begin);
+    return pfh::detail::sha256(identity);
+}
+
+bool parallel_checkpoint_equivalence() {
     const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0),
         pfh::RealDimension("y", 0.01, 10.0, std::nullopt, true),
         pfh::IntegerDimension("period", 1, 10000),
@@ -230,7 +238,7 @@ void parallel_checkpoint_equivalence() {
         }
         pending.push_back(actual);
     }
-    const auto identity = pfh::detail::sha256(pfh::detail::tpe_numeric_identity());
+    const auto identity = serial_golden_identity();
     std::ifstream goldens(PFH_TPE_SERIAL_GOLDENS);
     require(static_cast<bool>(goldens), "serial golden identity table missing");
     std::string known_identity, golden_hash;
@@ -245,11 +253,14 @@ void parallel_checkpoint_equivalence() {
     }
     if (!matched)
         std::cout << "SKIP independent serial golden: unknown numerical identity "
-                  << identity << '\n';
+                  << identity << "; proposal SHA-256 " << pfh::detail::sha256(bits.str()) << '\n';
+    else
+        std::cout << "PASS independent serial golden " << identity << '\n';
     for (const auto& candidate : pending) {
         parent.tell(candidate.id, static_cast<double>(candidate.id % 101));
         child.tell(candidate.id, static_cast<double>(candidate.id % 101));
     }
+    return matched;
 }
 
 void eight_worker_equivalence() {
@@ -422,6 +433,8 @@ int main(int argc, char** argv) {
                 numeric_identity_validation();
                 return 0;
             }
+            if (std::string(argv[1]) == "--serial-golden")
+                return parallel_checkpoint_equivalence() ? 0 : 77;
             if (std::string(argv[1]) == "--reduction") {
                 eight_worker_equivalence();
                 std::cout << "PASS all serial/threaded acquisition log-ratio bits\n";

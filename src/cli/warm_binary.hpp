@@ -245,7 +245,8 @@ public:
             const auto header_bytes = warm_integer<std::uint32_t>(header + 12);
             const auto block_bytes = warm_integer<std::uint64_t>(header + 16);
             const auto count = warm_integer<std::uint64_t>(header + 24);
-            if (warm_integer<std::uint16_t>(header + 10) != 0 ||
+            const auto flags = warm_integer<std::uint16_t>(header + 10);
+            if ((flags & ~1U) != 0 ||
                 warm_integer<std::uint32_t>(header + 44) != 0)
                 throw std::runtime_error("unsupported binary block flags");
             if (!std::equal(digest.begin(), digest.end(), header + 48))
@@ -254,9 +255,25 @@ public:
                 warm_integer<std::uint32_t>(header + 36) != 1 ||
                 warm_integer<std::uint32_t>(header + 40) != constraints)
                 throw std::runtime_error("binary column counts do not match study");
-            if (header_bytes != warm_add(80, warm_multiply(4, codecs_.size())) ||
+            const auto base_header_bytes = warm_add(80, warm_multiply(4, codecs_.size()));
+            if (header_bytes < base_header_bytes ||
                 count == 0 || block_bytes < header_bytes || block_bytes > mapping_.size - offset)
                 throw std::runtime_error("truncated or invalid binary block length");
+            std::optional<Json> symbol_record;
+            if (flags & 1U) {
+                if (header_bytes < base_header_bytes + 4)
+                    throw std::runtime_error("truncated symbol feeds header");
+                const auto length = warm_integer<std::uint32_t>(header + base_header_bytes);
+                if (!length || length > 8 * 1024 * 1024 ||
+                    header_bytes != base_header_bytes + 4 + length)
+                    throw std::runtime_error("invalid symbol feeds header length");
+                symbol_record = parse_json(std::string_view(
+                    reinterpret_cast<const char*>(header + base_header_bytes + 4), length),
+                    8 * 1024 * 1024);
+            } else if (header_bytes != base_header_bytes) {
+                throw std::runtime_error("invalid binary block header length");
+            }
+            validate_symbol_feeds_identity(symbol_record ? &*symbol_record : nullptr, recorded);
             std::uint64_t row_bytes = warm_add(17, warm_multiply(8, constraints));
             for (std::size_t index = 0; index < codecs_.size(); ++index) {
                 const auto* descriptor = header + 80 + index * 4;
@@ -558,6 +575,10 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
         const auto constraints = field(field(recorded, "objective"), "constraints").items.size();
         const auto constraint_order = warm_constraint_order(recorded);
         const auto hash = space_hash(recorded);
+        const auto* symbol_record = recorded.find("symbol_feeds");
+        const auto symbol_json = symbol_record ? dump_json(*symbol_record) : std::string{};
+        if (symbol_json.size() > 8 * 1024 * 1024)
+            throw std::runtime_error("symbol feeds header exceeds 8 MiB");
         if (!block_trials)
             block_trials = history.size();
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
@@ -565,13 +586,14 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
             throw std::runtime_error("cannot open binary warm output");
         for (std::uint64_t begin = 0; begin < history.size();) {
             const auto count = std::min(block_trials, history.size() - begin);
-            const auto header_bytes = warm_add(80, warm_multiply(4, codecs.size()));
+            const auto header_bytes = warm_add(warm_add(80, warm_multiply(4, codecs.size())),
+                symbol_record ? 4 + symbol_json.size() : 0);
             std::uint64_t row_bytes = warm_add(17, warm_multiply(8, constraints));
             for (const auto& codec : codecs)
                 row_bytes = warm_add(row_bytes, codec.encoding == 1 ? 4 : 8);
             output.write(reinterpret_cast<const char*>(warm_magic.data()), warm_magic.size());
             warm_write_integer(output, std::uint16_t{2});
-            warm_write_integer(output, std::uint16_t{0});
+            warm_write_integer(output, static_cast<std::uint16_t>(symbol_record ? 1 : 0));
             warm_write_integer(output, static_cast<std::uint32_t>(header_bytes));
             warm_write_integer(output, warm_add(header_bytes, warm_multiply(count, row_bytes)));
             warm_write_integer(output, count);
@@ -585,6 +607,10 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
                 output.put(static_cast<char>(codec.kind));
                 output.put(static_cast<char>(codec.encoding));
                 warm_write_integer(output, std::uint16_t{0});
+            }
+            if (symbol_record) {
+                warm_write_integer(output, static_cast<std::uint32_t>(symbol_json.size()));
+                output.write(symbol_json.data(), static_cast<std::streamsize>(symbol_json.size()));
             }
             for (std::uint64_t row = begin; row < begin + count; ++row)
                 warm_write_integer(output, history.binary ? history.binary->id(row) :

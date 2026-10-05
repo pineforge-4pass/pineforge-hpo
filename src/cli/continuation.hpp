@@ -6,6 +6,7 @@
 
 #include <pineforge/hpo/sampler.hpp>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -279,6 +280,36 @@ inline std::string canonical_space(const Json& space) {
 
 inline std::string space_hash(const Json& space) { return sha256(canonical_space(space)); }
 
+inline double symbol_mintick(const Json& value) {
+    char* end = nullptr;
+    const auto number = std::strtod(value.value.c_str(), &end);
+    if (value.kind != Json::Kind::Number || end != value.value.c_str() + value.value.size() ||
+        !(number > 0) || !std::isfinite(number))
+        throw std::runtime_error("symbol feed mintick must be a positive finite number");
+    return number;
+}
+
+inline std::string symbol_feeds_identity(const Json* record) {
+    if (!record)
+        return {};
+    auto normalized = *record;
+    for (auto& symbol : normalized.members.at("symbols").members) {
+        auto& facts = symbol.second.members.at("facts");
+        const auto mintick = facts.members.find("mintick");
+        if (mintick != facts.members.end())
+            mintick->second = Json::string(real_bits(symbol_mintick(mintick->second)));
+    }
+    return sha256(dump_json(normalized));
+}
+
+inline void validate_symbol_feeds_identity(const Json* parent, const Json& current) {
+    if (const auto* deferred = current.find("_defer_symbol_feeds");
+        deferred && deferred->kind == Json::Kind::Bool && deferred->value == "true")
+        return;
+    if (symbol_feeds_identity(parent) != symbol_feeds_identity(current.find("symbol_feeds")))
+        throw std::runtime_error("symbol feeds differ from parent (facts or feed values)");
+}
+
 inline Json space_from_spec(const Json& spec) {
     const auto& strategies = field(spec, "strategies");
     if (strategies.kind != Json::Kind::Array || strategies.items.size() != 1)
@@ -488,6 +519,17 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
         };
         if (parent_space && canonical_space(*parent_space) != expected)
             throw std::runtime_error("search space or objective differs (space_hash)");
+        if (parent_space)
+            validate_symbol_feeds_identity(parent_space->find("symbol_feeds"), current_space);
+        if (document && document->kind == Json::Kind::Object) {
+            if (const auto* runtime = document->find("applied_runtime")) {
+                validate_symbol_feeds_identity(runtime->find("symbol_feeds"), current_space);
+            }
+            if (const auto* digest = document->find("runtime_sha256")) {
+                if (digest->text() != symbol_feeds_identity(current_space.find("symbol_feeds")))
+                    throw std::runtime_error("symbol feeds differ from parent (runtime_sha256)");
+            }
+        }
         if (parent_space && document)
             verify_hash(*document);
         std::sort(history.records.begin(), history.records.end(), [](const auto& left,
@@ -501,6 +543,8 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
                 throw std::runtime_error("missing recorded space; compatibility cannot be proven");
             if (recorded && canonical_space(*recorded) != expected)
                 throw std::runtime_error("search space or objective differs (space_hash)");
+            if (recorded)
+                validate_symbol_feeds_identity(recorded->find("symbol_feeds"), current_space);
             verify_hash(record);
             const auto status = field(record, "status").text();
             const std::set<std::string> statuses{"ok", "constraint_violation", "engine_error",

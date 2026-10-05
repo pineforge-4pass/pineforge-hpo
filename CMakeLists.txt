@@ -123,7 +123,9 @@ target_compile_options(pineforge_hpo_core PRIVATE -Wall -Wextra -Wpedantic)
 set_source_files_properties(src/core/tpe_sampler.cpp PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 set(PFH_NUMERIC_FLAGS "${CMAKE_CXX_FLAGS}\n")
-foreach(PFH_CONFIG Debug Release RelWithDebInfo MinSizeRel)
+set(PFH_CONFIGURATIONS ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
+list(REMOVE_DUPLICATES PFH_CONFIGURATIONS)
+foreach(PFH_CONFIG IN LISTS PFH_CONFIGURATIONS)
     string(TOUPPER "${PFH_CONFIG}" PFH_CONFIG_UPPER)
     string(APPEND PFH_NUMERIC_FLAGS
         "$<$<CONFIG:${PFH_CONFIG}>:${CMAKE_CXX_FLAGS_${PFH_CONFIG_UPPER}}>\n")

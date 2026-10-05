@@ -46,6 +46,71 @@ class CliTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_symbol_feeds_path_and_inline_native_interface(self) -> None:
+        for source in (
+            "feeds/index.json",
+            {
+                "symbols": {
+                    "BINANCE:ETHUSDT": {
+                        "feeds": {"240": "eth.csv", "1D": "eth-daily.csv"}
+                    }
+                }
+            },
+            {
+                "symbols": {
+                    f"E{index}": {"syminfo": {"currency": "α" * 256}}
+                    for index in range(256)
+                }
+            },
+        ):
+            self._write_study(symbol_feeds=source)
+            study = load_study_spec(self.study_path)
+            command = _native_command(
+                study,
+                native=self.native,
+                plugin=self.root / "strategy.dylib",
+                artifact_key="a" * 64,
+            )
+            if isinstance(source, str):
+                self.assertEqual(study.symbol_feeds, (self.root / source).resolve())
+                self.assertEqual(
+                    command[command.index("--symbol-feeds") + 1],
+                    str((self.root / source).resolve()),
+                )
+            else:
+                self.assertEqual(
+                    command[command.index("--symbol-feeds-spec") + 1],
+                    str(self.study_path.resolve()),
+                )
+                self.assertLess(max(map(len, command)), 4096)
+
+    def test_input_symbol_search_dimension_is_refused(self) -> None:
+        study = load_study_spec(self.study_path)
+        for definition in ({"type": "string", "kind": "symbol"}, {"type": "symbol"}):
+            with self.assertRaisesRegex(CliError, "input.symbol.*refused.*D7"):
+                _validate_manifest_inputs(
+                    study,
+                    [
+                        {"title": "Length", **definition},
+                        {"title": "Threshold", "type": "float"},
+                        {"title": "Enabled", "type": "bool"},
+                    ],
+                )
+
+    def test_fixed_input_symbol_is_allowed(self) -> None:
+        self._write_study()
+        study = load_study_spec(self.study_path)
+        study.strategy.fixed_inputs["Other"] = "BINANCE:ETHUSDT"
+        _validate_manifest_inputs(
+            study,
+            [
+                {"title": "Length", "type": "int"},
+                {"title": "Threshold", "type": "float"},
+                {"title": "Enabled", "type": "bool"},
+                {"title": "Other", "type": "string", "kind": "symbol"},
+            ],
+        )
+
     def test_version_comes_from_package_metadata(self) -> None:
         output = io.StringIO()
         with (

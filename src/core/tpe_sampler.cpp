@@ -1312,7 +1312,8 @@ public:
         std::string stored_build;
         if (!(input >> std::quoted(stored_build)))
             throw std::invalid_argument("invalid TPE sampler-state build identity");
-        if (stored_build != numeric_build_)
+        if (stored_build != numeric_build_ ||
+            stored_build.find(";flags_sha256:unavailable") != std::string::npos)
             return false;
         std::uint64_t attempts, next_id, completed, fallback, epoch, older_seen;
         unsigned compact, cached_compact;

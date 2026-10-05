@@ -28,6 +28,8 @@ struct FakeStrategy {
     std::string symbol_timezone;
     std::string symbol_session;
     std::map<std::string, double> metadata;
+    std::map<std::string, std::string> symbol_facts;
+    std::map<std::string, std::vector<pf_bar_t>> symbol_feeds;
 };
 
 // Every syminfo metadata call of every handle, "key=value" in call order, for the adapter test.
@@ -140,6 +142,35 @@ PF_API void strategy_set_syminfo_session(pf_strategy_t strategy, const char* val
     state->symbol_session = value;
 }
 
+#if !defined(PINEFORGE_HPO_FAKE_PLUGIN_NO_METADATA)
+PF_API int strategy_set_symbol_facts(pf_strategy_t strategy, const char* key,
+                                     const char* field, const char* value) {
+    if (std::strcmp(key, "REFUSE") == 0) {
+        fake(strategy)->error = "deliberate symbol facts refusal";
+        return -1;
+    }
+    fake(strategy)->symbol_facts[std::string(key) + ":" + field] = value;
+    return 0;
+}
+
+PF_API int strategy_set_symbol_feed(pf_strategy_t strategy, const char* key, const char* timeframe,
+                                    const pf_bar_t* bars, const int64_t* closes, int count) {
+    if (std::strcmp(key, "REFUSE_FEED") == 0) {
+        fake(strategy)->error = "deliberate symbol feed refusal";
+        return -1;
+    }
+    if (count && (!bars || !closes))
+        return -1;
+    auto& target = fake(strategy)->symbol_feeds[std::string(key) + "@" + timeframe];
+    for (int index = 0; index < count; ++index) {
+        if (closes[index] <= bars[index].timestamp)
+            return -1;
+        target.push_back(bars[index]);
+    }
+    return 0;
+}
+#endif
+
 PF_API void run_backtest_full(pf_strategy_t strategy,
                               pf_bar_t*,
                               int bar_count,
@@ -167,7 +198,8 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
 
     const bool prefix_test = parse_or(state->inputs, "BatchPrefixTest", 0.0) == 1.0;
     if ((!prefix_test && bar_count != 2) || std::strcmp(input_timeframe, "1") != 0 ||
-        std::strcmp(script_timeframe, "5") != 0 || bar_magnifier != 1 || magnifier_samples != 6 ||
+        std::strcmp(script_timeframe, state->symbol_feeds.empty() ? "5" : "1") != 0 ||
+        bar_magnifier != 1 || magnifier_samples != 6 ||
         magnifier_distribution != PF_MAGNIFIER_TRIANGLE) {
         state->error = "backtest configuration was not forwarded";
         return;
@@ -203,8 +235,13 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     const double metadata_bonus =
         (qty_step == state->metadata.end() ? 0.0 : qty_step->second * 1'000.0) +
         (mincontract == state->metadata.end() ? 0.0 : mincontract->second * 10.0);
+    double feed_bonus = 0.0;
+    for (const auto& feed : state->symbol_feeds) {
+        for (const auto& bar : feed.second)
+            feed_bonus += bar.close;
+    }
     const double score = static_cast<double>(length) + initial_capital / 1'000.0 + timezone_bonus +
-        symbol_bonus + metadata_bonus;
+        symbol_bonus + metadata_bonus + feed_bonus;
 
     report->total_trades = length;
     report->net_profit = score;

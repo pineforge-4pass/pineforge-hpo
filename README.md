@@ -197,6 +197,62 @@ be strings without embedded NULs. Empty strings and omitted fields are no-ops;
 other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
 The four setters mirror the pinned engine 1.0.0 release harness.
 
+### Fixed other-symbol feeds (0.8.0)
+
+Optimize scripts reading other symbols with `request.security`, keeping those symbols fixed:
+
+```bash
+pineforge-hpo run work.json --symbol-feeds data/feeds/index.json \
+  --native ./build/bin/pineforge-hpo-native
+# Native: pineforge-hpo-native run ... --symbol-feeds data/feeds/index.json
+```
+
+Alternatively add `"symbol_feeds": "data/feeds/index.json"` to work.json, or supply an
+inline index. The CLI option overrides work.json. Index example:
+
+```json
+{
+  "symbols": {
+    "BINANCE:ETHUSDT": {
+      "syminfo": {
+        "tickerid": "BINANCE:ETHUSDT", "type": "crypto", "currency": "USDT",
+        "mintick": 0.01, "timezone": "UTC", "session": "24x7"
+      },
+      "feeds": {"240": "ethusdt-240.csv", "1D": "ethusdt-1D.csv"}
+    }
+  }
+}
+```
+
+Keys are exact script request strings, including exchange prefixes and suffixes.
+CSV paths resolve against the index directory (work.json's directory for an inline index).
+For BTCUSDT 4h pass the chart's own bars with `input_tf` and `script_tf` both `"240"`;
+do not aggregate lower-timeframe input into the chart. Include each requested feed and
+sufficient history; there is no network fetching. Initialization validates/hashes once,
+then every fresh trial installs facts/bars/closes through the public C ABI with no file I/O.
+Index/CSV/setter refusal is exit 1 with `--symbol-feeds:`, before any terminal trial output.
+**`input.symbol` search dimensions are refused (D7)**; such inputs may be fixed only.
+Direct native artifact users must keep the adjacent codegen `manifest.json` for input-kind
+validation; the Python frontend validates it automatically.
+
+Results record `applied_runtime.symbol_feeds` and `runtime_sha256`. Warm JSON/JSONL/v2
+refuse changed/added/removed feeds or facts; relocating identical files is safe. Empty/omitted
+feeds preserve prior result content and warm-v2 bytes, except the release-version marker.
+See [StudySpec](docs/study-spec.md) for validation and header details.
+
+The real compiled-Pine equality gate compares three candidates' complete C-ABI metrics
+and trades (field bytes unchanged, unspecified ABI padding zeroed) against a release
+harness supporting `--symbol-feeds`, using deterministic
+synthetic BTCUSDT 4h / ETHUSDT 240 + 1D fixtures:
+
+```bash
+python3 tests/test_symbol_feeds_e2e.py --native build/bin/pineforge-hpo-native \
+  --probe build/bin/pineforge_hpo_symbol_feed_report \
+  --harness /path/to/pineforge-engine/docker/run_json.py --output build/feeds-e2e
+```
+
+Runtime/plugin gitlinks remain pinned. Evidence and fixture/artifact hashes stay under build.
+
 `mincontract` (since 0.3.1) is the instrument's lot-size grid (TradingView
 `syminfo.mincontract`). Pass the catalog object as is: a number is applied to the
 engine as the metadata keys `qty_step` (the engine floors order quantities to this

@@ -1,7 +1,9 @@
 #include <pineforge/hpo/trial_executor.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -122,7 +124,8 @@ bool strip_prefix(std::string_view* value, std::string_view prefix) noexcept {
     return true;
 }
 
-ReportSnapshot copy_report(const pf_report_t& report, bool capture_equity_curve) {
+ReportSnapshot copy_report(const pf_report_t& report, bool capture_equity_curve,
+                           bool capture_trades) {
     if (report.total_trades < 0) {
         throw std::runtime_error("strategy returned a negative total_trades value");
     }
@@ -153,7 +156,15 @@ ReportSnapshot copy_report(const pf_report_t& report, bool capture_equity_curve)
     snapshot.script_tf_ratio = report.script_tf_ratio;
     snapshot.needs_aggregation = report.needs_aggregation != 0;
     snapshot.bar_magnifier_enabled = report.bar_magnifier_enabled != 0;
-    snapshot.metrics = report.metrics;
+    std::memcpy(&snapshot.metrics, &report.metrics, sizeof(snapshot.metrics));
+    if (capture_trades && report.total_trades > 0) {
+        if (!report.trades) {
+            throw std::runtime_error("strategy returned null non-empty trades");
+        }
+        snapshot.trades.resize(static_cast<std::size_t>(report.total_trades));
+        std::memcpy(snapshot.trades.data(), report.trades,
+                    snapshot.trades.size() * sizeof(pf_trade_t));
+    }
     if (capture_equity_curve && report.equity_curve_len > 0) {
         snapshot.equity_curve.assign(report.equity_curve,
                                      report.equity_curve + report.equity_curve_len);
@@ -252,6 +263,28 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
     if (!valid_magnifier_distribution(configuration_.magnifier_distribution)) {
         throw std::invalid_argument("invalid magnifier distribution");
     }
+    if (configuration_.symbol_feeds && !configuration_.symbol_feeds->empty()) {
+        TrialResources validation(*plugin_, plugin_->create_strategy());
+        plugin_->set_symbol_feeds(validation.strategy(), *configuration_.symbol_feeds);
+        const auto error = plugin_->last_error(validation.strategy());
+        if (!error.empty())
+            throw std::invalid_argument("--symbol-feeds: " + error);
+        const auto canonical = [](std::string timeframe) {
+            if (timeframe == "D" || timeframe == "W" || timeframe == "M" || timeframe == "S")
+                timeframe = "1" + timeframe;
+            return timeframe;
+        };
+        const auto has_bars = std::any_of(configuration_.symbol_feeds->begin(),
+            configuration_.symbol_feeds->end(), [](const auto& symbol) {
+                return !symbol.feeds.empty();
+            });
+        if (has_bars && !configuration_.script_timeframe.empty() &&
+            canonical(configuration_.input_timeframe) != canonical(configuration_.script_timeframe))
+            throw std::invalid_argument("--symbol-feeds: request.security of another symbol "
+                "needs the chart's own bars as input; input '" + configuration_.input_timeframe +
+                "' aggregated to chart '" + configuration_.script_timeframe +
+                "' is not supported");
+    }
 }
 
 TrialExecutionResult TrialExecutor::execute(const ParameterValues& inputs,
@@ -274,6 +307,8 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
     }
     if (configuration_.symbol_info)
         plugin_->set_symbol_info(resources.strategy(), *configuration_.symbol_info);
+    if (configuration_.symbol_feeds)
+        plugin_->set_symbol_feeds(resources.strategy(), *configuration_.symbol_feeds);
 
     plugin_->run_backtest_full(resources.strategy(), dataset_->data(),
                                static_cast<int>(bar_count), configuration_.input_timeframe,
@@ -291,7 +326,8 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
 
     TrialExecutionResult succeeded;
     succeeded.status = TrialExecutionStatus::kSucceeded;
-    succeeded.report = copy_report(resources.report, configuration_.capture_equity_curve);
+    succeeded.report = copy_report(resources.report, configuration_.capture_equity_curve,
+                                   configuration_.capture_trades);
     return succeeded;
 }
 

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cfenv>
+#include <cerrno>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
@@ -16,7 +18,10 @@
 
 namespace pineforge::hpo::detail {
 
-inline std::string runtime_math_fingerprint() {
+inline std::string compute_runtime_math_fingerprint() {
+    std::fenv_t environment;
+    std::fegetenv(&environment);
+    const auto saved_errno = errno;
     std::ostringstream values;
     values.imbue(std::locale::classic());
     values << std::hexfloat << std::setprecision(std::numeric_limits<long double>::max_digits10);
@@ -28,21 +33,40 @@ inline std::string runtime_math_fingerprint() {
         std::sqrt, std::cos, std::erfc, std::floor, std::ceil, std::round};
     double (*volatile double_fma)(double, double, double) = std::fma;
     long double (*volatile long_fma)(long double, long double, long double) = std::fma;
-    for (const double input : {0x1p-40, 0.125, 0.5, 0.9375, 1.0, 1.5, 5.0, 32.0}) {
-        volatile double argument = input;
-        volatile long double wide_argument = input;
-        for (const auto function : doubles) {
+    for (std::uint32_t index = 0; index < 4096; ++index) {
+        const double ratio = static_cast<double>(index) / 4095.0;
+        const double positive = std::ldexp(1.0 + ratio, static_cast<int>(index % 1800) - 900);
+        const double near_zero = std::ldexp(1.0 + ratio, -static_cast<int>(index % 900) - 1);
+        const double log1p_input = index % 2 ? -ratio * (1.0 - 0x1p-52) : positive;
+        const double expm1_input = index % 2 ? -near_zero : -745.0 + ratio * 1454.0;
+        const std::array<double, 10> inputs{positive, log1p_input, -745.0 + ratio * 1454.0,
+            expm1_input, positive, ratio * 6.283185307179586,
+            -32.0 + ratio * 64.0, (ratio - 0.5) * 0x1p40,
+            (ratio - 0.5) * 0x1p40, (ratio - 0.5) * 0x1p40};
+        for (std::size_t function_index = 0; function_index < inputs.size(); ++function_index) {
+            volatile double argument = inputs[function_index];
+            const auto function = doubles[function_index];
             const double result = function(argument);
             std::uint64_t bits;
             std::memcpy(&bits, &result, sizeof(bits));
             values << bits << ' ';
+            volatile long double wide_argument = inputs[function_index];
+            values << longs[function_index](wide_argument) << ' ';
         }
-        for (const auto function : longs)
-            values << function(wide_argument) << ' ';
+        volatile double argument = positive;
+        volatile long double wide_argument = positive;
         values << double_fma(argument, 0x1.0000000000001p0, -0.5) << ' '
                << long_fma(wide_argument, 0x1.0000000000001p0L, -0.5L) << ' ';
     }
-    return sha256(values.str());
+    const auto result = sha256(values.str());
+    std::fesetenv(&environment);
+    errno = saved_errno;
+    return result;
+}
+
+inline const std::string& runtime_math_fingerprint() {
+    static const auto fingerprint = compute_runtime_math_fingerprint();
+    return fingerprint;
 }
 
 inline std::string numeric_build_identity(double contraction, double fused) {

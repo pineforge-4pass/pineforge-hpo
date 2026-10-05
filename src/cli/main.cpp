@@ -9,6 +9,7 @@
 
 #include "json.hpp"
 #include "continuation.hpp"
+#include "symbol_feeds.hpp"
 #include "batch_executor.hpp"
 #include "../core/ordinal_set.hpp"
 
@@ -71,6 +72,12 @@ struct Options {
     std::string trials_out = "all";
     std::uint64_t best_k = 10;
     std::filesystem::path syminfo;
+    std::filesystem::path symbol_feeds_path;
+    std::filesystem::path symbol_feeds_spec;
+    std::string symbol_feeds_inline;
+    std::filesystem::path symbol_feeds_base = std::filesystem::current_path();
+    std::shared_ptr<const pfh::SymbolFeeds> symbol_feeds;
+    std::optional<pfh::detail::Json> symbol_feeds_record;
     std::string objective;
     std::vector<std::string> constraints;
     std::vector<std::string> recorded_metrics;
@@ -251,6 +258,7 @@ void print_help() {
               << "  --categorical-real-choice NAME VALUE     real choice\n"
               << "  --categorical-bool-choice NAME VALUE     boolean choice\n"
               << "  --fixed-input NAME VALUE\n"
+              << "  --symbol-feeds FILE        fixed other-symbol feed index (loaded once)\n"
               << "  --strategy-override NAME VALUE\n\n"
               << "Study options:\n"
               << "  --sampler grid|random|tpe|dlib_global  default: grid\n"
@@ -333,6 +341,14 @@ Options parse_options(int argc, char** argv) {
             out.artifact_key = require_value(argc, argv, i, option);
         } else if (option == "--syminfo") {
             out.syminfo = require_value(argc, argv, i, option);
+        } else if (option == "--symbol-feeds") {
+            out.symbol_feeds_path = require_value(argc, argv, i, option);
+        } else if (option == "--symbol-feeds-spec") {
+            out.symbol_feeds_spec = require_value(argc, argv, i, option);
+        } else if (option == "--symbol-feeds-inline") {
+            out.symbol_feeds_inline = require_value(argc, argv, i, option);
+        } else if (option == "--symbol-feeds-base") {
+            out.symbol_feeds_base = require_value(argc, argv, i, option);
         } else if (option == "--progress-fd") {
             const auto descriptor = parse_i64(require_value(argc, argv, i, option), option);
             if (descriptor < 0 || descriptor > std::numeric_limits<int>::max())
@@ -1382,7 +1398,14 @@ std::string render_results(const Options& options,
         << "  \"space_hash\": \"" << options.space_hash << "\",\n"
         << "  \"space\": " << *options.space_json << ",\n"
         << "  \"pineforge_hpo_version\": \"" << PINEFORGE_HPO_VERSION << "\",\n"
-        << "  \"sampler_implementation\": \"" << sampler_implementation << "\",\n"
+        << "  \"sampler_implementation\": \"" << sampler_implementation << "\",\n";
+    if (options.symbol_feeds_record) {
+        out << "  \"applied_runtime\": {\"symbol_feeds\": "
+            << pfh::detail::dump_json(*options.symbol_feeds_record) << "},\n"
+            << "  \"runtime_sha256\": \""
+            << pfh::detail::symbol_feeds_identity(&*options.symbol_feeds_record) << "\",\n";
+    }
+    out
         << "  \"ok\": " << (best_index ? "true" : "false") << ",\n"
         << "  \"artifact_key\": \"" << json_escape(options.artifact_key) << "\",\n"
         << "  \"sampler\": \"" << json_escape(options.sampler) << "\",\n"
@@ -1566,6 +1589,26 @@ void write_results(const Options& options, const std::string& json) {
 
 int run(Options options) {
     const auto started = RunState::Clock::now();
+    const auto manifest_path = options.strategy.parent_path() / "manifest.json";
+    if (std::filesystem::exists(manifest_path)) {
+        const auto manifest = pfh::detail::parse_json(pfh::detail::read_document(manifest_path));
+        if (const auto* inputs = manifest.find("inputs"); inputs &&
+            inputs->kind == pfh::detail::Json::Kind::Array) {
+            for (const auto& input : inputs->items) {
+                const auto* kind = input.find("kind");
+                const auto* type = input.find("type");
+                const auto* title = input.find("title");
+                if (title && ((kind && kind->value == "symbol") ||
+                              (type && type->value == "symbol"))) {
+                    for (const auto& dimension : options.dimensions) {
+                        if (pfh::dimension_name(dimension) == title->value)
+                            throw std::invalid_argument("HPO over input.symbol '" + title->value +
+                                "' is refused (D7); only fixed other-symbol reads are supported");
+                    }
+                }
+            }
+        }
+    }
     pfh::Pruner pruner(options.pruner, options.pruner_rungs, options.pruner_eta,
                        options.direction == Direction::kMinimize);
     if (options.batch_lag && options.sampler == "tpe" && !options.tpe_config.constant_liar)
@@ -1583,8 +1626,29 @@ int run(Options options) {
         throw std::invalid_argument(
             "grid sampling requires a step on every varying real dimension");
     }
-    const auto recorded = pfh::detail::recorded_space(space, options.objective,
+    const unsigned symbol_sources = static_cast<unsigned>(!options.symbol_feeds_path.empty()) +
+        static_cast<unsigned>(!options.symbol_feeds_spec.empty()) +
+        static_cast<unsigned>(!options.symbol_feeds_inline.empty());
+    if (symbol_sources > 1)
+        pfh::detail::symbol_feed_error("use a file or an inline index, not both");
+    if (symbol_sources) {
+        auto feeds = std::make_shared<const pfh::SymbolFeeds>(
+            !options.symbol_feeds_spec.empty() ?
+                pfh::detail::load_symbol_feeds_spec(options.symbol_feeds_spec) :
+            !options.symbol_feeds_path.empty() ?
+                pfh::detail::load_symbol_feeds(options.symbol_feeds_path) :
+                pfh::detail::load_symbol_feeds(
+                    pfh::detail::parse_json(options.symbol_feeds_inline, 256 * 1024 * 1024),
+                    options.symbol_feeds_base));
+        if (!feeds->empty()) {
+            options.symbol_feeds_record = pfh::detail::symbol_feeds_record(*feeds);
+            options.symbol_feeds = std::move(feeds);
+        }
+    }
+    auto recorded = pfh::detail::recorded_space(space, options.objective,
         options.direction == Direction::kMaximize ? "maximize" : "minimize", options.constraints);
+    if (options.symbol_feeds_record)
+        recorded.members["symbol_feeds"] = *options.symbol_feeds_record;
     options.space_json = std::make_shared<const std::string>(pfh::detail::dump_json(recorded));
     options.space_hash = pfh::detail::space_hash(recorded);
     if (!options.warm_start.empty()) {
@@ -1655,6 +1719,7 @@ int run(Options options) {
     configuration.magnifier_samples = options.magnifier_samples;
     configuration.magnifier_distribution = options.magnifier_distribution;
     configuration.capture_equity_curve = false;
+    configuration.symbol_feeds = options.symbol_feeds;
     if (!options.syminfo.empty())
         configuration.symbol_info = read_symbol_info(options.syminfo);
     const pfh::TrialExecutor executor(plugin, dataset, configuration);
@@ -1899,8 +1964,7 @@ int main(int argc, char** argv) {
             }
             if (spec.empty() || input.empty() || output.empty())
                 usage_error("warm-encode requires --spec, --input and --output");
-            const auto recorded = pfh::detail::space_from_spec(
-                pfh::detail::parse_json(pfh::detail::read_document(spec)));
+            const auto recorded = pfh::detail::space_with_symbol_feeds(spec);
             const auto space = pfh::detail::search_space_from_recorded(recorded);
             const auto history = pfh::detail::load_warm_history(input, space, recorded);
             pfh::detail::encode_warm_history(output, space, recorded, history, block_trials);
@@ -1911,6 +1975,7 @@ int main(int argc, char** argv) {
             std::filesystem::path warm;
             bool warm_details = false;
             bool warm_digest = false;
+            bool defer_symbol_feeds = false;
             for (int index = 2; index < argc; ++index) {
                 const std::string option = argv[index];
                 if (option == "--spec")
@@ -1921,13 +1986,18 @@ int main(int argc, char** argv) {
                     warm_details = true;
                 else if (option == "--warm-digest")
                     warm_digest = true;
+                else if (option == "--defer-symbol-feeds")
+                    defer_symbol_feeds = true;
                 else
                     usage_error("unknown space-info option: " + option);
             }
             if (spec.empty())
                 usage_error("space-info requires --spec");
-            const auto recorded = pfh::detail::space_from_spec(
-                pfh::detail::parse_json(pfh::detail::read_document(spec)));
+            auto recorded = defer_symbol_feeds ? pfh::detail::space_from_spec(
+                pfh::detail::parse_json(pfh::detail::read_document(spec), 256 * 1024 * 1024)) :
+                pfh::detail::space_with_symbol_feeds(spec);
+            if (defer_symbol_feeds)
+                recorded.members["_defer_symbol_feeds"] = pfh::detail::Json::boolean(true);
             const auto space = pfh::detail::search_space_from_recorded(recorded);
             std::optional<std::uint64_t> cardinality;
             try {

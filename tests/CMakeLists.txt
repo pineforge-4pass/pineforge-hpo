@@ -4,10 +4,17 @@ target_compile_options(pineforge_hpo_test_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_core COMMAND pineforge_hpo_test_core)
 
+add_executable(pineforge_hpo_test_numeric_unavailable test_numeric_unavailable.cpp
+    "${PROJECT_SOURCE_DIR}/src/core/tpe_sampler.cpp")
+target_link_libraries(pineforge_hpo_test_numeric_unavailable PRIVATE PineForgeHPO::core)
+add_test(NAME pineforge_hpo_numeric_unavailable COMMAND pineforge_hpo_test_numeric_unavailable)
+
 add_executable(pineforge_hpo_test_warm_start test_warm_start.cpp)
 target_link_libraries(pineforge_hpo_test_warm_start PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_warm_start PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_warm_start COMMAND pineforge_hpo_test_warm_start)
+add_test(NAME pineforge_hpo_serial_golden COMMAND pineforge_hpo_test_warm_start --serial-golden)
+set_tests_properties(pineforge_hpo_serial_golden PROPERTIES SKIP_RETURN_CODE 77)
 target_compile_definitions(pineforge_hpo_test_warm_start PRIVATE
     PFH_TPE_SERIAL_GOLDENS="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tpe-serial-goldens.txt")
 
@@ -163,8 +170,29 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_no_timezone>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_no_metadata>)
 
+    add_executable(pineforge_hpo_test_symbol_feeds test_symbol_feeds.cpp)
+    target_include_directories(pineforge_hpo_test_symbol_feeds PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
+    target_link_libraries(pineforge_hpo_test_symbol_feeds PRIVATE PineForgeHPO::engine_adapter)
+    add_dependencies(pineforge_hpo_test_symbol_feeds pineforge_hpo_fake_strategy
+        pineforge_hpo_fake_strategy_no_metadata)
+    add_test(NAME pineforge_hpo_symbol_feeds COMMAND pineforge_hpo_test_symbol_feeds
+        $<TARGET_FILE:pineforge_hpo_fake_strategy>
+        $<TARGET_FILE:pineforge_hpo_fake_strategy_no_metadata>)
+
+    add_executable(pineforge_hpo_symbol_feed_report symbol_feed_report.cpp)
+    target_include_directories(pineforge_hpo_symbol_feed_report PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
+    target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE PineForgeHPO::engine_adapter)
+
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
+        if(dlib_SOURCE_DIR)
+            add_test(NAME pineforge_hpo_numeric_flags
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_numeric_flags.py"
+                    "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
+        endif()
+        add_test(NAME pineforge_hpo_symbol_feeds_contract
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_symbol_feeds_contract.py"
+                $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         add_test(NAME pineforge_hpo_native_cli
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_native_cli.py"

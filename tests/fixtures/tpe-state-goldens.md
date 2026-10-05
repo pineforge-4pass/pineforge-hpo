@@ -30,7 +30,10 @@ identity is enforced for full sampler checkpoints: canonical RNG transport does
 not make different floating-point/math-library builds proposal-equivalent.
 
 `tpe-serial-goldens.txt` keys these hashes by SHA-256 of the derived numerical
-identity, not the host OS. Unknown identities print a clear SKIP message for the
+identity with only the `flags_sha256` component removed, not the host OS. The
+0.8.0 expanded math probe updates lookup keys, not the independently derived
+proposal hashes. Unknown identities print a clear SKIP message and the standalone
+`pineforge_hpo_serial_golden` CTest returns skip code 77 for the
 independent golden only; serial/threaded proposal and acquisition-bit comparisons
 still run. Refresh identities only after independently verifying the legacy oracle.
 
