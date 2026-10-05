@@ -9,7 +9,8 @@
 - Record `applied_runtime.symbol_feeds` and `runtime_sha256`, including exact symbol
   keys, installed facts, timeframe, bar count, first/last open and value hash. Warm JSON,
   JSONL and v2 block headers refuse changed/added/removed feeds. Feedless v2 bytes remain
-  unchanged; feedless result content remains unchanged except the release version marker.
+  unchanged; feedless grid/random result content remains unchanged except the release
+  version marker. TPE additionally gains the numeric-identity provenance fields below.
 - Refuse search dimensions naming `input.symbol` (D7); fixed symbol inputs remain supported.
   Require engine/codegen >= 1.1.0, pin both optional submodules to v1.2.0, and fail closed
   for ambiguous string-input metadata. Add real-artifact D7 refusal and BTCUSDT 4h /

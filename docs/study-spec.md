@@ -175,7 +175,8 @@ the `symbols` object records each symbol's `facts` and `feeds`. Each feed record
 SHA-256 of `pineforge:symbol-feed:barc-close-le:v1` plus NUL, then rows packed little-endian
 as five binary64 OHLCV values and two int64 open/close times (`<5dqq`). Paths do not affect
 identity. Warm continuation refuses changed/added/removed feeds/facts before any new trial.
-`space_hash` remains parameters/objective-only; feed identity is separate. No feeds add no fields.
+`space_hash` remains parameters/objective-only; feed identity is separate. No feeds add no
+feed-specific fields; TPE's numeric-identity provenance is independent of symbol feeds.
 
 ## Strategy
 
