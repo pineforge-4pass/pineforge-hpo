@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import struct
 import subprocess
@@ -25,6 +26,22 @@ from .study_spec import (
 SPACE_HASH_VERSION = 1
 WARM_START_EXIT = 4
 SPACE_EXHAUSTED_EXIT = 5
+
+
+def _validate_sampler_checkpoint(checkpoint: str) -> None:
+    if not isinstance(checkpoint, str):
+        raise ValueError("sampler-state must be a string")
+    encoded = checkpoint.encode("utf-8")
+    parts = encoded.split(b"\n", 2)
+    if (
+        len(encoded) > 16 * 1024 * 1024
+        or len(parts) != 3
+        or re.fullmatch(rb"PFHTPE[1-9][0-9]{0,9}", parts[0]) is None
+        or hashlib.sha256(parts[2]).hexdigest().encode() != parts[1]
+    ):
+        raise ValueError("invalid sampler-state checksum/version")
+
+
 _UINT64_MAX = (1 << 64) - 1
 _STATUSES = {
     "ok",
@@ -246,6 +263,9 @@ def load_warm_start(study: StudySpec, path: str | Path) -> WarmHistory:
             document = None
         parent_space = None
         if isinstance(document, dict) and "trials" in document:
+            if "tpe_sampler_state" in document:
+                checkpoint = document["tpe_sampler_state"]
+                _validate_sampler_checkpoint(checkpoint)
             if document.get("trials_out", "all") != "all":
                 raise ValueError("summary/none result is not a complete trial history")
             own_trials = document["trials"]

@@ -207,6 +207,7 @@ class StudySpecTest(unittest.TestCase):
                     "startup_trials": 20,
                     "ei_candidates": 48,
                     "history_switch": 4096,
+                    "max_threads": 8,
                     "gamma_fraction": 0.2,
                     "gamma_cap": 40,
                     "prior_weight": 1.5,
@@ -222,6 +223,7 @@ class StudySpecTest(unittest.TestCase):
             self.assertEqual(config.startup_trials, 20)
             self.assertEqual(config.ei_candidates, 48)
             self.assertEqual(config.history_switch, 4096)
+            self.assertEqual(config.max_threads, 8)
             self.assertEqual(config.gamma_fraction, 0.2)
             self.assertEqual(config.gamma_cap, 40)
             self.assertEqual(config.prior_weight, 1.5)
@@ -235,6 +237,7 @@ class StudySpecTest(unittest.TestCase):
             self.assertEqual(defaults.startup_trials, 10)
             self.assertEqual(defaults.ei_candidates, 24)
             self.assertIsNone(defaults.history_switch)
+            self.assertEqual(defaults.max_threads, 0)
             self.assertEqual(defaults.gamma_fraction, 0.10)
             self.assertEqual(defaults.gamma_cap, 25)
             self.assertEqual(defaults.prior_weight, 1.0)
@@ -245,6 +248,9 @@ class StudySpecTest(unittest.TestCase):
 
     def test_tpe_config_rejects_unknown_fields_and_invalid_ranges(self) -> None:
         invalid = (
+            ({"max_threads": -1}, r"max_threads: must be an integer in \[0, 1024\]"),
+            ({"max_threads": True}, r"max_threads: must be an integer in \[0, 1024\]"),
+            ({"max_threads": 1025}, r"max_threads: must be an integer in \[0, 1024\]"),
             ({"history_switch": 0}, "history_switch: must be a positive uint64"),
             ({"history_switch": True}, "history_switch: must be a positive uint64"),
             ({"history_switch": 2**64}, "history_switch: must be a positive uint64"),

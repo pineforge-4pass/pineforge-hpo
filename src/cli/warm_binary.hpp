@@ -4,13 +4,18 @@
 
 #include <array>
 #include <cmath>
+#include <iomanip>
 #include <numeric>
+#include <sstream>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 namespace pineforge::hpo::detail {
+
+inline constexpr std::array<unsigned char, 8> warm_state_magic{
+    'P', 'F', 'H', 'S', 'T', 'A', 'T', 'E'};
 
 inline constexpr std::array<unsigned char, 8> warm_magic{'P', 'F', 'H', 'W', 'A', 'R', 'M', 0};
 inline constexpr std::uint64_t warm_null = 0x7ff8000000000000ULL;
@@ -195,7 +200,41 @@ public:
             digest[index] = static_cast<unsigned char>(std::stoul(hash.substr(index * 2, 2),
                                                                  nullptr, 16));
         std::uint64_t offset = 0;
+        std::uint64_t checkpoint_rows = 0;
+        std::map<std::uint64_t, std::string> checkpoints;
         while (offset < mapping_.size) {
+            if (mapping_.size - offset >= 8 &&
+                std::equal(warm_state_magic.begin(), warm_state_magic.end(),
+                           mapping_.bytes + offset)) {
+                if (mapping_.size - offset < 16)
+                    throw std::runtime_error("truncated sampler-state block header");
+                const auto bytes = warm_integer<std::uint64_t>(mapping_.bytes + offset + 8);
+                if (!bytes || bytes > 16 * 1024 * 1024 || bytes > mapping_.size - offset - 16)
+                    throw std::runtime_error("invalid sampler-state block length");
+                const std::string state(
+                    reinterpret_cast<const char*>(mapping_.bytes + offset + 16),
+                    static_cast<std::size_t>(bytes));
+                if (!current_sampler_checkpoint(state)) {
+                    offset += 16 + static_cast<std::size_t>(bytes);
+                    continue;
+                }
+                std::istringstream payload(state.substr(73));
+                payload.imbue(std::locale::classic());
+                std::string signature, numeric_build;
+                std::uint64_t rows;
+                if (!(payload >> std::quoted(signature) >> std::quoted(numeric_build) >> rows))
+                    throw std::runtime_error("invalid sampler-state header");
+                const auto checksum = state.substr(8, 64);
+                const auto inserted = checkpoints.emplace(rows, checksum);
+                if (!inserted.second && inserted.first->second != checksum)
+                    throw std::runtime_error("conflicting sampler-state checkpoints");
+                if (sampler_state.empty() || rows > checkpoint_rows) {
+                    sampler_state = state;
+                    checkpoint_rows = rows;
+                }
+                offset += 16 + bytes;
+                continue;
+            }
             if (mapping_.size - offset < 80)
                 throw std::runtime_error("truncated binary block header");
             const auto* header = mapping_.bytes + offset;
@@ -253,6 +292,8 @@ public:
             rows_ += count;
             offset += block_bytes;
         }
+        if (!rows_)
+            throw std::runtime_error("binary history contains no trials");
         bool ordered = true;
         for (std::uint64_t row = 1; row < rows_; ++row)
             ordered = ordered && raw_id(row - 1) < raw_id(row);
@@ -353,6 +394,7 @@ public:
 
     std::uint64_t completed = 0;
     std::uint64_t feasible = 0;
+    std::string sampler_state;
 
 private:
     struct Block {
@@ -476,6 +518,7 @@ inline WarmHistory load_warm_history(const std::filesystem::path& path,
         auto source = std::make_shared<BinaryWarmSource>(path, space, recorded);
         history.completed = source->completed;
         history.feasible = source->feasible;
+        history.sampler_state = source->sampler_state;
         history.next_id = source->id(source->size() - 1) + 1;
         history.binary = std::move(source);
         return history;
@@ -585,6 +628,12 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
                 }
             }
             begin += count;
+        }
+        if (!history.sampler_state.empty()) {
+            output.write(reinterpret_cast<const char*>(warm_state_magic.data()),
+                         warm_state_magic.size());
+            warm_write_integer(output, static_cast<std::uint64_t>(history.sampler_state.size()));
+            output.write(history.sampler_state.data(), history.sampler_state.size());
         }
         output.flush();
         if (!output)

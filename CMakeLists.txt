@@ -119,9 +119,32 @@ target_include_directories(pineforge_hpo_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
-target_compile_options(pineforge_hpo_core PRIVATE
-    -Wall -Wextra -Wpedantic)
-target_link_libraries(pineforge_hpo_core PUBLIC dlib::dlib)
+target_compile_options(pineforge_hpo_core PRIVATE -Wall -Wextra -Wpedantic)
+set_source_files_properties(src/core/tpe_sampler.cpp PROPERTIES
+    COMPILE_OPTIONS "-ffp-contract=off")
+set(PFH_NUMERIC_FLAGS "${CMAKE_CXX_FLAGS}\n")
+foreach(PFH_CONFIG Debug Release RelWithDebInfo MinSizeRel)
+    string(TOUPPER "${PFH_CONFIG}" PFH_CONFIG_UPPER)
+    string(APPEND PFH_NUMERIC_FLAGS
+        "$<$<CONFIG:${PFH_CONFIG}>:${CMAKE_CXX_FLAGS_${PFH_CONFIG_UPPER}}>\n")
+endforeach()
+string(APPEND PFH_NUMERIC_FLAGS
+    "$<JOIN:$<TARGET_PROPERTY:pineforge_hpo_core,COMPILE_OPTIONS>,\n>\n"
+    "$<JOIN:$<TARGET_PROPERTY:pineforge_hpo_core,COMPILE_DEFINITIONS>,\n>\n"
+    "source:-ffp-contract=off\n")
+file(GENERATE OUTPUT
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/$<COMPILE_LANGUAGE>/numeric_build_flags.txt"
+    CONTENT "${PFH_NUMERIC_FLAGS}")
+add_custom_target(pineforge_hpo_numeric_flags
+    COMMAND "${CMAKE_COMMAND}"
+        "-DPFH_FLAGS_FILE=${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/CXX/numeric_build_flags.txt"
+        "-DPFH_FLAGS_HEADER=${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/CXX/numeric_build_flags.hpp"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateNumericBuildFlags.cmake")
+add_dependencies(pineforge_hpo_core pineforge_hpo_numeric_flags)
+target_include_directories(pineforge_hpo_core PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/CXX")
+find_package(Threads REQUIRED)
+target_link_libraries(pineforge_hpo_core PUBLIC dlib::dlib Threads::Threads)
 
 if(PINEFORGE_HPO_BUILD_ENGINE_ADAPTER)
     add_library(pineforge_hpo_engine_adapter STATIC

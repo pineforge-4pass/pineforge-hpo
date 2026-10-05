@@ -100,6 +100,7 @@ struct WarmStartObservation {
 };
 
 /// Immutable, ordered sampler observations, optionally backed by mapped binary columns.
+/// Const accessors must permit concurrent reads during independent-dimension model fitting.
 class WarmStartSource {
 public:
     /// Releases the source and any resources retained by its implementation.
@@ -153,6 +154,10 @@ struct TpeSamplerConfig {
 
     /// Uniform older non-elite reservoir size, in addition to 64 recent observations.
     std::uint64_t bad_reservoir_size = 448;
+
+    /// Maximum independent-dimension workers; zero selects min(8, available CPUs).
+    /// Linux CPU quotas and affinity constrain the default. This never changes suggestions.
+    std::uint32_t max_threads = 0;
 };
 
 /// @brief Independent, single-objective Tree-structured Parzen Estimator sampler.
@@ -211,18 +216,27 @@ public:
 
     /// Imports attempted candidates into a pristine sampler without consuming its new budget.
     /// Feasible objectives train the same estimator as tell(); other attempts only reserve points.
-    /// IDs continue after the largest imported ID. Returns true when complete lag-zero batches
-    /// replay exactly, preserving the uninterrupted RNG/model state; otherwise rebuilds history
-    /// with a continuation_seed() RNG. replay_batch_size == 0 disables replay.
+    /// IDs continue after the largest imported ID. No historical proposals are generated.
+    /// A matching sampler_state() checkpoint restores the exact RNG/model state and returns true.
+    /// Without one, history is rebuilt with continuation_seed() and returns false. The retained
+    /// replay_batch_size argument is ignored; legacy histories cannot recover rejection draws.
     /// @throws std::invalid_argument for invalid candidates, IDs, or non-finite objectives.
     /// @throws std::logic_error if the sampler is not pristine.
     bool warm_start(const std::vector<WarmStartObservation>& observations,
-                   std::uint64_t replay_batch_size = 0);
+                   std::uint64_t replay_batch_size = 0,
+                   const std::string& sampler_state = {});
 
     /// Restores exact ordered observations while retaining the immutable source by reference.
-    /// Import consumes every row; replay and configured compaction match the vector overload.
+    /// Import consumes every row; checkpoint restoration matches the vector overload.
     bool warm_start(std::shared_ptr<const WarmStartSource> source,
-                    std::uint64_t replay_batch_size = 0);
+                    std::uint64_t replay_batch_size = 0,
+                    const std::string& sampler_state = {});
+
+    /// Returns a versioned, checksummed checkpoint bound to the configuration and observations.
+    /// No candidate may be outstanding. Preserve this alongside the complete attempted history.
+    /// Numeric caches retain their fitting observation IDs, not redundant kernel arrays.
+    /// @throws std::logic_error if a candidate is outstanding.
+    std::string sampler_state() const;
 
     /// Restores the seeded initial state and clears finite-space reservations.
     ///

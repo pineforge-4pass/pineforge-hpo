@@ -8,6 +8,18 @@ add_executable(pineforge_hpo_test_warm_start test_warm_start.cpp)
 target_link_libraries(pineforge_hpo_test_warm_start PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_warm_start PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_warm_start COMMAND pineforge_hpo_test_warm_start)
+target_compile_definitions(pineforge_hpo_test_warm_start PRIVATE
+    PFH_TPE_SERIAL_GOLDENS="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tpe-serial-goldens.txt")
+
+add_executable(pineforge_hpo_checkpoint_exchange checkpoint_exchange.cpp)
+target_link_libraries(pineforge_hpo_checkpoint_exchange PRIVATE PineForgeHPO::core)
+
+add_executable(pineforge_hpo_test_mt_state test_mt_state.cpp)
+target_link_libraries(pineforge_hpo_test_mt_state PRIVATE PineForgeHPO::core)
+target_compile_definitions(pineforge_hpo_test_mt_state PRIVATE
+    PFH_MT_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/tpe-mt64-golden.txt"
+    PFH_MT_GOLDEN_HASH="3132b2ec79fbb1b9741d1c771356ba94ffce7e41c5e172e442ddc5350fb6db70")
+add_test(NAME pineforge_hpo_mt_state COMMAND pineforge_hpo_test_mt_state)
 
 add_executable(pineforge_hpo_test_warm_binary test_warm_binary.cpp)
 target_include_directories(pineforge_hpo_test_warm_binary PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")

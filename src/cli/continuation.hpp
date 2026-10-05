@@ -2,6 +2,7 @@
 
 #include "json.hpp"
 #include "sha256.hpp"
+#include "../core/sampler_checkpoint.hpp"
 
 #include <pineforge/hpo/sampler.hpp>
 #include <algorithm>
@@ -393,6 +394,7 @@ class BinaryWarmSource;
 
 struct WarmHistory {
     std::string source_sha256;
+    std::string sampler_state;
     std::vector<WarmStartObservation> observations;
     std::vector<std::vector<std::optional<double>>> rung_scores;
     std::vector<Json> records;
@@ -426,6 +428,11 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
         const Json* parent_space = nullptr;
         std::optional<Json> legacy_space;
         if (document && document->kind == Json::Kind::Object && document->find("trials")) {
+            if (const auto* state = document->find("tpe_sampler_state")) {
+                history.sampler_state = state->text();
+                const auto& checkpoint = history.sampler_state;
+                sampler_checkpoint_payload(checkpoint);
+            }
             if (const auto* mode = document->find("trials_out"); mode && mode->text() != "all")
                 throw std::runtime_error("summary/none result is not a complete trial history");
             const auto& records = field(*document, "trials");

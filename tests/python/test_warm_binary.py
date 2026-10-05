@@ -10,7 +10,11 @@ from pathlib import Path
 import struct
 import unittest
 
-from pineforge_hpo.continuation import WarmStartError, space_hash
+from pineforge_hpo.continuation import (
+    WarmStartError,
+    _validate_sampler_checkpoint,
+    space_hash,
+)
 from pineforge_hpo.study_spec import load_study_spec
 from pineforge_hpo.warm_binary import HEADER, encode_warm_block, write_warm_block
 
@@ -42,6 +46,43 @@ class WarmBinaryTests(unittest.TestCase):
         stream = io.BytesIO()
         self.assertEqual(write_warm_block(stream, self.study, self.trials), 247)
         self.assertEqual(stream.getvalue(), encode_warm_block(self.study, self.trials))
+
+    def test_optional_sampler_state(self):
+        payload = "opaque checkpoint\n"
+        state = (
+            "PFHTPE2\n" + hashlib.sha256(payload.encode()).hexdigest() + "\n" + payload
+        )
+        encoded = state.encode()
+        plain = encode_warm_block(self.study, self.trials)
+        expected = plain + b"PFHSTATE" + struct.pack("<Q", len(encoded)) + encoded
+        self.assertEqual(
+            encode_warm_block(self.study, self.trials, sampler_state=state), expected
+        )
+        stream = io.BytesIO()
+        self.assertEqual(
+            write_warm_block(stream, self.study, self.trials, sampler_state=state),
+            len(expected),
+        )
+        self.assertEqual(stream.getvalue(), expected)
+        for invalid in ("", 1, "x" * (16 * 1024 * 1024 + 1)):
+            with self.assertRaises(WarmStartError):
+                encode_warm_block(self.study, self.trials, sampler_state=invalid)
+
+    def test_other_checkpoint_versions_and_corruption(self):
+        payload = "future opaque checkpoint\n"
+        checksum = hashlib.sha256(payload.encode()).hexdigest()
+        for version in (1, 2, 3, 12):
+            state = f"PFHTPE{version}\n{checksum}\n{payload}"
+            _validate_sampler_checkpoint(state)
+            self.assertIn(
+                state.encode(),
+                encode_warm_block(self.study, self.trials, sampler_state=state),
+            )
+        for tag in ("PFHTPE0", "PFHTPE", "PFHTPE3x", "PFHTPE01"):
+            with self.assertRaises(ValueError):
+                _validate_sampler_checkpoint(f"{tag}\n{checksum}\n{payload}")
+        with self.assertRaises(ValueError):
+            _validate_sampler_checkpoint(f"PFHTPE3\n{checksum}\ncorrupt")
 
     def test_order_and_minimal_fields(self):
         rich = copy.deepcopy(self.trials)

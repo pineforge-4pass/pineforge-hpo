@@ -66,7 +66,8 @@ struct Options {
     std::shared_ptr<const pfh::detail::WarmHistory> warm_history;
     std::shared_ptr<const std::string> space_json;
     std::string space_hash;
-    bool tpe_warm_replayed = false;
+    bool tpe_warm_restored = false;
+    std::string tpe_sampler_state;
     std::string trials_out = "all";
     std::uint64_t best_k = 10;
     std::filesystem::path syminfo;
@@ -276,6 +277,7 @@ void print_help() {
               << "TPE options:\n"
               << "  --tpe-startup-trials N      random observations before model fitting\n"
               << "  --tpe-ei-candidates N       candidates scored by log l(x)/g(x)\n"
+              << "  --tpe-max-threads N        fit/score workers; 0: min(8, available CPUs)\n"
               << "  --tpe-history-switch N     completed observations before bounded TPE"
                  " (default unset: never switch; JSON null)\n"
               << "  --tpe-scale-ei-candidates N acquisition draws after the history switch\n"
@@ -430,6 +432,11 @@ Options parse_options(int argc, char** argv) {
             out.tpe_config.startup_trials = parse_u64(require_value(argc, argv, i, option), option);
         } else if (option == "--tpe-ei-candidates") {
             out.tpe_config.ei_candidates = parse_u64(require_value(argc, argv, i, option), option);
+        } else if (option == "--tpe-max-threads") {
+            const auto count = parse_u64(require_value(argc, argv, i, option), option);
+            if (count > 1024)
+                usage_error("--tpe-max-threads must be between 0 and 1024");
+            out.tpe_config.max_threads = static_cast<std::uint32_t>(count);
         } else if (option == "--tpe-history-switch") {
             out.tpe_config.history_switch =
                 parse_u64(require_value(argc, argv, i, option), option);
@@ -1400,6 +1407,7 @@ std::string render_results(const Options& options,
             << ", \"scale_ei_candidates\": " << options.tpe_config.scale_ei_candidates
             << ", \"bad_reservoir_size\": " << options.tpe_config.bad_reservoir_size
             << ", \"ei_candidates\": " << options.tpe_config.ei_candidates
+            << ", \"max_threads\": " << options.tpe_config.max_threads
             << ", \"gamma_fraction\": " << json_number(options.tpe_config.gamma_fraction)
             << ", \"gamma_cap\": " << options.tpe_config.gamma_cap
             << ", \"prior_weight\": " << json_number(options.tpe_config.prior_weight)
@@ -1412,7 +1420,11 @@ std::string render_results(const Options& options,
         << (options.direction == Direction::kMaximize ? "maximize" : "minimize") << "\",\n"
         << "  \"batch_size\": " << (options.batch_size ? options.batch_size : options.workers)
         << ",\n  \"batch_lag\": " << options.batch_lag
-        << ",\n  \"replay_contract\": \"ordered_batches_v1\",\n"
+        << ",\n  \"replay_contract\": \""
+        << "ordered_batches_v1"
+        << "\",\n  \"continuation_contract\": \""
+        << (options.sampler == "tpe" ? "sampler_checkpoint_v2" : "ordered_batches_v1")
+        << "\",\n"
         << "  \"pruner\": \"" << options.pruner_name << "\",\n"
         << "  \"pruner_eta\": " << options.pruner_eta << ",\n"
         << "  \"pruner_rungs\": [";
@@ -1495,6 +1507,8 @@ std::string render_results(const Options& options,
             << ",\"exhaustive_equivalent\":" << (exhaustive_equivalent ? "true" : "false")
             << "}}";
     }
+    if (!options.tpe_sampler_state.empty())
+        out << ",\n  \"tpe_sampler_state\": \"" << json_escape(options.tpe_sampler_state) << "\"";
     if (options.warm_history) {
         const auto& warm = *options.warm_history;
         out << ",\n  \"warm_start\": {\"source_sha256\":\"" << warm.source_digest()
@@ -1503,7 +1517,8 @@ std::string render_results(const Options& options,
             << ",\"space_hash\":\"" << options.space_hash << "\"}";
         if (options.sampler == "tpe")
             out << ",\n  \"warm_start_model\":\""
-                << (options.tpe_warm_replayed ? "replayed_batches" : "rebuilt_history") << "\"";
+                << (options.tpe_warm_restored ? "restored_sampler_state" : "rebuilt_history")
+                << "\"";
         if (options.trials_out == "all") {
             out << ",\n  \"warm_start_trials\": [";
             for (std::uint64_t index = 0; index < warm.size(); ++index) {
@@ -1763,11 +1778,19 @@ int run(Options options) {
                                 options.tpe_config, policy);
         if (options.warm_history) {
             const auto replay_batch = options.batch_lag == 0 ? batch_size : 0;
-            options.tpe_warm_replayed = options.warm_history->binary
-                ? sampler.warm_start(options.warm_history->binary, replay_batch)
-                : sampler.warm_start(options.warm_history->observations, replay_batch);
+            const auto state = options.batch_lag == 0 ? options.warm_history->sampler_state :
+                                                       std::string{};
+            try {
+                options.tpe_warm_restored = options.warm_history->binary
+                    ? sampler.warm_start(options.warm_history->binary, replay_batch, state)
+                    : sampler.warm_start(options.warm_history->observations, replay_batch, state);
+            } catch (const std::exception& error) {
+                throw pfh::detail::WarmStartError(error.what());
+            }
         }
         evaluate_adaptive(sampler);
+        if (sampler.outstanding() == 0)
+            options.tpe_sampler_state = sampler.sampler_state();
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
     } else {
         std::unique_ptr<pfh::Sampler> sampler;

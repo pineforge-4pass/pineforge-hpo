@@ -515,6 +515,7 @@ TPE config fields are strict; unknown fields are rejected:
 | `startup_trials` | `10` | Positive integer. |
 | `ei_candidates` | `24` | Integer in `[1, 1000000]`; the upper bound prevents an accidental near-infinite `ask()`. |
 | `history_switch` | `null` | Never switch when absent/null; positive uint64 opts into bounded models via native `--tpe-history-switch N`. |
+| `max_threads` | `0` | 0 uses min(8, available CPUs); 1..1024 sets a fit/score worker cap, also constrained by affinity/cgroup quotas. Native `--tpe-max-threads N`. Never changes suggestion bits. |
 | `gamma_fraction` | `0.1` | Finite number in `(0, 1]`. |
 | `gamma_cap` | `25` | Positive integer. |
 | `prior_weight` | `1.0` | Finite number greater than zero. |
@@ -796,18 +797,25 @@ observations count toward startup and the history-switch threshold. Available
 observations. Changing pruning rungs invalidates their meaning; keep the parent's
 prefix schedule for pruning equivalence.
 
-TPE first attempts to replay the ordered parent as complete lag-zero ask/tell batches
-with the current seed/configuration. Every proposal and ID must match. On success it
-preserves the RNG, density caches and bounded reservoir state, so its first new
-proposal (and subsequent proposals under the same batching/results) equals the long
-run. This is tested at batches **2, 5 and 8**, including bounded history and failures.
+Since 0.7.0, TPE imports the ordered parent without proposing any historical trial.
+A complete result's `tpe_sampler_state`, or a warm-v2 `PFHSTATE` extension, restores
+the exact suggestion RNG, reservoir RNG, finite fallback cursor, retained observations
+and bounded cache membership when configuration, seed, complete typed history and
+numerical-build identity match. Compiler/stdlib versions, target architecture and
+floating-point configuration/rounding are enforced; foreign builds reconstruct.
+The checkpoint is checksummed and contains a typed-history fingerprint. Full-history
+models rebuild from the same chronological rows; bounded caches rebuild from their
+recorded fitting IDs. Matching future lag-zero ask/tell schedules reproduce the
+uninterrupted stream bit-for-bit, including a partial final parent batch. The checkpoint
+requires zero outstanding candidates and the complete parent history, not just best-K rows.
 
-Otherwise it reconstructs all trainable history in ID order with the derived
-continuation RNG and applies the same history switch and reservations. Changed batch
-sizes, lag-one schedules, sparse IDs or a partial final batch need not preserve the
-uninterrupted proposal stream: different pending constant-liar candidates, RNG
-consumption and model rebuild boundaries are not recoverable from terminal trials
-alone. The weaker invariant is deterministic, bounded history reconstruction with
+Row-only v0.5/v0.6 parents, mismatching checkpoints and lag-one continuations instead
+reconstruct trainable history in ID order with the derived continuation RNG and the
+same history switch and reservations. This intentionally replaces the former complete
+matching-batch replay contract for legacy TPE parents. Numeric rejection sampling and
+finite retries consume a model-dependent RNG stream; winning terminal rows do not
+record its cursor. Advancing a fixed number of RNG draws per trial cannot be exact.
+The weaker invariant is deterministic, bounded history reconstruction with
 correct startup progress and exclusion of all reserved vectors. Exact byte replay
 holds for the same parent bytes, seed, sampler configuration, batch size and worker
 count (excluding explicitly requested timing sidecars).
@@ -824,6 +832,31 @@ duplicate-parameter trials. Each chunk is one independently self-describing bloc
 A file is one or more complete blocks concatenated byte-for-byte, with **no** outer
 header, separators, alignment padding, compression or footer. Blocks can arrive in
 any order; IDs determine observation order. Every block must match the current study.
+
+### Optional sampler-state block (0.7.0)
+
+An independent extension block starts with the eight ASCII bytes `PFHSTATE`, followed
+by a little-endian uint64 payload length and that many UTF-8 checkpoint bytes. There
+is no padding. The payload is `PFHTPE2\n`, a 64-character lowercase SHA-256 digest,
+`\n`, and the versioned state. The digest covers the state after the second newline. It checks integrity, not
+authenticity: warm files are trusted input. The payload contains a configuration/build
+signature, explicit numerical-build token, counters/history fingerprint, and two
+canonical engines (`MT64 312`, 312 uint64 state words, position 0..312). It never
+uses libc++/libstdc++ stream serialization. All-zero/degenerate states are rejected.
+Full-history state is independent of trial count; bounded state carries retained
+and cached fitting IDs only. The switch-transition window never serializes a stale
+full-history bad-model list.
+The payload must be nonempty and at most 16 MiB; at least one ordinary trial block is
+required. No-state warm-v2 golden bytes are unchanged. v0.6 and older binary readers
+reject this extension; omit `sampler_state` when producing a row-only export for them.
+
+State blocks can appear anywhere among row blocks. The checkpoint with the greatest
+attempted-row count wins, independently of block order; identical duplicates are
+allowed, conflicting checkpoints for the same attempted-row count are rejected. The sampler still
+verifies the selected checkpoint against the complete imported history and current
+configuration. A stale or incompatible checkpoint causes history reconstruction,
+never proposal replay. Native `warm-encode` preserves the state from complete result
+JSON. Python writers accept it through the keyword-only `sampler_state` argument.
 
 ### Block header
 

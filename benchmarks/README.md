@@ -12,6 +12,7 @@ part of the normal build.
 | `batching/` | Compare baseline, logical batches, fixed lag, and prefix pruning on real strategies | Active |
 | [`scaling/`](scaling/README.md) | History-flat acquisition, million-trial outputs, and pinned quality replay | Active |
 | [`warm/`](warm/README.md) | Binary warm-load resources and actual v0.5 JSON bitwise continuation | Active |
+| [`noreplay/`](noreplay/README.md) | No-replay continuation, exact full-history multicore fit, checkpoint equivalence | Active |
 
 The Optuna suite includes continuous, non-separable, mixed-type, log-scale, and
 million-candidate discrete objectives. Its checked-in

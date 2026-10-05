@@ -161,7 +161,7 @@ def main():
                     directory,
                     sampler,
                     batch,
-                    warm=parent_lines,
+                    warm=parent_path if sampler == "tpe" else parent_lines,
                     policy=policy,
                     label=label + "-child",
                 )
@@ -172,7 +172,7 @@ def main():
                     directory,
                     sampler,
                     batch,
-                    warm=parent_lines,
+                    warm=parent_path if sampler == "tpe" else parent_lines,
                     policy=policy,
                     label=label + "-replay",
                 )
@@ -213,7 +213,9 @@ def main():
                 )
                 require(
                     child["warm_start"]["source_sha256"]
-                    == hashlib.sha256(parent_lines.read_bytes()).hexdigest(),
+                    == hashlib.sha256(
+                        (parent_path if sampler == "tpe" else parent_lines).read_bytes()
+                    ).hexdigest(),
                     "source digest differs",
                 )
                 require(

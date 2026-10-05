@@ -1,24 +1,58 @@
 #include "pineforge/hpo/sampler.hpp"
 #include "ordinal_set.hpp"
+#include "sha256.hpp"
+#include "mt19937_64.hpp"
+#include "numeric_build.hpp"
+#include "dimension_workers.hpp"
+#include "sampler_checkpoint.hpp"
+#include "tpe_test_hooks.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace pineforge::hpo {
+namespace detail {
+
+thread_local TpeLogRatioObserver tpe_log_ratio_observer = nullptr;
+thread_local std::optional<double> tpe_contraction_override;
+
+void set_tpe_log_ratio_observer(TpeLogRatioObserver observer) noexcept {
+    tpe_log_ratio_observer = observer;
+}
+
+void set_tpe_contraction_override(std::optional<double> value) noexcept {
+    tpe_contraction_override = value;
+}
+
+std::string tpe_numeric_identity() {
+    volatile double first = 0x1.0000000000001p0;
+    volatile double second = 0x1.ffffffffffffep-1;
+    volatile double third = -1.0;
+    const double arithmetic = first * second + third;
+    const double fused = std::fma(first, second, third);
+    return numeric_build_identity(tpe_contraction_override.value_or(arithmetic), fused);
+}
+
+}
 namespace {
 
+constexpr std::uint32_t kTpeAlgorithmRevision = 1;
 constexpr double kInverse53 = 1.0 / 9007199254740992.0;
 constexpr double kLogSqrtTwoPi = 0.91893853320467274178;
 constexpr double kSqrtTwo = 1.41421356237309504880;
@@ -26,7 +60,86 @@ constexpr double kTwoPi = 6.28318530717958647693;
 constexpr std::uint64_t kMaxExactlyRepresentableBins = std::uint64_t{1} << 53U;
 constexpr std::uint64_t kMaxEiCandidates = 1'000'000;
 
-std::uint64_t bounded_random(std::mt19937_64& engine, std::uint64_t bound) {
+std::uint64_t double_bits(double value) {
+    std::uint64_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+void state_value(std::ostream& output, const ParameterValue& value) {
+    output << value.index() << ':';
+    std::visit([&](const auto& item) {
+        using Value = std::decay_t<decltype(item)>;
+        if constexpr (std::is_same_v<Value, double>)
+            output << double_bits(item);
+        else if constexpr (std::is_same_v<Value, std::string>)
+            output << std::quoted(item);
+        else
+            output << item;
+    }, value);
+    output << ' ';
+}
+
+std::string state_signature(const SearchSpace& space, std::uint64_t seed,
+                            ObjectiveDirection direction, CandidatePolicy policy,
+                            const TpeSamplerConfig& config, const std::string& numeric_build) {
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output << "tpe_revision:" << kTpeAlgorithmRevision << ' ' << seed << ' '
+           << static_cast<int>(direction) << ' '
+           << static_cast<int>(policy) << ' ' << config.startup_trials << ' '
+           << config.ei_candidates << ' ' << double_bits(config.gamma_fraction) << ' '
+           << config.gamma_cap << ' ' << double_bits(config.prior_weight) << ' '
+           << config.constant_liar << ' ' << config.history_switch.value_or(0) << ' '
+           << config.scale_ei_candidates << ' ' << config.bad_reservoir_size << ' '
+           << std::quoted(numeric_build) << ' ';
+    for (const auto& dimension : space.dimensions()) {
+        output << dimension.index() << ' ' << std::quoted(std::string(dimension_name(dimension)))
+               << ' ';
+        std::visit([&](const auto& item) {
+            using Value = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<Value, IntegerDimension>) {
+                output << item.low() << ' ' << item.high() << ' ' << item.step() << ' '
+                       << item.log() << ' ';
+            } else if constexpr (std::is_same_v<Value, RealDimension>) {
+                output << double_bits(item.low()) << ' ' << double_bits(item.high()) << ' '
+                       << item.step().has_value() << ' '
+                       << double_bits(item.step().value_or(0)) << ' ' << item.log() << ' ';
+            } else if constexpr (std::is_same_v<Value, CategoricalDimension>) {
+                output << item.choices().size() << ' ';
+                for (const auto& value : item.choices())
+                    state_value(output, value);
+            }
+        }, dimension);
+    }
+    return detail::sha256(output.str());
+}
+
+using StateFingerprint = std::array<std::uint64_t, 4>;
+
+void fingerprint_record(StateFingerprint& fingerprint, const std::string& record) {
+    const auto digest = detail::sha256(record);
+    for (std::size_t index = 0; index < fingerprint.size(); ++index)
+        fingerprint[index] ^= std::stoull(digest.substr(index * 16, 16), nullptr, 16);
+}
+
+template <typename GetValue>
+void fingerprint_candidate(StateFingerprint& fingerprint, std::uint64_t identifier,
+                           std::size_t dimensions, GetValue&& get_value) {
+    std::ostringstream record;
+    record.imbue(std::locale::classic());
+    record << "candidate " << identifier << ' ';
+    for (std::size_t column = 0; column < dimensions; ++column)
+        state_value(record, get_value(column));
+    fingerprint_record(fingerprint, record.str());
+}
+
+void fingerprint_score(StateFingerprint& fingerprint, std::uint64_t identifier, double score) {
+    fingerprint_record(fingerprint, "objective " + std::to_string(identifier) + ' ' +
+                        std::to_string(double_bits(score)));
+}
+
+std::uint64_t bounded_random(detail::Mt19937_64& engine, std::uint64_t bound) {
     if (bound == 0) {
         throw std::invalid_argument("TPE random bound must be positive");
     }
@@ -39,15 +152,15 @@ std::uint64_t bounded_random(std::mt19937_64& engine, std::uint64_t bound) {
     }
 }
 
-double unit_random(std::mt19937_64& engine) {
+double unit_random(detail::Mt19937_64& engine) {
     return static_cast<double>(engine() >> 11U) * kInverse53;
 }
 
-double open_unit_random(std::mt19937_64& engine) {
+double open_unit_random(detail::Mt19937_64& engine) {
     return (static_cast<double>(engine() >> 11U) + 0.5) * kInverse53;
 }
 
-double standard_normal(std::mt19937_64& engine) {
+double standard_normal(detail::Mt19937_64& engine) {
     // Do not cache the second Box-Muller variate: every call consumes exactly
     // two engine values, which makes reset/replay behavior straightforward.
     const double radius = std::sqrt(-2.0 * std::log(open_unit_random(engine)));
@@ -308,7 +421,7 @@ public:
         }
     }
 
-    double sample(std::mt19937_64& engine) const {
+    double sample(detail::Mt19937_64& engine) const {
         const double target = unit_random(engine) * total_weight_;
         double cumulative = 0.0;
         const Component* selected = &components_.back();
@@ -501,7 +614,7 @@ public:
         }
     }
 
-    std::size_t sample(std::mt19937_64& engine) const {
+    std::size_t sample(detail::Mt19937_64& engine) const {
         const double target = unit_random(engine) * total_mass_;
         double cumulative = 0.0;
         for (std::size_t i = 0; i < masses_.size(); ++i) {
@@ -534,6 +647,8 @@ private:
 };
 
 void validate_config(const TpeSamplerConfig& config) {
+    if (config.max_threads > 1024)
+        throw std::invalid_argument("TPE max_threads must be in [0, 1024]");
     if (config.history_switch && *config.history_switch == 0)
         throw std::invalid_argument("TPE history_switch must be positive");
     if (config.startup_trials == 0) {
@@ -701,6 +816,8 @@ public:
         std::shared_ptr<CategoricalModel> bad_categorical;
     };
 
+    const std::string numeric_build_ = detail::tpe_numeric_identity();
+
     Impl(const SearchSpace& space,
          std::uint64_t seed,
          std::optional<std::uint64_t> finite_cardinality)
@@ -734,9 +851,14 @@ public:
         next_owned_ = 0;
         older_bad_seen_ = 0;
         compact_history_ = false;
+        cached_compact_ = false;
+        cached_epoch_ = 0;
         cached_models_.clear();
         good_ids_.clear();
         bad_ids_.clear();
+        bad_model_ids_.clear();
+        fingerprint_ = {};
+        attempted_ = 0;
         pending_.clear();
         pending_encodings_.clear();
         if (reservations_.has_value()) {
@@ -851,15 +973,29 @@ public:
                                !cached_models_.empty() &&
                                compact_history_ == cached_compact_;
         if (!reuse_good || !reuse_bad) {
-            std::vector<DimensionModel> updated;
-            updated.reserve(space.dimensions().size());
-            for (std::size_t index = 0; index < space.dimensions().size(); ++index) {
-                updated.push_back(build_model(index, space.dimensions()[index], encodings_[index],
-                    good, bad, good_weights, bad_weights, config.prior_weight, compact_history_,
-                    cached_models_.empty() ? nullptr : &cached_models_[index], reuse_good,
-                    reuse_bad));
+            std::vector<DimensionModel> updated(space.dimensions().size());
+            try {
+                dimension_work(updated.size(), !compact_history_ && bad.size() >= 4096, config,
+                               [&](std::size_t index) {
+                    auto* cached = cached_models_.empty() ? nullptr : &cached_models_[index];
+                    if (cached && !reuse_bad) {
+                        cached->bad_numeric.reset();
+                        cached->bad_categorical.reset();
+                    }
+                    updated[index] = build_model(index, space.dimensions()[index],
+                        encodings_[index], good, bad, good_weights, bad_weights,
+                        config.prior_weight, compact_history_, cached, reuse_good, reuse_bad);
+                });
+            } catch (...) {
+                cached_models_.clear();
+                good_ids_.clear();
+                bad_ids_.clear();
+                bad_model_ids_.clear();
+                throw;
             }
             cached_models_ = std::move(updated);
+            if (!reuse_bad)
+                bad_model_ids_ = bad_ids;
             good_ids_ = std::move(good_ids);
             bad_ids_ = std::move(bad_ids);
             cached_compact_ = compact_history_;
@@ -911,50 +1047,62 @@ public:
             Candidate candidate;
             candidate.id = id;
             values.clear();
-            double log_ratio = 0.0;
-            for (std::size_t i = 0; i < space.dimensions().size(); ++i) {
-                const auto& dimension = space.dimensions()[i];
-                const auto& encoding = encodings_[i];
-                const auto& model = models[i];
-                ParameterValue value;
-                double contribution = 0.0;
-
+            values.resize(models.size());
+            std::vector<double> samples(models.size());
+            std::vector<double> contributions(models.size());
+            for (std::size_t column = 0; column < models.size(); ++column) {
+                const auto& dimension = space.dimensions()[column];
+                const auto& model = models[column];
                 if (model.kind == DimensionModel::Kind::Numeric) {
-                    const double sampled = model.good_numeric->sample(engine_);
-                    value = decode_numeric(dimension, encoding, sampled);
+                    samples[column] = model.good_numeric->sample(engine_);
+                    values[column] = decode_numeric(dimension, encodings_[column], samples[column]);
+                } else if (model.kind == DimensionModel::Kind::Categorical) {
+                    samples[column] = model.good_categorical->sample(engine_);
+                    values[column] = decode_categorical(dimension,
+                        static_cast<std::size_t>(samples[column]));
+                } else {
+                    values[column] = fixed_value(dimension);
+                }
+            }
+            dimension_work(models.size(), !compact_history_ && history_.size() >= 4096, config,
+                           [&](std::size_t column) {
+                const auto& dimension = space.dimensions()[column];
+                const auto& encoding = encodings_[column];
+                const auto& model = models[column];
+                if (model.kind == DimensionModel::Kind::Numeric) {
                     const bool continuous = encoding.kind == EncodingKind::ContinuousReal ||
                                             encoding.kind == EncodingKind::LogContinuousReal;
-                    const double legal = compact_history_ && continuous ? sampled :
-                        encode_numeric(dimension, encoding, value);
-                    if (encoding.kind == EncodingKind::ContinuousReal ||
-                        encoding.kind == EncodingKind::LogContinuousReal) {
-                        contribution = model.good_numeric->log_density(legal) -
-                            model.bad_numeric->pending_log_density(legal, pending_numeric[i]);
+                    if (continuous) {
+                        const double legal = compact_history_ ? samples[column] :
+                            encode_numeric(dimension, encoding, values[column]);
+                        contributions[column] = model.good_numeric->log_density(legal) -
+                            model.bad_numeric->pending_log_density(legal, pending_numeric[column]);
                     } else {
-                        const auto [lower, upper] = numeric_bin(dimension, encoding, value);
-                        contribution = model.good_numeric->log_bin_mass(lower, upper) -
-                            model.bad_numeric->pending_log_bin_mass(lower, upper,
-                                                                    pending_numeric[i]);
+                        const auto bounds = numeric_bin(dimension, encoding, values[column]);
+                        contributions[column] =
+                            model.good_numeric->log_bin_mass(bounds.first, bounds.second) -
+                            model.bad_numeric->pending_log_bin_mass(bounds.first, bounds.second,
+                                                                   pending_numeric[column]);
                     }
                 } else if (model.kind == DimensionModel::Kind::Categorical) {
-                    const std::size_t sampled = model.good_categorical->sample(engine_);
-                    value = decode_categorical(dimension, sampled);
-                    contribution = model.good_categorical->log_density(sampled) -
-                        model.bad_categorical->pending_log_density(sampled, pending_values[i]);
-                } else {
-                    value = fixed_value(dimension);
+                    const auto sampled = static_cast<std::size_t>(samples[column]);
+                    contributions[column] = model.good_categorical->log_density(sampled) -
+                        model.bad_categorical->pending_log_density(sampled, pending_values[column]);
                 }
-                if (!std::isfinite(contribution)) {
+            });
+            double log_ratio = 0.0;
+            for (std::size_t column = 0; column < models.size(); ++column) {
+                if (!std::isfinite(contributions[column])) {
                     throw std::logic_error(
                         "TPE produced a non-finite acquisition contribution for dimension: " +
-                        std::string(dimension_name(dimension)));
+                        std::string(dimension_name(space.dimensions()[column])));
                 }
-                log_ratio += contribution;
-                if (!std::isfinite(log_ratio)) {
+                log_ratio += contributions[column];
+                if (!std::isfinite(log_ratio))
                     throw std::logic_error("TPE acquisition log ratio is non-finite");
-                }
-                values.push_back(std::move(value));
             }
+            if (detail::tpe_log_ratio_observer)
+                detail::tpe_log_ratio_observer(log_ratio);
             if (reservations_.has_value()) {
                 for (std::size_t index = 0; index < values.size(); ++index)
                     candidate.values.emplace(std::string(dimension_name(space.dimensions()[index])),
@@ -1007,10 +1155,6 @@ public:
     }
 
     void retain_observation(Candidate candidate, double score) {
-        if (warm_replay_row_) {
-            history_.push_back(*warm_replay_row_);
-            return;
-        }
         const auto reference = owned_marker | next_owned_++;
         owned_history_.emplace(reference, CompletedObservation{std::move(candidate), score});
         history_.push_back(reference);
@@ -1085,14 +1229,13 @@ public:
     }
 
     std::mutex mutex_;
-    std::mt19937_64 engine_;
-    std::mt19937_64 reservoir_engine_;
+    detail::Mt19937_64 engine_;
+    detail::Mt19937_64 reservoir_engine_;
     std::vector<Encoding> encodings_;
     std::vector<std::uint64_t> history_;
     std::vector<std::uint64_t> older_bad_;
     std::map<std::uint64_t, CompletedObservation> owned_history_;
     std::shared_ptr<const WarmStartSource> source_;
-    std::optional<std::uint64_t> warm_replay_row_;
     double source_direction_ = 1.0;
     std::uint64_t next_owned_ = 0;
     std::uint64_t older_bad_seen_ = 0;
@@ -1102,6 +1245,9 @@ public:
     std::vector<DimensionModel> cached_models_;
     std::vector<std::uint64_t> good_ids_;
     std::vector<std::uint64_t> bad_ids_;
+    std::vector<std::uint64_t> bad_model_ids_;
+    StateFingerprint fingerprint_{};
+    std::uint64_t attempted_ = 0;
     std::map<std::uint64_t, Candidate> pending_;
     std::map<std::uint64_t, std::vector<double>> pending_encodings_;
     std::optional<std::uint64_t> finite_cardinality_;
@@ -1114,7 +1260,170 @@ public:
     std::atomic<std::uint64_t> outstanding_{0};
     std::atomic<std::uint64_t> duplicate_proposals_skipped_{0};
 
+    std::string write_state(const std::string& signature) const {
+        std::ostringstream output;
+        output.imbue(std::locale::classic());
+        output << std::quoted(signature) << '\n'
+               << std::quoted(numeric_build_) << '\n'
+               << attempted_ << ' ' << next_id_ << ' '
+               << completed_.load(std::memory_order_relaxed) << ' ' << fallback_cursor_ << ' '
+               << compact_history_ << ' ' << cached_compact_ << ' ' << cached_epoch_ << ' '
+               << older_bad_seen_ << '\n';
+        for (const auto word : fingerprint_)
+            output << word << ' ';
+        output << '\n';
+        engine_.write(output);
+        reservoir_engine_.write(output);
+        const auto references = [&](const auto& values) {
+            output << (compact_history_ ? values.size() : 0) << ' ';
+            if (compact_history_)
+                for (const auto reference : values)
+                    output << observation_id(view(reference)) << ' ';
+            output << '\n';
+        };
+        references(history_);
+        references(older_bad_);
+        const auto identifiers = [&](const auto& values) {
+            output << (cached_compact_ ? values.size() : 0) << ' ';
+            if (cached_compact_)
+                for (const auto identifier : values)
+                    output << identifier << ' ';
+            output << '\n';
+        };
+        identifiers(good_ids_);
+        identifiers(bad_model_ids_);
+        const auto payload = output.str();
+        return "PFHTPE2\n" + detail::sha256(payload) + '\n' + payload;
+    }
+
+    bool read_state(const std::string& state, const std::string& signature,
+                    const SearchSpace& space, const TpeSamplerConfig& config) {
+        if (state.empty())
+            return false;
+        if (!detail::current_sampler_checkpoint(state))
+            return false;
+        std::istringstream input(state.substr(73));
+        input.imbue(std::locale::classic());
+        std::string stored_signature;
+        if (!(input >> std::quoted(stored_signature)))
+            throw std::invalid_argument("invalid TPE sampler-state signature");
+        if (stored_signature != signature)
+            return false;
+        std::string stored_build;
+        if (!(input >> std::quoted(stored_build)))
+            throw std::invalid_argument("invalid TPE sampler-state build identity");
+        if (stored_build != numeric_build_)
+            return false;
+        std::uint64_t attempts, next_id, completed, fallback, epoch, older_seen;
+        unsigned compact, cached_compact;
+        StateFingerprint fingerprint{};
+        detail::Mt19937_64 engine;
+        detail::Mt19937_64 reservoir;
+        if (!(input >> attempts >> next_id >> completed >> fallback >> compact >> cached_compact
+                    >> epoch >> older_seen) || compact > 1 || cached_compact > 1)
+            throw std::invalid_argument("invalid TPE sampler-state counters");
+        for (auto& word : fingerprint)
+            input >> word;
+        if (!input)
+            throw std::invalid_argument("invalid TPE sampler-state fingerprint");
+        if (attempts != source_->size() || next_id != next_id_ ||
+            completed != completed_.load(std::memory_order_relaxed) ||
+            fingerprint != fingerprint_)
+            return false;
+        engine.read(input);
+        reservoir.read(input);
+        const auto identifiers = [&] {
+            std::uint64_t count;
+            if (!(input >> count) || count > source_->size() || count > state.size())
+                throw std::invalid_argument("invalid TPE sampler-state observation count");
+            std::vector<std::uint64_t> values(static_cast<std::size_t>(count));
+            std::unordered_set<std::uint64_t> seen;
+            for (auto& identifier : values)
+                if (!(input >> identifier) || !seen.insert(identifier).second)
+                    throw std::invalid_argument("invalid TPE sampler-state observation IDs");
+            return values;
+        };
+        const auto history = identifiers();
+        const auto older = identifiers();
+        auto good = identifiers();
+        auto bad = identifiers();
+        input >> std::ws;
+        if (!input.eof() || (!compact && (!history.empty() || !older.empty() ||
+                                         !good.empty() || !bad.empty())) ||
+            (compact && !config.history_switch) ||
+            (finite_cardinality_ && fallback > *finite_cardinality_))
+            throw std::invalid_argument("invalid TPE sampler-state structure");
+        const auto row_for_id = [&](std::uint64_t identifier) {
+            std::uint64_t begin = 0;
+            std::uint64_t end = source_->size();
+            while (begin < end) {
+                const auto middle = begin + (end - begin) / 2;
+                if (source_->id(middle) < identifier)
+                    begin = middle + 1;
+                else
+                    end = middle;
+            }
+            if (begin == source_->size() || source_->id(begin) != identifier)
+                throw std::invalid_argument("TPE sampler-state references missing trial");
+            return begin;
+        };
+        const auto references = [&](const auto& values) {
+            std::vector<std::uint64_t> rows;
+            for (const auto identifier : values) {
+                const auto row = row_for_id(identifier);
+                if (!source_->objective(row))
+                    throw std::invalid_argument("TPE sampler-state retains abandoned trial");
+                rows.push_back(row);
+            }
+            return rows;
+        };
+        if (compact) {
+            history_ = references(history);
+            older_bad_ = references(older);
+            std::vector<ObservationView> good_views;
+            std::vector<ObservationView> bad_views;
+            for (const auto identifier : good)
+                good_views.push_back(view(row_for_id(identifier)));
+            for (const auto identifier : bad)
+                bad_views.push_back(view(row_for_id(identifier)));
+            if (!good.empty() || !bad.empty()) {
+                const auto good_weights = observation_weights(good.size());
+                const auto bad_weights = observation_weights(bad.size());
+                for (std::size_t column = 0; column < encodings_.size(); ++column)
+                    cached_models_.push_back(build_model(column, space.dimensions()[column],
+                        encodings_[column], good_views, bad_views, good_weights, bad_weights,
+                        config.prior_weight, cached_compact != 0, nullptr, false, false));
+            }
+            good_ids_ = std::move(good);
+            bad_ids_ = bad;
+            bad_model_ids_ = std::move(bad);
+        }
+        engine_ = engine;
+        reservoir_engine_ = reservoir;
+        fallback_cursor_ = fallback;
+        compact_history_ = compact != 0;
+        cached_compact_ = cached_compact != 0;
+        cached_epoch_ = epoch;
+        older_bad_seen_ = older_seen;
+        return true;
+    }
+
 private:
+    template <typename Function>
+    void dimension_work(std::size_t dimensions, bool parallel, const TpeSamplerConfig& config,
+                        Function&& function) {
+        if (!parallel) {
+            for (std::size_t index = 0; index < dimensions; ++index)
+                function(index);
+            return;
+        }
+        const auto requested = config.max_threads ? config.max_threads : 8;
+        workers_.run(dimensions, std::min(requested, available_cpus_), function);
+    }
+
+    detail::DimensionWorkers workers_;
+    unsigned available_cpus_ = detail::available_cpus();
+
     static Encoding make_encoding(const Dimension& dimension) {
         return std::visit(
             [](const auto& item) -> Encoding {
@@ -1680,6 +1989,11 @@ std::optional<Candidate> TpeSampler::ask() {
         throw std::logic_error("duplicate TPE candidate id");
     }
     impl_->generated_.store(generated + 1, std::memory_order_relaxed);
+    fingerprint_candidate(impl_->fingerprint_, candidate->id, space_.dimensions().size(),
+        [&](std::size_t column) {
+            return candidate->values.at(std::string(dimension_name(space_.dimensions()[column])));
+        });
+    ++impl_->attempted_;
     ++impl_->next_id_;
     impl_->outstanding_.fetch_add(1, std::memory_order_relaxed);
     return candidate;
@@ -1698,6 +2012,7 @@ void TpeSampler::tell(std::uint64_t candidate_id, double objective_value) {
     }
     const double score =
         direction_ == ObjectiveDirection::Maximize ? objective_value : -objective_value;
+    fingerprint_score(impl_->fingerprint_, candidate_id, objective_value);
     impl_->retain_observation(found->second, score);
     impl_->pending_.erase(found);
     impl_->pending_encodings_.erase(candidate_id);
@@ -1719,7 +2034,7 @@ void TpeSampler::abandon(std::uint64_t candidate_id) {
 }
 
 bool TpeSampler::warm_start(const std::vector<WarmStartObservation>& observations,
-                           std::uint64_t replay_batch_size) {
+                            std::uint64_t replay_batch_size, const std::string& sampler_state) {
     class VectorSource final : public WarmStartSource {
     public:
         VectorSource(const SearchSpace& space, std::vector<WarmStartObservation> values)
@@ -1745,11 +2060,12 @@ bool TpeSampler::warm_start(const std::vector<WarmStartObservation>& observation
         std::vector<WarmStartObservation> values_;
         std::vector<std::string> names_;
     };
-    return warm_start(std::make_shared<VectorSource>(space_, observations), replay_batch_size);
+    return warm_start(std::make_shared<VectorSource>(space_, observations), replay_batch_size,
+                      sampler_state);
 }
 
 bool TpeSampler::warm_start(std::shared_ptr<const WarmStartSource> source,
-                           std::uint64_t replay_batch_size) {
+                           std::uint64_t replay_batch_size, const std::string& sampler_state) {
     std::unique_ptr<Impl> previous;
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     if (impl_->generated_ != 0 || impl_->completed_ != 0 || impl_->next_id_ != 0 ||
@@ -1772,54 +2088,46 @@ bool TpeSampler::warm_start(std::shared_ptr<const WarmStartSource> source,
     const auto policy = candidate_policy_ == CandidatePolicy::Exhaustive
         ? CandidatePolicy::WithoutReplacement : candidate_policy_;
     TpeSampler restored(space_, seed_, direction_, 0, config_, policy);
+    (void)replay_batch_size;
+    restored.impl_ = std::make_unique<Impl>(space_, continuation_seed(seed_, source->size()),
+                                           impl_->finite_cardinality_);
     restored.impl_->source_ = source;
     restored.impl_->source_direction_ = direction_ == ObjectiveDirection::Maximize ? 1.0 : -1.0;
-    bool replayed = source->size() != 0 && replay_batch_size != 0 &&
-        source->size() % replay_batch_size == 0;
-    for (std::uint64_t begin = 0; replayed && begin < source->size();
-         begin += replay_batch_size) {
-        for (std::size_t index = begin; index < begin + replay_batch_size; ++index) {
-            const auto proposal = restored.ask();
-            const auto observation = source->observation(space_, index);
-            if (!proposal || proposal->id != observation.candidate.id ||
-                proposal->values != observation.candidate.values) {
-                replayed = false;
-                break;
-            }
-        }
-        if (replayed) {
-            for (std::size_t index = begin; index < begin + replay_batch_size; ++index) {
-                restored.impl_->warm_replay_row_ = index;
-                if (const auto objective = source->objective(index))
-                    restored.tell(source->id(index), *objective);
-                else
-                    restored.abandon(source->id(index));
-                restored.impl_->warm_replay_row_.reset();
-            }
+    for (std::uint64_t row = 0; row < source->size(); ++row) {
+        if (restored.impl_->reservations_)
+            restored.impl_->reserve_candidate(space_, source->observation(space_, row).candidate);
+        fingerprint_candidate(restored.impl_->fingerprint_, source->id(row),
+            space_.dimensions().size(), [&](std::size_t column) {
+                return source->parameter(row, column);
+            });
+        if (const auto objective = source->objective(row)) {
+            fingerprint_score(restored.impl_->fingerprint_, source->id(row), *objective);
+            restored.impl_->history_.push_back(row);
+            ++restored.impl_->completed_;
+            restored.impl_->compact_observations(config_);
         }
     }
-    if (!replayed) {
-        restored.impl_ = std::make_unique<Impl>(space_, continuation_seed(seed_, source->size()),
-                                               impl_->finite_cardinality_);
-        restored.impl_->source_ = source;
-        restored.impl_->source_direction_ = direction_ == ObjectiveDirection::Maximize ? 1.0 : -1.0;
-        for (std::uint64_t row = 0; row < source->size(); ++row) {
-            if (restored.impl_->reservations_)
-                restored.impl_->reserve_candidate(
-                    space_, source->observation(space_, row).candidate);
-            if (source->objective(row)) {
-                restored.impl_->history_.push_back(row);
-                ++restored.impl_->completed_;
-                restored.impl_->compact_observations(config_);
-            }
-        }
-    }
+    restored.impl_->next_id_ = next_id;
+    restored.impl_->attempted_ = source->size();
+    const bool checkpoint_restored = restored.impl_->read_state(sampler_state,
+        state_signature(space_, seed_, direction_, policy, config_, restored.impl_->numeric_build_),
+        space_, config_);
     restored.impl_->generated_ = 0;
     restored.impl_->duplicate_proposals_skipped_.store(0, std::memory_order_relaxed);
     restored.impl_->next_id_ = next_id;
     previous.swap(impl_);
     impl_.swap(restored.impl_);
-    return replayed;
+    return checkpoint_restored;
+}
+
+std::string TpeSampler::sampler_state() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex_);
+    if (!impl_->pending_.empty())
+        throw std::logic_error("TPE sampler state requires no outstanding candidates");
+    const auto policy = candidate_policy_ == CandidatePolicy::Exhaustive
+        ? CandidatePolicy::WithoutReplacement : candidate_policy_;
+    return impl_->write_state(
+        state_signature(space_, seed_, direction_, policy, config_, impl_->numeric_build_));
 }
 
 void TpeSampler::reset() {
