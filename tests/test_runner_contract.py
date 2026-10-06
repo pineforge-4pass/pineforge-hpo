@@ -226,9 +226,12 @@ def main() -> int:
             require(child.returncode == 1, f"progress I/O failure has wrong exit: {stderr}")
             require("--progress-fd" in stderr, "progress I/O diagnostic missing")
             result = json.loads(stdout)
-            require(result["stop_reason"] == "cancelled", "progress I/O final JSON missing")
-            require(result["trials_completed"] > 0, "progress I/O discarded completed trials")
-            require(result == json.loads(final.read_text()), "progress I/O output file differs")
+            require(result == {
+                "schema_version": 1, "ok": False,
+                "failure": {"origin": "hpo", "code": "hpo_output_io_failed",
+                            "args": {}, "exit_code": 1},
+            }, "progress I/O failure document differs")
+            require(not final.exists(), "progress I/O published an apparently successful result")
         elif case == "cancel":
             for sampler in ("grid", "random", "tpe", "dlib_global"):
                 for signum in (signal.SIGTERM, signal.SIGINT):

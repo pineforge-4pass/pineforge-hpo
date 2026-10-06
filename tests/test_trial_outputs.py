@@ -143,8 +143,12 @@ class TrialOutputTests(unittest.TestCase):
             output, errors = process.communicate(timeout=8)
             self.assertEqual(process.returncode, 1, errors)
             self.assertIn("reader stalled after stop", errors)
-            self.assertEqual(json.loads(output)["stop_reason"],
-                             "deadline" if stop == "deadline" else "cancelled")
+            self.assertEqual(json.loads(output), {
+                "schema_version": 1,
+                "ok": False,
+                "failure": {"origin": "hpo", "code": "hpo_output_io_failed",
+                            "args": {}, "exit_code": 1},
+            })
             os.set_blocking(read_fd, False)
             content = os.read(read_fd, 65536)
             self.assertTrue(not content or content.endswith(b"\n"))
