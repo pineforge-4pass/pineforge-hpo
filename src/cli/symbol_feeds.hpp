@@ -12,6 +12,7 @@
 #include <ctime>
 #include <cstring>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <limits>
 #include <regex>
@@ -299,30 +300,7 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
         symbol_feed_error(where + ": no column " + missing);
     SymbolFeed feed;
     feed.timeframe = timeframe;
-    if (!input.eof()) {
-        const auto rows_begin = input.tellg();
-        if (rows_begin == std::streampos(-1))
-            symbol_feed_error(where + ": cannot read CSV");
-        auto count_line = line;
-        std::size_t row_count = 0;
-        try {
-            while (symbol_csv_row(input, cells, count_line, where)) {
-                if (!cells.empty() && ++row_count > static_cast<std::size_t>(INT32_MAX))
-                    break;
-            }
-        } catch (const std::invalid_argument&) {
-        }
-        if (row_count > static_cast<std::size_t>(INT32_MAX))
-            symbol_feed_error(where + ": exceeds the C ABI bar-count limit");
-        if (input.bad())
-            symbol_feed_error(where + ": cannot read CSV");
-        input.clear();
-        input.seekg(rows_begin);
-        if (!input)
-            symbol_feed_error(where + ": cannot read CSV");
-        feed.bars.reserve(row_count);
-        feed.close_ms.reserve(row_count);
-    }
+    std::deque<std::pair<pf_bar_t, std::int64_t>> rows;
     const auto field_cell = [&](const std::string& name) -> std::string {
         const auto found = columns.find(name);
         return found == columns.end() || found->second >= cells.size() ? "" : cells[found->second];
@@ -362,7 +340,7 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
             close < -symbol_stamp_max || close > symbol_stamp_max)
             symbol_feed_error(at + ": a time must be unix milliseconds within +-" +
                               std::to_string(symbol_stamp_max));
-        if (!feed.bars.empty() && feed.bars.back().timestamp >= bar.timestamp)
+        if (!rows.empty() && rows.back().first.timestamp >= bar.timestamp)
             symbol_feed_error(at + ": timestamps must increase");
         const auto bad_close = [&](const std::string& location, std::int64_t open_ms,
                                    std::int64_t close_ms) {
@@ -370,8 +348,8 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
                 " is not after its open " + std::to_string(open_ms) +
                 " and at or before the next bar's open (is the timeframe right?)");
         };
-        if (!feed.close_ms.empty() && feed.close_ms.back() > bar.timestamp)
-            bad_close(previous_at, feed.bars.back().timestamp, feed.close_ms.back());
+        if (!rows.empty() && rows.back().second > bar.timestamp)
+            bad_close(previous_at, rows.back().first.timestamp, rows.back().second);
         if (close <= bar.timestamp)
             bad_close(at, bar.timestamp, close);
         for (const auto value : {bar.open, bar.high, bar.low, bar.close, bar.volume}) {
@@ -381,14 +359,20 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
         }
         symbol_hash_integer(hashed, static_cast<std::uint64_t>(bar.timestamp));
         symbol_hash_integer(hashed, static_cast<std::uint64_t>(close));
-        feed.bars.push_back(bar);
-        feed.close_ms.push_back(close);
+        rows.emplace_back(bar, close);
         previous_at = at;
-        if (feed.bars.size() > static_cast<std::size_t>(INT32_MAX))
+        if (rows.size() > static_cast<std::size_t>(INT32_MAX))
             symbol_feed_error(where + ": exceeds the C ABI bar-count limit");
     }
     if (input.bad())
         symbol_feed_error(where + ": cannot read CSV");
+    feed.bars.reserve(rows.size());
+    feed.close_ms.reserve(rows.size());
+    while (!rows.empty()) {
+        feed.bars.push_back(rows.front().first);
+        feed.close_ms.push_back(rows.front().second);
+        rows.pop_front();
+    }
     feed.source_values_sha256 = sha256(hashed);
     return feed;
 }

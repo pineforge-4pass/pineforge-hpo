@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <future>
 #include <iostream>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace pfh = pineforge::hpo;
@@ -46,6 +47,21 @@ int main(int argc, char** argv) {
                 "row reservation changed CSV records");
         require(capacity_feed.bars.capacity() == 3 && capacity_feed.close_ms.capacity() == 3,
                 "feed vectors retained growth capacity instead of one exact copy");
+        const auto fifo = directory / "feed.fifo";
+        require(::mkfifo(fifo.c_str(), 0600) == 0, "cannot create streaming feed fixture");
+        auto writer = std::async(std::launch::async, [&] {
+            std::ifstream source(capacity_csv, std::ios::binary);
+            std::ofstream target(fifo, std::ios::binary);
+            target << source.rdbuf();
+        });
+        const auto streaming_feed = detail::load_symbol_feed(fifo, "E", "1");
+        writer.get();
+        require(streaming_feed.source_values_sha256 == capacity_feed.source_values_sha256 &&
+                    streaming_feed.close_ms == capacity_feed.close_ms &&
+                    streaming_feed.bars.size() == capacity_feed.bars.size(),
+                "streaming feed values or fingerprint changed");
+        require(streaming_feed.bars.capacity() == 3 && streaming_feed.close_ms.capacity() == 3,
+                "streaming feed vectors did not retain exact capacity");
         const auto record = detail::symbol_feeds_record(*symbols);
         require(detail::field(detail::field(record, "symbols"), "BINANCE:ETHUSDT")
                     .find("facts") != nullptr, "facts missing from fingerprint");
