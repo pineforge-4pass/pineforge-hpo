@@ -25,10 +25,12 @@
 - Preserve completed-trial publication to writable stdout and `--output` after progress-I/O
   failures. Add a top-level `failure` object (`origin`, `code`, `args`, `exit_code`) to the
   ordinary result document; retain exit 1, or exit 3 and timeout trials for the watchdog.
+  Scheduler statistics continue to be written after a progress-I/O failure when requested.
 - Publish `hpo_failure_codes.json` and its checked version/hash diff in the Python package
   and release assets. CI checks the unreleased diff; release packaging stamps its target
   version without changing the catalog bytes. Pin the diff baseline explicitly so checks
   continue to pass after release tagging.
+  Release stamping requires advancing the baseline to the previous merged release.
 - Parse symbol feeds once, including non-seekable inputs, and reserve exact retained
   capacity for bars and close times without changing feed values or fingerprints.
 

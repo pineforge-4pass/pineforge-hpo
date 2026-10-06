@@ -207,10 +207,35 @@ def main(argv: list[str] | None = None) -> int:
                 "no pinned baseline; supply --from-tag to initialize the diff"
             )
         version_key(previous)
-        git(repo, "rev-parse", "--verify", f"refs/tags/{previous}^{{commit}}")
-        git(repo, "merge-base", "--is-ancestor", f"refs/tags/{previous}", "HEAD")
+        try:
+            git(repo, "rev-parse", "--verify", f"refs/tags/{previous}^{{commit}}")
+        except subprocess.CalledProcessError:
+            raise ValueError(
+                f"baseline tag {previous} is missing or invalid; fetch release tags"
+            ) from None
+        try:
+            git(repo, "merge-base", "--is-ancestor", f"refs/tags/{previous}", "HEAD")
+        except subprocess.CalledProcessError:
+            raise ValueError(
+                f"baseline tag {previous} is not an ancestor of HEAD; "
+                "choose a merged release tag"
+            ) from None
         if release is not None and version_key("v" + release) <= version_key(previous):
             raise ValueError("target version must be newer than the previous release")
+        if release is not None:
+            target = version_key("v" + release)
+            tags = git(repo, "tag", "--merged", "HEAD", "--list").decode().splitlines()
+            releases = [
+                tag
+                for tag in tags
+                if VERSION.fullmatch(tag) and version_key(tag) < target
+            ]
+            latest = max(releases, key=version_key)
+            if previous != latest:
+                raise ValueError(
+                    f"release {release} requires baseline {latest}, not {previous}; "
+                    f"advance the pinned baseline with --from-tag {latest}"
+                )
         exists = git(repo, "ls-tree", previous, "--", args.catalog).strip()
         before = git(repo, "show", f"{previous}:{args.catalog}") if exists else None
         after = (repo / args.catalog).read_bytes()

@@ -53,6 +53,12 @@ status uses `setting_unsupported` with no arguments; other failed setter statuse
 use `engine_unclassified_error` with no arguments. Every non-OK checked factory
 status instead carries `hpo_strategy_create_failed`.
 
+An ambiguous input title is one status-only `UNSUPPORTED` case: the native runner
+reports `setting_unsupported` with `{}`, while the engine harness reports
+`setting_rejected` with `reason: ambiguous_key`. The native runner deliberately
+does not infer that reason from English text. Once the engine supplies latched
+setter metadata, the forwarding branch preserves its specific code and arguments.
+
 Python's existing manifest/override preflight also uses `setting_rejected` for
 known setting refusals. The optional `input` argument is only the codegen manifest's
 literal Pine input title. HPO-specific domain, study, and artifact consistency
@@ -115,7 +121,11 @@ the catalog or its raw hash. Generation and `--check` use the explicit baseline
 pinned in the diff's `from.tag`, not the newest merged tag, so checks remain valid
 after a release tag is created. Before the next release cycle's catalog edits,
 advance that baseline explicitly with `--from-tag vX.Y.Z`; an initial diff also
-requires `--from-tag`.
+requires `--from-tag`. Release stamping refuses an outdated baseline: `from.tag`
+must equal the newest merged release tag strictly older than the target version.
+For example, after `v0.10.0` exists, stamping `0.11.0` with baseline `v0.9.0`
+fails and asks for `--from-tag v0.10.0`. Plain unreleased checks keep using their
+pinned baseline and remain valid after tagging.
 
 ## Regression proof
 

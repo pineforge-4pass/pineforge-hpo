@@ -2141,11 +2141,6 @@ int run(Options options) {
         progress_failure, 1);
     const auto write_start = RunState::Clock::now();
     write_result_file(options, json);
-    if (progress_failure) {
-        publish_result(json);
-        print_process_failure(progress_failure);
-        return 1;
-    }
     const auto write_end = RunState::Clock::now();
     if (!options.scheduler_stats.empty()) {
         std::ofstream stats(options.scheduler_stats);
@@ -2173,6 +2168,10 @@ int run(Options options) {
                                                          "failed writing scheduler stats file");
     }
     publish_result(json);
+    if (progress_failure) {
+        print_process_failure(progress_failure);
+        return 1;
+    }
     return best_index ? 0 : 2;
 }
 

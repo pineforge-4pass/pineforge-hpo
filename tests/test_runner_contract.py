@@ -217,8 +217,9 @@ def main() -> int:
             read_fd, write_fd = os.pipe()
             os.close(read_fd)
             final = directory / "progress-error.json"
+            stats = directory / "progress-error-stats.json"
             child = process(native, plugin, csv, write_fd, "--fixed-input", "DelayMs", "20",
-                            "--output", str(final), workers=2)
+                            "--output", str(final), "--scheduler-stats", str(stats), workers=2)
             os.close(write_fd)
             try:
                 stdout, stderr = child.communicate(timeout=8)
@@ -235,6 +236,11 @@ def main() -> int:
             require(result["failure"] == {
                 "origin": "hpo", "code": "hpo_output_io_failed", "args": {}, "exit_code": 1,
             }, "progress I/O failure metadata differs")
+            statistics = json.loads(stats.read_text())
+            require(statistics["final_json_bytes"] == len(stdout.encode()),
+                    "progress I/O failure lost scheduler result size")
+            require(statistics["worker_seconds"] >= 0 and statistics["busy_seconds"] >= 0,
+                    "progress I/O failure lost scheduler timing statistics")
         elif case == "cancel":
             for sampler in ("grid", "random", "tpe", "dlib_global"):
                 for signum in (signal.SIGTERM, signal.SIGINT):

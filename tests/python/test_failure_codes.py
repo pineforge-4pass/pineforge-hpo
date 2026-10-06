@@ -287,6 +287,13 @@ class FailureCodeTests(unittest.TestCase):
             ]
             missing = subprocess.run(command, capture_output=True)
             self.assertNotEqual(missing.returncode, 0)
+            bad_baseline = subprocess.run(
+                [*command, "--from-tag", "v999.0.0"], capture_output=True
+            )
+            self.assertNotEqual(bad_baseline.returncode, 0)
+            self.assertIn(b"baseline tag v999.0.0 is missing", bad_baseline.stderr)
+            self.assertIn(b"fetch release tags", bad_baseline.stderr)
+            self.assertNotIn(b"Command '[", bad_baseline.stderr)
             subprocess.run(
                 [*command, "--from-tag", baseline], check=True, capture_output=True
             )
@@ -303,9 +310,12 @@ class FailureCodeTests(unittest.TestCase):
             )
             git("tag", "v" + release_version)
             subprocess.run([*command, "--check"], check=True, capture_output=True)
-            (repo / "diff.json").write_text("{}")
+            altered = json.loads((repo / "diff.json").read_bytes())
+            altered["to"]["catalogSha256"] = "0" * 64
+            (repo / "diff.json").write_bytes(DIFF.dump(altered))
             stale = subprocess.run([*command, "--check"], capture_output=True)
             self.assertNotEqual(stale.returncode, 0)
+            self.assertIn(b"catalog diff is stale", stale.stderr)
             subprocess.run(
                 [
                     *command,
@@ -321,6 +331,55 @@ class FailureCodeTests(unittest.TestCase):
             self.assertEqual(release["to"]["version"], release_version)
             self.assertNotIn("unreleased", release["to"])
             subprocess.run([*command, "--check"], check=True, capture_output=True)
+            next_version = ".".join(
+                map(str, (*baseline_version[:2], baseline_version[2] + 2))
+            )
+            outdated = subprocess.run(
+                [*command, "--release-version", next_version], capture_output=True
+            )
+            self.assertNotEqual(outdated.returncode, 0)
+            self.assertIn(
+                f"requires baseline v{release_version}, not {baseline}".encode(),
+                outdated.stderr,
+            )
+            self.assertEqual(json.loads((repo / "diff.json").read_bytes()), release)
+            subprocess.run(
+                [*command, "--from-tag", "v" + release_version],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [*command, "--release-version", next_version],
+                check=True,
+                capture_output=True,
+            )
+            advanced = json.loads((repo / "diff.json").read_bytes())
+            self.assertEqual(advanced["from"]["tag"], "v" + release_version)
+            self.assertEqual(advanced["to"]["version"], next_version)
+            subprocess.run([*command, "--check"], check=True, capture_output=True)
+            unrelated = subprocess.check_output(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit-tree",
+                    "HEAD^{tree}",
+                    "-m",
+                    "unrelated",
+                ],
+                text=True,
+            ).strip()
+            git("tag", "v999.0.1", unrelated)
+            unmerged = subprocess.run(
+                [*command, "--from-tag", "v999.0.1"], capture_output=True
+            )
+            self.assertNotEqual(unmerged.returncode, 0)
+            self.assertIn(b"baseline tag v999.0.1 is not an ancestor", unmerged.stderr)
+            self.assertNotIn(b"Command '[", unmerged.stderr)
 
 
 if __name__ == "__main__":
