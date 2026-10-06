@@ -102,4 +102,6 @@ ruff format --check python tests/python benchmarks
 
 Pull requests should explain the user-visible behavior, compatibility impact,
 verification performed, and any benchmark claims. By contributing, you agree
-that your contribution is licensed under Apache-2.0.
+that your contribution is licensed under the [PineForge Source License 1.2](LICENSE)
+starting with v0.11.0. Releases up to and including v0.10.0 were released under
+Apache-2.0 and remain available under that license.

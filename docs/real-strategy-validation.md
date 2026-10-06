@@ -1,7 +1,10 @@
 # Real-strategy adaptive HPO validation
 
-This validation exercises the complete direct-PineScript path without copying a
-scraped strategy or corpus market data into this Apache-2.0 repository.
+This historical validation exercised the complete direct-PineScript path without
+copying a scraped strategy or corpus market data into the then-Apache-2.0
+repository. Releases up to and including v0.10.0 remain available under Apache-2.0;
+starting with v0.11.0, original HPO code uses the
+[PineForge Source License 1.2](../LICENSE).
 
 > **Historical snapshot.** This run was recorded during `0.1.0` development
 > with sampler identity `pineforge_product_tpe_v1`, before the finite-candidate

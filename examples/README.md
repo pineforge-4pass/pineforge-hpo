@@ -6,8 +6,10 @@ two public entry points without requiring benchmark datasets.
 ## Direct PineScript study
 
 [`single_strategy/`](single_strategy/) contains a PineScript strategy, a tiny
-synthetic one-minute OHLCV fixture covered by this repository's Apache-2.0
-license, and a complete StudySpec. It exercises the normal command-line path:
+synthetic one-minute OHLCV fixture covered by this repository's
+[PineForge Source License 1.2](../LICENSE) starting with v0.11.0, and a complete
+StudySpec. Releases up to and including v0.10.0 remain available under Apache-2.0.
+It exercises the normal command-line path:
 
 ```bash
 pineforge-hpo run examples/single_strategy/study.json \

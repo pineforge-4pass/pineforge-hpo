@@ -407,8 +407,9 @@ a separately gated 0.4.x follow-up; Python `prepare_run()` remains unchanged.
   aggregating independent completed reports is not a shared-account
   simulation.
 
-See [LEGAL.md](../LEGAL.md) for the Apache-2.0 project boundary and optional
-dependency licenses.
+See [LEGAL.md](../LEGAL.md) for the PineForge Source License 1.2 project boundary
+starting with v0.11.0 and optional dependency licenses. Releases up to and including
+v0.10.0 remain available under Apache-2.0.
 
 ## Build this site locally
 

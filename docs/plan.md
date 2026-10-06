@@ -34,7 +34,10 @@ modes remain opt-in; see [batching measurements](batching.md).
 
 Implemented:
 
-- Apache-2.0 repository license and explicit separate-codegen boundary;
+- Apache-2.0 repository license at the initial release and an explicit
+  separate-codegen boundary; releases up to and including v0.10.0 remain available
+  under Apache-2.0. Starting with v0.11.0, original HPO code uses the
+  [PineForge Source License 1.2](../LICENSE);
 - dependency-free JSON StudySpec loader for `single_strategy`;
 - `Candidate`, `TrialContext`, `ObjectiveResult`, expression policy, and status
   contracts;
