@@ -129,7 +129,8 @@ target_compile_options(pineforge_hpo_test_tpe_scale PRIVATE -Wall -Wextra -Wpeda
 add_test(NAME pineforge_hpo_tpe_scale COMMAND pineforge_hpo_test_tpe_scale)
 set_tests_properties(pineforge_hpo_tpe_scale PROPERTIES TIMEOUT 240)
 add_executable(pineforge_hpo_test_ordinal_set test_ordinal_set.cpp)
-target_include_directories(pineforge_hpo_test_ordinal_set PRIVATE "${PROJECT_SOURCE_DIR}/src/core")
+target_include_directories(pineforge_hpo_test_ordinal_set PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/core" "${PROJECT_SOURCE_DIR}/include")
 target_compile_options(pineforge_hpo_test_ordinal_set PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_ordinal_set COMMAND pineforge_hpo_test_ordinal_set)
 set_tests_properties(pineforge_hpo_tpe_concurrency PROPERTIES TIMEOUT 30)

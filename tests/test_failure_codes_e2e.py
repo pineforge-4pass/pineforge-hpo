@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--engine-root", type=Path, required=True)
+    parser.add_argument("--engine-codes", choices=("present", "absent"), required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -56,6 +57,10 @@ def main():
     silent = builder.build(SOURCE + "if bar_index >= 3\n    runtime.error()\n")
     engine_codes = hasattr(
         ctypes.CDLL(str(valid.plugin_path)), "strategy_get_last_error_code"
+    )
+    require(
+        engine_codes == (args.engine_codes == "present"),
+        "compiled plugin failure getters differ from the selected engine",
     )
 
     def run(label, executable, artifact, extra=(), exit_code=0):
