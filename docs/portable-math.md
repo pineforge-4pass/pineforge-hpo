@@ -2,7 +2,8 @@
 
 ## Arithmetic contract and checkpoint compatibility
 
-Version 0.9.0's TPE algorithm revision is **2**. Supported environments are x86-64
+Version 0.10.0 retains TPE algorithm revision **2**, introduced in 0.9.0.
+Supported environments are x86-64
 with FMA3 and aarch64 Linux/macOS arm64, using IEEE-754 binary64, nearest rounding
 and gradual underflow. The sampler checks rounding/FTZ/DAZ/FZ before initialization
 and every `ask()`. Builds disable fast math, implicit contraction, numerical builtins
@@ -239,13 +240,14 @@ fails configuration. Optional local builds explicitly print `SKIP: MPFR not foun
 return CTest skip code 77. CI prints the 104,962 exact binary64 primitive comparisons
 and 27 interval checks with verbose test output.
 
-Grid/random compatibility builds the same ten-space probe against v0.8.0 and 0.9.0
+Grid/random compatibility builds the same ten-space probe against v0.8.0 and the
+current release
 and compares raw candidate bits, plus the CLI contract's result bytes after changing
 only the release-version field. Contract/E2E use the pinned canonical Pine harness.
 The ten-space grid/random stream SHA-256 is
 `5fc2113bfd59d669d570e21a27ceabbeba412f947784b6f9cc9797a7c9c57f47`
-for both releases. The Linux A1 differential runs 176 perturbations (22 functions
-times eight spaces), with unchanged proposal bits, numeric identities and warm restores.
+for the baseline and current release. The Linux A1 differential runs 176 perturbations
+(22 functions times eight spaces), with unchanged proposal bits, numeric identities and warm restores.
 The `asan` test preset includes bounded quarantine settings without disabling leak,
 address or undefined-behavior checking; `ctest --preset asan` needs no extra shell flags.
 

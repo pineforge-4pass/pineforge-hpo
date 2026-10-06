@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 (2026-10-06)
 
 - Strategies stopped by an empty `runtime.error()` are no longer scored as successful
   trials. A non-empty engine error text, a non-empty failure code, or failed run status

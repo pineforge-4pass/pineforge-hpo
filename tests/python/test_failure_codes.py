@@ -215,6 +215,11 @@ class FailureCodeTests(unittest.TestCase):
             CATALOG["codes"].keys() - before_codes.keys(),
         )
         self.assertEqual(document["removed"], [])
+        if document["to"]["version"] is not None:
+            self.assertEqual(
+                document["to"]["version"], (ROOT / "VERSION").read_text().strip()
+            )
+            self.assertNotIn("unreleased", document["to"])
 
     def test_catalog_diff_vocab_paths_presence_and_deprecation(self):
         updated = copy.deepcopy(CATALOG)
@@ -331,6 +336,25 @@ class FailureCodeTests(unittest.TestCase):
             self.assertEqual(release["to"]["version"], release_version)
             self.assertNotIn("unreleased", release["to"])
             subprocess.run([*command, "--check"], check=True, capture_output=True)
+            stamped_bytes = (repo / "diff.json").read_bytes()
+            subprocess.run(
+                [*command, "--release-version", release_version],
+                check=True,
+                capture_output=True,
+            )
+            self.assertEqual((repo / "diff.json").read_bytes(), stamped_bytes)
+            subprocess.run(
+                [*command, "--check", "--release-version", release_version],
+                check=True,
+                capture_output=True,
+            )
+            old_unreleased = subprocess.run(command, capture_output=True)
+            self.assertNotEqual(old_unreleased.returncode, 0)
+            self.assertIn(
+                f"unreleased diff requires baseline v{release_version}".encode(),
+                old_unreleased.stderr,
+            )
+            self.assertEqual((repo / "diff.json").read_bytes(), stamped_bytes)
             next_version = ".".join(
                 map(str, (*baseline_version[:2], baseline_version[2] + 2))
             )
@@ -348,6 +372,16 @@ class FailureCodeTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
             )
+            unreleased = json.loads((repo / "diff.json").read_bytes())
+            self.assertEqual(unreleased["from"]["tag"], "v" + release_version)
+            self.assertEqual(
+                unreleased["from"]["catalogSha256"],
+                hashlib.sha256(CATALOG_BYTES).hexdigest(),
+            )
+            self.assertIsNone(unreleased["to"]["version"])
+            self.assertTrue(unreleased["to"]["unreleased"])
+            self.assertEqual(unreleased["added"], [])
+            subprocess.run([*command, "--check"], check=True, capture_output=True)
             subprocess.run(
                 [*command, "--release-version", next_version],
                 check=True,

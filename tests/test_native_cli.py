@@ -313,8 +313,9 @@ def main() -> int:
         tpe_json = json.loads(tpe.stdout)
         require(tpe_json["schema_version"] == 1, "wrong native result schema")
         require(
-            tpe_json["pineforge_hpo_version"] != "unknown",
-            "native result omitted the HPO version",
+            tpe_json["pineforge_hpo_version"]
+            == (Path(__file__).resolve().parents[1] / "VERSION").read_text().strip(),
+            "native result HPO version differs from VERSION",
         )
         require(
             tpe_json["sampler_implementation"] == "pineforge_product_tpe_v3_bounded",

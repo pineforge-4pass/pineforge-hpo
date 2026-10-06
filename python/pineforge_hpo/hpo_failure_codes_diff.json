@@ -6,8 +6,7 @@
     "catalogSha256": null
   },
   "to": {
-    "version": null,
-    "unreleased": true,
+    "version": "0.10.0",
     "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
   },
   "catalogSchema": {

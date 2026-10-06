@@ -106,7 +106,8 @@ The diff names the previous release and raw catalog SHA-256, added entries, chan
 field paths with before/after presence and values (including vocabulary changes),
 and deprecations with `replacedBy`. Removing an existing code is rejected. The
 0.9.0 baseline did not contain a catalog, so its hash is `null`, not a hash of an
-invented empty file. The checked-in target is `version: null, unreleased: true`.
+invented empty file. The 0.10.0 release commit carries target `version: "0.10.0"`
+with `unreleased` absent. Development diffs instead use `version: null, unreleased: true`.
 
 ```bash
 python3 scripts/gen_catalog_diff.py --check
@@ -117,14 +118,19 @@ python3 scripts/gen_catalog_diff.py --check --release-version 0.10.0
 The release workflow stamps the target version and ships both JSON files as
 release assets and inside the wheel/source distribution. It verifies that the
 wheel's catalog bytes exactly match the assets. Stamping the diff does not modify
-the catalog or its raw hash. Generation and `--check` use the explicit baseline
+the catalog or its raw hash. Repeating the release stamp on the already-stamped
+release tree is byte-identical, including after its tag is created. Generation and
+`--check` use the explicit baseline
 pinned in the diff's `from.tag`, not the newest merged tag, so checks remain valid
 after a release tag is created. Before the next release cycle's catalog edits,
 advance that baseline explicitly with `--from-tag vX.Y.Z`; an initial diff also
 requires `--from-tag`. Release stamping refuses an outdated baseline: `from.tag`
 must equal the newest merged release tag strictly older than the target version.
 For example, after `v0.10.0` exists, stamping `0.11.0` with baseline `v0.9.0`
-fails and asks for `--from-tag v0.10.0`. Plain unreleased checks keep using their
+fails and asks for `--from-tag v0.10.0`. Generating a new unreleased diff also
+requires the newest merged release baseline; after that tag, run
+`python3 scripts/gen_catalog_diff.py --from-tag v0.10.0`. Its `from` catalog hash
+then matches the 0.10.0 release catalog. Plain unreleased checks keep using their
 pinned baseline and remain valid after tagging.
 
 ## Regression proof

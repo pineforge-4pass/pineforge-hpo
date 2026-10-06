@@ -222,18 +222,22 @@ def main(argv: list[str] | None = None) -> int:
             ) from None
         if release is not None and version_key("v" + release) <= version_key(previous):
             raise ValueError("target version must be newer than the previous release")
-        if release is not None:
-            target = version_key("v" + release)
+        if release is not None or not args.check:
+            target = version_key("v" + release) if release is not None else None
             tags = git(repo, "tag", "--merged", "HEAD", "--list").decode().splitlines()
             releases = [
                 tag
                 for tag in tags
-                if VERSION.fullmatch(tag) and version_key(tag) < target
+                if VERSION.fullmatch(tag)
+                and (target is None or version_key(tag) < target)
             ]
             latest = max(releases, key=version_key)
             if previous != latest:
+                target_description = (
+                    f"release {release}" if release is not None else "unreleased diff"
+                )
                 raise ValueError(
-                    f"release {release} requires baseline {latest}, not {previous}; "
+                    f"{target_description} requires baseline {latest}, not {previous}; "
                     f"advance the pinned baseline with --from-tag {latest}"
                 )
         exists = git(repo, "ls-tree", previous, "--", args.catalog).strip()
