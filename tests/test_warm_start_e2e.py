@@ -215,7 +215,8 @@ def main():
         )
         if expected:
             require(
-                not progress_file.read_bytes() and not process.stdout,
+                not progress_file.read_bytes()
+                and json.loads(process.stdout)["failure"]["exit_code"] == expected,
                 "initialization refusal emitted billable output",
             )
             require(

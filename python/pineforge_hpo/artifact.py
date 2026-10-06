@@ -18,6 +18,8 @@ import tempfile
 import time
 from typing import Any, Callable, Mapping, Sequence
 
+from .error import HpoError
+
 from .transpile import (
     TranspileDiagnostic,
     TranspileFailure,
@@ -58,7 +60,7 @@ _REQUIRED_PLUGIN_SYMBOLS = (
 )
 
 
-class ArtifactBuildError(RuntimeError):
+class ArtifactBuildError(HpoError, RuntimeError):
     """A configuration, transpile, compile, or cache publication failure."""
 
     def __init__(
@@ -77,6 +79,23 @@ class ArtifactBuildError(RuntimeError):
         self.stderr = stderr
         self.diagnostics = tuple(diagnostics)
         super().__init__(message)
+        code, args = {
+            "configuration": ("hpo_toolchain_unavailable", {"reason": "configuration"}),
+            "transpile": ("hpo_transpile_failed", {}),
+            "compile": ("hpo_toolchain_unavailable", {"reason": "compile"}),
+            "plugin_validation": ("hpo_plugin_invalid", {"reason": "validation"}),
+            "cache": ("hpo_output_io_failed", {}),
+        }.get(stage, ("hpo_unclassified_error", {}))
+        self.with_failure(code, args)
+        if stage == "transpile":
+            if any(item.phase == "CONFIGURATION" for item in self.diagnostics):
+                self.with_failure(
+                    "hpo_toolchain_unavailable", {"reason": "configuration"}
+                )
+            elif any(item.phase == "INTERNAL" for item in self.diagnostics):
+                self.with_failure(
+                    "hpo_toolchain_unavailable", {"reason": "transpile_internal"}
+                )
 
 
 @dataclass(frozen=True)

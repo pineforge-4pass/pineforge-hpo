@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .error import HpoError
+
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -56,12 +58,16 @@ _STATUSES = {
 }
 
 
-class WarmStartError(ValueError):
+class WarmStartError(HpoError, ValueError):
     """A parent cannot safely seed the requested study (exit 4)."""
 
+    code = "hpo_warm_start_rejected"
 
-class SpaceExhaustedError(ValueError):
+
+class SpaceExhaustedError(HpoError, ValueError):
     """Every finite parameter vector has already been tried (exit 5)."""
+
+    code = "hpo_space_exhausted"
 
 
 @dataclass(frozen=True)

@@ -84,6 +84,10 @@ def main() -> int:
         )
         require(unknown.returncode == 1, "unknown metric did not fail initialization")
         require(
+            json.loads(unknown.stdout)["failure"]["code"] == "hpo_study_spec_invalid",
+            "unknown metric lacks a stable initialization code",
+        )
+        require(
             "unknown report metric" in unknown.stderr,
             "unknown metric diagnostic was not preserved",
         )
@@ -106,6 +110,13 @@ def main() -> int:
             f"engine 1.0 metric names were rejected: {renamed.stderr}",
         )
         renamed_trial = json.loads(renamed.stdout)["trials"][0]
+        require(
+            all(
+                renamed_trial[key] is None
+                for key in ("failure_code", "failure_args", "failure_origin")
+            ),
+            "successful trial carries failure metadata",
+        )
         require(
             renamed_trial["status"] == "ok" and renamed_trial["feasible"],
             "pre-1.0 metric aliases disagreed with the engine 1.0 names",
@@ -302,8 +313,9 @@ def main() -> int:
         tpe_json = json.loads(tpe.stdout)
         require(tpe_json["schema_version"] == 1, "wrong native result schema")
         require(
-            tpe_json["pineforge_hpo_version"] != "unknown",
-            "native result omitted the HPO version",
+            tpe_json["pineforge_hpo_version"]
+            == (Path(__file__).resolve().parents[1] / "VERSION").read_text().strip(),
+            "native result HPO version differs from VERSION",
         )
         require(
             tpe_json["sampler_implementation"] == "pineforge_product_tpe_v3_bounded",
@@ -343,9 +355,11 @@ def main() -> int:
             "TPE configuration was not preserved in result provenance",
         )
         tpe_trials = tpe_json["trials"]
-        require(tpe_json["tpe_history_switch"] == 128 and
-                all(trial["tpe_history_switch"] == 128 for trial in tpe_trials),
-                "TPE history switch is missing from the result or trial archive")
+        require(
+            tpe_json["tpe_history_switch"] == 128
+            and all(trial["tpe_history_switch"] == 128 for trial in tpe_trials),
+            "TPE history switch is missing from the result or trial archive",
+        )
         unique_tpe_parameters = {
             tuple(sorted(trial["parameters"].items())) for trial in tpe_trials
         }
@@ -383,11 +397,15 @@ def main() -> int:
         tpe_default = invoke(native, plugin, csv, sampler="tpe", max_trials=12)
         require(tpe_default.returncode == 0, "default full-history TPE study failed")
         tpe_default_json = json.loads(tpe_default.stdout)
-        require(tpe_default_json["tpe_history_switch"] is None and
-                tpe_default_json["sampler_config"]["history_switch"] is None and
-                all(trial["tpe_history_switch"] is None
-                    for trial in tpe_default_json["trials"]),
-                "unset TPE history switch must be recorded as null")
+        require(
+            tpe_default_json["tpe_history_switch"] is None
+            and tpe_default_json["sampler_config"]["history_switch"] is None
+            and all(
+                trial["tpe_history_switch"] is None
+                for trial in tpe_default_json["trials"]
+            ),
+            "unset TPE history switch must be recorded as null",
+        )
         tpe_repeat_trials = json.loads(tpe_repeat.stdout)["trials"]
         require(
             [trial["parameters"] for trial in tpe_trials]

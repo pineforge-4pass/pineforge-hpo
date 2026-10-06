@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include <cmath>
 #include <map>
 #include <stdexcept>
@@ -37,22 +39,33 @@ struct Json {
     }
     const Json* find(const std::string& key) const {
         if (kind != Kind::Object)
-            throw std::runtime_error("expected object");
+            throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
+                                                    "expected object");
         auto found = members.find(key);
         return found == members.end() ? nullptr : &found->second;
     }
     std::string text() const {
         if (kind != Kind::String)
-            throw std::runtime_error("expected string");
+            throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
+                                                    "expected string");
         return value;
     }
     double real() const {
         if (kind != Kind::Number)
-            throw std::runtime_error("expected number");
+            throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
+                                                    "expected number");
         std::size_t consumed = 0;
-        double result = std::stod(value, &consumed);
+        double result;
+        try {
+            result = std::stod(value, &consumed);
+        } catch (const std::out_of_range& error) {
+            throw TypedHpoError<std::out_of_range>("hpo_input_file_invalid", {}, error.what());
+        } catch (const std::invalid_argument& error) {
+            throw TypedHpoError<std::invalid_argument>("hpo_input_file_invalid", {}, error.what());
+        }
         if (consumed != value.size() || !std::isfinite(result))
-            throw std::runtime_error("nonfinite number");
+            throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
+                                                    "nonfinite number");
         return result;
     }
 };
@@ -61,7 +74,8 @@ class JsonParser {
     std::string_view input_;
     std::size_t position_ = 0;
     [[noreturn]] void fail() const {
-        throw std::runtime_error("invalid JSON at byte " + std::to_string(position_));
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_input_file_invalid", {}, "invalid JSON at byte " + std::to_string(position_));
     }
     void skip_whitespace() {
         while (position_ < input_.size() &&
@@ -213,8 +227,10 @@ class JsonParser {
                     fail();
                 auto value = parse(depth + 1);
                 if (!json.members.emplace(key, std::move(value)).second)
-                    throw std::invalid_argument("invalid JSON at byte " +
-                        std::to_string(position_) + " (duplicate key " + key + ")");
+                    throw TypedHpoError<std::invalid_argument>("hpo_input_file_invalid", {},
+                                                               "invalid JSON at byte " +
+                                                                   std::to_string(position_) +
+                                                                   " (duplicate key " + key + ")");
                 skip_whitespace();
                 if (take('}'))
                     return json;
@@ -276,7 +292,9 @@ class JsonParser {
 public:
     explicit JsonParser(std::string_view input, std::size_t limit = 1024 * 1024) : input_(input) {
         if (input.size() > limit)
-            throw std::runtime_error("JSON frame exceeds " + std::to_string(limit) + " bytes");
+            throw TypedHpoError<std::runtime_error>(
+                "hpo_input_file_invalid", {},
+                "JSON frame exceeds " + std::to_string(limit) + " bytes");
     }
     Json run() {
         auto json = parse(0);

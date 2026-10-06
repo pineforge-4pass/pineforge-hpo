@@ -129,7 +129,8 @@ target_compile_options(pineforge_hpo_test_tpe_scale PRIVATE -Wall -Wextra -Wpeda
 add_test(NAME pineforge_hpo_tpe_scale COMMAND pineforge_hpo_test_tpe_scale)
 set_tests_properties(pineforge_hpo_tpe_scale PROPERTIES TIMEOUT 240)
 add_executable(pineforge_hpo_test_ordinal_set test_ordinal_set.cpp)
-target_include_directories(pineforge_hpo_test_ordinal_set PRIVATE "${PROJECT_SOURCE_DIR}/src/core")
+target_include_directories(pineforge_hpo_test_ordinal_set PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/core" "${PROJECT_SOURCE_DIR}/include")
 target_compile_options(pineforge_hpo_test_ordinal_set PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_ordinal_set COMMAND pineforge_hpo_test_ordinal_set)
 set_tests_properties(pineforge_hpo_tpe_concurrency PROPERTIES TIMEOUT 30)
@@ -196,6 +197,30 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         endif()
     endforeach()
 
+    foreach(extension CODED STATUS CHECKED BAD_ABI)
+        string(TOLOWER "${extension}" extension_name)
+        add_library(pineforge_hpo_fake_strategy_${extension_name} SHARED test_engine_adapter.cpp)
+        target_compile_definitions(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
+            PINEFORGE_HPO_FAKE_PLUGIN=1 PINEFORGE_HPO_FAKE_PLUGIN_${extension}=1)
+        target_include_directories(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
+            "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+        set_target_properties(pineforge_hpo_fake_strategy_${extension_name} PROPERTIES
+            PREFIX "" OUTPUT_NAME "fake_strategy_${extension_name}")
+        target_compile_options(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
+            -Wall -Wextra -Wpedantic)
+        if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+            target_compile_options(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
+                -fsanitize=address,undefined -fno-omit-frame-pointer)
+            target_link_options(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
+                -fsanitize=address,undefined)
+        elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+            target_compile_options(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
+                -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
+                -fsanitize=thread)
+        endif()
+    endforeach()
+
     add_executable(pineforge_hpo_test_engine_adapter test_engine_adapter.cpp)
     target_link_libraries(pineforge_hpo_test_engine_adapter PRIVATE
         PineForgeHPO::engine_adapter
@@ -210,13 +235,21 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     add_dependencies(pineforge_hpo_test_engine_adapter
         pineforge_hpo_fake_strategy
         pineforge_hpo_fake_strategy_no_timezone
-        pineforge_hpo_fake_strategy_no_metadata)
+        pineforge_hpo_fake_strategy_no_metadata
+        pineforge_hpo_fake_strategy_coded
+        pineforge_hpo_fake_strategy_status
+        pineforge_hpo_fake_strategy_checked
+        pineforge_hpo_fake_strategy_bad_abi)
 
     add_test(NAME pineforge_hpo_engine_adapter
         COMMAND pineforge_hpo_test_engine_adapter
             $<TARGET_FILE:pineforge_hpo_fake_strategy>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_no_timezone>
-            $<TARGET_FILE:pineforge_hpo_fake_strategy_no_metadata>)
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_no_metadata>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_coded>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
 
     add_executable(pineforge_hpo_test_symbol_feeds test_symbol_feeds.cpp)
     target_include_directories(pineforge_hpo_test_symbol_feeds PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
@@ -233,6 +266,13 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
+        add_test(NAME pineforge_hpo_failure_codes
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_failure_codes.py"
+                $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy_coded>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT PINEFORGE_HPO_ENABLE_SANITIZERS
                 AND NOT PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
             add_library(pineforge_hpo_libm_identity_shim SHARED libm_identity_shim.cpp)

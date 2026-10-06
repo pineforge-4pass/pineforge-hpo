@@ -54,7 +54,10 @@ class TrialOutputTests(unittest.TestCase):
         self.assertEqual([line["trial_id"] for line in lines], list(range(3000)))
         for line in lines:
             self.assertTrue({"trial_id", "status", "objective", "feasible", "parameters",
-                             "backtest"}.issubset(line))
+                             "backtest", "failure_code", "failure_args", "failure_origin"}.issubset(line))
+            self.assertIsNone(line["failure_code"])
+            self.assertIsNone(line["failure_args"])
+            self.assertIsNone(line["failure_origin"])
             self.assertTrue({"input_bars_processed", "script_bars_processed",
                              "magnifier_sample_ticks_total"}.issubset(line["backtest"]))
         return json.loads(completed.stdout), lines
@@ -140,8 +143,13 @@ class TrialOutputTests(unittest.TestCase):
             output, errors = process.communicate(timeout=8)
             self.assertEqual(process.returncode, 1, errors)
             self.assertIn("reader stalled after stop", errors)
-            self.assertEqual(json.loads(output)["stop_reason"],
+            result = json.loads(output)
+            self.assertEqual(result["stop_reason"],
                              "deadline" if stop == "deadline" else "cancelled")
+            self.assertGreater(result["trials_completed"], 0)
+            self.assertEqual(result["failure"], {
+                "origin": "hpo", "code": "hpo_output_io_failed", "args": {}, "exit_code": 1,
+            })
             os.set_blocking(read_fd, False)
             content = os.read(read_fd, 65536)
             self.assertTrue(not content or content.endswith(b"\n"))

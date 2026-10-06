@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -19,7 +21,9 @@ class BatchExecutor final {
 public:
     explicit BatchExecutor(unsigned count) : started_(Clock::now()) {
         if (count == 0)
-            throw std::invalid_argument("batch executor requires at least one worker");
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                "batch executor requires at least one worker");
         try {
             for (unsigned worker = 0; worker < count; ++worker) {
                 workers_.emplace_back([this] {
@@ -58,7 +62,8 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (closing_)
-                throw std::logic_error("batch executor is closed");
+                throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                                      "batch executor is closed");
             queue_.push_back(std::move(task));
         }
         ready_.notify_one();

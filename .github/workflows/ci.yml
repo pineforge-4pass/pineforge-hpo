@@ -67,6 +67,9 @@ jobs:
       - name: Build
         run: cmake --build build -j4
 
+      - name: Check failure catalog diff
+        run: python3 scripts/gen_catalog_diff.py --check
+
       - name: Test
         run: |
           ctest --test-dir build -V \
@@ -147,6 +150,25 @@ jobs:
             build/lib/fake_strategy.so --baseline build/baseline/bin/pineforge-hpo-native \
             --harness external/pineforge-engine/docker/run_json.py
 
+      - name: v0.9.0 valid-study and silent-failure contract gate
+        if: runner.os == 'Linux'
+        run: |
+          git worktree add --detach build/failure-baseline-source ab2cd2ecdc00933195a81a98488ab09016b77970
+          cmake -S build/failure-baseline-source -B build/failure-baseline \
+            -DCMAKE_BUILD_TYPE=Release -DPINEFORGE_HPO_BUILD_TESTS=OFF \
+            -DFETCHCONTENT_SOURCE_DIR_DLIB="${{ github.workspace }}/build/_deps/dlib-src" \
+            -DPINEFORGE_ENGINE_ROOT="${{ github.workspace }}/external/pineforge-engine"
+          cmake --build build/failure-baseline -j4
+          codes=absent
+          if grep -q 'strategy_get_last_error_code(' external/pineforge-engine/include/pineforge/pineforge.h; then
+            codes=present
+          fi
+          python tests/test_failure_codes_e2e.py \
+            --native build/bin/pineforge-hpo-native \
+            --baseline build/failure-baseline/bin/pineforge-hpo-native \
+            --engine-root external/pineforge-engine --engine-codes "$codes" \
+            --output build/failure-e2e
+
   python:
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
@@ -160,6 +182,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           submodules: true
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

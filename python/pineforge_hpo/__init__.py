@@ -32,6 +32,8 @@ from .transpile import (
     transpile_source,
 )
 
+from .error import HpoError
+
 
 def _distribution_version() -> str:
     try:
@@ -66,6 +68,7 @@ __all__ = [
     "CodegenIdentity",
     "DatasetSpec",
     "ExecutionSpec",
+    "HpoError",
     "ObjectiveSpec",
     "ParameterSpec",
     "SamplerSpec",

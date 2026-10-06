@@ -34,6 +34,53 @@ double score(const pfh::Candidate& candidate) {
     return -std::abs(value - 0.37);
 }
 
+void input_failure_metadata() {
+    for (const auto& text : {"9223372036854775808", "-9223372036854775809"}) {
+        bool refused = false;
+        try {
+            pfh::detail::json_integer(pfh::detail::Json::number(text));
+        } catch (const std::out_of_range& error) {
+            const auto* failure = dynamic_cast<const pfh::HpoError*>(&error);
+            refused = failure && failure->code() == "hpo_study_spec_invalid" &&
+                std::get<std::string>(failure->args().at("reason").value()) == "study";
+        }
+        require(refused, "int64 overflow lost its type or structured failure metadata");
+    }
+    bool refused = false;
+    try {
+        pfh::detail::json_id(pfh::detail::Json::number("18446744073709551616"));
+    } catch (const std::out_of_range& error) {
+        const auto* failure = dynamic_cast<const pfh::HpoError*>(&error);
+        refused = failure && failure->code() == "hpo_study_spec_invalid" &&
+            std::get<std::string>(failure->args().at("reason").value()) == "study";
+    }
+    require(refused, "uint64 overflow lost its type or structured failure metadata");
+    require(pfh::detail::json_integer(pfh::detail::Json::number("-9223372036854775808")) ==
+                std::numeric_limits<std::int64_t>::min(), "valid int64 boundary changed");
+    require(pfh::detail::json_id(pfh::detail::Json::number("18446744073709551614")) ==
+                std::numeric_limits<std::uint64_t>::max() - 1, "valid uint64 boundary changed");
+    refused = false;
+    try {
+        pfh::detail::read_document(std::filesystem::path(__FILE__) / "not-a-document");
+    } catch (const pfh::HpoError& error) {
+        refused = error.code() == "hpo_input_file_invalid" && error.args().empty();
+        require(std::string(error.what()).find("cannot read") == 0,
+                "invalid path fixture did not reach the document open failure");
+    }
+    require(refused, "document open failure was misclassified as a study error");
+#if defined(__linux__)
+    refused = false;
+    try {
+        pfh::detail::read_document(std::filesystem::current_path());
+    } catch (const pfh::HpoError& error) {
+        refused = error.code() == "hpo_input_file_invalid" && error.args().empty();
+        require(std::string(error.what()).find("failed reading") == 0,
+                "directory fixture did not reach the document read failure");
+    }
+    require(refused, "document I/O failure was misclassified as a study error");
+#endif
+}
+
 void checkpoint_equivalence(std::uint64_t batch, bool bounded, pfh::CandidatePolicy policy,
                             std::uint64_t history_count, std::uint64_t reservoir = 448,
                             std::uint64_t new_trials = 200) {
@@ -448,6 +495,7 @@ void invalid_imports() {
 
 int main(int argc, char** argv) {
     try {
+        input_failure_metadata();
         if (argc == 2) {
             if (std::string(argv[1]) == "--numeric-identity") {
                 std::cout << pfh::detail::sha256(pfh::detail::tpe_numeric_identity()) << '\n'

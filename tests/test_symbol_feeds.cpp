@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <future>
 #include <iostream>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace pfh = pineforge::hpo;
@@ -35,6 +36,32 @@ int main(int argc, char** argv) {
                 "index did not load both bars");
         require(std::isnan(symbols->front().feeds.front().bars.front().volume),
                 "missing volume is not na");
+        const auto capacity_csv = directory / "capacity.csv";
+        std::ofstream(capacity_csv) << "\xef\xbb\xbftimestamp,open,high,low,close,note\r\n"
+                                      "1700000000000,10,11,9,10,\"a\nb\"\r\n"
+                                      "\r\n"
+                                      "1700000060000,20,21,19,20,c\r\n"
+                                      "1700000120000,30,31,29,30,d";
+        const auto capacity_feed = detail::load_symbol_feed(capacity_csv, "E", "1");
+        require(capacity_feed.bars.size() == 3 && capacity_feed.close_ms.size() == 3,
+                "row reservation changed CSV records");
+        require(capacity_feed.bars.capacity() == 3 && capacity_feed.close_ms.capacity() == 3,
+                "feed vectors retained growth capacity instead of one exact copy");
+        const auto fifo = directory / "feed.fifo";
+        require(::mkfifo(fifo.c_str(), 0600) == 0, "cannot create streaming feed fixture");
+        auto writer = std::async(std::launch::async, [&] {
+            std::ifstream source(capacity_csv, std::ios::binary);
+            std::ofstream target(fifo, std::ios::binary);
+            target << source.rdbuf();
+        });
+        const auto streaming_feed = detail::load_symbol_feed(fifo, "E", "1");
+        writer.get();
+        require(streaming_feed.source_values_sha256 == capacity_feed.source_values_sha256 &&
+                    streaming_feed.close_ms == capacity_feed.close_ms &&
+                    streaming_feed.bars.size() == capacity_feed.bars.size(),
+                "streaming feed values or fingerprint changed");
+        require(streaming_feed.bars.capacity() == 3 && streaming_feed.close_ms.capacity() == 3,
+                "streaming feed vectors did not retain exact capacity");
         const auto record = detail::symbol_feeds_record(*symbols);
         require(detail::field(detail::field(record, "symbols"), "BINANCE:ETHUSDT")
                     .find("facts") != nullptr, "facts missing from fingerprint");

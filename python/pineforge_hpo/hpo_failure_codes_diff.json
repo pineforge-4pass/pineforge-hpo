@@ -1,0 +1,293 @@
+{
+  "schema": "pineforge-hpo-failure-catalog-diff/v1",
+  "from": {
+    "version": "0.9.0",
+    "tag": "v0.9.0",
+    "catalogSha256": null
+  },
+  "to": {
+    "version": "0.10.0",
+    "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
+  },
+  "catalogSchema": {
+    "before": null,
+    "after": "pineforge-hpo-failure-catalog/v1"
+  },
+  "metadataChanges": [],
+  "added": [
+    {
+      "code": "hpo_cli_usage",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "Invalid command-line arguments."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_dataset_invalid",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "The OHLCV dataset is invalid."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_input_file_invalid",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "An input file could not be read or decoded."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_invariant",
+      "collection": "codes",
+      "entry": {
+        "class": "internal",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "An HPO implementation invariant was violated."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_metric_expression_failed",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "A metric expression could not be evaluated or ranked."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_output_io_failed",
+      "collection": "codes",
+      "entry": {
+        "class": "output",
+        "retryable": true,
+        "args": {},
+        "templates": [
+          "An output stream or artifact could not be written."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_plugin_invalid",
+      "collection": "codes",
+      "entry": {
+        "class": "environment",
+        "retryable": false,
+        "args": {
+          "reason": {
+            "kind": "string",
+            "values": [
+              "abi",
+              "load",
+              "path",
+              "platform",
+              "setter_missing",
+              "symbols",
+              "validation"
+            ]
+          }
+        },
+        "templates": [
+          "The strategy plugin is incompatible ({reason})."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_portable_math_unavailable",
+      "collection": "codes",
+      "entry": {
+        "class": "environment",
+        "retryable": false,
+        "args": {
+          "requirement": {
+            "kind": "string",
+            "values": [
+              "binary64_round_to_nearest",
+              "gradual_underflow",
+              "no_fast_math",
+              "x86_64_fma3"
+            ]
+          }
+        },
+        "templates": [
+          "Portable TPE requires {requirement}."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_report_invalid",
+      "collection": "codes",
+      "entry": {
+        "class": "internal",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "The strategy returned an invalid report."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_space_exhausted",
+      "collection": "codes",
+      "entry": {
+        "class": "continuation",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "Every finite parameter vector has already been tried."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_strategy_create_failed",
+      "collection": "codes",
+      "entry": {
+        "class": "resource",
+        "retryable": true,
+        "args": {},
+        "templates": [
+          "A fresh strategy handle could not be created."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_study_spec_invalid",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "reason": {
+            "kind": "string",
+            "values": [
+              "artifact_metadata",
+              "backtest",
+              "input",
+              "input_symbol",
+              "objective",
+              "overrides",
+              "pruner",
+              "sampler",
+              "search_space",
+              "study",
+              "symbol_feeds"
+            ]
+          }
+        },
+        "templates": [
+          "The study specification is invalid ({reason})."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_toolchain_unavailable",
+      "collection": "codes",
+      "entry": {
+        "class": "environment",
+        "retryable": false,
+        "args": {
+          "reason": {
+            "kind": "string",
+            "values": [
+              "compile",
+              "configuration",
+              "native_runner",
+              "transpile_internal"
+            ]
+          }
+        },
+        "templates": [
+          "The required toolchain is unavailable ({reason})."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_transpile_failed",
+      "collection": "codes",
+      "entry": {
+        "class": "strategy",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "The Pine strategy could not be transpiled."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_trial_timeout",
+      "collection": "codes",
+      "entry": {
+        "class": "resource",
+        "retryable": true,
+        "args": {},
+        "templates": [
+          "The trial exceeded its execution deadline."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_unclassified_error",
+      "collection": "codes",
+      "entry": {
+        "class": "internal",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "An unclassified HPO failure occurred."
+        ],
+        "since": "0.10.0"
+      }
+    },
+    {
+      "code": "hpo_warm_start_rejected",
+      "collection": "codes",
+      "entry": {
+        "class": "continuation",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "The parent history cannot seed this study."
+        ],
+        "since": "0.10.0"
+      }
+    }
+  ],
+  "changed": [],
+  "removed": [],
+  "deprecated": []
+}

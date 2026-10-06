@@ -491,7 +491,9 @@ ExpressionEvaluation evaluate_node(const Node& node,
 }  // namespace
 
 ExpressionError::ExpressionError(std::string message, std::size_t offset)
-    : std::runtime_error(std::move(message) + " at offset " + std::to_string(offset)),
+    : TypedHpoError<>("hpo_study_spec_invalid",
+                      {{"reason", "objective"}},
+                      std::move(message) + " at offset " + std::to_string(offset)),
       offset_(offset) {}
 
 MetricExpression::MetricExpression(std::string source) : source_(std::move(source)) {

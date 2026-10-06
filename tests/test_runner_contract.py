@@ -24,6 +24,8 @@ def check_progress(result: dict, lines: list[dict]) -> None:
     require(len({trial["trial_id"] for trial in lines}) == len(lines), "duplicate progress IDs")
     require(all(expected.get(trial["trial_id"]) == trial for trial in lines),
             "progress objects differ from final trial objects")
+    require(all({"failure_code", "failure_args", "failure_origin"}.issubset(trial)
+                for trial in lines), "terminal records lack failure metadata")
 
 
 def process(native: Path, plugin: Path, csv: Path, progress: int, *extra: str,
@@ -86,10 +88,13 @@ def main() -> int:
             harness = ast.parse((root / "external/pineforge-engine/docker/run_json.py").read_text())
             function = next(node for node in harness.body if isinstance(node, ast.FunctionDef)
                             and node.name == "apply_syminfo")
-            setters = [node.func.attr for node in ast.walk(function)
-                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                       and node.func.attr.startswith("strategy_set_syminfo_")
-                       and node.func.attr != "strategy_set_syminfo_metadata"]
+            setters = []
+            for node in ast.walk(function):
+                name = (node.attr if isinstance(node, ast.Attribute) else
+                        node.value if isinstance(node, ast.Constant) else None)
+                if (isinstance(name, str) and name.startswith("strategy_set_syminfo_")
+                        and name != "strategy_set_syminfo_metadata"):
+                    setters.append(name)
             require(setters == ["strategy_set_syminfo_mintick", "strategy_set_syminfo_pointvalue",
                                 "strategy_set_syminfo_timezone", "strategy_set_syminfo_session"],
                     "pinned harness changed the four-setter order")
@@ -129,7 +134,9 @@ def main() -> int:
                             '{"syminfo": {"mincontract": 0}}'):
                 symbol_file.write_text(content)
                 completed = invoke(native, plugin, csv, "--syminfo", str(symbol_file))
-                require(completed.returncode == 1 and completed.stdout == "" and
+                require(completed.returncode == 1 and
+                        json.loads(completed.stdout)["failure"]["code"] ==
+                        "hpo_study_spec_invalid" and
                         "syminfo.mincontract must be a positive finite number" in completed.stderr,
                         f"invalid mincontract was not rejected visibly: {content}: "
                         f"{completed.stderr}")
@@ -210,8 +217,9 @@ def main() -> int:
             read_fd, write_fd = os.pipe()
             os.close(read_fd)
             final = directory / "progress-error.json"
+            stats = directory / "progress-error-stats.json"
             child = process(native, plugin, csv, write_fd, "--fixed-input", "DelayMs", "20",
-                            "--output", str(final), workers=2)
+                            "--output", str(final), "--scheduler-stats", str(stats), workers=2)
             os.close(write_fd)
             try:
                 stdout, stderr = child.communicate(timeout=8)
@@ -225,6 +233,14 @@ def main() -> int:
             require(result["stop_reason"] == "cancelled", "progress I/O final JSON missing")
             require(result["trials_completed"] > 0, "progress I/O discarded completed trials")
             require(result == json.loads(final.read_text()), "progress I/O output file differs")
+            require(result["failure"] == {
+                "origin": "hpo", "code": "hpo_output_io_failed", "args": {}, "exit_code": 1,
+            }, "progress I/O failure metadata differs")
+            statistics = json.loads(stats.read_text())
+            require(statistics["final_json_bytes"] == len(stdout.encode()),
+                    "progress I/O failure lost scheduler result size")
+            require(statistics["worker_seconds"] >= 0 and statistics["busy_seconds"] >= 0,
+                    "progress I/O failure lost scheduler timing statistics")
         elif case == "cancel":
             for sampler in ("grid", "random", "tpe", "dlib_global"):
                 for signum in (signal.SIGTERM, signal.SIGINT):
@@ -266,6 +282,10 @@ def main() -> int:
                 require(time.monotonic() - started < 3, "watchdog joined the hung worker")
                 result = json.loads(stdout)
                 require(result == json.loads(final.read_text()), "timeout final file differs")
+                require(all(trial["failure_code"] == "hpo_trial_timeout" and
+                            trial["failure_origin"] == "hpo" and trial["failure_args"] == {}
+                            for trial in result["trials"] if trial["status"] == "trial_timeout"),
+                        "timeout record lacks stable failure metadata")
                 require(result["stop_reason"] == "trial_timeout", "wrong timeout stop reason")
                 require(sum(trial["status"] == "trial_timeout" for trial in result["trials"]) == 1,
                         "watchdog did not record exactly one timed-out trial")
@@ -276,8 +296,10 @@ def main() -> int:
         elif case == "timeout_progress_error":
             read_fd, write_fd = os.pipe()
             os.close(read_fd)
+            final = directory / "timeout-progress-error.json"
             child = process(native, plugin, csv, write_fd, "--fixed-input", "HangAtLength", "15",
                             "--fixed-input", "DelayMs", "50", "--trial-timeout-seconds", "0.2",
+                            "--output", str(final),
                             workers=2)
             os.close(write_fd)
             try:
@@ -288,9 +310,18 @@ def main() -> int:
                     child.wait()
             require(child.returncode == 3, f"progress I/O disabled the watchdog: {stderr}")
             result = json.loads(stdout)
-            require(result["stop_reason"] == "trial_timeout", "timeout final JSON missing")
-            require(sum(trial["status"] == "trial_timeout" for trial in result["trials"]) == 1,
+            require(result["failure"]["code"] == "hpo_output_io_failed",
+                    "progress I/O failure lost its stable code")
+            require(result["failure"] == {
+                "origin": "hpo", "code": "hpo_output_io_failed", "args": {}, "exit_code": 3,
+            },
+                    "progress I/O failure changed the timeout exit code")
+            require(result["stop_reason"] == "trial_timeout" and
+                    sum(trial["status"] == "trial_timeout" for trial in result["trials"]) == 1,
                     "progress I/O changed the timeout terminal table")
+            require(any(trial["status"] == "ok" for trial in result["trials"]),
+                    "progress I/O discarded completed trials before timeout")
+            require(result == json.loads(final.read_text()), "timeout output file differs")
         else:
             raise RuntimeError(f"unknown test case: {case}")
     print(f"PASS native runner {case}")

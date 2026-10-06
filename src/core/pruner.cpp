@@ -1,3 +1,4 @@
+#include <pineforge/hpo/error.hpp>
 #include <pineforge/hpo/pruner.hpp>
 
 #include <algorithm>
@@ -11,20 +12,25 @@ Pruner::Pruner(PrunerKind kind, std::vector<double> rungs, unsigned eta, bool mi
     : kind_(kind), rungs_(std::move(rungs)), eta_(eta), minimize_(minimize),
       history_(rungs_.size()), cursors_(rungs_.size()) {
     if (eta_ < 2)
-        throw std::invalid_argument("pruner eta must be at least 2");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid", {{"reason", "pruner"}},
+                                                   "pruner eta must be at least 2");
     double previous = 0.0;
     for (double rung : rungs_) {
         if (!std::isfinite(rung) || rung <= previous || rung >= 1.0)
-            throw std::invalid_argument("pruner rungs must increase strictly in (0, 1)");
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "pruner"}},
+                "pruner rungs must increase strictly in (0, 1)");
         previous = rung;
     }
     if (kind_ != PrunerKind::None && rungs_.empty())
-        throw std::invalid_argument("pruning requires at least one prefix rung");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid", {{"reason", "pruner"}},
+                                                   "pruning requires at least one prefix rung");
 }
 
 std::vector<std::size_t> Pruner::bar_counts(std::size_t full_size) const {
     if (full_size == 0)
-        throw std::invalid_argument("pruning requires a nonempty dataset");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid", {{"reason", "pruner"}},
+                                                   "pruning requires a nonempty dataset");
     std::vector<std::size_t> result;
     if (kind_ != PrunerKind::None) {
         for (double fraction : rungs_) {

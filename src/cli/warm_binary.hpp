@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include "continuation.hpp"
 
 #include <array>
@@ -62,13 +64,15 @@ inline int warm_compare_real(double left, double right) {
 
 inline std::uint64_t warm_add(std::uint64_t left, std::uint64_t right) {
     if (right > std::numeric_limits<std::uint64_t>::max() - left)
-        throw std::runtime_error("binary block length overflow");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "binary block length overflow");
     return left + right;
 }
 
 inline std::uint64_t warm_multiply(std::uint64_t left, std::uint64_t right) {
     if (left && right > std::numeric_limits<std::uint64_t>::max() / left)
-        throw std::runtime_error("binary block length overflow");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "binary block length overflow");
     return left * right;
 }
 
@@ -85,7 +89,9 @@ public:
         if (encoding == 1) {
             count_ = single_.finite_cardinality().value();
             if (count_ > std::uint64_t{1} + std::numeric_limits<std::int32_t>::max())
-                throw std::runtime_error("binary parameter grid index exceeds int32: " + name_);
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}},
+                    "binary parameter grid index exceeds int32: " + name_);
         }
     }
 
@@ -122,7 +128,8 @@ public:
         const auto decoded = decode(static_cast<std::uint32_t>(index));
         if (decoded != value || (std::holds_alternative<double>(value) &&
             warm_compare_real(std::get<double>(decoded), std::get<double>(value)) != 0))
-            throw std::runtime_error("noncanonical binary grid parameter: " + name_);
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "noncanonical binary grid parameter: " + name_);
         return static_cast<std::uint32_t>(index);
     }
 
@@ -149,13 +156,15 @@ public:
     explicit WarmMapping(const std::filesystem::path& path) {
         const auto descriptor = ::open(path.c_str(), O_RDONLY);
         if (descriptor < 0)
-            throw std::runtime_error("cannot open binary warm input");
+            throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
+                                                    "cannot open binary warm input");
         struct stat info {};
         if (::fstat(descriptor, &info) != 0 || info.st_size <= 0 ||
             static_cast<std::uint64_t>(info.st_size) >
                 std::numeric_limits<std::size_t>::max()) {
             ::close(descriptor);
-            throw std::runtime_error("invalid binary warm file length");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "invalid binary warm file length");
         }
         size = static_cast<std::size_t>(info.st_size);
 #if defined(POSIX_FADV_SEQUENTIAL)
@@ -164,7 +173,8 @@ public:
         auto* mapping = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, descriptor, 0);
         ::close(descriptor);
         if (mapping == MAP_FAILED)
-            throw std::runtime_error("cannot map binary warm input");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "cannot map binary warm input");
         ::madvise(mapping, size, MADV_SEQUENTIAL);
         bytes = static_cast<const unsigned char*>(mapping);
     }
@@ -207,10 +217,14 @@ public:
                 std::equal(warm_state_magic.begin(), warm_state_magic.end(),
                            mapping_.bytes + offset)) {
                 if (mapping_.size - offset < 16)
-                    throw std::runtime_error("truncated sampler-state block header");
+                    throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}},
+                                                            "truncated sampler-state block header");
                 const auto bytes = warm_integer<std::uint64_t>(mapping_.bytes + offset + 8);
                 if (!bytes || bytes > 16 * 1024 * 1024 || bytes > mapping_.size - offset - 16)
-                    throw std::runtime_error("invalid sampler-state block length");
+                    throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}},
+                                                            "invalid sampler-state block length");
                 const std::string state(
                     reinterpret_cast<const char*>(mapping_.bytes + offset + 16),
                     static_cast<std::size_t>(bytes));
@@ -223,11 +237,15 @@ public:
                 std::string signature, numeric_build;
                 std::uint64_t rows;
                 if (!(payload >> std::quoted(signature) >> std::quoted(numeric_build) >> rows))
-                    throw std::runtime_error("invalid sampler-state header");
+                    throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}},
+                                                            "invalid sampler-state header");
                 const auto checksum = state.substr(8, 64);
                 const auto inserted = checkpoints.emplace(rows, checksum);
                 if (!inserted.second && inserted.first->second != checksum)
-                    throw std::runtime_error("conflicting sampler-state checkpoints");
+                    throw TypedHpoError<std::runtime_error>(
+                        "hpo_study_spec_invalid", {{"reason", "study"}},
+                        "conflicting sampler-state checkpoints");
                 if (sampler_state.empty() || rows > checkpoint_rows) {
                     sampler_state = state;
                     checkpoint_rows = rows;
@@ -236,42 +254,61 @@ public:
                 continue;
             }
             if (mapping_.size - offset < 80)
-                throw std::runtime_error("truncated binary block header");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "truncated binary block header");
             const auto* header = mapping_.bytes + offset;
             if (!std::equal(warm_magic.begin(), warm_magic.end(), header))
-                throw std::runtime_error("invalid binary block magic");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "invalid binary block magic");
             if (warm_integer<std::uint16_t>(header + 8) != 2)
-                throw std::runtime_error("unsupported binary warm version");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "unsupported binary warm version");
             const auto header_bytes = warm_integer<std::uint32_t>(header + 12);
             const auto block_bytes = warm_integer<std::uint64_t>(header + 16);
             const auto count = warm_integer<std::uint64_t>(header + 24);
             const auto flags = warm_integer<std::uint16_t>(header + 10);
             if ((flags & ~1U) != 0 ||
                 warm_integer<std::uint32_t>(header + 44) != 0)
-                throw std::runtime_error("unsupported binary block flags");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "unsupported binary block flags");
             if (!std::equal(digest.begin(), digest.end(), header + 48))
-                throw std::runtime_error("search space or objective differs (space_hash)");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}},
+                    "search space or objective differs (space_hash)");
             if (warm_integer<std::uint32_t>(header + 32) != codecs_.size() ||
                 warm_integer<std::uint32_t>(header + 36) != 1 ||
                 warm_integer<std::uint32_t>(header + 40) != constraints)
-                throw std::runtime_error("binary column counts do not match study");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "binary column counts do not match study");
             const auto base_header_bytes = warm_add(80, warm_multiply(4, codecs_.size()));
             if (header_bytes < base_header_bytes ||
                 count == 0 || block_bytes < header_bytes || block_bytes > mapping_.size - offset)
-                throw std::runtime_error("truncated or invalid binary block length");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "truncated or invalid binary block length");
             std::optional<Json> symbol_record;
             if (flags & 1U) {
                 if (header_bytes < base_header_bytes + 4)
-                    throw std::runtime_error("truncated symbol feeds header");
+                    throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}},
+                                                            "truncated symbol feeds header");
                 const auto length = warm_integer<std::uint32_t>(header + base_header_bytes);
                 if (!length || length > 8 * 1024 * 1024 ||
                     header_bytes != base_header_bytes + 4 + length)
-                    throw std::runtime_error("invalid symbol feeds header length");
+                    throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}},
+                                                            "invalid symbol feeds header length");
                 symbol_record = parse_json(std::string_view(
                     reinterpret_cast<const char*>(header + base_header_bytes + 4), length),
                     8 * 1024 * 1024);
             } else if (header_bytes != base_header_bytes) {
-                throw std::runtime_error("invalid binary block header length");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "invalid binary block header length");
             }
             validate_symbol_feeds_identity(symbol_record ? &*symbol_record : nullptr, recorded);
             std::uint64_t row_bytes = warm_add(17, warm_multiply(8, constraints));
@@ -279,13 +316,19 @@ public:
                 const auto* descriptor = header + 80 + index * 4;
                 if (descriptor[0] != codecs_[index].kind ||
                     descriptor[1] != codecs_[index].encoding || descriptor[2] || descriptor[3])
-                    throw std::runtime_error("binary parameter descriptor differs from study");
+                    throw TypedHpoError<std::runtime_error>(
+                        "hpo_study_spec_invalid", {{"reason", "study"}},
+                        "binary parameter descriptor differs from study");
                 row_bytes = warm_add(row_bytes, codecs_[index].encoding == 1 ? 4 : 8);
             }
             if (block_bytes != warm_add(header_bytes, warm_multiply(count, row_bytes)))
-                throw std::runtime_error("invalid binary payload length");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "invalid binary payload length");
             if (warm_add(rows_, count) > std::numeric_limits<std::uint32_t>::max())
-                throw std::runtime_error("binary history exceeds uint32 row index capacity");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}},
+                    "binary history exceeds uint32 row index capacity");
             Block block;
             block.begin = rows_;
             block.count = count;
@@ -310,7 +353,8 @@ public:
             offset += block_bytes;
         }
         if (!rows_)
-            throw std::runtime_error("binary history contains no trials");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "binary history contains no trials");
         bool ordered = true;
         for (std::uint64_t row = 1; row < rows_; ++row)
             ordered = ordered && raw_id(row - 1) < raw_id(row);
@@ -322,7 +366,8 @@ public:
             });
             for (std::uint64_t row = 1; row < rows_; ++row)
                 if (id(row - 1) == id(row))
-                    throw std::runtime_error("duplicate trial_id");
+                    throw TypedHpoError<std::runtime_error>(
+                        "hpo_study_spec_invalid", {{"reason", "study"}}, "duplicate trial_id");
         }
         tried_.resize(static_cast<std::size_t>(rows_));
         std::iota(tried_.begin(), tried_.end(), 0U);
@@ -425,7 +470,8 @@ private:
     };
     std::pair<const Block*, std::uint64_t> locate(std::uint64_t row) const {
         if (row >= rows_)
-            throw std::out_of_range("binary warm row out of range");
+            throw TypedHpoError<std::out_of_range>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                   "binary warm row out of range");
         if (blocks_.size() == 1)
             return {&blocks_.front(), row};
         const auto found = std::upper_bound(blocks_.begin(), blocks_.end(), row,
@@ -459,16 +505,20 @@ private:
     }
     static void validate_score(const unsigned char* bytes) {
         if (!std::isfinite(warm_real(bytes)) && warm_integer<std::uint64_t>(bytes) != warm_null)
-            throw std::runtime_error("invalid binary objective or constraint value");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "invalid binary objective or constraint value");
     }
     void validate(const Block& block) {
         for (std::uint64_t row = 0; row < block.count; ++row) {
             if (warm_integer<std::uint64_t>(block.ids + row * 8) ==
                 std::numeric_limits<std::uint64_t>::max())
-                throw std::runtime_error("trial_id leaves no continuation ID");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "trial_id leaves no continuation ID");
             const auto state = block.states[row];
             if (state >= warm_states.size())
-                throw std::runtime_error("invalid binary trial state");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "invalid binary trial state");
             completed += state <= 1;
             feasible += state == 0;
             validate_score(block.objectives + row * 8);
@@ -482,8 +532,9 @@ private:
                 if (codecs_[column].encoding == 1
                     ? !codecs_[column].valid_index(warm_integer<std::uint32_t>(bytes))
                     : !codecs_[column].valid_real(warm_real(bytes)))
-                    throw std::runtime_error("invalid binary parameter column: " +
-                                             codecs_[column].name());
+                    throw TypedHpoError<std::runtime_error>(
+                        "hpo_study_spec_invalid", {{"reason", "study"}},
+                        "invalid binary parameter column: " + codecs_[column].name());
             }
         }
     }
@@ -565,7 +616,9 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
     const auto temporary = path.string() + ".tmp." + std::to_string(::getpid());
     try {
         if (!history.size())
-            throw std::runtime_error("binary warm input must contain at least one trial");
+            throw TypedHpoError<std::runtime_error>(
+                "hpo_study_spec_invalid", {{"reason", "study"}},
+                "binary warm input must contain at least one trial");
         std::map<std::string, Dimension> sorted;
         for (const auto& dimension : space.dimensions())
             sorted.emplace(std::string(dimension_name(dimension)), dimension);
@@ -578,12 +631,14 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
         const auto* symbol_record = recorded.find("symbol_feeds");
         const auto symbol_json = symbol_record ? dump_json(*symbol_record) : std::string{};
         if (symbol_json.size() > 8 * 1024 * 1024)
-            throw std::runtime_error("symbol feeds header exceeds 8 MiB");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "symbol feeds header exceeds 8 MiB");
         if (!block_trials)
             block_trials = history.size();
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output)
-            throw std::runtime_error("cannot open binary warm output");
+            throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
+                                                    "cannot open binary warm output");
         for (std::uint64_t begin = 0; begin < history.size();) {
             const auto count = std::min(block_trials, history.size() - begin);
             const auto header_bytes = warm_add(warm_add(80, warm_multiply(4, codecs.size())),
@@ -648,7 +703,9 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
                     const auto* values = record.find("constraint_values");
                     if (values && (values->kind != Json::Kind::Array ||
                                    values->items.size() != constraints))
-                        throw std::runtime_error("constraint column counts do not match study");
+                        throw TypedHpoError<std::runtime_error>(
+                            "hpo_study_spec_invalid", {{"reason", "study"}},
+                            "constraint column counts do not match study");
                     warm_write_real(output, values && column < values->items.size()
                         ? values->items[constraint_order[column]] : Json{});
                 }
@@ -663,7 +720,8 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
         }
         output.flush();
         if (!output)
-            throw std::runtime_error("failed writing binary warm output");
+            throw TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
+                                                    "failed writing binary warm output");
         output.close();
         std::filesystem::rename(temporary, path);
     } catch (const std::exception& error) {

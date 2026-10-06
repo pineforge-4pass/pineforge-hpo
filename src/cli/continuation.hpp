@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include "json.hpp"
 #include "sha256.hpp"
 #include "../core/sampler_checkpoint.hpp"
@@ -19,21 +21,24 @@ namespace pineforge::hpo::detail {
 
 inline constexpr int space_hash_version = 1;
 
-class WarmStartError : public std::runtime_error {
+class WarmStartError : public TypedHpoError<> {
 public:
     explicit WarmStartError(const std::string& message)
-        : std::runtime_error("warm-start incompatible: " + message) {}
+        : TypedHpoError<>("hpo_warm_start_rejected", {}, "warm-start incompatible: " + message) {}
 };
 
-class SpaceExhausted : public std::runtime_error {
+class SpaceExhausted : public TypedHpoError<> {
 public:
-    SpaceExhausted() : std::runtime_error("space exhausted: every parameter vector was tried") {}
+    SpaceExhausted()
+        : TypedHpoError<>(
+              "hpo_space_exhausted", {}, "space exhausted: every parameter vector was tried") {}
 };
 
 inline const Json& field(const Json& document, const std::string& name) {
     const auto* value = document.find(name);
     if (!value)
-        throw std::runtime_error("missing " + name);
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "missing " + name);
     return *value;
 }
 
@@ -101,7 +106,7 @@ inline std::string dump_json(const Json& document) {
         return output + (array ? "]" : "}");
     }
     }
-    throw std::logic_error("invalid JSON kind");
+    throw TypedHpoError<std::logic_error>("hpo_invariant", {}, "invalid JSON kind");
 }
 
 inline Json scalar_json(const ParameterValue& value) {
@@ -124,22 +129,44 @@ inline Json scalar_json(const ParameterValue& value) {
 
 inline std::int64_t json_integer(const Json& value) {
     if (value.kind != Json::Kind::Number || value.value.find_first_of(".eE") != std::string::npos)
-        throw std::runtime_error("expected int64 JSON integer");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "expected int64 JSON integer");
     std::size_t consumed = 0;
-    const auto parsed = std::stoll(value.value, &consumed);
+    std::int64_t parsed;
+    try {
+        parsed = std::stoll(value.value, &consumed);
+    } catch (const std::out_of_range& error) {
+        throw TypedHpoError<std::out_of_range>(
+            "hpo_study_spec_invalid", {{"reason", "study"}}, error.what());
+    } catch (const std::invalid_argument& error) {
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "study"}}, error.what());
+    }
     if (consumed != value.value.size())
-        throw std::runtime_error("invalid integer");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "invalid integer");
     return parsed;
 }
 
 inline std::uint64_t json_id(const Json& value) {
     if (value.kind != Json::Kind::Number || value.value.empty() || value.value.front() == '-' ||
         value.value.find_first_of(".eE") != std::string::npos)
-        throw std::runtime_error("expected uint64 trial_id");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "expected uint64 trial_id");
     std::size_t consumed = 0;
-    const auto parsed = std::stoull(value.value, &consumed);
+    std::uint64_t parsed;
+    try {
+        parsed = std::stoull(value.value, &consumed);
+    } catch (const std::out_of_range& error) {
+        throw TypedHpoError<std::out_of_range>(
+            "hpo_study_spec_invalid", {{"reason", "study"}}, error.what());
+    } catch (const std::invalid_argument& error) {
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "study"}}, error.what());
+    }
     if (consumed != value.value.size() || parsed == std::numeric_limits<std::uint64_t>::max())
-        throw std::runtime_error("trial_id leaves no continuation ID");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "trial_id leaves no continuation ID");
     return parsed;
 }
 
@@ -153,7 +180,8 @@ inline ParameterValue scalar_value(const Json& value) {
             return json_integer(value);
         return value.real();
     }
-    throw std::runtime_error("expected scalar parameter");
+    throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                            "expected scalar parameter");
 }
 
 inline Json recorded_space(const SearchSpace& space, const std::string& expression,
@@ -229,7 +257,8 @@ inline std::string canonical_space(const Json& space) {
     result.members["space_hash_version"] = Json::number(std::to_string(space_hash_version));
     auto parameters = object_json();
     if (field(space, "parameters").kind != Json::Kind::Object)
-        throw std::runtime_error("parameters must be an object");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "parameters must be an object");
     for (const auto& entry : field(space, "parameters").members) {
         const auto& source = entry.second;
         auto parameter = object_json();
@@ -244,16 +273,19 @@ inline std::string canonical_space(const Json& space) {
             }
             parameter.members["log"] = field(source, "log");
             if (parameter.members["log"].kind != Json::Kind::Bool)
-                throw std::runtime_error("log must be boolean");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "log must be boolean");
         } else if (kind == "categorical") {
             auto choices = array_json();
             if (field(source, "choices").kind != Json::Kind::Array)
-                throw std::runtime_error("choices must be an array");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "choices must be an array");
             for (const auto& choice : field(source, "choices").items)
                 choices.items.push_back(canonical_scalar(choice));
             parameter.members["choices"] = std::move(choices);
         } else if (kind != "boolean") {
-            throw std::runtime_error("unknown parameter kind");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "unknown parameter kind");
         }
         parameters.members[entry.first] = std::move(parameter);
     }
@@ -266,7 +298,8 @@ inline std::string canonical_space(const Json& space) {
     field(source, "direction").text();
     auto constraints = field(source, "constraints");
     if (constraints.kind != Json::Kind::Array)
-        throw std::runtime_error("constraints must be an array");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "constraints must be an array");
     for (const auto& constraint : constraints.items)
         constraint.text();
     std::sort(constraints.items.begin(), constraints.items.end(), [](const auto& left,
@@ -285,7 +318,9 @@ inline double symbol_mintick(const Json& value) {
     const auto number = std::strtod(value.value.c_str(), &end);
     if (value.kind != Json::Kind::Number || end != value.value.c_str() + value.value.size() ||
         !(number > 0) || !std::isfinite(number))
-        throw std::runtime_error("symbol feed mintick must be a positive finite number");
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_study_spec_invalid", {{"reason", "study"}},
+            "symbol feed mintick must be a positive finite number");
     return number;
 }
 
@@ -295,7 +330,9 @@ inline std::string symbol_feeds_identity(const Json* record) {
     auto normalized = *record;
     const auto* symbols = normalized.kind == Json::Kind::Object ? normalized.find("symbols") : nullptr;
     if (!symbols || symbols->kind != Json::Kind::Object)
-        throw std::runtime_error("invalid symbol feeds header record: symbols must be an object");
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_study_spec_invalid", {{"reason", "study"}},
+            "invalid symbol feeds header record: symbols must be an object");
     for (auto& symbol : normalized.members.find("symbols")->second.members) {
         const auto* facts_record = symbol.second.kind == Json::Kind::Object ?
             symbol.second.find("facts") : nullptr;
@@ -303,8 +340,10 @@ inline std::string symbol_feeds_identity(const Json* record) {
             symbol.second.find("feeds") : nullptr;
         if (!facts_record || facts_record->kind != Json::Kind::Object ||
             !feeds_record || feeds_record->kind != Json::Kind::Object)
-            throw std::runtime_error("invalid symbol feeds header record for " + symbol.first +
-                                     ": facts and feeds must be objects");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "invalid symbol feeds header record for " +
+                                                        symbol.first +
+                                                        ": facts and feeds must be objects");
         auto& facts = symbol.second.members.find("facts")->second;
         const auto mintick = facts.members.find("mintick");
         if (mintick != facts.members.end())
@@ -318,16 +357,20 @@ inline void validate_symbol_feeds_identity(const Json* parent, const Json& curre
         deferred && deferred->kind == Json::Kind::Bool && deferred->value == "true")
         return;
     if (symbol_feeds_identity(parent) != symbol_feeds_identity(current.find("symbol_feeds")))
-        throw std::runtime_error("symbol feeds differ from parent (facts or feed values)");
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_study_spec_invalid", {{"reason", "study"}},
+            "symbol feeds differ from parent (facts or feed values)");
 }
 
 inline Json space_from_spec(const Json& spec) {
     const auto& strategies = field(spec, "strategies");
     if (strategies.kind != Json::Kind::Array || strategies.items.size() != 1)
-        throw std::runtime_error("space-info requires a single-strategy StudySpec");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "space-info requires a single-strategy StudySpec");
     const auto& parameters = field(strategies.items.front(), "search_space");
     if (parameters.kind != Json::Kind::Object)
-        throw std::runtime_error("search_space must be an object");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "search_space must be an object");
     std::vector<Dimension> dimensions;
     for (const auto& entry : parameters.members) {
         const auto& parameter = entry.second;
@@ -335,7 +378,8 @@ inline Json space_from_spec(const Json& spec) {
         const auto* step = parameter.find("step");
         const auto* log = parameter.find("log");
         if (log && log->kind != Json::Kind::Bool)
-            throw std::runtime_error("log must be boolean");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "log must be boolean");
         const bool logarithmic = log && log->value == "true";
         if (kind == "integer")
             dimensions.emplace_back(IntegerDimension(entry.first,
@@ -351,26 +395,31 @@ inline Json space_from_spec(const Json& spec) {
             std::vector<ParameterValue> choices;
             const auto& values = field(parameter, "choices");
             if (values.kind != Json::Kind::Array)
-                throw std::runtime_error("choices must be an array");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "choices must be an array");
             for (const auto& value : values.items)
                 choices.push_back(scalar_value(value));
             dimensions.emplace_back(CategoricalDimension(entry.first, std::move(choices)));
         } else
-            throw std::runtime_error("unknown parameter kind");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "unknown parameter kind");
     }
     const auto& objective = field(spec, "objective");
     if (field(objective, "kind").text() != "expression")
-        throw std::runtime_error("space-info requires an expression objective");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "space-info requires an expression objective");
     std::vector<std::string> constraints;
     if (const auto* values = objective.find("constraints")) {
         if (values->kind != Json::Kind::Array)
-            throw std::runtime_error("constraints must be an array");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "constraints must be an array");
         for (const auto& value : values->items)
             constraints.push_back(value.text());
     }
     const auto direction = field(objective, "direction").text();
     if (direction != "maximize" && direction != "minimize")
-        throw std::runtime_error("unknown objective direction");
+        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                "unknown objective direction");
     return recorded_space(SearchSpace(std::move(dimensions)),
         field(objective, "expression").text(), direction, constraints);
 }
@@ -419,16 +468,20 @@ inline std::string candidate_key(const Candidate& candidate) {
 inline std::string read_document(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input)
-        throw std::runtime_error("cannot read " + path.string());
+        throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
+                                                "cannot read " + path.string());
     std::string result;
     char buffer[8192];
     while (input.read(buffer, sizeof(buffer)) || input.gcount() != 0) {
         result.append(buffer, static_cast<std::size_t>(input.gcount()));
         if (result.size() > 256 * 1024 * 1024)
-            throw std::runtime_error("warm-start document exceeds 256 MiB; use JSONL shards");
+            throw TypedHpoError<std::runtime_error>(
+                "hpo_input_file_invalid", {},
+                "warm-start document exceeds 256 MiB; use JSONL shards");
     }
     if (input.bad())
-        throw std::runtime_error("failed reading " + path.string());
+        throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
+                                                "failed reading " + path.string());
     return result;
 }
 
@@ -476,22 +529,31 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
                 sampler_checkpoint_payload(checkpoint);
             }
             if (const auto* mode = document->find("trials_out"); mode && mode->text() != "all")
-                throw std::runtime_error("summary/none result is not a complete trial history");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}},
+                    "summary/none result is not a complete trial history");
             const auto& records = field(*document, "trials");
             if (records.kind != Json::Kind::Array)
-                throw std::runtime_error("trials must be an array");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "trials must be an array");
             if (const auto* count = document->find("trials_completed"); count &&
                 json_integer(*count) != static_cast<std::int64_t>(records.items.size()))
-                throw std::runtime_error("result does not contain all completed trials");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}},
+                    "result does not contain all completed trials");
             if (const auto* inherited = document->find("warm_start_trials")) {
                 if (inherited->kind != Json::Kind::Array)
-                    throw std::runtime_error("warm_start_trials must be an array");
+                    throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}},
+                                                            "warm_start_trials must be an array");
                 history.records = inherited->items;
             }
             if (const auto* warm = document->find("warm_start"); warm &&
                 json_integer(field(*warm, "trials")) !=
                     static_cast<std::int64_t>(history.records.size()))
-                throw std::runtime_error("result is missing ancestor trials");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "result is missing ancestor trials");
             history.records.insert(history.records.end(), records.items.begin(),
                                    records.items.end());
             parent_space = document->find("space");
@@ -518,7 +580,8 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
             }
         }
         if (history.records.empty())
-            throw std::runtime_error("parent has no trials");
+            throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+                                                    "parent has no trials");
         const auto expected = canonical_space(current_space);
         const auto expected_hash = sha256(expected);
         const auto verify_hash = [&](const Json& owner) {
@@ -526,10 +589,14 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
             const auto* hash = owner.find("space_hash");
             if (version && json_integer(*version) == space_hash_version && hash &&
                 hash->text() != expected_hash)
-                throw std::runtime_error("recorded space_hash does not match space");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "recorded space_hash does not match space");
         };
         if (parent_space && canonical_space(*parent_space) != expected)
-            throw std::runtime_error("search space or objective differs (space_hash)");
+            throw TypedHpoError<std::runtime_error>(
+                "hpo_study_spec_invalid", {{"reason", "study"}},
+                "search space or objective differs (space_hash)");
         if (parent_space)
             validate_symbol_feeds_identity(parent_space->find("symbol_feeds"), current_space);
         if (document && document->kind == Json::Kind::Object) {
@@ -538,7 +605,9 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
             }
             if (const auto* digest = document->find("runtime_sha256")) {
                 if (digest->text() != symbol_feeds_identity(current_space.find("symbol_feeds")))
-                    throw std::runtime_error("symbol feeds differ from parent (runtime_sha256)");
+                    throw TypedHpoError<std::runtime_error>(
+                        "hpo_study_spec_invalid", {{"reason", "study"}},
+                        "symbol feeds differ from parent (runtime_sha256)");
             }
         }
         if (parent_space && document)
@@ -551,9 +620,13 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
         for (const auto& record : history.records) {
             const auto* recorded = record.find("space");
             if (!recorded && !parent_space)
-                throw std::runtime_error("missing recorded space; compatibility cannot be proven");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}},
+                    "missing recorded space; compatibility cannot be proven");
             if (recorded && canonical_space(*recorded) != expected)
-                throw std::runtime_error("search space or objective differs (space_hash)");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}},
+                    "search space or objective differs (space_hash)");
             if (recorded)
                 validate_symbol_feeds_identity(recorded->find("symbol_feeds"), current_space);
             verify_hash(record);
@@ -562,15 +635,20 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
                 "objective_error", "constraint_error", "trial_error", "trial_timeout",
                 "pruned", "partial"};
             if (!statuses.count(status))
-                throw std::runtime_error("unknown trial status: " + status);
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "unknown trial status: " + status);
             Candidate candidate;
             candidate.id = json_id(field(record, "trial_id"));
             if (!ids.insert(candidate.id).second)
-                throw std::runtime_error("duplicate trial_id");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "duplicate trial_id");
             history.next_id = std::max(history.next_id, candidate.id + 1);
             const auto& values = field(record, "parameters");
             if (values.kind != Json::Kind::Object)
-                throw std::runtime_error("parameters must be an object");
+                throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                        {{"reason", "study"}},
+                                                        "parameters must be an object");
             for (const auto& dimension : space.dimensions()) {
                 const auto name = std::string(dimension_name(dimension));
                 const auto& value = field(values, name);
@@ -586,7 +664,8 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
                 candidate.values.emplace(name, std::move(scalar));
             }
             if (values.members.size() != candidate.values.size() || !space.is_valid(candidate))
-                throw std::runtime_error("invalid trial parameters");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "invalid trial parameters");
             try {
                 if (space.finite_cardinality())
                     candidate = space.candidate_at(space.candidate_ordinal(candidate),
@@ -595,12 +674,15 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
             }
             const auto& feasible = field(record, "feasible");
             if (feasible.kind != Json::Kind::Bool)
-                throw std::runtime_error("feasible must be boolean");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}}, "feasible must be boolean");
             const auto& objective = field(record, "objective");
             const bool completed = status == "ok" || status == "constraint_violation";
             const bool is_feasible = feasible.value == "true";
             if ((status == "ok" && !is_feasible) || (status != "ok" && is_feasible))
-                throw std::runtime_error("inconsistent status/feasibility/objective");
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_study_spec_invalid", {{"reason", "study"}},
+                    "inconsistent status/feasibility/objective");
             std::optional<double> score;
             if (objective.kind != Json::Kind::Null) {
                 const auto parsed = objective.real();
@@ -614,10 +696,14 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
             std::vector<std::optional<double>> scores;
             if (const auto* pruning = record.find("pruning")) {
                 if (pruning->kind != Json::Kind::Object)
-                    throw std::runtime_error("pruning must be an object");
+                    throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}},
+                                                            "pruning must be an object");
                 if (const auto* rungs = pruning->find("rung_scores")) {
                     if (rungs->kind != Json::Kind::Array)
-                        throw std::runtime_error("pruning.rung_scores must be an array");
+                        throw TypedHpoError<std::runtime_error>(
+                            "hpo_study_spec_invalid", {{"reason", "study"}},
+                            "pruning.rung_scores must be an array");
                     for (const auto& rung : rungs->items)
                         scores.push_back(rung.kind == Json::Kind::Null ? std::nullopt :
                             std::optional<double>(rung.real()));

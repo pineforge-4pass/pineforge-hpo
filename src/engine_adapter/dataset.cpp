@@ -1,4 +1,5 @@
 #include <pineforge/hpo/dataset.hpp>
+#include <pineforge/hpo/error.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -76,8 +77,10 @@ std::vector<std::string> parse_csv_row(const std::string& line, std::size_t line
                 value.clear();
                 after_quote = false;
             } else if (ch != ' ' && ch != '\t' && ch != '\r') {
-                throw std::runtime_error("invalid character after quoted CSV field on line " +
-                                         std::to_string(line_number));
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_dataset_invalid", {},
+                    "invalid character after quoted CSV field on line " +
+                        std::to_string(line_number));
             }
             continue;
         }
@@ -87,8 +90,9 @@ std::vector<std::string> parse_csv_row(const std::string& line, std::size_t line
             value.clear();
         } else if (ch == '"') {
             if (!trim(value).empty()) {
-                throw std::runtime_error("quote inside unquoted CSV field on line " +
-                                         std::to_string(line_number));
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_dataset_invalid", {},
+                    "quote inside unquoted CSV field on line " + std::to_string(line_number));
             }
             value.clear();
             in_quotes = true;
@@ -98,8 +102,9 @@ std::vector<std::string> parse_csv_row(const std::string& line, std::size_t line
     }
 
     if (in_quotes) {
-        throw std::runtime_error("unterminated quoted CSV field on line " +
-                                 std::to_string(line_number));
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_dataset_invalid", {},
+            "unterminated quoted CSV field on line " + std::to_string(line_number));
     }
     values.push_back(trim(std::move(value)));
     return values;
@@ -110,13 +115,17 @@ double parse_finite_double(const std::string& text, const char* column, std::siz
     stream.imbue(std::locale::classic());
     double result = 0.0;
     if (!(stream >> result)) {
-        throw std::runtime_error("invalid " + std::string(column) + " value on line " +
-                                 std::to_string(line_number) + ": " + text);
+        throw TypedHpoError<std::runtime_error>("hpo_dataset_invalid", {},
+                                                "invalid " + std::string(column) +
+                                                    " value on line " +
+                                                    std::to_string(line_number) + ": " + text);
     }
     stream >> std::ws;
     if (stream.peek() != std::char_traits<char>::eof() || !std::isfinite(result)) {
-        throw std::runtime_error("invalid " + std::string(column) + " value on line " +
-                                 std::to_string(line_number) + ": " + text);
+        throw TypedHpoError<std::runtime_error>("hpo_dataset_invalid", {},
+                                                "invalid " + std::string(column) +
+                                                    " value on line " +
+                                                    std::to_string(line_number) + ": " + text);
     }
     return result;
 }
@@ -127,8 +136,9 @@ std::int64_t parse_timestamp(const std::string& text, std::size_t line_number) {
     const char* const end = begin + text.size();
     const auto parsed = std::from_chars(begin, end, result, 10);
     if (parsed.ec != std::errc{} || parsed.ptr != end) {
-        throw std::runtime_error("invalid timestamp value on line " + std::to_string(line_number) +
-                                 ": " + text);
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_dataset_invalid", {},
+            "invalid timestamp value on line " + std::to_string(line_number) + ": " + text);
     }
     return result;
 }
@@ -146,12 +156,14 @@ Dataset::Dataset(std::vector<pf_bar_t> bars) : bars_(std::move(bars)) {
         const pf_bar_t& bar = bars_[index];
         if (!std::isfinite(bar.open) || !std::isfinite(bar.high) || !std::isfinite(bar.low) ||
             !std::isfinite(bar.close) || !std::isfinite(bar.volume)) {
-            throw std::invalid_argument("dataset contains a non-finite OHLCV value at index " +
-                                        std::to_string(index));
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_dataset_invalid", {},
+                "dataset contains a non-finite OHLCV value at index " + std::to_string(index));
         }
         if (index > 0 && bar.timestamp <= bars_[index - 1].timestamp) {
-            throw std::invalid_argument("dataset timestamps must be strictly increasing at index " +
-                                        std::to_string(index));
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_dataset_invalid", {},
+                "dataset timestamps must be strictly increasing at index " + std::to_string(index));
         }
     }
 }
@@ -159,12 +171,14 @@ Dataset::Dataset(std::vector<pf_bar_t> bars) : bars_(std::move(bars)) {
 Dataset Dataset::load_csv(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
-        throw std::runtime_error("cannot open OHLCV CSV: " + path.string());
+        throw TypedHpoError<std::runtime_error>("hpo_dataset_invalid", {},
+                                                "cannot open OHLCV CSV: " + path.string());
     }
 
     std::string header_line;
     if (!std::getline(input, header_line)) {
-        throw std::runtime_error("OHLCV CSV is empty: " + path.string());
+        throw TypedHpoError<std::runtime_error>("hpo_dataset_invalid", {},
+                                                "OHLCV CSV is empty: " + path.string());
     }
 
     const std::vector<std::string> raw_headers = parse_csv_row(header_line, 1);
@@ -173,19 +187,22 @@ Dataset Dataset::load_csv(const std::filesystem::path& path) {
     for (std::size_t index = 0; index < raw_headers.size(); ++index) {
         const std::string name = normalize_header(raw_headers[index], index == 0);
         if (name.empty()) {
-            throw std::runtime_error("empty CSV header column in " + path.string());
+            throw TypedHpoError<std::runtime_error>("hpo_dataset_invalid", {},
+                                                    "empty CSV header column in " + path.string());
         }
         if (!columns.emplace(name, index).second) {
-            throw std::runtime_error("duplicate CSV header column '" + name + "' in " +
-                                     path.string());
+            throw TypedHpoError<std::runtime_error>(
+                "hpo_dataset_invalid", {},
+                "duplicate CSV header column '" + name + "' in " + path.string());
         }
     }
 
     const char* const required[] = {"timestamp", "open", "high", "low", "close", "volume"};
     for (const char* name : required) {
         if (columns.find(name) == columns.end()) {
-            throw std::runtime_error("OHLCV CSV is missing required column '" + std::string(name) +
-                                     "': " + path.string());
+            throw TypedHpoError<std::runtime_error>("hpo_dataset_invalid", {},
+                                                    "OHLCV CSV is missing required column '" +
+                                                        std::string(name) + "': " + path.string());
         }
     }
 
@@ -201,8 +218,9 @@ Dataset Dataset::load_csv(const std::filesystem::path& path) {
         const auto field = [&](const char* name) -> const std::string& {
             const std::size_t index = columns.at(name);
             if (index >= row.size()) {
-                throw std::runtime_error("CSV row has too few columns on line " +
-                                         std::to_string(line_number));
+                throw TypedHpoError<std::runtime_error>(
+                    "hpo_dataset_invalid", {},
+                    "CSV row has too few columns on line " + std::to_string(line_number));
             }
             return row[index];
         };
@@ -218,7 +236,8 @@ Dataset Dataset::load_csv(const std::filesystem::path& path) {
     }
 
     if (bars.empty()) {
-        throw std::runtime_error("OHLCV CSV contains no data rows: " + path.string());
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_dataset_invalid", {}, "OHLCV CSV contains no data rows: " + path.string());
     }
     return Dataset(std::move(bars));
 }

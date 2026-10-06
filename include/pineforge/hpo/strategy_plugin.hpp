@@ -49,6 +49,7 @@ public:
     int abi_version() const noexcept { return abi_version_value_; }
 
     /// Creates a fresh strategy handle owned by the caller.
+    /// Prefers optional checked creation and otherwise uses the legacy factory.
     /// @throws std::runtime_error when the plugin returns a null handle.
     pf_strategy_t create_strategy() const;
 
@@ -56,11 +57,15 @@ public:
     void free_strategy(pf_strategy_t strategy) const noexcept;
 
     /// Applies one serialized Pine input before the backtest starts.
+    /// Uses the optional checked setter when exported; refuses rejected settings.
     /// @throws std::invalid_argument for a null handle or an embedded NUL in key/value.
+    /// @throws std::runtime_error for an engine-rejected setting.
     void set_input(pf_strategy_t strategy, const std::string& key, const std::string& value) const;
 
     /// Applies one serialized runtime strategy override before the backtest starts.
+    /// Uses the optional checked setter when exported; refuses rejected settings.
     /// @throws std::invalid_argument for a null handle or an embedded NUL in key/value.
+    /// @throws std::runtime_error for an engine-rejected setting.
     void set_override(pf_strategy_t strategy,
                       const std::string& key,
                       const std::string& value) const;
@@ -101,6 +106,13 @@ public:
     /// @throws std::invalid_argument for a null handle.
     std::string last_error(pf_strategy_t strategy) const;
 
+    /// Returns an engine code, or nullopt when the optional getter is unavailable.
+    std::optional<std::string> last_error_code(pf_strategy_t strategy) const;
+    /// Returns raw engine argument JSON, or nullopt when its getter is unavailable.
+    std::optional<std::string> last_error_args(pf_strategy_t strategy) const;
+    /// Returns the optional run status; status 1 denotes a failed execution.
+    std::optional<std::int32_t> last_run_status(pf_strategy_t strategy) const;
+
     /// Releases report-owned allocations populated by run_backtest_full().
     void free_report(pf_report_t* report) const noexcept;
 
@@ -126,6 +138,10 @@ private:
                                        pf_magnifier_distribution_t,
                                        pf_report_t*);
     using StrategyGetLastErrorFn = const char* (*)(pf_strategy_t);
+    using StrategyLastRunStatusFn = int (*)(pf_strategy_t);
+    using StrategyCreateCheckedFn = int (*)(const char*, pf_strategy_t*, char*, std::size_t);
+    using StrategySetCheckedFn =
+        int (*)(pf_strategy_t, const char*, const char*, char*, std::size_t);
     using ReportFreeFn = void (*)(pf_report_t*);
     using AbiVersionFn = int (*)();
 
@@ -148,6 +164,12 @@ private:
     StrategySetSymbolFeedFn strategy_set_symbol_feed_ = nullptr;
     RunBacktestFullFn run_backtest_full_ = nullptr;
     StrategyGetLastErrorFn strategy_get_last_error_ = nullptr;
+    StrategyGetLastErrorFn strategy_get_last_error_code_ = nullptr;
+    StrategyGetLastErrorFn strategy_get_last_error_args_ = nullptr;
+    StrategyLastRunStatusFn strategy_last_run_status_ = nullptr;
+    StrategyCreateCheckedFn strategy_create_checked_ = nullptr;
+    StrategySetCheckedFn strategy_set_input_checked_ = nullptr;
+    StrategySetCheckedFn strategy_set_override_checked_ = nullptr;
     ReportFreeFn report_free_ = nullptr;
     AbiVersionFn pf_abi_version_ = nullptr;
 };

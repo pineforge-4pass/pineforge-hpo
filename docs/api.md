@@ -12,6 +12,7 @@ samplers.
 
 - [README and quick start](../README.md)
 - [StudySpec v1](study-spec.md)
+- [Stable failure codes and checked settings](failure-codes.md)
 - [Architecture](architecture.md)
 - [Deterministic batching and prefix pruning](batching.md)
 - [Finite candidate policies](adr/0003-finite-candidate-policies.md)
@@ -275,7 +276,7 @@ Grid/random behavior is unchanged. Complete result JSON and native warm-encode
 preserve checkpoints; a JSONL trial stream or reduced result needs separately retained
 complete rows and a matching revision-2 checkpoint to recover exact TPE continuation.
 Older result checkpoints preserve useful history but do not provide revision-1 continuation
-under 0.9.0.
+under 0.10.0.
 `generated()` counts new proposals, `completed()` includes imported trainable
 observations, and `outstanding()` starts at zero. New IDs follow the highest imported
 ID, including failed/pruned trials. Import validates all observations before mutating

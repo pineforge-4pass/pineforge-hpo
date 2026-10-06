@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include <cerrno>
 #include <cstdio>
 #include <cstdint>
@@ -27,7 +29,8 @@ public:
     bool insert(std::uint64_t value) {
         if (dense_limit_ != 0) {
             if (value >= dense_limit_)
-                throw std::out_of_range("finite coverage ordinal exceeds cardinality");
+                throw TypedHpoError<std::out_of_range>(
+                    "hpo_invariant", {}, "finite coverage ordinal exceeds cardinality");
             if (dense_.empty())
                 dense_.resize((dense_limit_ + 63) / 64);
             auto& word = dense_[value / 64];
@@ -68,10 +71,13 @@ private:
 
     static File create(std::uint64_t capacity) {
         if (capacity > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()) / sizeof(Slot))
-            throw std::overflow_error("finite coverage index is too large");
+            throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid",
+                                                     {{"reason", "sampler"}},
+                                                     "finite coverage index is too large");
         File file(std::tmpfile());
         if (!file || ::ftruncate(::fileno(file.get()), capacity * sizeof(Slot)) != 0)
-            throw std::runtime_error("cannot create finite coverage temporary index");
+            throw TypedHpoError<std::runtime_error>(
+                "hpo_invariant", {}, "cannot create finite coverage temporary index");
         return file;
     }
 
@@ -82,7 +88,8 @@ private:
             count = ::pread(::fileno(file), &slot, sizeof(slot), index * sizeof(slot));
         } while (count < 0 && errno == EINTR);
         if (count != sizeof(slot))
-            throw std::runtime_error("cannot read finite coverage temporary index");
+            throw TypedHpoError<std::runtime_error>("hpo_invariant", {},
+                                                    "cannot read finite coverage temporary index");
         return slot;
     }
 
@@ -92,7 +99,8 @@ private:
             count = ::pwrite(::fileno(file), &slot, sizeof(slot), index * sizeof(slot));
         } while (count < 0 && errno == EINTR);
         if (count != sizeof(slot))
-            throw std::runtime_error("cannot write finite coverage temporary index");
+            throw TypedHpoError<std::runtime_error>("hpo_invariant", {},
+                                                    "cannot write finite coverage temporary index");
     }
 
     static std::pair<std::uint64_t, bool> locate(std::FILE* file, std::uint64_t capacity,
@@ -110,7 +118,9 @@ private:
 
     void grow() {
         if (capacity_ > std::numeric_limits<std::uint64_t>::max() / 2)
-            throw std::overflow_error("finite coverage index is too large");
+            throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid",
+                                                     {{"reason", "sampler"}},
+                                                     "finite coverage index is too large");
         const auto next_capacity = capacity_ * 2;
         auto next = create(next_capacity);
         for (std::uint64_t index = 0; index < capacity_; ++index) {

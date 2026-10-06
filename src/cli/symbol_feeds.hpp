@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include "continuation.hpp"
 #include <pineforge/hpo/symbol_feeds.hpp>
 
@@ -10,6 +12,7 @@
 #include <ctime>
 #include <cstring>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <limits>
 #include <regex>
@@ -22,7 +25,8 @@ inline constexpr std::size_t symbol_csv_field_max = 131072;
 inline constexpr const char* symbol_feed_canonicalization = "pf-symbol-feed-barc-close-le-v1";
 
 [[noreturn]] inline void symbol_feed_error(const std::string& message) {
-    throw std::invalid_argument("--symbol-feeds: " + message);
+    throw TypedHpoError<std::invalid_argument>(
+        "hpo_study_spec_invalid", {{"reason", "symbol_feeds"}}, "--symbol-feeds: " + message);
 }
 
 inline std::size_t symbol_utf8_length(const std::string& value) {
@@ -207,7 +211,8 @@ inline std::string symbol_numeric_unicode(std::string value) {
         const auto following = std::upper_bound(decimal_starts.begin(),
                                                 decimal_starts.end(), point);
         if (following == decimal_starts.begin() || point - *(following - 1) >= 10)
-            throw std::invalid_argument("not a number");
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "symbol_feeds"}}, "not a number");
         normalized += static_cast<char>('0' + point - *(following - 1));
     }
     return normalized;
@@ -224,7 +229,8 @@ inline std::string symbol_numeric_cell(std::string value, bool optional = false)
         if (value[index] == '_' && (index == 0 || index + 1 == value.size() ||
             value[index - 1] < '0' || value[index - 1] > '9' ||
             value[index + 1] < '0' || value[index + 1] > '9'))
-            throw std::invalid_argument("not a number");
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "symbol_feeds"}}, "not a number");
     }
     value.erase(std::remove(value.begin(), value.end(), '_'), value.end());
     return value;
@@ -234,22 +240,26 @@ inline double symbol_double(const std::string& cell) {
     const auto text = symbol_numeric_cell(cell);
     if (text.empty() || text.find_first_of("xXpP") != std::string::npos ||
         text.find('\0') != std::string::npos || text.find('(') != std::string::npos)
-        throw std::invalid_argument("not a number");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "symbol_feeds"}}, "not a number");
     char* end = nullptr;
     const auto number = std::strtod(text.c_str(), &end);
     if (end != text.c_str() + text.size())
-        throw std::invalid_argument("not a number");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "symbol_feeds"}}, "not a number");
     return number;
 }
 
 inline std::int64_t symbol_integer(const std::string& cell) {
     const auto text = symbol_numeric_cell(cell);
     if (text.empty() || text.find_first_not_of("+-0123456789") != std::string::npos)
-        throw std::invalid_argument("not a number");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "symbol_feeds"}}, "not a number");
     std::size_t consumed = 0;
     const auto number = std::stoll(text, &consumed);
     if (consumed != text.size())
-        throw std::invalid_argument("not a number");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "symbol_feeds"}}, "not a number");
     return number;
 }
 
@@ -290,6 +300,7 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
         symbol_feed_error(where + ": no column " + missing);
     SymbolFeed feed;
     feed.timeframe = timeframe;
+    std::deque<std::pair<pf_bar_t, std::int64_t>> rows;
     const auto field_cell = [&](const std::string& name) -> std::string {
         const auto found = columns.find(name);
         return found == columns.end() || found->second >= cells.size() ? "" : cells[found->second];
@@ -329,7 +340,7 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
             close < -symbol_stamp_max || close > symbol_stamp_max)
             symbol_feed_error(at + ": a time must be unix milliseconds within +-" +
                               std::to_string(symbol_stamp_max));
-        if (!feed.bars.empty() && feed.bars.back().timestamp >= bar.timestamp)
+        if (!rows.empty() && rows.back().first.timestamp >= bar.timestamp)
             symbol_feed_error(at + ": timestamps must increase");
         const auto bad_close = [&](const std::string& location, std::int64_t open_ms,
                                    std::int64_t close_ms) {
@@ -337,8 +348,8 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
                 " is not after its open " + std::to_string(open_ms) +
                 " and at or before the next bar's open (is the timeframe right?)");
         };
-        if (!feed.close_ms.empty() && feed.close_ms.back() > bar.timestamp)
-            bad_close(previous_at, feed.bars.back().timestamp, feed.close_ms.back());
+        if (!rows.empty() && rows.back().second > bar.timestamp)
+            bad_close(previous_at, rows.back().first.timestamp, rows.back().second);
         if (close <= bar.timestamp)
             bad_close(at, bar.timestamp, close);
         for (const auto value : {bar.open, bar.high, bar.low, bar.close, bar.volume}) {
@@ -348,14 +359,20 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
         }
         symbol_hash_integer(hashed, static_cast<std::uint64_t>(bar.timestamp));
         symbol_hash_integer(hashed, static_cast<std::uint64_t>(close));
-        feed.bars.push_back(bar);
-        feed.close_ms.push_back(close);
+        rows.emplace_back(bar, close);
         previous_at = at;
-        if (feed.bars.size() > static_cast<std::size_t>(INT32_MAX))
+        if (rows.size() > static_cast<std::size_t>(INT32_MAX))
             symbol_feed_error(where + ": exceeds the C ABI bar-count limit");
     }
     if (input.bad())
         symbol_feed_error(where + ": cannot read CSV");
+    feed.bars.reserve(rows.size());
+    feed.close_ms.reserve(rows.size());
+    while (!rows.empty()) {
+        feed.bars.push_back(rows.front().first);
+        feed.close_ms.push_back(rows.front().second);
+        rows.pop_front();
+    }
     feed.source_values_sha256 = sha256(hashed);
     return feed;
 }

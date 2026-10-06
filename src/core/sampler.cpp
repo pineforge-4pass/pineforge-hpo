@@ -1,4 +1,5 @@
 #include "pineforge/hpo/sampler.hpp"
+#include <pineforge/hpo/error.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -25,7 +26,8 @@ std::uint64_t integer_count(const IntegerDimension& dimension) {
         static_cast<std::uint64_t>(dimension.high()) - static_cast<std::uint64_t>(dimension.low());
     const std::uint64_t quotient = span / static_cast<std::uint64_t>(dimension.step());
     if (quotient == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("integer dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid", {{"reason", "sampler"}},
+                                                 "integer dimension cardinality exceeds uint64_t");
     }
     return quotient + 1;
 }
@@ -49,8 +51,9 @@ std::int64_t integer_at(const IntegerDimension& dimension, std::uint64_t index) 
 
 std::uint64_t real_grid_count(const RealDimension& dimension) {
     if (!dimension.step().has_value()) {
-        throw std::invalid_argument("grid sampling a real dimension requires a step: " +
-                                    dimension.name());
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "grid sampling a real dimension requires a step: " + dimension.name());
     }
     const long double low = static_cast<long double>(dimension.low());
     const long double high = static_cast<long double>(dimension.high());
@@ -59,7 +62,8 @@ std::uint64_t real_grid_count(const RealDimension& dimension) {
     const long double scaled = std::isfinite(span) ? span / step : high / step - low / step;
     const long double floored = std::floor(scaled);
     if (floored >= static_cast<long double>(std::numeric_limits<std::uint64_t>::max())) {
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid", {{"reason", "sampler"}},
+                                                 "real dimension cardinality exceeds uint64_t");
     }
     std::uint64_t last_index = static_cast<std::uint64_t>(floored);
     const std::uint64_t next_index = last_index + 1;
@@ -70,7 +74,8 @@ std::uint64_t real_grid_count(const RealDimension& dimension) {
         last_index = next_index;
     }
     if (last_index == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid", {{"reason", "sampler"}},
+                                                 "real dimension cardinality exceeds uint64_t");
     }
     return last_index + 1;
 }
@@ -87,7 +92,8 @@ double real_at(const RealDimension& dimension, std::uint64_t index) {
 
 std::uint64_t bounded_random(std::mt19937_64& engine, std::uint64_t bound) {
     if (bound == 0) {
-        throw std::invalid_argument("random bound must be positive");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}}, "random bound must be positive");
     }
     // Rejection sampling avoids modulo bias while depending only on the
     // standardized mt19937_64 output, rather than implementation-specific
@@ -170,7 +176,8 @@ std::uint64_t continuation_seed(std::uint64_t seed, std::uint64_t warm_trials) n
 GridSampler::GridSampler(SearchSpace space) : space_(std::move(space)) {
     const auto cardinality = space_.finite_cardinality();
     if (!cardinality.has_value()) {
-        throw std::invalid_argument(
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
             "grid sampling requires a step on every varying real dimension");
     }
     total_candidates_ = *cardinality;

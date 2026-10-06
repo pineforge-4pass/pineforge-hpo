@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include "sha256.hpp"
 
 #include <algorithm>
@@ -18,10 +20,14 @@ inline std::string_view sampler_checkpoint_payload(std::string_view state) {
         !std::all_of(state.begin() + 7, state.begin() + newline,
                      [](char value) { return value >= '0' && value <= '9'; }) ||
         state.size() < newline + 66 || state[newline + 65] != '\n')
-        throw std::invalid_argument("invalid sampler-state checksum/version");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "invalid sampler-state checksum/version");
     const auto payload = state.substr(newline + 66);
     if (sha256(payload) != state.substr(newline + 1, 64))
-        throw std::invalid_argument("invalid sampler-state checksum/version");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "invalid sampler-state checksum/version");
     return payload;
 }
 
@@ -37,7 +43,9 @@ inline std::string sampler_checkpoint_numeric_identity(const std::string& state)
     input.imbue(std::locale::classic());
     std::string signature, identity;
     if (!(input >> std::quoted(signature) >> std::quoted(identity)))
-        throw std::invalid_argument("invalid TPE sampler-state build identity");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "invalid TPE sampler-state build identity");
     return identity;
 }
 
