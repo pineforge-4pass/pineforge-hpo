@@ -21,6 +21,8 @@
 - Publish `hpo_failure_codes.json` and its checked version/hash diff in the Python package
   and release assets. CI checks the unreleased diff; release packaging stamps its target
   version without changing the catalog bytes.
+- Reserve exact symbol-feed row capacity before loading bars and close times. The extra
+  cold CSV counting pass avoids geometric capacity overhead without changing feed data.
 
 ## 0.9.0 — 2026-10-05
 

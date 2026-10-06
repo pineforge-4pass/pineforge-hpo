@@ -106,3 +106,24 @@ release assets and inside the wheel/source distribution. It verifies that the
 wheel's catalog bytes exactly match the assets. Stamping the diff does not modify
 the catalog or its raw hash. Regenerate the unreleased diff against the next
 previous-release tag before subsequent catalog edits.
+
+## Regression proof
+
+CI builds the 0.9.0 native runner and compares a valid three-candidate grid study
+against the current runner. Existing trial fields, including parameters, metrics,
+and objective, must have identical canonical bytes. The same generated strategy
+with an empty `runtime.error()` must reproduce the old partial-report success and
+be rejected by the current runner. The test also exercises checked input and
+override refusals against the real engine. Getter presence is asserted explicitly;
+the pinned older engine expects null failure metadata for the empty runtime error.
+
+```bash
+python3 tests/test_failure_codes_e2e.py \
+  --native build/bin/pineforge-hpo-native \
+  --baseline build/failure-baseline/bin/pineforge-hpo-native \
+  --engine-root external/pineforge-engine --engine-codes absent \
+  --output build/failure-e2e
+```
+
+Use `--engine-codes present` when validating an engine with the optional getters.
+The output directory retains before/after observations, failure records, and hashes.
