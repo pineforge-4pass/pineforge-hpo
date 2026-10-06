@@ -493,7 +493,6 @@ def _validate_manifest_inputs(
             "unknown_key",
             "StudySpec references inputs not emitted by pineforge-codegen-oss: "
             + ", ".join(unknown),
-            unknown[0],
         )
     for name, parameter in study.strategy.search_space.items():
         manifest = by_title[name]

@@ -150,7 +150,16 @@ class FailureCodeTests(unittest.TestCase):
         with self.assertRaises(CliError) as caught:
             _validate_manifest_inputs(study, [])
         self.assertEqual(caught.exception.args["reason"], "unknown_key")
-        self.assertEqual(caught.exception.args["input"], "Exact Pine Title")
+        self.assertNotIn("input", caught.exception.args)
+        strategy.fixed_inputs.clear()
+        strategy.fixed_inputs["forged arbitrary English"] = 1
+        with self.assertRaises(CliError) as caught:
+            _validate_manifest_inputs(study, manifest)
+        self.assertEqual(
+            caught.exception.args,
+            {"entrypoint": "strategy_set_input", "reason": "unknown_key"},
+        )
+        self.assertIn("forged arbitrary English", str(caught.exception))
 
     def test_output_io_failure_metadata(self):
         with mock.patch(
