@@ -8,13 +8,13 @@ dynamic = ["version"]
 description = "Native hyperparameter optimization for PineForge strategies"
 readme = "PYPI_README.md"
 requires-python = ">=3.11"
-license = "Apache-2.0"
+# PineForge Source License 1.2 (source-available); see LICENSE.
+license = { file = "LICENSE" }
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "PineForge contributors" }]
 keywords = ["pinescript", "backtesting", "hyperparameter-optimization", "portfolio"]
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
