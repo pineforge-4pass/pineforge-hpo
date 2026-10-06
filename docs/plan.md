@@ -37,7 +37,7 @@ Implemented:
 - Apache-2.0 repository license at the initial release and an explicit
   separate-codegen boundary; releases up to and including v0.10.0 remain available
   under Apache-2.0. Starting with v0.11.0, original HPO code uses the
-  [PineForge Source License 1.2](../LICENSE);
+  [PineForge Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE);
 - dependency-free JSON StudySpec loader for `single_strategy`;
 - `Candidate`, `TrialContext`, `ObjectiveResult`, expression policy, and status
   contracts;

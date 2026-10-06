@@ -4,7 +4,8 @@
 - Date: 2026-07-18
 
 > **Current license status (2026-10-07).** Starting with v0.11.0, original HPO
-> code uses the [PineForge Source License 1.2](../../LICENSE). Releases up to and
+> code uses the [PineForge Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
+> Releases up to and
 > including v0.10.0 remain available under Apache-2.0. The Apache-2.0 references
 > below describe the boundary at this ADR's 2026-07-18 decision; dlib's Boost
 > Software License 1.0 is unchanged.
