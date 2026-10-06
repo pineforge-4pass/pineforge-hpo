@@ -132,7 +132,16 @@ inline std::int64_t json_integer(const Json& value) {
         throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
                                                 "expected int64 JSON integer");
     std::size_t consumed = 0;
-    const auto parsed = std::stoll(value.value, &consumed);
+    std::int64_t parsed;
+    try {
+        parsed = std::stoll(value.value, &consumed);
+    } catch (const std::out_of_range& error) {
+        throw TypedHpoError<std::out_of_range>(
+            "hpo_study_spec_invalid", {{"reason", "study"}}, error.what());
+    } catch (const std::invalid_argument& error) {
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "study"}}, error.what());
+    }
     if (consumed != value.value.size())
         throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
                                                 "invalid integer");
@@ -145,7 +154,16 @@ inline std::uint64_t json_id(const Json& value) {
         throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
                                                 "expected uint64 trial_id");
     std::size_t consumed = 0;
-    const auto parsed = std::stoull(value.value, &consumed);
+    std::uint64_t parsed;
+    try {
+        parsed = std::stoull(value.value, &consumed);
+    } catch (const std::out_of_range& error) {
+        throw TypedHpoError<std::out_of_range>(
+            "hpo_study_spec_invalid", {{"reason", "study"}}, error.what());
+    } catch (const std::invalid_argument& error) {
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "study"}}, error.what());
+    }
     if (consumed != value.value.size() || parsed == std::numeric_limits<std::uint64_t>::max())
         throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
                                                 "trial_id leaves no continuation ID");
@@ -462,7 +480,7 @@ inline std::string read_document(const std::filesystem::path& path) {
                 "warm-start document exceeds 256 MiB; use JSONL shards");
     }
     if (input.bad())
-        throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
+        throw TypedHpoError<std::runtime_error>("hpo_input_file_invalid", {},
                                                 "failed reading " + path.string());
     return result;
 }

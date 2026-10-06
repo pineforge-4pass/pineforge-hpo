@@ -77,7 +77,8 @@ still compile, but equal `PF_ABI_VERSION` values do not guarantee a compatible C
 layout or the same behavior. The optional `transpile` extra requires `pineforge-codegen`
 >= 1.1.0 and < 2, so install the release that matches your engine (`pineforge-codegen==1.2.0` for the
 gitlinks). The native adapter reads the equity statistics by their engine 1.0 names, so it
-needs engine 1.x headers. Regenerate a precompiled plugin referenced from a StudySpec with
+needs engine headers >= 1.1.0 (including the checked-settings API). Regenerate a
+precompiled plugin referenced from a StudySpec with
 codegen 1.2.0 and rebuild it against engine v1.2.0: plugins from engine v0.13.x or earlier
 (ABI 3 or lower) are refused with an ABI mismatch, while plugins from 1.0 prereleases or
 development builds also report ABI 4 and load without an error although they do not pair

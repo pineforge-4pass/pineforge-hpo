@@ -188,11 +188,7 @@ def main():
                 and trial["failure_code"] == "setting_rejected",
                 trial,
             )
-            require(trial["failure_args"]["entrypoint"] == entrypoint, trial)
-            if "input" in trial["failure_args"]:
-                require(
-                    trial["failure_args"]["input"] in {"Mode", "FixedNumber"}, trial
-                )
+            require(trial["failure_args"] == {"entrypoint": entrypoint}, trial)
 
     receipt = {
         "schema": "pineforge-hpo-failure-e2e/v1",

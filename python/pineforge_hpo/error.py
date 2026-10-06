@@ -5,18 +5,18 @@ from __future__ import annotations
 from typing import Any
 
 
-class HpoError:
-    """Mixin preserving exception types/signatures and exposing typed failure args.
+class HpoError(Exception):
+    """Exception base preserving legacy types and exposing typed failure args.
 
-    ``str(error)`` retains the legacy message. ``error.args`` is the scalar JSON
-    object used by the failure protocol, not BaseException's message tuple.
+    ``str(error)`` and ``error.args`` retain the legacy message contract.
+    ``error.failure_args`` is the scalar JSON object used by the failure protocol.
     """
 
     code: str | None = "hpo_unclassified_error"
     origin = "hpo"
 
     @property
-    def args(self) -> dict[str, Any] | None:
+    def failure_args(self) -> dict[str, Any] | None:
         arguments = getattr(self, "_failure_args", {})
         return dict(arguments) if arguments is not None else None
 
@@ -36,7 +36,7 @@ def failure_document(error: BaseException, exit_code: int) -> dict[str, Any]:
         "failure": {
             "origin": getattr(error, "origin", "hpo"),
             "code": getattr(error, "code", "hpo_unclassified_error"),
-            "args": error.args if isinstance(error, HpoError) else {},
+            "args": error.failure_args if isinstance(error, HpoError) else {},
             "exit_code": exit_code,
         },
     }

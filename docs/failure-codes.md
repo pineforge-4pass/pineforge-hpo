@@ -46,10 +46,12 @@ an unknown title, override key, invalid enum, or unparseable value. Setter refus
 carry engine-owned `setting_rejected` metadata, using the engine's closed
 `entrypoint` and `reason` vocabularies. When the engine supplies a more specific
 code/argument object, HPO forwards it unchanged apart from argument normalization.
-When getters are absent, HPO synthesizes the engine code using `unknown_key` for
-an unsupported setting and `unparseable_value` for other setter refusals; it does
-not classify the English diagnostic. A checked factory exception instead carries
-`hpo_strategy_create_failed`.
+When no getter code is available, an invalid-argument setter status uses
+`setting_rejected` with only `entrypoint`: the status cannot establish a reason,
+so HPO omits `reason` rather than classifying the English diagnostic. An unsupported
+status uses `setting_unsupported` with no arguments; other failed setter statuses
+use `engine_unclassified_error` with no arguments. Every non-OK checked factory
+status instead carries `hpo_strategy_create_failed`.
 
 Python's existing manifest/override preflight also uses `setting_rejected` for
 known setting refusals. The optional `input` argument is only the codegen manifest's
@@ -67,15 +69,20 @@ process failure, while preserving existing exit codes and stderr diagnostics:
 
 Trial failures still appear in ordinary study results. Exit 2 still denotes no
 feasible best trial; ordinary watchdog timeout results still use exit 3 and include
-the timeout terminal record. An output I/O failure is a process failure, including
-when the watchdog must exit 3 after a failed progress write. Warm-start rejection
+the timeout terminal record. A progress-I/O failure still publishes completed trials
+to stdout and `--output` when writable, adding a top-level `failure` object with
+`origin`, `code`, `args`, and `exit_code` to the ordinary result document. It exits 1;
+the watchdog preserves the timeout terminal record and exits 3. The result's `ok`
+field continues to describe whether a feasible best trial exists; inspect `failure`
+and the process exit code to detect a publication failure. Warm-start rejection
 and exhausted unique space retain exits 4 and 5. Python argparse retains exit 2.
 
 Public Python exception types preserve their standard exception families, messages,
-and call signatures. They additionally implement `pineforge_hpo.HpoError` and expose
-`.code`, `.origin`, and `.args`. Here `.args` is the failure argument object (or
-`None` for unavailable engine arguments), not BaseException's diagnostic tuple;
-use `str(error)` for the original message. C++ callers can catch their existing
+and call signatures. They additionally inherit the catchable exception base
+`pineforge_hpo.HpoError` and expose `.code`, `.origin`, and `.failure_args`. The latter
+is the failure argument object (or `None` for unavailable engine arguments).
+`BaseException.args` remains the writable diagnostic tuple; `str(error)` retains
+the original message. C++ callers can catch their existing
 standard exception family or inspect the `pineforge::hpo::HpoError` metadata mixin
 declared in `include/pineforge/hpo/error.hpp`.
 
@@ -104,8 +111,11 @@ python3 scripts/gen_catalog_diff.py --check --release-version 0.10.0
 The release workflow stamps the target version and ships both JSON files as
 release assets and inside the wheel/source distribution. It verifies that the
 wheel's catalog bytes exactly match the assets. Stamping the diff does not modify
-the catalog or its raw hash. Regenerate the unreleased diff against the next
-previous-release tag before subsequent catalog edits.
+the catalog or its raw hash. Generation and `--check` use the explicit baseline
+pinned in the diff's `from.tag`, not the newest merged tag, so checks remain valid
+after a release tag is created. Before the next release cycle's catalog edits,
+advance that baseline explicitly with `--from-tag vX.Y.Z`; an initial diff also
+requires `--from-tag`.
 
 ## Regression proof
 

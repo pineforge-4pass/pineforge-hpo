@@ -12,17 +12,25 @@
   boundary. Optional getters preserve compatibility with older plugins and the exact ABI
   version check remains unchanged.
 - Prefer checked strategy creation and input/override setters when exported. Rejected
-  settings fail closed with engine-owned `setting_rejected` metadata; older plugins retain
-  the legacy setter fallback.
-- Add typed C++ failure metadata and Python exception `.code`, `.args`, and `.origin`
-  without changing public call signatures or human-readable diagnostics. Initialization
+  settings fail closed with engine-owned metadata; unsupported settings use
+  `setting_unsupported`, and ambiguous status-only refusals omit a reason rather than
+  inventing one. Values outside declared minval/maxval ranges or options, previously
+  accepted by legacy setters, now fail trials and may move best trials. Older plugins
+  retain the legacy setter fallback. Building the adapter requires engine headers >= 1.1.0.
+- Add typed C++ failure metadata and Python exception `.code`, `.failure_args`, and `.origin`
+  without changing public call signatures, `BaseException.args`, or human-readable
+  diagnostics. `HpoError` is a catchable exception base. Initialization
   and process errors now print one structured failure document on stdout, retaining exit
   codes and stderr diagnostics.
+- Preserve completed-trial publication to writable stdout and `--output` after progress-I/O
+  failures. Add a top-level `failure` object (`origin`, `code`, `args`, `exit_code`) to the
+  ordinary result document; retain exit 1, or exit 3 and timeout trials for the watchdog.
 - Publish `hpo_failure_codes.json` and its checked version/hash diff in the Python package
   and release assets. CI checks the unreleased diff; release packaging stamps its target
-  version without changing the catalog bytes.
-- Reserve exact symbol-feed row capacity before loading bars and close times. The extra
-  cold CSV counting pass avoids geometric capacity overhead without changing feed data.
+  version without changing the catalog bytes. Pin the diff baseline explicitly so checks
+  continue to pass after release tagging.
+- Parse symbol feeds once, including non-seekable inputs, and reserve exact retained
+  capacity for bars and close times without changing feed values or fingerprints.
 
 ## 0.9.0 — 2026-10-05
 

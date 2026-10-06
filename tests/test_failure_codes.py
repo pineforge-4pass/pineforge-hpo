@@ -10,7 +10,9 @@ import tempfile
 import unittest
 
 
-NATIVE, LEGACY, CODED, STATUS = (Path(sys.argv.pop(1)).resolve() for _ in range(4))
+NATIVE, LEGACY, CODED, STATUS, CHECKED, BAD_ABI = (
+    Path(sys.argv.pop(1)).resolve() for _ in range(6)
+)
 
 
 class FailureCodesTests(unittest.TestCase):
@@ -180,7 +182,7 @@ class FailureCodesTests(unittest.TestCase):
                 "FixedNumber",
                 "not-a-number",
                 "strategy_set_input",
-                "unparseable_value",
+                "expected_integer",
             ),
             (
                 "--strategy-override",
@@ -194,39 +196,72 @@ class FailureCodesTests(unittest.TestCase):
                 "commission_type",
                 "not-an-enum",
                 "strategy_set_override",
-                "unparseable_value",
+                "invalid_input_option",
             ),
         )
-        for flag, key, value, entrypoint, reason in cases:
-            with self.subTest(key=key):
-                _, lines = self.run_study(flag, key, value)
-                for trial in lines:
-                    self.assertEqual(trial["status"], "trial_error")
-                    self.assertEqual(trial["failure_code"], "setting_rejected")
-                    self.assertEqual(
-                        trial["failure_args"],
-                        {"entrypoint": entrypoint, "reason": reason},
-                    )
-                    self.assertEqual(trial["failure_origin"], "engine")
+        cases += (("--fixed-input", "Mode", "forged", "strategy_set_input",
+                   "invalid_input_option"),)
+        for plugin in (CODED, CHECKED):
+            for flag, key, value, entrypoint, reason in cases:
+                with self.subTest(plugin=plugin, key=key):
+                    _, lines = self.run_study(flag, key, value, plugin=plugin)
+                    for trial in lines:
+                        self.assertEqual(trial["status"], "trial_error")
+                        self.assertEqual(trial["failure_code"], "setting_rejected")
+                        arguments = {"entrypoint": entrypoint}
+                        if plugin == CODED:
+                            arguments["reason"] = reason
+                        self.assertEqual(trial["failure_args"], arguments)
+                        self.assertEqual(trial["failure_origin"], "engine")
+
+    def test_checked_unsupported_and_unclassified_have_no_arguments(self):
+        for plugin in (CODED, CHECKED):
+            for key, code in (("Unsupported", "setting_unsupported"),
+                              ("Exception", "engine_unclassified_error"),
+                              ("RunFailed", "engine_unclassified_error")):
+                with self.subTest(plugin=plugin, key=key):
+                    _, lines = self.run_study("--fixed-input", key, "1", plugin=plugin)
+                    for trial in lines:
+                        self.assertEqual(trial["status"], "trial_error")
+                        self.assertEqual(trial["failure_code"], code)
+                        self.assertEqual(trial["failure_args"], {})
+                        self.assertEqual(trial["failure_origin"], "engine")
+
+    def test_bad_abi_remains_a_plugin_initialization_failure(self):
+        completed = subprocess.run(
+            self.command(plugin=BAD_ABI), capture_output=True, text=True
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("ABI", completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["failure"], {
+            "origin": "hpo", "code": "hpo_plugin_invalid", "args": {"reason": "abi"},
+            "exit_code": 1,
+        })
 
     def test_checked_and_legacy_success_are_identical(self):
         results = []
-        for plugin in (LEGACY, CODED):
+        for plugin in (LEGACY, CODED, CHECKED):
             _, lines = self.run_study(plugin=plugin, exit_code=0)
             for trial in lines:
                 self.assertIsNone(trial["failure_code"])
                 self.assertIsNone(trial["failure_args"])
                 self.assertIsNone(trial["failure_origin"])
             results.append(json.dumps(lines, separators=(",", ":")))
-        self.assertEqual(*results)
+        for result in results[1:]:
+            self.assertEqual(results[0], result)
 
     def test_checked_factory_and_metric_failures(self):
-        _, lines = self.run_study(env={**os.environ, "PFH_TEST_CREATE_REFUSED": "1"})
-        for trial in lines:
-            self.assertEqual(trial["status"], "trial_error")
-            self.assertEqual(trial["failure_code"], "hpo_strategy_create_failed")
-            self.assertEqual(trial["failure_origin"], "hpo")
-            self.assertEqual(trial["failure_args"], {})
+        for plugin in (CODED, CHECKED):
+            for refusal in ("1", "invalid_argument", "unsupported", "run_failed", "partial"):
+                with self.subTest(plugin=plugin, refusal=refusal):
+                    _, lines = self.run_study(
+                        plugin=plugin, env={**os.environ, "PFH_TEST_CREATE_REFUSED": refusal}
+                    )
+                    for trial in lines:
+                        self.assertEqual(trial["status"], "trial_error")
+                        self.assertEqual(trial["failure_code"], "hpo_strategy_create_failed")
+                        self.assertEqual(trial["failure_origin"], "hpo")
+                        self.assertEqual(trial["failure_args"], {})
         command = self.command()
         command[command.index("--objective") + 1] = "metrics.all.net_profit / 0"
         completed = subprocess.run(command, capture_output=True, text=True)

@@ -229,12 +229,12 @@ def main() -> int:
             require(child.returncode == 1, f"progress I/O failure has wrong exit: {stderr}")
             require("--progress-fd" in stderr, "progress I/O diagnostic missing")
             result = json.loads(stdout)
-            require(result == {
-                "schema_version": 1, "ok": False,
-                "failure": {"origin": "hpo", "code": "hpo_output_io_failed",
-                            "args": {}, "exit_code": 1},
-            }, "progress I/O failure document differs")
-            require(not final.exists(), "progress I/O published an apparently successful result")
+            require(result["stop_reason"] == "cancelled", "progress I/O final JSON missing")
+            require(result["trials_completed"] > 0, "progress I/O discarded completed trials")
+            require(result == json.loads(final.read_text()), "progress I/O output file differs")
+            require(result["failure"] == {
+                "origin": "hpo", "code": "hpo_output_io_failed", "args": {}, "exit_code": 1,
+            }, "progress I/O failure metadata differs")
         elif case == "cancel":
             for sampler in ("grid", "random", "tpe", "dlib_global"):
                 for signum in (signal.SIGTERM, signal.SIGINT):
@@ -290,8 +290,10 @@ def main() -> int:
         elif case == "timeout_progress_error":
             read_fd, write_fd = os.pipe()
             os.close(read_fd)
+            final = directory / "timeout-progress-error.json"
             child = process(native, plugin, csv, write_fd, "--fixed-input", "HangAtLength", "15",
                             "--fixed-input", "DelayMs", "50", "--trial-timeout-seconds", "0.2",
+                            "--output", str(final),
                             workers=2)
             os.close(write_fd)
             try:
@@ -304,8 +306,16 @@ def main() -> int:
             result = json.loads(stdout)
             require(result["failure"]["code"] == "hpo_output_io_failed",
                     "progress I/O failure lost its stable code")
-            require(result["failure"]["exit_code"] == 3 and not result["ok"],
+            require(result["failure"] == {
+                "origin": "hpo", "code": "hpo_output_io_failed", "args": {}, "exit_code": 3,
+            },
                     "progress I/O failure changed the timeout exit code")
+            require(result["stop_reason"] == "trial_timeout" and
+                    sum(trial["status"] == "trial_timeout" for trial in result["trials"]) == 1,
+                    "progress I/O changed the timeout terminal table")
+            require(any(trial["status"] == "ok" for trial in result["trials"]),
+                    "progress I/O discarded completed trials before timeout")
+            require(result == json.loads(final.read_text()), "timeout output file differs")
         else:
             raise RuntimeError(f"unknown test case: {case}")
     print(f"PASS native runner {case}")

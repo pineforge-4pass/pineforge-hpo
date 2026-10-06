@@ -948,7 +948,7 @@ public:
     using Clock = std::chrono::steady_clock;
 
     RunState(const Options& options, Clock::time_point started, TrialArchive& archive,
-             std::function<void(const std::vector<TrialRecord>&)> timeout_result)
+             std::function<void(const std::vector<TrialRecord>&, std::exception_ptr)> timeout_result)
         : options_(options), started_(started), archive_(archive),
           timeout_result_(std::move(timeout_result)),
           has_trials_file_(!options_.trials_file.empty()) {
@@ -1050,10 +1050,7 @@ public:
             writer_.join();
     }
 
-    void check_error() const {
-        if (error_exception_)
-            std::rethrow_exception(error_exception_);
-    }
+    std::exception_ptr progress_error() const noexcept { return error_exception_; }
 
     double serialization_seconds() const noexcept { return serialization_seconds_; }
     double progress_write_seconds() const noexcept { return progress_write_seconds_; }
@@ -1188,8 +1185,7 @@ private:
                 if (timed_out_) {
                     auto trials = archive_.retained();
                     lock.unlock();
-                    check_error();
-                    timeout_result_(trials);
+                    timeout_result_(trials, error_exception_);
                     ::_exit(3);
                 }
                 if (done_)
@@ -1215,7 +1211,7 @@ private:
     const Options& options_;
     Clock::time_point started_;
     TrialArchive& archive_;
-    std::function<void(const std::vector<TrialRecord>&)> timeout_result_;
+    std::function<void(const std::vector<TrialRecord>&, std::exception_ptr)> timeout_result_;
     std::atomic<StopReason> reason_{StopReason::kNone};
     std::mutex mutex_;
     std::condition_variable changed_;
@@ -1660,6 +1656,30 @@ void write_results(const Options& options, const std::string& json) {
     publish_result(json);
 }
 
+std::string append_process_failure(std::string json, std::exception_ptr failure,
+                                  std::int32_t exit_code) {
+    if (failure) {
+        try {
+            std::rethrow_exception(failure);
+        } catch (const std::exception& error) {
+            json.insert(json.rfind('}'), ",\"failure\":" +
+                                            pfh::detail::failure_json(error, exit_code));
+        }
+    }
+    return json;
+}
+
+void print_process_failure(std::exception_ptr failure) {
+    if (failure) {
+        try {
+            std::rethrow_exception(failure);
+        } catch (const std::exception& error) {
+            std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
+            std::cerr.flush();
+        }
+    }
+}
+
 void validate_search_input_kinds(const Options& options) {
     const bool required = std::any_of(options.dimensions.begin(), options.dimensions.end(),
         [](const auto& dimension) {
@@ -1938,11 +1958,13 @@ int run(Options options) {
 
     TrialArchive archive(options, space, finite_cardinality.has_value());
     std::atomic<std::uint64_t> duplicate_proposals_skipped{0};
-    RunState state(options, started, archive, [&](const std::vector<TrialRecord>& completed) {
-        write_results(options, render_results(options, space, finite_cardinality, completed,
-                                             best_trial(options, completed),
-                                             duplicate_proposals_skipped.load(),
-                                             "trial_timeout", &archive));
+    RunState state(options, started, archive, [&](const std::vector<TrialRecord>& completed,
+                                                std::exception_ptr failure) {
+        write_results(options, append_process_failure(
+            render_results(options, space, finite_cardinality, completed,
+                           best_trial(options, completed), duplicate_proposals_skipped.load(),
+                           "trial_timeout", &archive), failure, 3));
+        print_process_failure(failure);
     });
     const auto direction = options.direction == Direction::kMaximize
                                ? pfh::ObjectiveDirection::Maximize
@@ -2112,12 +2134,18 @@ int run(Options options) {
     const auto best_index = best_trial(options, trials);
 
     const auto render_start = RunState::Clock::now();
-    const auto json = render_results(options, space, finite_cardinality, trials, best_index,
-                                     duplicate_proposals_skipped.load(), state.stop_reason(),
-                                     &archive);
+    const auto progress_failure = state.progress_error();
+    const auto json = append_process_failure(
+        render_results(options, space, finite_cardinality, trials, best_index,
+                       duplicate_proposals_skipped.load(), state.stop_reason(), &archive),
+        progress_failure, 1);
     const auto write_start = RunState::Clock::now();
-    state.check_error();
     write_result_file(options, json);
+    if (progress_failure) {
+        publish_result(json);
+        print_process_failure(progress_failure);
+        return 1;
+    }
     const auto write_end = RunState::Clock::now();
     if (!options.scheduler_stats.empty()) {
         std::ofstream stats(options.scheduler_stats);

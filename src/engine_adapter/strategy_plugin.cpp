@@ -60,15 +60,6 @@ void reject_embedded_null(const std::string& value, const char* label) {
     }
 }
 
-const char* settings_reason(int status) noexcept {
-    switch (status) {
-    case PF_SETTINGS_UNSUPPORTED:
-        return "unknown_key";
-    default:
-        return "unparseable_value";
-    }
-}
-
 void check_settings(const StrategyPlugin& plugin,
                     pf_strategy_t strategy,
                     int status,
@@ -79,9 +70,12 @@ void check_settings(const StrategyPlugin& plugin,
     const auto code = strategy ? plugin.last_error_code(strategy) : std::nullopt;
     if (code && !code->empty())
         throw EngineError(code, plugin.last_error_args(strategy), message);
-    throw TypedHpoError<>("setting_rejected",
-                          {{"entrypoint", entrypoint}, {"reason", settings_reason(status)}},
-                          message, FailureOrigin::Engine);
+    if (status == PF_SETTINGS_INVALID_ARGUMENT)
+        throw TypedHpoError<>("setting_rejected", {{"entrypoint", entrypoint}}, message,
+                              FailureOrigin::Engine);
+    throw TypedHpoError<>(status == PF_SETTINGS_UNSUPPORTED ? "setting_unsupported"
+                                                           : "engine_unclassified_error",
+                          {}, message, FailureOrigin::Engine);
 }
 
 }  // namespace
@@ -285,15 +279,9 @@ pf_strategy_t StrategyPlugin::create_strategy() const {
         const auto status =
             strategy_create_checked_(nullptr, &strategy, error.data(), error.size());
         if (status != PF_SETTINGS_OK) {
-            try {
-                if (status == PF_SETTINGS_EXCEPTION)
-                    throw TypedHpoError<>("hpo_strategy_create_failed", {}, error.data());
-                check_settings(*this, strategy, status, "strategy_create", error.data());
-            } catch (...) {
-                if (strategy)
-                    free_strategy(strategy);
-                throw;
-            }
+            if (strategy)
+                free_strategy(strategy);
+            throw TypedHpoError<>("hpo_strategy_create_failed", {}, error.data());
         }
     } else {
         strategy = strategy_create_(nullptr);

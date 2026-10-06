@@ -327,7 +327,8 @@ PF_API const char* strategy_get_last_error(pf_strategy_t strategy) {
     return strategy != nullptr ? fake(strategy)->error.c_str() : nullptr;
 }
 
-#if defined(PINEFORGE_HPO_FAKE_PLUGIN_CODED) || defined(PINEFORGE_HPO_FAKE_PLUGIN_STATUS)
+#if defined(PINEFORGE_HPO_FAKE_PLUGIN_CODED) || defined(PINEFORGE_HPO_FAKE_PLUGIN_STATUS) || \
+    defined(PINEFORGE_HPO_FAKE_PLUGIN_CHECKED)
 PF_API int strategy_last_run_status(pf_strategy_t strategy) {
     return strategy ? (!fake(strategy)->error.empty() ? 1 : fake(strategy)->run_status) : 1;
 }
@@ -351,15 +352,25 @@ PF_API const char* strategy_get_last_error_args(pf_strategy_t strategy) {
            : !state->error.empty()    ? "{}"
                                       : "";
 }
+#endif
 
+#if defined(PINEFORGE_HPO_FAKE_PLUGIN_CODED) || defined(PINEFORGE_HPO_FAKE_PLUGIN_CHECKED)
 PF_API int strategy_create_checked(const char*,
                                    pf_strategy_t* out,
                                    char* error,
                                    std::size_t capacity) {
     *out = nullptr;
-    if (std::getenv("PFH_TEST_CREATE_REFUSED")) {
+    if (const char* refusal = std::getenv("PFH_TEST_CREATE_REFUSED")) {
         if (error && capacity)
             std::snprintf(error, capacity, "deliberate checked create refusal");
+        if (std::strcmp(refusal, "partial") == 0)
+            *out = strategy_create(nullptr);
+        if (std::strcmp(refusal, "invalid_argument") == 0)
+            return PF_SETTINGS_INVALID_ARGUMENT;
+        if (std::strcmp(refusal, "unsupported") == 0)
+            return PF_SETTINGS_UNSUPPORTED;
+        if (std::strcmp(refusal, "run_failed") == 0)
+            return PF_SETTINGS_RUN_FAILED;
         return PF_SETTINGS_EXCEPTION;
     }
     *out = strategy_create(nullptr);
@@ -369,13 +380,17 @@ PF_API int strategy_create_checked(const char*,
 }
 
 int checked_refusal(
-    pf_strategy_t strategy, const char* entrypoint, int status, char* error, std::size_t capacity) {
+    pf_strategy_t strategy, const char* entrypoint, int status, const char* reason,
+    const char* message, char* error, std::size_t capacity) {
     auto* state = fake(strategy);
-    state->error = "deliberate checked setting refusal";
-    state->error_code = "setting_rejected";
-    state->error_args = std::string("{\"entrypoint\":\"") + entrypoint + "\",\"reason\":\"" +
-                        (status == PF_SETTINGS_UNSUPPORTED ? "unknown_key" : "unparseable_value") +
-                        "\"}";
+    state->error = message;
+    state->error_code = status == PF_SETTINGS_INVALID_ARGUMENT ? "setting_rejected"
+                        : status == PF_SETTINGS_UNSUPPORTED ? "setting_unsupported"
+                                                            : "engine_unclassified_error";
+    state->error_args = status == PF_SETTINGS_INVALID_ARGUMENT
+                            ? std::string("{\"entrypoint\":\"") + entrypoint +
+                                  "\",\"reason\":\"" + reason + "\"}"
+                            : "{}";
     if (error && capacity)
         std::snprintf(error, capacity, "%s", state->error.c_str());
     return status;
@@ -384,15 +399,28 @@ int checked_refusal(
 PF_API int strategy_set_input_checked(
     pf_strategy_t strategy, const char* key, const char* value, char* error, std::size_t capacity) {
     if (std::strcmp(key, "Unknown") == 0 || std::strcmp(key, "length") == 0)
-        return checked_refusal(strategy, "strategy_set_input", PF_SETTINGS_UNSUPPORTED, error,
+        return checked_refusal(strategy, "strategy_set_input", PF_SETTINGS_INVALID_ARGUMENT,
+                               "unknown_key", "unknown input key", error, capacity);
+    if (std::strcmp(key, "Unsupported") == 0)
+        return checked_refusal(strategy, "strategy_set_input", PF_SETTINGS_UNSUPPORTED, "",
+                               "input cannot be honoured by this compiled strategy", error,
                                capacity);
+    if (std::strcmp(key, "Exception") == 0 || std::strcmp(key, "RunFailed") == 0)
+        return checked_refusal(strategy, "strategy_set_input",
+                               std::strcmp(key, "Exception") == 0 ? PF_SETTINGS_EXCEPTION
+                                                                   : PF_SETTINGS_RUN_FAILED,
+                               "", "unexpected setting failure", error, capacity);
     if (std::strcmp(key, "Length") == 0 || std::strcmp(key, "FixedNumber") == 0) {
         char* end = nullptr;
-        const auto number = std::strtod(value, &end);
-        if (end == value || *end || !std::isfinite(number))
+        std::strtoll(value, &end, 10);
+        if (end == value || *end)
             return checked_refusal(strategy, "strategy_set_input", PF_SETTINGS_INVALID_ARGUMENT,
-                                   error, capacity);
+                                   "expected_integer", "expected an integer", error, capacity);
     }
+    if (std::strcmp(key, "Mode") == 0 && std::strcmp(value, "fast") != 0 &&
+        std::strcmp(value, "slow") != 0)
+        return checked_refusal(strategy, "strategy_set_input", PF_SETTINGS_INVALID_ARGUMENT,
+                               "invalid_input_option", "invalid input option", error, capacity);
     strategy_set_input(strategy, key, value);
     if (error && capacity)
         error[0] = '\0';
@@ -402,11 +430,11 @@ PF_API int strategy_set_input_checked(
 PF_API int strategy_set_override_checked(
     pf_strategy_t strategy, const char* key, const char* value, char* error, std::size_t capacity) {
     if (std::strcmp(key, "unknown_override") == 0)
-        return checked_refusal(strategy, "strategy_set_override", PF_SETTINGS_UNSUPPORTED, error,
-                               capacity);
+        return checked_refusal(strategy, "strategy_set_override", PF_SETTINGS_INVALID_ARGUMENT,
+                               "unknown_key", "unknown override key", error, capacity);
     if (std::strcmp(key, "commission_type") == 0 && std::strcmp(value, "percent") != 0)
         return checked_refusal(strategy, "strategy_set_override", PF_SETTINGS_INVALID_ARGUMENT,
-                               error, capacity);
+                               "invalid_input_option", "invalid input option", error, capacity);
     strategy_set_override(strategy, key, value);
     if (error && capacity)
         error[0] = '\0';
@@ -425,7 +453,11 @@ PF_API void report_free(pf_report_t* report) {
 }
 
 PF_API int pf_abi_version(void) {
+#if defined(PINEFORGE_HPO_FAKE_PLUGIN_BAD_ABI)
+    return PF_ABI_VERSION + 1;
+#else
     return PF_ABI_VERSION;
+#endif
 }
 
 PF_API int fake_active_handles(void) {
@@ -926,7 +958,7 @@ void test_optional_failure_symbols(const std::filesystem::path& legacy_path,
             "move construction lost the optional failure getters");
     require(failed.report.net_profit == 0, "failed partial report was snapshotted");
     require_throws_containing([&] { (void)executor.execute({{"Unknown", "14"}}); },
-                              "checked setting", "move lost checked input setter");
+                              "unknown input key", "move lost checked input setter");
     auto assigned = std::make_shared<StrategyPlugin>(legacy_path);
     *assigned = std::move(*moved);
     TrialExecutor reassigned(assigned, test_dataset(), test_configuration());
@@ -946,25 +978,41 @@ void test_optional_failure_symbols(const std::filesystem::path& legacy_path,
     require(counters.lifetime_violations() == 0, "failure broke report-before-handle teardown");
 }
 
+void test_checked_factory_refusals(const std::filesystem::path& path) {
+    FakeCounters counters(path);
+    pineforge::hpo::StrategyPlugin plugin(path);
+    for (const auto* refusal : {"invalid_argument", "unsupported", "run_failed", "partial"}) {
+        ::setenv("PFH_TEST_CREATE_REFUSED", refusal, 1);
+        bool refused = false;
+        try {
+            plugin.create_strategy();
+        } catch (const pineforge::hpo::HpoError& error) {
+            refused = error.code() == "hpo_strategy_create_failed" && error.args().empty() &&
+                      error.origin() == pineforge::hpo::FailureOrigin::Hpo;
+        }
+        ::unsetenv("PFH_TEST_CREATE_REFUSED");
+        require(refused, "checked factory status was misclassified");
+        require(counters.active_handles() == 0, "failed checked factory leaked a partial handle");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
-        require(argc >= 2 && argc <= 6,
-                "usage: test_engine_adapter <fake-plugin> [fake-plugin-without-timezone "
-                "[fake-plugin-without-metadata]]");
+        require(argc == 8, "usage: test_engine_adapter <legacy> <no-timezone> <no-metadata> "
+                           "<coded> <status> <checked-no-getters> <bad-abi>");
         test_dataset_loader();
         test_trial_executor(argv[1]);
         test_lot_grid_metadata(argv[1]);
-        if (argc >= 3) {
-            test_missing_timezone_symbol(argv[2]);
-        }
-        if (argc >= 4) {
-            test_missing_metadata_symbol(argv[3]);
-        }
-        if (argc == 6) {
-            test_optional_failure_symbols(argv[1], argv[4], argv[5]);
-        }
+        test_missing_timezone_symbol(argv[2]);
+        test_missing_metadata_symbol(argv[3]);
+        test_optional_failure_symbols(argv[1], argv[4], argv[5]);
+        test_optional_failure_symbols(argv[1], argv[4], argv[6]);
+        test_checked_factory_refusals(argv[4]);
+        test_checked_factory_refusals(argv[6]);
+        require_throws_containing([&] { pineforge::hpo::StrategyPlugin plugin(argv[7]); },
+                                  "ABI", "bad ABI plugin was accepted");
         std::cout << "engine adapter tests passed\n";
         return 0;
     } catch (const std::exception& error) {

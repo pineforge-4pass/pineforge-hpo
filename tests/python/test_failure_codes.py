@@ -23,6 +23,7 @@ from pineforge_hpo.cli import (
 from pineforge_hpo.continuation import SpaceExhaustedError, WarmStartError
 from pineforge_hpo.error import failure_document
 from pineforge_hpo.study_spec import StrategySpec, StudySpec
+from pineforge_hpo.transpile import TranspileFailure, TranspileResult
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,14 +61,26 @@ class FailureCodeTests(unittest.TestCase):
             ),
             (WarmStartError("original"), ValueError, "hpo_warm_start_rejected", {}),
             (SpaceExhaustedError("original"), ValueError, "hpo_space_exhausted", {}),
+            (
+                TranspileFailure(TranspileResult(None)),
+                RuntimeError,
+                "hpo_transpile_failed",
+                {},
+            ),
         )
         for error, family, code, arguments in errors:
             with self.subTest(code=code):
                 self.assertIsInstance(error, family)
                 self.assertIsInstance(error, HpoError)
-                self.assertIn("original", str(error))
+                if not isinstance(error, TranspileFailure):
+                    self.assertIn("original", str(error))
                 self.assertEqual(error.code, code)
-                self.assertEqual(error.args, arguments)
+                self.assertEqual(error.failure_args, arguments)
+                self.assertEqual(error.args, (str(error),))
+                try:
+                    raise error
+                except HpoError as caught:
+                    self.assertIs(caught, error)
                 self.assertEqual(error.origin, "hpo")
                 declarations = CATALOG["codes"][code]["args"]
                 self.assertEqual(arguments.keys(), declarations.keys())
@@ -77,9 +90,15 @@ class FailureCodeTests(unittest.TestCase):
         error = CliError("original").with_failure(
             "future_engine_failure", None, "engine"
         )
-        self.assertIsNone(error.args)
+        self.assertIsNone(error.failure_args)
         self.assertEqual(failure_document(error, 1)["failure"]["origin"], "engine")
         self.assertEqual(str(error), "original")
+        for error_type in (HpoError, CliError, WarmStartError, SpaceExhaustedError):
+            error = error_type("original")
+            self.assertEqual(str(error_type(*error.args)), "original")
+            error.args = ("replacement",)
+            self.assertEqual(error.args, ("replacement",))
+            self.assertEqual(str(error), "replacement")
 
     def test_argparse_and_init_failure_documents(self):
         for arguments, exit_code, code in (
@@ -131,7 +150,7 @@ class FailureCodeTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "setting_rejected")
                 self.assertEqual(caught.exception.origin, "engine")
                 self.assertEqual(
-                    caught.exception.args,
+                    caught.exception.failure_args,
                     {"entrypoint": "strategy_set_override", "reason": reason},
                 )
         strategy.strategy_overrides.clear()
@@ -140,7 +159,7 @@ class FailureCodeTests(unittest.TestCase):
         with self.assertRaises(CliError) as caught:
             _validate_manifest_inputs(study, manifest)
         self.assertEqual(
-            caught.exception.args,
+            caught.exception.failure_args,
             {
                 "entrypoint": "strategy_set_input",
                 "reason": "expected_integer",
@@ -149,14 +168,14 @@ class FailureCodeTests(unittest.TestCase):
         )
         with self.assertRaises(CliError) as caught:
             _validate_manifest_inputs(study, [])
-        self.assertEqual(caught.exception.args["reason"], "unknown_key")
-        self.assertNotIn("input", caught.exception.args)
+        self.assertEqual(caught.exception.failure_args["reason"], "unknown_key")
+        self.assertNotIn("input", caught.exception.failure_args)
         strategy.fixed_inputs.clear()
         strategy.fixed_inputs["forged arbitrary English"] = 1
         with self.assertRaises(CliError) as caught:
             _validate_manifest_inputs(study, manifest)
         self.assertEqual(
-            caught.exception.args,
+            caught.exception.failure_args,
             {"entrypoint": "strategy_set_input", "reason": "unknown_key"},
         )
         self.assertIn("forged arbitrary English", str(caught.exception))
@@ -176,11 +195,25 @@ class FailureCodeTests(unittest.TestCase):
         document = json.loads(
             (CATALOG_PATH.parent / "hpo_failure_codes_diff.json").read_bytes()
         )
-        self.assertEqual(document, DIFF.catalog_diff(None, CATALOG_BYTES, "v0.9.0"))
+        baseline = document["from"]["tag"]
+        exists = DIFF.git(ROOT, "ls-tree", baseline, "--", DIFF.CATALOG).strip()
+        before = (
+            DIFF.git(ROOT, "show", f"{baseline}:{DIFF.CATALOG}") if exists else None
+        )
+        self.assertEqual(
+            document,
+            DIFF.catalog_diff(
+                before, CATALOG_BYTES, baseline, document["to"]["version"]
+            ),
+        )
         self.assertEqual(
             document["to"]["catalogSha256"], hashlib.sha256(CATALOG_BYTES).hexdigest()
         )
-        self.assertEqual(len(document["added"]), 17)
+        before_codes = json.loads(before)["codes"] if before else {}
+        self.assertEqual(
+            {entry["code"] for entry in document["added"]},
+            CATALOG["codes"].keys() - before_codes.keys(),
+        )
         self.assertEqual(document["removed"], [])
 
     def test_catalog_diff_vocab_paths_presence_and_deprecation(self):
@@ -233,7 +266,14 @@ class FailureCodeTests(unittest.TestCase):
                 "-m",
                 "baseline",
             )
-            git("tag", "v0.9.0")
+            baseline = json.loads(
+                (CATALOG_PATH.parent / "hpo_failure_codes_diff.json").read_bytes()
+            )["from"]["tag"]
+            baseline_version = DIFF.version_key(baseline)
+            release_version = ".".join(
+                map(str, (*baseline_version[:2], baseline_version[2] + 1))
+            )
+            git("tag", baseline)
             (repo / "catalog.json").write_bytes(CATALOG_BYTES)
             command = [
                 "python3",
@@ -245,18 +285,40 @@ class FailureCodeTests(unittest.TestCase):
                 "--output",
                 "diff.json",
             ]
-            subprocess.run(command, check=True, capture_output=True)
+            missing = subprocess.run(command, capture_output=True)
+            self.assertNotEqual(missing.returncode, 0)
+            subprocess.run(
+                [*command, "--from-tag", baseline], check=True, capture_output=True
+            )
+            subprocess.run([*command, "--check"], check=True, capture_output=True)
+            git("add", "catalog.json", "diff.json")
+            git(
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "catalog",
+            )
+            git("tag", "v" + release_version)
             subprocess.run([*command, "--check"], check=True, capture_output=True)
             (repo / "diff.json").write_text("{}")
             stale = subprocess.run([*command, "--check"], capture_output=True)
             self.assertNotEqual(stale.returncode, 0)
             subprocess.run(
-                [*command, "--release-version", "0.10.0"],
+                [
+                    *command,
+                    "--from-tag",
+                    baseline,
+                    "--release-version",
+                    release_version,
+                ],
                 check=True,
                 capture_output=True,
             )
             release = json.loads((repo / "diff.json").read_bytes())
-            self.assertEqual(release["to"]["version"], "0.10.0")
+            self.assertEqual(release["to"]["version"], release_version)
             self.assertNotIn("unreleased", release["to"])
             subprocess.run([*command, "--check"], check=True, capture_output=True)
 

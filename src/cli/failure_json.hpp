@@ -97,13 +97,18 @@ inline FailureDetails exception_failure(const std::exception& error) {
     return {"hpo_unclassified_error", "{}", "hpo"};
 }
 
-inline std::string failure_document(const std::exception& error, std::int32_t exit_code) {
+inline std::string failure_json(const std::exception& error, std::int32_t exit_code) {
     const auto failure = exception_failure(error);
-    return "{\"schema_version\":1,\"ok\":false,\"failure\":{\"origin\":" +
+    return "{\"origin\":" +
            dump_json(Json::string(failure.origin)) +
            ",\"code\":" + (failure.code ? dump_json(Json::string(*failure.code)) : "null") +
            ",\"args\":" + failure.args.value_or("null") +
-           ",\"exit_code\":" + std::to_string(exit_code) + "}}\n";
+           ",\"exit_code\":" + std::to_string(exit_code) + "}";
+}
+
+inline std::string failure_document(const std::exception& error, std::int32_t exit_code) {
+    return "{\"schema_version\":1,\"ok\":false,\"failure\":" + failure_json(error, exit_code) +
+           "}\n";
 }
 
 }  // namespace pineforge::hpo::detail

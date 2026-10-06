@@ -32,14 +32,6 @@ def version_key(tag: str) -> tuple[int, ...]:
     return tuple(map(int, match.groups()))
 
 
-def previous_release(repo: Path, revision: str, exclude: str | None) -> str:
-    tags = git(repo, "tag", "--merged", revision).decode().splitlines()
-    releases = [tag for tag in tags if VERSION.fullmatch(tag) and tag != exclude]
-    if not releases:
-        raise ValueError("no previous release tag; fetch the repository's release tags")
-    return max(releases, key=version_key)
-
-
 def sha256(payload: bytes | None) -> str | None:
     return hashlib.sha256(payload).hexdigest() if payload is not None else None
 
@@ -209,9 +201,14 @@ def main(argv: list[str] | None = None) -> int:
             release = stored["to"]["version"]
         if release is not None:
             version_key("v" + release)
-        previous = previous_release(repo, "HEAD", "v" + release if release else None)
-        if args.from_tag is not None and previous != args.from_tag:
-            raise ValueError(f"from tag must be the previous release {previous}")
+        previous = args.from_tag or (stored or {}).get("from", {}).get("tag")
+        if previous is None:
+            raise ValueError(
+                "no pinned baseline; supply --from-tag to initialize the diff"
+            )
+        version_key(previous)
+        git(repo, "rev-parse", "--verify", f"refs/tags/{previous}^{{commit}}")
+        git(repo, "merge-base", "--is-ancestor", f"refs/tags/{previous}", "HEAD")
         if release is not None and version_key("v" + release) <= version_key(previous):
             raise ValueError("target version must be newer than the previous release")
         exists = git(repo, "ls-tree", previous, "--", args.catalog).strip()

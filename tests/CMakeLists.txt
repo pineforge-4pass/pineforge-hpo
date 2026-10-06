@@ -197,7 +197,7 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         endif()
     endforeach()
 
-    foreach(extension CODED STATUS)
+    foreach(extension CODED STATUS CHECKED BAD_ABI)
         string(TOLOWER "${extension}" extension_name)
         add_library(pineforge_hpo_fake_strategy_${extension_name} SHARED test_engine_adapter.cpp)
         target_compile_definitions(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
@@ -237,7 +237,9 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         pineforge_hpo_fake_strategy_no_timezone
         pineforge_hpo_fake_strategy_no_metadata
         pineforge_hpo_fake_strategy_coded
-        pineforge_hpo_fake_strategy_status)
+        pineforge_hpo_fake_strategy_status
+        pineforge_hpo_fake_strategy_checked
+        pineforge_hpo_fake_strategy_bad_abi)
 
     add_test(NAME pineforge_hpo_engine_adapter
         COMMAND pineforge_hpo_test_engine_adapter
@@ -245,7 +247,9 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_no_timezone>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_no_metadata>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_coded>
-            $<TARGET_FILE:pineforge_hpo_fake_strategy_status>)
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
 
     add_executable(pineforge_hpo_test_symbol_feeds test_symbol_feeds.cpp)
     target_include_directories(pineforge_hpo_test_symbol_feeds PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
@@ -266,7 +270,9 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_failure_codes.py"
                 $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy_coded>
-                $<TARGET_FILE:pineforge_hpo_fake_strategy_status>)
+                $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT PINEFORGE_HPO_ENABLE_SANITIZERS
                 AND NOT PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
             add_library(pineforge_hpo_libm_identity_shim SHARED libm_identity_shim.cpp)
