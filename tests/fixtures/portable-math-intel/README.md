@@ -1,6 +1,6 @@
 # Intel portable TPE checkpoint fixture
 
-Written on AWS `c6i.2xlarge` (Intel Xeon) by the HPO-MATH proof protocol, seed 170905,
+Written on an Intel Xeon cloud VM by the portable-math proof protocol, seed 170905,
 4,200 deterministic seed observations, 256 proposed trials, and a checkpoint after 128.
 The `.history` files contain the 128 newly proposed parent trials; the executable
 reconstructs the deterministic seed observations. `.state` is the actual sampler

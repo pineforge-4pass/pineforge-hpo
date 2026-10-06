@@ -2,6 +2,7 @@
 
 #include "sha256.hpp"
 #include "portable_math.hpp"
+#include "tpe_algorithm.hpp"
 
 #include <array>
 #include <cerrno>
@@ -81,7 +82,8 @@ inline std::string numeric_build_identity(double contraction, double fused,
     std::uint32_t = 0, const std::optional<std::string>& = {}) {
     std::ostringstream output;
     output.imbue(std::locale::classic());
-    output << "portable-tpe-v2;core_math:aa66f20b0118453890acb29b98b51c9c8dd92118"
+    output << "portable-tpe-v" << kTpeAlgorithmRevision
+           << ";core_math:aa66f20b0118453890acb29b98b51c9c8dd92118"
            << ";binary64:53;math_shim:1;semantic_flags:strict"
            << ";contract_canary:" << pfh_math_bits(contraction) << ':' << pfh_math_bits(fused)
            << ";libm_functions:0;portable_probe_sha256:" << runtime_math_fingerprint()

@@ -51,20 +51,26 @@ jobs:
           -DPINEFORGE_BUILD_SPEED_BENCH=OFF
 
       - name: Configure PineForge HPO
-        run: >-
-          cmake -S . -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine
-          -DPINEFORGE_HPO_BUILD_TESTS=ON
-          -DPINEFORGE_HPO_BUILD_EXAMPLES=ON
-          -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON
+        run: |
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
+            -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
 
       - name: Build
         run: cmake --build build -j4
 
       - name: Test
         run: |
-          ctest --test-dir build -V -R '^pineforge_hpo_serial_golden$'
+          ctest --test-dir build -V \
+            -R '^pineforge_hpo_(serial_golden|portable_math_accuracy|portable_math_contraction)$'
           ctest --test-dir build --output-on-failure
 
       - name: Cross-vendor reproducibility and Intel checkpoint restore

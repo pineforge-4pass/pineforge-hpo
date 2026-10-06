@@ -284,6 +284,21 @@ Identical objective observations, configuration, seed and ask/tell scheduling re
 necessary: portable proposal math does not make a strategy's objective vendor-independent.
 Grid/random behavior is retained; their v0.8.0 compatibility is checked separately.
 
+Runtime refusals surface as CLI **exit code 1** with the exception message, including
+`portable TPE requires x86-64 FMA3` and
+`portable TPE requires gradual underflow (FTZ/DAZ off)` (aarch64: `(FZ off)`).
+An externally built plugin using `-ffast-math`/`-Ofast` can enable FTZ/DAZ at load time,
+causing initialization or the next `ask()` to fail. HPO-built plugins do not use these flags.
+Do not treat these environment refusals as a checkpoint rebuild or silently retry unchanged.
+Identity strings now use `portable-tpe-v2;...portable_probe_sha256:` instead of the
+host-libm `...libm_probe_sha256:` format; compare them as opaque strings for equality only.
+Building now requires both C and C++ compilers. `PineForgeHPO::core` transitively links
+`pineforge_hpo_portable_math`; manual link lines must include that library too.
+`INPUT_METADATA_REVISION = 2` causes a one-time artifact-cache rebuild. A trusted
+`input_kind_schema: 1` marker contradicting known codegen versions below 1.1.0, or a
+precompiled manifest disagreeing with adjacent provenance, is refused before any trials.
+External builders must satisfy the [trusted input-kind contract](docs/study-spec.md).
+
 The real compiled-Pine equality gate compares three candidates' complete C-ABI metrics
 and trades (field bytes unchanged, unspecified ABI padding zeroed) against a release
 harness supporting `--symbol-feeds`, using deterministic

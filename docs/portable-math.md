@@ -6,7 +6,10 @@ Version 0.9.0's TPE algorithm revision is **2**. Supported environments are x86-
 with FMA3 and aarch64 Linux/macOS arm64, using IEEE-754 binary64, nearest rounding
 and gradual underflow. The sampler checks rounding/FTZ/DAZ/FZ before initialization
 and every `ask()`. Builds disable fast math, implicit contraction, numerical builtins
-and LTO for these paths. The unfused-versus-fused contraction canary remains enforced.
+and LTO for these paths. `-fno-fast-math` precedes `-ffp-contract=off`, so Clang cannot
+reset the latter while disabling fast math. Unfused-versus-fused contraction canaries
+cover both the sampler C++ translation unit and the C library's exact kernel flags;
+the C-kernel canary is an independent CTest and does not depend on MPFR availability.
 
 The six vendored binary64 kernels are CORE-MATH `log`, `log1p`, `exp`, `expm1`, `cos`
 and `erfc`, pinned at `aa66f20b0118453890acb29b98b51c9c8dd92118`. The sources and
@@ -37,6 +40,37 @@ is not an uninterrupted revision-1 stream. A matching revision-2 checkpoint rest
 only with the same seed, space, typed complete history, configuration and ask/tell
 schedule. Objective evaluation is outside this portable-math contract: the application
 must provide identical observations to obtain identical proposals.
+
+### Application guidance
+
+Runtime environment refusals become CLI **exit code 1** with the message text:
+`portable TPE requires x86-64 FMA3`,
+`portable TPE requires gradual underflow (FTZ/DAZ off)` on x86-64,
+`portable TPE requires gradual underflow (FZ off)` on aarch64,
+`portable TPE requires binary64 round-to-nearest evaluation`, or
+`portable TPE refuses fast-math`. These are hard failures, not history rebuilds.
+External plugins compiled with `-ffast-math`/`-Ofast` can enable FTZ/DAZ at load time,
+so the sampler rechecks before every `ask()`. HPO's own artifact flags exclude fast math;
+applications must ensure external plugins preserve the supported arithmetic environment.
+
+The identity format changes from host `...libm_probe_sha256:` to
+`portable-tpe-v2;...portable_probe_sha256:`. Treat the full identity as opaque and compare
+for equality only. Its revision prefix and checkpoint signature derive from the same
+`kTpeAlgorithmRevision`; a later revision bump therefore rebuilds with a mismatch reason.
+The compiler-flags hash is intentionally not bound in this identity: portability binds
+the semantic arithmetic contract, not arbitrary toolchain flags. Arbitrary numerical
+compiler modifications remain unsupported; a missing generated flags header still
+refuses restoration.
+
+Configuration now requires a **C compiler as well as C++**. `PineForgeHPO::core`
+transitively links `pineforge_hpo_portable_math`; manual link lines must include it.
+The artifact cache has a one-time rebuild because `INPUT_METADATA_REVISION = 2`.
+Before any trials, Python and native precompiled paths refuse `input_kind_schema: 1`
+when the known recorded codegen version is below 1.1.0, and refuse disagreements with
+adjacent provenance (marker, artifact key, plugin hash or codegen version).
+Unknown-version markers remain trusted assertions, not inferred capabilities; external
+builders must perform the symbol-input transpile canary and satisfy the
+[documented provenance and input-kind guarantees](study-spec.md).
 
 ## Complete pre-change inventory
 
@@ -174,19 +208,21 @@ Both serial and eight-worker modes produce this same result on all four hosts:
 
 | Host | Aggregate proposal SHA-256 | Numeric identity SHA-256 |
 |---|---|---|
-| AWS c6i.2xlarge, Intel x86-64 | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
-| AWS c6a.2xlarge, AMD x86-64 | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
-| spark2, aarch64 Linux | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
-| GitHub macOS arm64 CI | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
+| Intel x86-64 Linux cloud VM | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
+| AMD x86-64 Linux cloud VM | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
+| aarch64 Linux host | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
+| macOS arm64 CI runner | `d118128454387b310c501ddb215df87731cdcb668ce7eb8aa46562c81ea6ba59` | `acac13d55cab79e3d64d8d255c014d9278d55659d835819840013594bdb28613` |
 
-Verification receipts on October 5, 2026: Intel remote job
-`rj-20261005t140849-bca3a4`, AMD `rj-20261005t141008-892c20`, spark2
-`rj-20261005t141716-ae0c64`, and macOS CI run `37323502580`, job `111808264971`.
+The October 5, 2026 proof is reproducible from the committed Intel fixtures and hashes.
+GitHub Actions run `37328176096` verifies the original reviewed head
+`1bb896e2a6360a467115038592641334a935de79` (not subsequent review-fix commits):
+Linux x86-64 job `111824159541` and macOS arm64 job `111824159809` publish proof artifacts.
 The 24 Intel fixture files in `tests/fixtures/portable-math-intel/` were byte-checked
-against the Intel artifacts. AMD, spark2 and macOS each imported all eight actual Intel
+against the Intel artifacts. AMD, aarch64 Linux and macOS each imported all eight actual Intel
 checkpoints, reported `restored_sampler_state` eight times and matched all 128 child
 proposals per space against the uninterrupted Intel run. These are cross-host restore
-receipts, not just same-host checkpoint tests.
+proofs, not just same-host checkpoint tests. The fixture restore is also registered as
+`pineforge_hpo_portable_math_intel_restore` in CTest, including sanitizer runs.
 
 ## Reproducible verification
 
@@ -197,8 +233,11 @@ portable serial golden. The regenerated proposal-stream SHA-256 is
 the fixture file SHA-256 is
 `aa8070c4a24abb5c03e7bff25a7cba7488267064cb9d7dd657c533887b3f2971`.
 The LD_PRELOAD differential retains all 22 function probes/eight spaces; replaced
-functions must change neither proposal bits nor identity. MPFR is test-only/optional;
-available builds run 104,962 exact binary64 primitive comparisons.
+functions must change neither proposal bits nor identity. MPFR is test-only and required
+by both native CI jobs (`-DPINEFORGE_HPO_REQUIRE_MPFR=ON`); a missing header or library
+fails configuration. Optional local builds explicitly print `SKIP: MPFR not found` and
+return CTest skip code 77. CI prints the 104,962 exact binary64 primitive comparisons
+and 27 interval checks with verbose test output.
 
 Grid/random compatibility builds the same ten-space probe against v0.8.0 and 0.9.0
 and compares raw candidate bits, plus the CLI contract's result bytes after changing
@@ -222,7 +261,7 @@ evaluation optimizations are measured separately, not disguised by a tolerance c
 
 ## Proposal performance results
 
-The final Intel job `rj-20261005t140849-bca3a4` uses four independent builds per arm,
+The final Intel cloud VM experiment uses four independent builds per arm,
 with ccache disabled. Ratios compare revision 2 against v0.8.0; lower is faster.
 Every individual space and the aggregate must have an upper 95% bound below 1.05.
 
@@ -238,8 +277,8 @@ Every individual space and the aggregate must have an upper 95% bound below 1.05
 | Mixed | 0.835519 | [0.803053, 0.869298] |
 | Aggregate | 0.891249 | [0.879831, 0.902814] |
 
-Raw evidence is retained under the ignored remote-results directory:
-`build/hpo-remote-queue/results/rj-20261005t140849-bca3a4/a1/out/performance/build/evidence/performance/`.
+The raw CSV and metadata sidecar are identified by the following SHA-256 checksums;
+`scripts/verify_portable_math.sh performance` reproduces the measurement protocol.
 CSV SHA-256: `23f0498761f5a93a582197c5cd70e255dd81dbb5065b25763ea78bc0ef1680bf`.
 Metadata SHA-256: `0f1e50c3a7f77ee3c46d039be0c697b13a888fc556bc830432b2e56784c7bf86`.
 The sidecar records all eight binary hashes, build order, CPU and variance components.
@@ -251,7 +290,7 @@ first fast result 0.9196 aggregate but failing individual linear/log-real upper 
 ## Native TPE versus Optuna
 
 The pinned Optuna 4.9.0 smoke and standard six-problem/five-seed profiles both pass
-on spark2 in `rj-20261005t141716-ae0c64`. The standard run uses seeds 17, 41, 73,
+on an aarch64 Linux host. The standard run uses seeds 17, 41, 73,
 109 and 149 and each problem's declared trial budget. It emits 60 rows and checks
 the declared optima in both implementations; all 1,000,000 discrete candidates are
 enumerated, confirming a unique minimum of zero and a second-best value of 17.
@@ -277,28 +316,31 @@ and is distinct from the proposal-only regression experiment.
 
 Standard CSV SHA-256: `76ac5bdf569ecefa34484d35ad5950f22f34b2e49fbd248e1fce017234264123`.
 Metadata SHA-256: `ce2f09c8a5278b52408bfc187ccf8dbb373b741fc64fd0dea829d5d9c256ad7a`.
-Both are retained in
-`build/hpo-remote-queue/results/rj-20261005t141716-ae0c64/a1/out/optuna/build/evidence/`.
+`scripts/verify_portable_math.sh optuna` reproduces the protocol.
 
 ## Release gate receipts
 
 The numerical implementation at `deb9b1167df7ccab61a0484c0b87434f6b939a18` has
-the following completed receipts; subsequent release-documentation and line-wrapping
+the following completed gates; subsequent release-documentation and line-wrapping
 changes do not alter arithmetic or RNG consumption.
 
-- AMD and spark2 release: 40/40 CTests, required portable serial golden, 85/85 Python tests.
-- AMD and spark2 contract: v0.8.0 `--baseline` plus canonical `--harness`, ten-space
+- AMD cloud VM and aarch64 Linux release: 40/40 CTests, required portable serial golden,
+  85/85 Python tests.
+- AMD cloud VM and aarch64 Linux contract: v0.8.0 `--baseline` plus canonical `--harness`, ten-space
   grid/random equality, and real-Pine input-kind/symbol-feed/metric/trade E2E equality.
-- Cloud Run ASan/UBSan: 39/39 CTests in `rj-20261005t142005-a193f3`; `ctest --preset asan`
+- Linux ASan/UBSan: 39/39 CTests; `ctest --preset asan`
   uses only the checked-in quarantine environment (867.40 seconds).
-- AMD TSan: 39/39 CTests in `rj-20261005t142006-3874b3` (671.64 seconds).
-  The owned worker uses process-local `setarch -R`; no shared host sysctl is modified.
+- AMD cloud VM TSan: 39/39 CTests (671.64 seconds).
+  The worker uses process-local `setarch -R`; no shared host sysctl is modified.
   Earlier sanitizer startup failures from incompatible randomized memory mappings
   are retained as failures, not called successful race checks.
-- Zero-warning Doxygen and generated-site validation: 276 HTML files, AMD/spark2 and CI.
+- Zero-warning Doxygen and generated-site validation: 276 HTML files, AMD cloud VM,
+  aarch64 Linux host and CI.
 - Ruff 0.15.20: `check` and `format --check`, 26 Python files.
-- CI run `37323502580`, documentation `37323502218`, benchmark smoke `37323502489`
-  and PR code-quality checks all finish successfully for the numerical head.
+- GitHub Actions run `37328176096` (original reviewed head `1bb896e2a6360a467115038592641334a935de79`):
+  native Linux x86-64, macOS arm64 and Python finish successfully. The same head also
+  passes API docs, benchmark smoke and PR code-quality checks in their own workflows.
 
-These receipts and raw artifacts are retained under `build/hpo-remote-queue/results/`.
-Final-head CI and remote receipts are also included in the lane completion report.
+The committed Intel fixtures, published proof hashes and public GitHub Actions artifacts
+support the cross-vendor claims. Use the verification profiles above to rerun the other
+gates; results from the original reviewed head are not labeled as review-fix-head runs.

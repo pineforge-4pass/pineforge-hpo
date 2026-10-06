@@ -41,10 +41,6 @@ void set_tpe_contraction_override(std::optional<double> value) noexcept {
     tpe_contraction_override = value;
 }
 
-void set_tpe_long_log1p_probe(long double (*function)(long double)) {
-    (void)function;
-}
-
 std::string tpe_numeric_identity(const SearchSpace& space) {
     (void)space;
     require_portable_environment();
@@ -64,7 +60,6 @@ std::string tpe_numeric_identity() {
 }
 namespace {
 
-constexpr std::uint32_t kTpeAlgorithmRevision = 2;
 constexpr double kInverse53 = 1.0 / 9007199254740992.0;
 constexpr double kLogSqrtTwoPi = 0.91893853320467274178;
 constexpr double kSqrtTwo = 1.41421356237309504880;
@@ -108,7 +103,7 @@ std::string state_signature(const SearchSpace& space, std::uint64_t seed,
                             const TpeSamplerConfig& config, const std::string& numeric_build) {
     std::ostringstream output;
     output.imbue(std::locale::classic());
-    output << "tpe_revision:" << kTpeAlgorithmRevision << ' ' << seed << ' '
+    output << "tpe_revision:" << detail::kTpeAlgorithmRevision << ' ' << seed << ' '
            << static_cast<int>(direction) << ' '
            << static_cast<int>(policy) << ' ' << config.startup_trials << ' '
            << config.ei_candidates << ' ' << double_bits(config.gamma_fraction) << ' '

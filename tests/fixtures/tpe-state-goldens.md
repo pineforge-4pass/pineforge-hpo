@@ -27,10 +27,10 @@ not inherited as an assertion of v0.8.0 proposal compatibility.
 `tpe-serial-goldens.txt` now keys the hash by portable algorithm revision and binary64
 precision, not host long-double precision. The fixture file SHA-256 is
 `aa8070c4a24abb5c03e7bff25a7cba7488267064cb9d7dd657c533887b3f2971`.
-Every golden run prints its key and full numerical identity. Unknown contract keys
-return CTest skip code 77 only outside CI. Configure with
-`-DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON` (both native CI jobs do) to make any
-missing golden a failure. Refresh proposal hashes only with an intentional numerical
+Every golden run prints its key and full numerical identity. A missing portable
+revision's golden is always a failure, including outside CI; there is no skip-code path.
+Both native CI jobs retain `-DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON` for explicit
+release-gate configuration. Refresh proposal hashes only with an intentional numerical
 algorithm revision and independent serial/threaded verification; ordinary identity
 changes must not rebaseline them. The [eight-space cross-vendor proof](../../docs/portable-math.md)
 also checks Intel, AMD, aarch64 Linux and macOS arm64 over 256 newly proposed trials

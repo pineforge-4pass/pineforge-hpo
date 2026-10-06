@@ -1,6 +1,7 @@
 #include <pineforge/hpo/sampler.hpp>
 #include "../src/cli/continuation.hpp"
 #include "../src/core/tpe_test_hooks.hpp"
+#include "../src/core/tpe_algorithm.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -181,7 +182,7 @@ void state_mismatch_and_transition() {
 }
 
 std::string serial_golden_identity() {
-    return "portable-tpe-v2;binary64:53";
+    return "portable-tpe-v" + std::to_string(pfh::detail::kTpeAlgorithmRevision) + ";binary64:53";
 }
 
 void check_serial_golden(const std::string& identity, const std::string& expected,
@@ -271,53 +272,14 @@ bool parallel_checkpoint_equivalence() {
         break;
     }
     if (!matched)
-        std::cout << "SKIP independent serial golden: unknown numerical identity "
-                  << identity << "; proposal SHA-256 " << pfh::detail::sha256(bits.str()) << '\n';
-    else
-        std::cout << "PASS independent serial golden " << identity << '\n';
+        throw std::runtime_error("independent serial golden missing for " + identity +
+            "; proposal SHA-256 " + pfh::detail::sha256(bits.str()));
+    std::cout << "PASS independent serial golden " << identity << '\n';
     for (const auto& candidate : pending) {
         parent.tell(candidate.id, static_cast<double>(candidate.id % 101));
         child.tell(candidate.id, static_cast<double>(candidate.id % 101));
     }
-    require(matched || !std::getenv("PFH_REQUIRE_SERIAL_GOLDEN"),
-            "independent serial golden is required for this CI build");
     return matched;
-}
-
-long double changed_log1p(long double value) {
-    return std::nextafter(std::log1p(value), std::numeric_limits<long double>::infinity());
-}
-
-void scoped_numeric_identity_validation() {
-    for (const pfh::SearchSpace space : {
-        pfh::SearchSpace({pfh::RealDimension("value", 0.0, 1.0)}),
-        pfh::SearchSpace({pfh::IntegerDimension("value", 1, 99)}),
-        pfh::SearchSpace({pfh::CategoricalDimension("value", {std::string("a"),
-                                                           std::string("b")})}),
-        pfh::SearchSpace({pfh::RealDimension("value", 0.1, 99.0, std::nullopt, true)}),
-        pfh::SearchSpace({pfh::IntegerDimension("value", 1, 99, 1, true)})}) {
-        pfh::detail::set_tpe_long_log1p_probe(nullptr);
-        const auto identity = pfh::detail::tpe_numeric_identity(space);
-        pfh::TpeSampler parent(space, 17);
-        const auto state = parent.sampler_state();
-        pfh::detail::set_tpe_long_log1p_probe(changed_log1p);
-        const auto changed = pfh::detail::tpe_numeric_identity(space);
-        const bool logarithmic = std::visit([](const auto& dimension) {
-            using Item = std::decay_t<decltype(dimension)>;
-            if constexpr (std::is_same_v<Item, pfh::RealDimension> ||
-                          std::is_same_v<Item, pfh::IntegerDimension>)
-                return dimension.log();
-            return false;
-        }, space.dimensions().front());
-        (void)logarithmic;
-        require(identity == changed,
-                "host long-double log1p changed the portable identity");
-        pfh::TpeSampler child(space, 17);
-        require(child.warm_start(std::vector<pfh::WarmStartObservation>{}, 1, state),
-                "portable checkpoint did not restore across changed host log1p");
-    }
-    pfh::detail::set_tpe_long_log1p_probe(nullptr);
-    std::cout << "PASS portable math: all spaces restore across changed host log1p\n";
 }
 
 void eight_worker_equivalence() {
@@ -367,6 +329,9 @@ void eight_worker_equivalence() {
 
 void numeric_identity_validation() {
     const pfh::SearchSpace space({pfh::RealDimension("x", 0.0, 1.0)});
+    const auto prefix = "portable-tpe-v" + std::to_string(pfh::detail::kTpeAlgorithmRevision) + ";";
+    require(pfh::detail::tpe_numeric_identity(space).rfind(prefix, 0) == 0,
+            "numeric identity does not track the TPE algorithm revision");
     std::vector<pfh::WarmStartObservation> warm;
     pfh::detail::set_tpe_contraction_override(0.0);
     pfh::TpeSampler parent(space, 17);
@@ -490,8 +455,10 @@ int main(int argc, char** argv) {
                 numeric_identity_validation();
                 return 0;
             }
-            if (std::string(argv[1]) == "--serial-golden")
-                return parallel_checkpoint_equivalence() ? 0 : 77;
+            if (std::string(argv[1]) == "--serial-golden") {
+                parallel_checkpoint_equivalence();
+                return 0;
+            }
             if (std::string(argv[1]) == "--reduction") {
                 eight_worker_equivalence();
                 std::cout << "PASS all serial/threaded acquisition log-ratio bits\n";
@@ -537,7 +504,6 @@ int main(int argc, char** argv) {
             checkpoint_equivalence(batch, true, pfh::CandidatePolicy::SamplerDefault, 201, 7, 300);
         checkpoint_validation();
         numeric_identity_validation();
-        scoped_numeric_identity_validation();
         state_mismatch_and_transition();
         parallel_checkpoint_equivalence();
         eight_worker_equivalence();

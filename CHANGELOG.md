@@ -10,6 +10,10 @@
   portable-kernel self-probe. Revision-1/v0.8.0 checkpoints rebuild ordered objective history
   with an explicit reason, never import or mix old sampler state. Regenerate serial goldens
   for the portable revision; preserve grid/random release compatibility.
+- Intentionally stop binding the compiler-flags hash in `numeric_build_identity`:
+  the strict semantic contract, contraction canaries and portable-kernel self-probe
+  permit cross-compiler/vendor restoration. Arbitrary numerical compiler modifications
+  remain unsupported; a missing generated flags header still prevents restoration.
 - Add eight-space serial/threaded cross-vendor and Intel warm-restore proof tooling,
   MPFR accuracy checks and independent-build proposal-only performance measurements.
   Document the supported arithmetic environment, numerical bounds and proof receipts.

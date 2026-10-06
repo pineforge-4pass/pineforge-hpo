@@ -44,6 +44,7 @@ option(PINEFORGE_HPO_BUILD_NATIVE_CLI
 option(PINEFORGE_HPO_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" OFF)
 option(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER "Build with ThreadSanitizer" OFF)
 option(PINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN "Fail instead of skipping unknown serial goldens" OFF)
+option(PINEFORGE_HPO_REQUIRE_MPFR "Require MPFR for exact portable-math tests" OFF)
 if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
 endif()
@@ -107,6 +108,7 @@ else()
 endif()
 
 add_library(pineforge_hpo_portable_math STATIC
+    src/core/portable_math_canary.c
     third_party/core_math/log/log.c
     third_party/core_math/log1p/log1p.c
     third_party/core_math/exp/exp.c
@@ -114,7 +116,7 @@ add_library(pineforge_hpo_portable_math STATIC
     third_party/core_math/cos/cos.c
     third_party/core_math/erfc/erfc.c)
 target_compile_options(pineforge_hpo_portable_math PRIVATE
-    -ffp-contract=off -fno-fast-math -frounding-math -fno-builtin -fno-lto
+    -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
     "-include${CMAKE_CURRENT_SOURCE_DIR}/third_party/core_math/portable.h")
 set_target_properties(pineforge_hpo_portable_math PROPERTIES
     C_STANDARD 11 C_STANDARD_REQUIRED ON INTERPROCEDURAL_OPTIMIZATION OFF)
@@ -135,7 +137,7 @@ target_include_directories(pineforge_hpo_core
         $<INSTALL_INTERFACE:include>)
 target_compile_options(pineforge_hpo_core PRIVATE -Wall -Wextra -Wpedantic)
 set_source_files_properties(src/core/tpe_sampler.cpp src/core/search_space.cpp PROPERTIES
-    COMPILE_OPTIONS "-ffp-contract=off;-fno-fast-math;-frounding-math;-fno-builtin;-fno-lto")
+    COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off;-frounding-math;-fno-builtin;-fno-lto")
 set(PFH_NUMERIC_FLAGS "${CMAKE_CXX_FLAGS}\n")
 set(PFH_CONFIGURATIONS ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
 list(REMOVE_DUPLICATES PFH_CONFIGURATIONS)

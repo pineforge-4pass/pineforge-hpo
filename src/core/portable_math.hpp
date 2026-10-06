@@ -10,6 +10,7 @@ double pfh_cr_exp(double value);
 double pfh_cr_expm1(double value);
 double pfh_cr_cos(double value);
 double pfh_cr_erfc(double value);
+double pfh_math_contraction_canary(double first, double second, double third);
 }
 
 #include "../../third_party/core_math/portable.h"

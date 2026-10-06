@@ -49,7 +49,7 @@
 - Prefer typed IDs and enums in the hot path; resolve configuration strings
   during study initialization.
 - Seed all stochastic samplers and persist the seed with every study.
-- Bump `kTpeAlgorithmRevision` in `src/core/tpe_sampler.cpp` for every change to
+- Bump `kTpeAlgorithmRevision` in `src/core/tpe_algorithm.hpp` for every change to
   TPE numerical arithmetic or RNG consumption; revalidate checkpoint/golden contracts.
 
 ## Verification

@@ -133,6 +133,9 @@ int main() {
 #ifdef PFH_HAVE_MPFR
         accuracy();
         interval_accuracy();
+#else
+        std::cerr << "SKIP: MPFR not found; exact portable-math comparisons did not run\n";
+        return 77;
 #endif
         std::cout << "PASS portable math edge contracts\n";
     } catch (const std::exception& error) {
