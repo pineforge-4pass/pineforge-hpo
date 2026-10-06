@@ -235,7 +235,7 @@ JSONL instead. A standalone `trials` array must likewise contain the entire inte
 ancestry and each trial's recorded space. JSON inputs are capped at 256 MiB;
 the v2 binary cap and minimal ancestor representation are described above.
 
-In 0.7.0, TPE results expose
+Since 0.7.0, TPE results expose
 `warm_start_model: "restored_sampler_state" | "rebuilt_history"`,
 `replay_contract: "ordered_batches_v1"`, the separate
 `continuation_contract: "sampler_checkpoint_v2"`, and `tpe_sampler_state` when no
@@ -247,17 +247,20 @@ MT states are rejected. SHA-256 provides integrity only, not authenticity; warm
 files/checkpoints must come from trusted sources.
 Keep the complete history alongside this checkpoint; a checkpoint is not a trial store.
 Matching configuration, seed, direction, typed history and numerical-build identity
-restore exact RNG and bounded model state. The enforced identity includes compiler
-and standard-library family/version, target architecture, fast/finite math macros,
-floating-point formats and rounding mode. Contraction is measured by a canary
-compiled inside the sampler; runtime libm behavior is fingerprinted using fixed
-double and long-double calls (log/log1p, exp/expm1, sqrt, cos, erfc, fma and rounding).
-Generated configuration, directory/target compile options and definitions are hashed;
-the sampler algorithm revision is also enforced. These finite probes are not proof
-of every libm result or arbitrary compiler transformation; manual non-CMake builds
-report flags unavailable, and later runtime library/environment changes are not monitored.
-Treat exactness as same numerical build, not universal cross-build equivalence.
-A foreign numerical build or well-formed other checkpoint version rebuilds
+restore exact RNG and bounded model state. Since 0.9.0, the enforced identity is the
+portable revision-2 binary64 arithmetic contract: pinned CORE-MATH kernels, their
+self-probe, nearest rounding, gradual underflow and the unfused-contraction canary.
+Compiler brand, CPU vendor, libc and long-double format no longer participate.
+Explicit IEEE FMA is used where required; implicit contraction, fast math, numerical
+builtins and LTO are disabled on the numerical path. The sampler checks the supported
+floating-point environment before initialization and each ask. Matching checkpoints
+restore across supported Intel/AMD x86-64 with FMA3, aarch64 Linux and macOS arm64;
+the application must still supply identical objective observations and ask/tell schedules.
+Manual non-CMake builds report flags unavailable and refuse checkpoint restoration.
+See the [cross-vendor proof and error analysis](portable-math.md).
+Revision-1/v0.8.0 checkpoints rebuild ordered history, never mix old RNG/model state
+with revision 2, and expose an explicit `warm_start_reason`. A mismatched arithmetic
+contract or well-formed other checkpoint version likewise rebuilds
 history instead of returning exit 4. A changed seed/configuration/history falls back to deterministic
 reconstruction; malformed checkpoint bytes fail closed. Lag-one runner continuation
 also reconstructs, as before. New batch sizes are accepted but only matching future
@@ -268,9 +271,11 @@ replay proposals, even for complete matching lag-zero batches. Their next propos
 are deterministic reconstructed-history suggestions, not necessarily the old replay
 stream. Numeric rejection draws and finite reservation retries depend on historical
 models, so their exact RNG cursor cannot be inferred from winning terminal rows.
-Grid/random behavior is unchanged. Complete 0.7.0 result JSON and native warm-encode
+Grid/random behavior is unchanged. Complete result JSON and native warm-encode
 preserve checkpoints; a JSONL trial stream or reduced result needs separately retained
-complete rows and the checkpoint to recover exact TPE continuation.
+complete rows and a matching revision-2 checkpoint to recover exact TPE continuation.
+Older result checkpoints preserve useful history but do not provide revision-1 continuation
+under 0.9.0.
 `generated()` counts new proposals, `completed()` includes imported trainable
 observations, and `outstanding()` starts at zero. New IDs follow the highest imported
 ID, including failed/pruned trials. Import validates all observations before mutating

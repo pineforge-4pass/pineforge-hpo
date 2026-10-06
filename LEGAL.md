@@ -26,3 +26,9 @@ upstream project and full license text are available at
 
 Pine Script is a trademark of TradingView, Inc. PineForge is not affiliated
 with, endorsed by, or sponsored by TradingView.
+
+The TPE sampler includes the MIT-licensed CORE-MATH binary64 kernels for `log`,
+`log1p`, `exp`, `expm1`, `cos` and `erfc`. Their upstream source revision, original
+author notices and full license are retained in `third_party/core_math/`; see
+`NOTICE` and [the integration record](docs/portable-math.md). MPFR is an
+optional accuracy-test dependency only and is not linked into the runtime library.

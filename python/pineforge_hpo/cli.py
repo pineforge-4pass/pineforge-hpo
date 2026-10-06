@@ -34,6 +34,7 @@ from .study_spec import (
     TpeSamplerConfig,
     load_study_spec,
 )
+from .transpile import legacy_input_kind_version
 
 
 class CliError(RuntimeError):
@@ -168,6 +169,27 @@ def _precompiled_artifact(
             f"artifact manifest has an invalid artifact key: {manifest_path}"
         )
     provenance_path = path.parent / "provenance.json"
+    _artifact_input_metadata(manifest_path)
+    if provenance_path.is_file():
+        try:
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as error:
+            raise CliError(
+                f"cannot read artifact provenance {provenance_path}: {error}"
+            ) from error
+        if not isinstance(provenance, Mapping) or any(
+            provenance.get(field) != manifest.get(field)
+            or type(provenance.get(field)) is not type(manifest.get(field))
+            for field in (
+                "input_kind_schema",
+                "request_identity",
+                "artifact_key",
+                "plugin_sha256",
+            )
+        ):
+            raise CliError(
+                f"artifact manifest disagrees with provenance: {provenance_path}"
+            )
     generated_cpp_path = path.parent / "generated.cpp"
     artifact = {
         "artifact_key": artifact_key,
@@ -297,7 +319,13 @@ def _artifact_input_metadata(path: Path) -> tuple[str | None, bool]:
         identity = manifest.get("request_identity")
         codegen = identity.get("codegen") if isinstance(identity, dict) else None
         version = codegen.get("version") if isinstance(codegen, dict) else None
-        return version if isinstance(version, str) else None, kinds_emitted
+        recorded_version = version if isinstance(version, str) else None
+        if kinds_emitted and legacy_input_kind_version(recorded_version):
+            raise CliError(
+                "input_kind_schema: 1 contradicts recorded codegen version "
+                f"{recorded_version}; codegen >= 1.1.0 is required"
+            )
+        return recorded_version, kinds_emitted
     except (OSError, UnicodeError, ValueError, KeyError, TypeError):
         return None, False
 

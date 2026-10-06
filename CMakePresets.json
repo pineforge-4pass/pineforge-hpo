@@ -32,7 +32,8 @@
   ],
   "testPresets": [
     {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
-    {"name": "asan", "configurePreset": "asan", "output": {"outputOnFailure": true}},
+    {"name": "asan", "configurePreset": "asan", "output": {"outputOnFailure": true},
+     "environment": {"ASAN_OPTIONS": "quarantine_size_mb=16:thread_local_quarantine_size_kb=64"}},
     {"name": "tsan", "configurePreset": "tsan", "output": {"outputOnFailure": true}}
   ]
 }

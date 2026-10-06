@@ -237,9 +237,10 @@ This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.2.0).
 Direct native artifact users must keep the adjacent codegen `manifest.json` when searching
 string-valued inputs. `input.source` and `input.enum` dimensions are supported; only a
 `type: "string"` input requires the manifest's explicit `"input_kind_schema": 1` marker.
-PineForge HPO's artifact builder writes it when its one-pass codegen result contains the
-modern `requests` list (including an empty list), the capability introduced with symbol
-input kinds in codegen 1.1.0. Individual input `kind` fields never vouch for other inputs.
+PineForge HPO's artifact builder writes it only after observing the modern `requests` list
+(including an empty list) and a cached, separate one-line `input.symbol` canary transpile
+whose input metadata contains `kind: "symbol"`. Individual input `kind` fields never
+vouch for other inputs.
 This supports symbol-free string/timeframe searches and codegen source checkouts whose
 package version is unknown. Unstamped manifests fail closed with a rebuild instruction;
 rebuild with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0. Pre-stamp caches rebuild once
@@ -248,18 +249,55 @@ validates generated/precompiled metadata automatically. An unreadable optional m
 does not break a numeric-only native study. Duplicate titles unrelated to searched/fixed
 inputs do not invalidate Python studies; native rejects duplicates only for searched inputs.
 
+**External artifact builders:** `input_kind_schema: 1` is a trusted assertion, not a
+signature or an inference made by HPO. Before writing it, verify the actual transpiler's
+symbol-kind canary, preserve every input's original kind (especially `input.symbol`), and
+bind the manifest to the exact plugin hash, artifact key and codegen request identity.
+Write the same marker/identity/hash into adjacent `provenance.json`; never copy a marker
+from another artifact or invent missing kinds. A known codegen version below 1.1.0
+contradicts the marker and is refused. Python cross-checks adjacent provenance; native
+cross-checks the cheap marker/key/hash/version fields. Unknown versions still require a
+genuine capability check. Treat third-party builders as part of your trust boundary.
+
 Results record `applied_runtime.symbol_feeds` and `runtime_sha256`. Warm JSON/JSONL/v2
 refuse changed/added/removed feeds or facts; relocating identical files is safe. Empty/omitted
 feeds preserve prior grid/random result content and warm-v2 bytes, except the release-version
 marker. TPE additionally exposes `numeric_build_identity` and `parent_numeric_build_identity`
 (also in `warm_start` provenance); the parent is null when no compatible-version checkpoint
 was compared. `restored_sampler_state` requires equal, non-null parent/child identities.
-The runtime-libm fingerprint covers only functions used by the configured space: a
-long-double `log1p` difference cannot block linear/integer/categorical continuation, but
-does block log-scale checkpoint restoration. Other compiler/flags/platform checks remain.
+Since 0.9.0, TPE uses pinned, correctly-rounded CORE-MATH binary64 kernels instead of
+host transcendental functions, including every log-scale transform. Its identity describes
+the portable arithmetic contract, not CPU vendor, compiler brand or host libm.
+**v0.8.0 TPE checkpoints rebuild from ordered objective history; their sampler state is
+never imported or mixed.** This is not a bitwise continuation of the v0.8.0 algorithm.
 Native `space-info` and `warm-encode` also accept `--symbol-feeds <index.json>` to override
 the work file's feed index.
 See [StudySpec](docs/study-spec.md) for validation and header details.
+
+### Cross-vendor reproducibility
+
+Portable TPE requires x86-64 with FMA3 or aarch64, IEEE-754 binary64, nearest rounding,
+gradual underflow and disabled implicit FMA contraction/fast math. Other runtime modes
+are refused before sampling. All eight space types, serial/threaded execution and Intel
+checkpoint restoration are exercised by the [proof table and arithmetic inventory](docs/portable-math.md).
+Identical objective observations, configuration, seed and ask/tell scheduling remain
+necessary: portable proposal math does not make a strategy's objective vendor-independent.
+Grid/random behavior is retained; their v0.8.0 compatibility is checked separately.
+
+Runtime refusals surface as CLI **exit code 1** with the exception message, including
+`portable TPE requires x86-64 FMA3` and
+`portable TPE requires gradual underflow (FTZ/DAZ off)` (aarch64: `(FZ off)`).
+An externally built plugin using `-ffast-math`/`-Ofast` can enable FTZ/DAZ at load time,
+causing initialization or the next `ask()` to fail. HPO-built plugins do not use these flags.
+Do not treat these environment refusals as a checkpoint rebuild or silently retry unchanged.
+Identity strings now use `portable-tpe-v2;...portable_probe_sha256:` instead of the
+host-libm `...libm_probe_sha256:` format; compare them as opaque strings for equality only.
+Building now requires both C and C++ compilers. `PineForgeHPO::core` transitively links
+`pineforge_hpo_portable_math`; manual link lines must include that library too.
+`INPUT_METADATA_REVISION = 2` causes a one-time artifact-cache rebuild. A trusted
+`input_kind_schema: 1` marker contradicting known codegen versions below 1.1.0, or a
+precompiled manifest disagreeing with adjacent provenance, is refused before any trials.
+External builders must satisfy the [trusted input-kind contract](docs/study-spec.md).
 
 The real compiled-Pine equality gate compares three candidates' complete C-ABI metrics
 and trades (field bytes unchanged, unspecified ABI padding zeroed) against a release

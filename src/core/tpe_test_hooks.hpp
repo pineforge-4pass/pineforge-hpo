@@ -10,7 +10,7 @@ using TpeLogRatioObserver = void (*)(double);
 void set_tpe_log_ratio_observer(TpeLogRatioObserver observer) noexcept;
 void set_tpe_contraction_override(std::optional<double> value) noexcept;
 std::string tpe_numeric_identity();
-void set_tpe_long_log1p_probe(long double (*function)(long double));
 std::string tpe_numeric_identity(const SearchSpace& space);
+double tpe_log_normal_interval(double lower, double upper);
 
 }

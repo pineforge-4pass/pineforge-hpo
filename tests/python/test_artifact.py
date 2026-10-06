@@ -104,7 +104,7 @@ class ArtifactBuilderTest(unittest.TestCase):
         self.eigen = make_eigen(self.root)
         self.compiler, self.log = make_compiler(self.root)
         self.cache = self.root / "cache"
-        self.codegen = CodegenIdentity("0.9.0", "c" * 64, "/fake/codegen/__init__.py")
+        self.codegen = CodegenIdentity("1.1.0", "c" * 64, "/fake/codegen/__init__.py")
         self.transpiled = TranspileResult(
             generated_cpp='extern "C" int generated_strategy = 1;\n',
             inputs=({"title": "Length", "type": "int", "default": 14},),
@@ -199,6 +199,22 @@ class ArtifactBuilderTest(unittest.TestCase):
             self.assertEqual(
                 json.loads(repaired.manifest_path.read_text())["input_kind_schema"], 1
             )
+
+    def test_builder_refuses_marker_with_known_legacy_codegen(self) -> None:
+        with (
+            patch(
+                "pineforge_hpo.artifact.codegen_identity",
+                return_value=replace(self.codegen, version="1.0.9"),
+            ),
+            patch(
+                "pineforge_hpo.artifact.transpile_source",
+                return_value=replace(self.transpiled, input_kind_schema=1),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ArtifactBuildError, "contradicts recorded codegen"
+            ):
+                self.builder().build("legacy symbol metadata")
 
     def test_old_metadata_cache_is_not_reused_or_stamped_without_capability(
         self,

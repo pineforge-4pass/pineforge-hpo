@@ -1,4 +1,5 @@
 #include "pineforge/hpo/search_space.hpp"
+#include "portable_grid.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -73,45 +74,15 @@ std::int64_t integer_at(const IntegerDimension& dimension, std::uint64_t index) 
 }
 
 std::uint64_t real_grid_count(const RealDimension& dimension) {
-    const long double low = static_cast<long double>(dimension.low());
-    const long double high = static_cast<long double>(dimension.high());
-    const long double step = static_cast<long double>(*dimension.step());
-    const long double span = high - low;
-    const long double scaled = std::isfinite(span) ? span / step : high / step - low / step;
-    if (!std::isfinite(scaled) || scaled < 0.0L) {
-        throw std::overflow_error("real dimension cardinality is not representable: " +
-                                  dimension.name());
-    }
-
-    const long double floored = std::floor(scaled);
-    if (floored >= static_cast<long double>(std::numeric_limits<std::uint64_t>::max())) {
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t: " +
-                                  dimension.name());
-    }
-    std::uint64_t last_index = static_cast<std::uint64_t>(floored);
-
-    // JSON decimal values such as 0.3 / 0.1 can land just below an integer
-    // after conversion to double. Include and snap only when the next decoded
-    // grid value is at most one representable double above high. This keeps an
-    // intentionally off-lattice high (for example 1.0 with step 0.3) excluded.
-    const std::uint64_t next_index = last_index + 1;
-    const double decoded_next =
-        std::fma(static_cast<double>(next_index), *dimension.step(), dimension.low());
-    if (std::isfinite(decoded_next) &&
-        decoded_next <= std::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
-        last_index = next_index;
-    }
-    if (last_index == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t: " +
-                                  dimension.name());
-    }
-    return last_index + 1;
+    return detail::portable_grid_count(dimension.low(), dimension.high(), *dimension.step());
 }
 
 double real_at(const RealDimension& dimension, std::uint64_t index, std::uint64_t count) {
-    double decoded = std::fma(static_cast<double>(index), *dimension.step(), dimension.low());
+    double decoded =
+        detail::math::fma(static_cast<double>(index), *dimension.step(), dimension.low());
     if (index + 1 == count && decoded > dimension.high() &&
-        decoded <= std::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
+        decoded <=
+            detail::math::nextafter(dimension.high(), std::numeric_limits<double>::infinity())) {
         decoded = dimension.high();
     }
     if (!std::isfinite(decoded) || decoded < dimension.low() || decoded > dimension.high()) {
@@ -155,16 +126,17 @@ void validate_real_grid_injective(const RealDimension& dimension, std::uint64_t 
     const double first = real_at(dimension, 0, count);
     const double last = real_at(dimension, count - 1, count);
     const double edge = std::abs(first) >= std::abs(last) ? first : last;
-    const double next_up = std::nextafter(edge, std::numeric_limits<double>::infinity());
-    const double next_down = std::nextafter(edge, -std::numeric_limits<double>::infinity());
-    const long double gap_up =
-        std::isfinite(next_up) ? static_cast<long double>(next_up) - static_cast<long double>(edge)
-                               : 0.0L;
-    const long double gap_down = std::isfinite(next_down) ? static_cast<long double>(edge) -
-                                                                static_cast<long double>(next_down)
-                                                          : 0.0L;
-    const long double largest_gap = std::max(std::abs(gap_up), std::abs(gap_down));
-    if (static_cast<long double>(*dimension.step()) <= largest_gap) {
+    const double next_up = detail::math::nextafter(edge, std::numeric_limits<double>::infinity());
+    const double next_down =
+        detail::math::nextafter(edge, -std::numeric_limits<double>::infinity());
+    const double gap_up =
+        std::isfinite(next_up) ? static_cast<double>(next_up) - static_cast<double>(edge)
+                               : 0.0;
+    const double gap_down = std::isfinite(next_down) ? static_cast<double>(edge) -
+                                                                static_cast<double>(next_down)
+                                                          : 0.0;
+    const double largest_gap = std::max(std::abs(gap_up), std::abs(gap_down));
+    if (static_cast<double>(*dimension.step()) <= largest_gap) {
         throw std::invalid_argument(
             "stepped real grid is too large to prove unique binary64 ABI values; use integer "
             "ticks or a larger step: " +
@@ -239,15 +211,10 @@ std::uint64_t dimension_ordinal(const Dimension& dimension,
                     }
                     return 0;
                 }
-                const long double real_ld = static_cast<long double>(real);
-                const long double low_ld = static_cast<long double>(item.low());
-                const long double step_ld = static_cast<long double>(*item.step());
-                const long double delta = real_ld - low_ld;
-                const long double scaled =
-                    std::isfinite(delta) ? delta / step_ld : real_ld / step_ld - low_ld / step_ld;
-                const long double rounded = std::round(scaled);
-                if (!std::isfinite(rounded) || rounded < 0.0L ||
-                    rounded >= static_cast<long double>(count)) {
+                const double rounded = detail::pair_round(
+                    detail::grid_coordinate(real, item.low(), *item.step()));
+                if (!std::isfinite(rounded) || rounded < 0.0 ||
+                    rounded >= static_cast<double>(count)) {
                     throw std::invalid_argument("real parameter is outside its finite grid: " +
                                                 item.name());
                 }
@@ -345,18 +312,14 @@ bool RealDimension::contains(const ParameterValue& value) const noexcept {
         return true;
     }
 
-    const long double real_ld = static_cast<long double>(*real);
-    const long double low_ld = static_cast<long double>(low_);
-    const long double step_ld = static_cast<long double>(*step_);
-    const long double delta = real_ld - low_ld;
-    const long double index =
-        std::isfinite(delta) ? delta / step_ld : real_ld / step_ld - low_ld / step_ld;
+    const auto coordinate = detail::grid_coordinate(*real, low_, *step_);
+    const double index = coordinate.high + coordinate.low;
     if (!std::isfinite(index)) {
         return false;
     }
-    const long double nearest = std::round(index);
-    const long double step_tolerance =
-        64.0L * std::numeric_limits<double>::epsilon() * std::max(1.0L, std::abs(index));
+    const double nearest = detail::pair_round(coordinate);
+    const double step_tolerance =
+        64.0 * std::numeric_limits<double>::epsilon() * std::max(1.0, std::abs(index));
     return std::abs(index - nearest) <= step_tolerance;
 }
 

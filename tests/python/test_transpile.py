@@ -38,10 +38,10 @@ class TranspileBridgeTest(unittest.TestCase):
         self.assertIsNone(result.input_kind_schema)
         call.assert_called_once_with("strategy('x')", filename="trend.pine")
 
-    def test_input_kind_capability_uses_requests_payload_not_inputs(self) -> None:
+    def test_requests_alone_do_not_prove_input_kinds(self) -> None:
         for requests, expected in (
-            ([], 1),
-            ([{"line": 1}], 1),
+            ([], None),
+            ([{"line": 1}], None),
             (None, None),
             ({}, None),
             ([42], None),
@@ -61,6 +61,22 @@ class TranspileBridgeTest(unittest.TestCase):
         with patch("pineforge_hpo.transpile.transpile_full", return_value=payload):
             result = transpile_source("strategy('x')")
         self.assertIsNone(result.input_kind_schema)
+
+    def test_symbol_canary_proves_input_kind_capability(self) -> None:
+        payload = {
+            "cpp": "int strategy;",
+            "inputs": [],
+            "strategyParams": {},
+            "requests": [],
+        }
+        canary = {"inputs": [{"type": "string", "kind": "symbol"}]}
+        with patch(
+            "pineforge_hpo.transpile.transpile_full", side_effect=[payload, canary]
+        ) as call:
+            result = transpile_source("strategy('x')")
+        self.assertEqual(result.input_kind_schema, 1)
+        self.assertEqual(call.call_count, 2)
+        self.assertIn('input.symbol("NASDAQ:AAPL")', call.call_args.args[0])
 
     def test_compile_error_becomes_structured_diagnostic(self) -> None:
         error = CompileError(

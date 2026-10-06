@@ -12,7 +12,7 @@ file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION"
 project(PineForgeHPO
     VERSION ${PINEFORGE_HPO_VERSION}
     DESCRIPTION "Native hyperparameter optimization for PineForge strategies"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 set(CMAKE_CXX_STANDARD 17)
@@ -44,6 +44,7 @@ option(PINEFORGE_HPO_BUILD_NATIVE_CLI
 option(PINEFORGE_HPO_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" OFF)
 option(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER "Build with ThreadSanitizer" OFF)
 option(PINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN "Fail instead of skipping unknown serial goldens" OFF)
+option(PINEFORGE_HPO_REQUIRE_MPFR "Require MPFR for exact portable-math tests" OFF)
 if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
 endif()
@@ -106,6 +107,20 @@ else()
     FetchContent_MakeAvailable(dlib)
 endif()
 
+add_library(pineforge_hpo_portable_math STATIC
+    src/core/portable_math_canary.c
+    third_party/core_math/log/log.c
+    third_party/core_math/log1p/log1p.c
+    third_party/core_math/exp/exp.c
+    third_party/core_math/expm1/expm1.c
+    third_party/core_math/cos/cos.c
+    third_party/core_math/erfc/erfc.c)
+target_compile_options(pineforge_hpo_portable_math PRIVATE
+    -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
+    "-include${CMAKE_CURRENT_SOURCE_DIR}/third_party/core_math/portable.h")
+set_target_properties(pineforge_hpo_portable_math PROPERTIES
+    C_STANDARD 11 C_STANDARD_REQUIRED ON INTERPROCEDURAL_OPTIMIZATION OFF)
+
 add_library(pineforge_hpo_core STATIC
     src/core/dlib_sampler.cpp
     src/core/objective.cpp
@@ -121,8 +136,8 @@ target_include_directories(pineforge_hpo_core
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>)
 target_compile_options(pineforge_hpo_core PRIVATE -Wall -Wextra -Wpedantic)
-set_source_files_properties(src/core/tpe_sampler.cpp PROPERTIES
-    COMPILE_OPTIONS "-ffp-contract=off")
+set_source_files_properties(src/core/tpe_sampler.cpp src/core/search_space.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off;-frounding-math;-fno-builtin;-fno-lto")
 set(PFH_NUMERIC_FLAGS "${CMAKE_CXX_FLAGS}\n")
 set(PFH_CONFIGURATIONS ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
 list(REMOVE_DUPLICATES PFH_CONFIGURATIONS)
@@ -147,7 +162,8 @@ add_dependencies(pineforge_hpo_core pineforge_hpo_numeric_flags)
 target_include_directories(pineforge_hpo_core PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated/$<CONFIG>/CXX")
 find_package(Threads REQUIRED)
-target_link_libraries(pineforge_hpo_core PUBLIC dlib::dlib Threads::Threads)
+target_link_libraries(pineforge_hpo_core PUBLIC
+    dlib::dlib Threads::Threads pineforge_hpo_portable_math)
 
 if(PINEFORGE_HPO_BUILD_ENGINE_ADAPTER)
     add_library(pineforge_hpo_engine_adapter STATIC
@@ -185,7 +201,8 @@ if(PINEFORGE_HPO_BUILD_NATIVE_CLI)
 endif()
 
 if(PINEFORGE_HPO_ENABLE_SANITIZERS)
-    foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native)
+    foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native
+                   pineforge_hpo_portable_math)
         if(TARGET ${target})
             target_compile_options(${target} PUBLIC
                 -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -195,7 +212,8 @@ if(PINEFORGE_HPO_ENABLE_SANITIZERS)
 endif()
 
 if(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
-    foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native)
+    foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native
+                   pineforge_hpo_portable_math)
         if(TARGET ${target})
             target_compile_options(${target} PUBLIC -fsanitize=thread -fno-omit-frame-pointer)
             target_link_options(${target} PUBLIC -fsanitize=thread)

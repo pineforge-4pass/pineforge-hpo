@@ -176,6 +176,10 @@ if selected <= open
     require(symbol_free.returncode == 0, symbol_free.stderr.decode())
     manifest.pop("input_kind_schema")
     manifest_path.write_text(json.dumps(manifest))
+    provenance_path = Path(artifact["provenance"])
+    provenance = json.loads(provenance_path.read_text())
+    provenance.pop("input_kind_schema")
+    provenance_path.write_text(json.dumps(provenance))
     try:
         prepare_run(
             spec,
@@ -272,6 +276,10 @@ if selected <= open
         "rebuild the artifact with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0"
     )
     manifest.pop("input_kind_schema")
+    provenance_path = Path(artifact["provenance"])
+    provenance = json.loads(provenance_path.read_text())
+    provenance.pop("input_kind_schema")
+    provenance_path.write_text(json.dumps(provenance))
     for unrelated_kind in (None, 42, "symbol", "string"):
         manifest["inputs"].append(
             {"title": "Unrelated", "type": "int", "kind": unrelated_kind}
@@ -304,6 +312,8 @@ if selected <= open
         flush=True,
     )
     manifest["input_kind_schema"] = 1
+    provenance["input_kind_schema"] = 1
+    provenance_path.write_text(json.dumps(provenance))
     mode = next(item for item in manifest["inputs"] if item["title"] == "Mode")
     mode["type"] = "foo"
     manifest_path.write_text(json.dumps(manifest))

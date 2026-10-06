@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 import hashlib
 import importlib
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Mapping
+import re
+from typing import Any, Callable, Mapping
 
 try:
     import pineforge_codegen
@@ -47,7 +49,7 @@ class TranspileDiagnostic:
 
 @dataclass(frozen=True)
 class TranspileResult:
-    """Result of exactly one ``transpile_full`` pipeline invocation."""
+    """Result of the strategy pipeline, with a separately cached capability canary."""
 
     generated_cpp: str | None
     inputs: tuple[dict[str, Any], ...] = ()
@@ -134,6 +136,36 @@ def _diagnostics_from_payload(
         else:
             output.append(_diagnostic_from_codegen(raw))
     return tuple(output)
+
+
+def legacy_input_kind_version(version: str | None) -> bool:
+    """Whether a recorded, parseable codegen version predates input-kind metadata."""
+    match = re.fullmatch(
+        r"[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?([-+a-zA-Z.].*)?",
+        (version or "").strip(),
+    )
+    if not match:
+        return False
+    core = tuple(int(component or "0") for component in match.groups()[:3])
+    suffix = match.group(4) or ""
+    return core < (1, 1, 0) or (
+        core == (1, 1, 0) and suffix.startswith(("-", "a", "b", "rc", "dev", ".dev"))
+    )
+
+
+@lru_cache(maxsize=8)
+def _input_kind_canary(transpiler: Callable[..., Any]) -> bool:
+    source = (
+        '//@version=6\nstrategy("kind canary")\nprobe = input.symbol("NASDAQ:AAPL")'
+    )
+    try:
+        payload = transpiler(source, filename="<input-kind-canary>")
+        return isinstance(payload, Mapping) and any(
+            isinstance(item, Mapping) and item.get("kind") == "symbol"
+            for item in payload.get("inputs", [])
+        )
+    except Exception:
+        return False
 
 
 def transpile_source(pine_source: str, *, filename: str = "<input>") -> TranspileResult:
@@ -241,6 +273,7 @@ def transpile_source(pine_source: str, *, filename: str = "<input>") -> Transpil
             1
             if isinstance(payload.get("requests"), list)
             and all(isinstance(item, Mapping) for item in payload["requests"])
+            and _input_kind_canary(transpiler)
             else None
         ),
     )

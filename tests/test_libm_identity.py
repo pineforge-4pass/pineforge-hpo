@@ -203,23 +203,22 @@ def main():
             )
             parent.write_text(json.dumps(warm_baseline))
             child = run(dimensions, "log1pl", ulp=True, parent=parent)
-            log_scale = name in {"log-real", "log-int"}
             require(
-                (child["numeric_build_identity"] != identity) == log_scale,
-                f"{name}: log1pl scope",
+                child["numeric_build_identity"] == identity,
+                f"{name}: portable identity depends on log1pl",
             )
             require(
                 child["parent_numeric_build_identity"] == identity,
                 f"{name}: parent identity lost",
             )
-            expected = "rebuilt_history" if log_scale else "restored_sampler_state"
+            expected = "restored_sampler_state"
             require(
                 child["warm_start_model"] == expected,
                 f"{name}: expected {expected}, got {child['warm_start_model']}",
             )
-        require(changed_count > 0, "differential never changed proposals")
+        require(changed_count == 0, "host libm changed portable proposals")
         print(
-            f"PASS A1 masks: 176 perturbations, {changed_count} proposal changes covered; log1pl warm scope",
+            "PASS portable math: 176 perturbations, no identity/proposal changes; all warm restores",
             flush=True,
         )
     return 0

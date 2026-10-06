@@ -4,9 +4,51 @@ target_compile_options(pineforge_hpo_test_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_core COMMAND pineforge_hpo_test_core)
 
+add_executable(pineforge_hpo_test_portable_math_canary test_portable_math_canary.cpp)
+target_link_libraries(pineforge_hpo_test_portable_math_canary PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_portable_math_canary PRIVATE
+    -fno-fast-math -ffp-contract=off)
+add_test(NAME pineforge_hpo_portable_math_contraction
+    COMMAND pineforge_hpo_test_portable_math_canary)
+
+add_executable(pineforge_hpo_test_portable_math test_portable_math.cpp)
+target_link_libraries(pineforge_hpo_test_portable_math PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_portable_math PRIVATE -ffp-contract=off)
+find_path(PFH_MPFR_INCLUDE mpfr.h)
+find_library(PFH_MPFR_LIBRARY mpfr)
+if(PFH_MPFR_INCLUDE AND PFH_MPFR_LIBRARY)
+    target_include_directories(pineforge_hpo_test_portable_math PRIVATE "${PFH_MPFR_INCLUDE}")
+    target_link_libraries(pineforge_hpo_test_portable_math PRIVATE "${PFH_MPFR_LIBRARY}")
+    target_compile_definitions(pineforge_hpo_test_portable_math PRIVATE PFH_HAVE_MPFR=1)
+elseif(PINEFORGE_HPO_REQUIRE_MPFR)
+    message(FATAL_ERROR "MPFR is required for exact portable-math tests (mpfr.h and library)")
+else()
+    message(WARNING "SKIP: MPFR not found; exact portable-math tests will be skipped")
+endif()
+add_test(NAME pineforge_hpo_portable_math_accuracy COMMAND pineforge_hpo_test_portable_math)
+set_tests_properties(pineforge_hpo_portable_math_accuracy PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(pineforge_hpo_portable_math_proof portable_math_proof.cpp)
+target_link_libraries(pineforge_hpo_portable_math_proof PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_portable_math_proof PRIVATE -ffp-contract=off)
+add_test(NAME pineforge_hpo_portable_math_serial COMMAND pineforge_hpo_portable_math_proof
+    "${CMAKE_CURRENT_BINARY_DIR}/portable-proof/serial" 1)
+add_test(NAME pineforge_hpo_portable_math_threaded COMMAND pineforge_hpo_portable_math_proof
+    "${CMAKE_CURRENT_BINARY_DIR}/portable-proof/threaded" 8
+    "${CMAKE_CURRENT_BINARY_DIR}/portable-proof/serial")
+add_test(NAME pineforge_hpo_portable_math_intel_restore COMMAND pineforge_hpo_portable_math_proof
+    "${CMAKE_CURRENT_BINARY_DIR}/portable-proof/intel-restored" 8
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/portable-math-intel")
+set_tests_properties(pineforge_hpo_portable_math_serial PROPERTIES
+    FIXTURES_SETUP portable_checkpoint)
+set_tests_properties(pineforge_hpo_portable_math_threaded PROPERTIES
+    FIXTURES_REQUIRED portable_checkpoint)
+
 add_executable(pineforge_hpo_test_numeric_unavailable test_numeric_unavailable.cpp
     "${PROJECT_SOURCE_DIR}/src/core/tpe_sampler.cpp")
 target_link_libraries(pineforge_hpo_test_numeric_unavailable PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_numeric_unavailable PRIVATE
+    -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto)
 add_test(NAME pineforge_hpo_numeric_unavailable COMMAND pineforge_hpo_test_numeric_unavailable)
 
 add_executable(pineforge_hpo_test_warm_start test_warm_start.cpp)
@@ -14,7 +56,6 @@ target_link_libraries(pineforge_hpo_test_warm_start PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_warm_start PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_warm_start COMMAND pineforge_hpo_test_warm_start)
 add_test(NAME pineforge_hpo_serial_golden COMMAND pineforge_hpo_test_warm_start --serial-golden)
-set_tests_properties(pineforge_hpo_serial_golden PROPERTIES SKIP_RETURN_CODE 77)
 if(PINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN)
     set_tests_properties(pineforge_hpo_serial_golden PROPERTIES
         ENVIRONMENT "PFH_REQUIRE_SERIAL_GOLDEN=1")

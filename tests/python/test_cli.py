@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -15,6 +16,7 @@ from pineforge_hpo import __version__
 from pineforge_hpo.cli import (
     CliError,
     _artifact_input_metadata,
+    _precompiled_artifact,
     _parser,
     _native_command,
     _resolve_engine_root,
@@ -184,6 +186,52 @@ class CliTests(unittest.TestCase):
         for marker in (True, "1", 2):
             manifest.write_text(json.dumps({"input_kind_schema": marker}))
             self.assertEqual(_artifact_input_metadata(manifest), (None, False))
+        for version in (
+            "1",
+            "1.0",
+            "1.0.9",
+            "v1.0.0",
+            "1.1rc1",
+            "1.1.0-rc.1",
+            "1.1.0rc1",
+            "1.1.0.dev1",
+        ):
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "input_kind_schema": 1,
+                        "request_identity": {"codegen": {"version": version}},
+                    }
+                )
+            )
+            with self.assertRaisesRegex(CliError, "contradicts recorded codegen"):
+                _artifact_input_metadata(manifest)
+
+    def test_precompiled_marker_cross_checks_provenance(self) -> None:
+        plugin = self.root / "plugin.so"
+        plugin.write_bytes(b"fixture plugin bytes")
+        manifest = {
+            "schema_version": 1,
+            "inputs": [],
+            "input_kind_schema": 1,
+            "plugin_sha256": hashlib.sha256(plugin.read_bytes()).hexdigest(),
+            "artifact_key": "a" * 64,
+            "request_identity": {"codegen": {"version": "1.1.0"}},
+        }
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        provenance = self.root / "provenance.json"
+        provenance.write_text(json.dumps(manifest))
+        _precompiled_artifact(plugin)
+        for field, value in (
+            ("input_kind_schema", True),
+            ("input_kind_schema", None),
+            ("artifact_key", "b" * 64),
+            ("plugin_sha256", "b" * 64),
+            ("request_identity", {"codegen": {"version": "1.0.9"}}),
+        ):
+            provenance.write_text(json.dumps({**manifest, field: value}))
+            with self.assertRaisesRegex(CliError, "disagrees with provenance"):
+                _precompiled_artifact(plugin)
 
     def test_version_comes_from_package_metadata(self) -> None:
         output = io.StringIO()

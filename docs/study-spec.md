@@ -162,12 +162,21 @@ Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted)
 `input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
 Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.2.0).
 `input.source` and `input.enum` search dimensions are supported and cannot be symbols.
-String dimensions require the manifest-level `"input_kind_schema": 1` marker, written by
-PineForge HPO's artifact builder after observing the modern codegen `requests` list in
-its one-pass transpile result. The list is present even for symbol-free scripts; codegen
-1.1.0 introduced it alongside `kind: "symbol"` metadata. Individual input `kind` fields
-are not a capability signal. Package version is diagnostic only, so `unknown` does not
-reject a stamped artifact. Unstamped string dimensions fail closed and instruct rebuilding
+String dimensions require the manifest-level `"input_kind_schema": 1` marker. HPO's builder
+requires a valid modern codegen `requests` list and a separate cached one-line
+`input.symbol` canary whose input metadata actually carries `kind: "symbol"`. The list
+is present even for symbol-free scripts; its presence alone is no longer sufficient.
+Individual input `kind` fields are not a capability signal. An external builder may stamp
+the marker only after making the same capability check, preserving all original input
+kinds, and binding the manifest to the exact plugin SHA-256, artifact key and codegen
+request identity. It must repeat those values in adjacent `provenance.json`, when supplied.
+The marker is trusted: matching forged manifest/provenance files are not authenticated.
+Never stamp an old artifact, infer missing kinds, or transfer the marker between artifacts.
+Known recorded codegen versions below 1.1.0 are refused even with a marker. `unknown`
+is not a version contradiction, but cannot replace the builder's capability check.
+Python precompiled artifacts cross-check the full request identity, marker, artifact key
+and plugin hash against adjacent provenance. Native cheaply cross-checks marker, key,
+hash and codegen version. Unstamped string dimensions fail closed and instruct rebuilding
 with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0. The artifact-cache identity includes the
 builder's input-metadata revision so pre-stamp caches rebuild once. Unrelated duplicate titles are
 ignored; duplicates for searched inputs (or Python fixed inputs) remain refused.
@@ -877,14 +886,20 @@ Since 0.7.0, TPE imports the ordered parent without proposing any historical tri
 A complete result's `tpe_sampler_state`, or a warm-v2 `PFHSTATE` extension, restores
 the exact suggestion RNG, reservoir RNG, finite fallback cursor, retained observations
 and bounded cache membership when configuration, seed, complete typed history and
-numerical-build identity match. Compiler/stdlib versions, target architecture and
-floating-point configuration/rounding are enforced; foreign builds reconstruct.
-Since 0.8.0 the runtime-libm fingerprint includes only the double/long-double functions
-used by the configured space, with 4,096 inputs per function cached once per process.
-In particular, long-double `log1p` is included for log-scale real/integer dimensions but
-not for linear/integer/categorical spaces. An Intel/AMD difference in that function alone
-therefore preserves non-log checkpoint compatibility; other numeric-build components
-still must match. Older identities and other checkpoint versions rebuild without replay.
+numerical-build identity match. Since 0.9.0, that identity records TPE algorithm revision 2,
+the pinned CORE-MATH revision, binary64 arithmetic, nearest rounding, gradual underflow,
+the implicit-contraction canary and a self-probe of the portable kernels. No host-libm,
+CPU-vendor, compiler-brand, libc or long-double fingerprint participates. Explicit IEEE
+FMA is used for correctly-rounded kernels and compensated arithmetic; implicit
+contraction and fast math remain disabled. Unsupported FP modes and unavailable
+numeric-build instrumentation fail closed. See the [cross-vendor proof](portable-math.md).
+
+**v0.8.0 checkpoints are rebuilt, not refused:** ordered typed objective history is
+compatible, but revision-1 arithmetic/RNG state is not imported into revision 2.
+`warm_start_model` is `"rebuilt_history"`, with `warm_start_reason` explaining the numerical
+algorithm/build mismatch and that this is not a bitwise v0.8.0 continuation. Old-state
+bytes are never mixed with the new model. Identical revision-2 checkpoints can restore
+across supported Intel, AMD, aarch64 Linux and macOS arm64 hosts.
 
 TPE result JSON records `numeric_build_identity` (the child computed identity) and
 `parent_numeric_build_identity` (the identity extracted from the checkpoint actually
