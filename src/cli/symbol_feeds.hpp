@@ -308,10 +308,12 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
         try {
             while (symbol_csv_row(input, cells, count_line, where)) {
                 if (!cells.empty() && ++row_count > static_cast<std::size_t>(INT32_MAX))
-                    symbol_feed_error(where + ": exceeds the C ABI bar-count limit");
+                    break;
             }
         } catch (const std::invalid_argument&) {
         }
+        if (row_count > static_cast<std::size_t>(INT32_MAX))
+            symbol_feed_error(where + ": exceeds the C ABI bar-count limit");
         if (input.bad())
             symbol_feed_error(where + ": cannot read CSV");
         input.clear();
