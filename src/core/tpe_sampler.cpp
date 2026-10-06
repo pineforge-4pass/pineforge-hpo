@@ -1,12 +1,13 @@
-#include "pineforge/hpo/sampler.hpp"
-#include "ordinal_set.hpp"
-#include "sha256.hpp"
+#include <pineforge/hpo/error.hpp>
+#include "dimension_workers.hpp"
 #include "mt19937_64.hpp"
 #include "numeric_build.hpp"
-#include "dimension_workers.hpp"
-#include "sampler_checkpoint.hpp"
-#include "tpe_test_hooks.hpp"
+#include "ordinal_set.hpp"
+#include "pineforge/hpo/sampler.hpp"
 #include "portable_grid.hpp"
+#include "sampler_checkpoint.hpp"
+#include "sha256.hpp"
+#include "tpe_test_hooks.hpp"
 
 #include <algorithm>
 #include <array>
@@ -159,7 +160,8 @@ void fingerprint_score(StateFingerprint& fingerprint, std::uint64_t identifier, 
 
 std::uint64_t bounded_random(detail::Mt19937_64& engine, std::uint64_t bound) {
     if (bound == 0) {
-        throw std::invalid_argument("TPE random bound must be positive");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}}, "TPE random bound must be positive");
     }
     const std::uint64_t threshold = (0U - bound) % bound;
     while (true) {
@@ -190,7 +192,8 @@ std::uint64_t integer_count(const IntegerDimension& dimension) {
         static_cast<std::uint64_t>(dimension.high()) - static_cast<std::uint64_t>(dimension.low());
     const std::uint64_t quotient = span / static_cast<std::uint64_t>(dimension.step());
     if (quotient == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("integer dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid", {{"reason", "sampler"}},
+                                                 "integer dimension cardinality exceeds uint64_t");
     }
     return quotient + 1;
 }
@@ -389,7 +392,8 @@ public:
                  double prior_weight, bool fast_density = false)
         : fast_density_(fast_density) {
         if (values.size() != weights.size()) {
-            throw std::logic_error("TPE numeric values and weights have different sizes");
+            throw TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "TPE numeric values and weights have different sizes");
         }
 
         std::vector<WeightedNumericValue> sorted;
@@ -626,7 +630,8 @@ private:
     void add_component(double mean, double sigma, double weight) {
         if (!std::isfinite(mean) || !std::isfinite(sigma) || sigma <= 0.0 ||
             !std::isfinite(weight) || weight <= 0.0) {
-            throw std::logic_error("invalid TPE numeric mixture component");
+            throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                                  "invalid TPE numeric mixture component");
         }
         components_.push_back({mean, sigma, weight});
         total_weight_ += weight;
@@ -655,7 +660,8 @@ public:
                      double prior_weight)
         : masses_(choice_count, 0.0) {
         if (values.size() != weights.size()) {
-            throw std::logic_error("TPE categorical values and weights have different sizes");
+            throw TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "TPE categorical values and weights have different sizes");
         }
         double mixture_weight = prior_weight;
         for (const double weight : weights) {
@@ -672,7 +678,8 @@ public:
         double baseline_sum = prior_weight / mixture_weight / static_cast<double>(choice_count);
         for (std::size_t i = 0; i < values.size(); ++i) {
             if (values[i] >= masses_.size()) {
-                throw std::logic_error("TPE categorical observation is out of range");
+                throw TypedHpoError<std::logic_error>(
+                    "hpo_invariant", {}, "TPE categorical observation is out of range");
             }
             const double component_weight = weights[i] / mixture_weight;
             baseline_sum += component_weight * alpha / observed_normalizer;
@@ -720,28 +727,45 @@ private:
 
 void validate_config(const TpeSamplerConfig& config) {
     if (config.max_threads > 1024)
-        throw std::invalid_argument("TPE max_threads must be in [0, 1024]");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "TPE max_threads must be in [0, 1024]");
     if (config.history_switch && *config.history_switch == 0)
-        throw std::invalid_argument("TPE history_switch must be positive");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "TPE history_switch must be positive");
     if (config.startup_trials == 0) {
-        throw std::invalid_argument("TPE startup_trials must be positive");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "TPE startup_trials must be positive");
     }
     if (config.ei_candidates == 0 || config.ei_candidates > kMaxEiCandidates) {
-        throw std::invalid_argument("TPE ei_candidates must be in [1, 1000000]");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "TPE ei_candidates must be in [1, 1000000]");
     }
     if (config.scale_ei_candidates == 0 || config.scale_ei_candidates > kMaxEiCandidates)
-        throw std::invalid_argument("TPE scale_ei_candidates must be in [1, 1000000]");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "TPE scale_ei_candidates must be in [1, 1000000]");
     if (config.bad_reservoir_size > 65536)
-        throw std::invalid_argument("TPE bad_reservoir_size must be in [0, 65536]");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "TPE bad_reservoir_size must be in [0, 65536]");
     if (!std::isfinite(config.gamma_fraction) || config.gamma_fraction <= 0.0 ||
         config.gamma_fraction > 1.0) {
-        throw std::invalid_argument("TPE gamma_fraction must be finite and in (0, 1]");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "TPE gamma_fraction must be finite and in (0, 1]");
     }
     if (config.gamma_cap == 0) {
-        throw std::invalid_argument("TPE gamma_cap must be positive");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}}, "TPE gamma_cap must be positive");
     }
     if (!std::isfinite(config.prior_weight) || config.prior_weight <= 0.0) {
-        throw std::invalid_argument("TPE prior_weight must be finite and positive");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "TPE prior_weight must be finite and positive");
     }
 }
 
@@ -761,7 +785,8 @@ public:
 
         bool contains(std::uint64_t ordinal) const {
             if (ordinal >= cardinality_) {
-                throw std::out_of_range("TPE finite candidate ordinal is out of range");
+                throw TypedHpoError<std::out_of_range>(
+                    "hpo_invariant", {}, "TPE finite candidate ordinal is out of range");
             }
             if (dense_) {
                 const std::size_t word = static_cast<std::size_t>(ordinal / 64U);
@@ -773,7 +798,8 @@ public:
 
         bool insert(std::uint64_t ordinal) {
             if (ordinal >= cardinality_) {
-                throw std::out_of_range("TPE finite candidate ordinal is out of range");
+                throw TypedHpoError<std::out_of_range>(
+                    "hpo_invariant", {}, "TPE finite candidate ordinal is out of range");
             }
             if (dense_) {
                 const std::size_t word = static_cast<std::size_t>(ordinal / 64U);
@@ -913,7 +939,8 @@ public:
     void reset(std::uint64_t seed) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!pending_.empty()) {
-            throw std::logic_error("TPE cannot reset while candidates are outstanding");
+            throw TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "TPE cannot reset while candidates are outstanding");
         }
         engine_.seed(seed);
         reservoir_engine_.seed(seed ^ 0xd1b54a32d192ed03ULL);
@@ -1166,13 +1193,15 @@ public:
             double log_ratio = 0.0;
             for (std::size_t column = 0; column < models.size(); ++column) {
                 if (!std::isfinite(contributions[column])) {
-                    throw std::logic_error(
+                    throw TypedHpoError<std::logic_error>(
+                        "hpo_invariant", {},
                         "TPE produced a non-finite acquisition contribution for dimension: " +
-                        std::string(dimension_name(space.dimensions()[column])));
+                            std::string(dimension_name(space.dimensions()[column])));
                 }
                 log_ratio += contributions[column];
                 if (!std::isfinite(log_ratio))
-                    throw std::logic_error("TPE acquisition log ratio is non-finite");
+                    throw TypedHpoError<std::logic_error>(
+                        "hpo_invariant", {}, "TPE acquisition log ratio is non-finite");
             }
             if (detail::tpe_log_ratio_observer)
                 detail::tpe_log_ratio_observer(log_ratio);
@@ -1221,7 +1250,8 @@ public:
         }
         Candidate candidate = space.candidate_at(fallback_cursor_, id);
         if (!reservations_->insert(fallback_cursor_)) {
-            throw std::logic_error("TPE finite fallback failed to reserve an unseen candidate");
+            throw TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "TPE finite fallback failed to reserve an unseen candidate");
         }
         ++fallback_cursor_;
         return candidate;
@@ -1379,12 +1409,16 @@ public:
         input.imbue(std::locale::classic());
         std::string stored_signature;
         if (!(input >> std::quoted(stored_signature)))
-            throw std::invalid_argument("invalid TPE sampler-state signature");
+            throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                       {{"reason", "sampler"}},
+                                                       "invalid TPE sampler-state signature");
         if (stored_signature != signature)
             return false;
         std::string stored_build;
         if (!(input >> std::quoted(stored_build)))
-            throw std::invalid_argument("invalid TPE sampler-state build identity");
+            throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                       {{"reason", "sampler"}},
+                                                       "invalid TPE sampler-state build identity");
         if (stored_build != numeric_build_ ||
             stored_build.find(";flags_sha256:unavailable") != std::string::npos)
             return false;
@@ -1395,11 +1429,15 @@ public:
         detail::Mt19937_64 reservoir;
         if (!(input >> attempts >> next_id >> completed >> fallback >> compact >> cached_compact
                     >> epoch >> older_seen) || compact > 1 || cached_compact > 1)
-            throw std::invalid_argument("invalid TPE sampler-state counters");
+            throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                       {{"reason", "sampler"}},
+                                                       "invalid TPE sampler-state counters");
         for (auto& word : fingerprint)
             input >> word;
         if (!input)
-            throw std::invalid_argument("invalid TPE sampler-state fingerprint");
+            throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                       {{"reason", "sampler"}},
+                                                       "invalid TPE sampler-state fingerprint");
         if (attempts != source_->size() || next_id != next_id_ ||
             completed != completed_.load(std::memory_order_relaxed) ||
             fingerprint != fingerprint_)
@@ -1409,12 +1447,16 @@ public:
         const auto identifiers = [&] {
             std::uint64_t count;
             if (!(input >> count) || count > source_->size() || count > state.size())
-                throw std::invalid_argument("invalid TPE sampler-state observation count");
+                throw TypedHpoError<std::invalid_argument>(
+                    "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                    "invalid TPE sampler-state observation count");
             std::vector<std::uint64_t> values(static_cast<std::size_t>(count));
             std::unordered_set<std::uint64_t> seen;
             for (auto& identifier : values)
                 if (!(input >> identifier) || !seen.insert(identifier).second)
-                    throw std::invalid_argument("invalid TPE sampler-state observation IDs");
+                    throw TypedHpoError<std::invalid_argument>(
+                        "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                        "invalid TPE sampler-state observation IDs");
             return values;
         };
         const auto history = identifiers();
@@ -1426,7 +1468,9 @@ public:
                                          !good.empty() || !bad.empty())) ||
             (compact && !config.history_switch) ||
             (finite_cardinality_ && fallback > *finite_cardinality_))
-            throw std::invalid_argument("invalid TPE sampler-state structure");
+            throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                       {{"reason", "sampler"}},
+                                                       "invalid TPE sampler-state structure");
         const auto row_for_id = [&](std::uint64_t identifier) {
             std::uint64_t begin = 0;
             std::uint64_t end = source_->size();
@@ -1438,7 +1482,9 @@ public:
                     end = middle;
             }
             if (begin == source_->size() || source_->id(begin) != identifier)
-                throw std::invalid_argument("TPE sampler-state references missing trial");
+                throw TypedHpoError<std::invalid_argument>(
+                    "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                    "TPE sampler-state references missing trial");
             return begin;
         };
         const auto references = [&](const auto& values) {
@@ -1446,7 +1492,9 @@ public:
             for (const auto identifier : values) {
                 const auto row = row_for_id(identifier);
                 if (!source_->objective(row))
-                    throw std::invalid_argument("TPE sampler-state retains abandoned trial");
+                    throw TypedHpoError<std::invalid_argument>(
+                        "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                        "TPE sampler-state retains abandoned trial");
                 rows.push_back(row);
             }
             return rows;
@@ -1505,7 +1553,8 @@ private:
                 if constexpr (std::is_same_v<T, IntegerDimension>) {
                     const std::uint64_t count = integer_count(item);
                     if (count > kMaxExactlyRepresentableBins) {
-                        throw std::invalid_argument(
+                        throw TypedHpoError<std::invalid_argument>(
+                            "hpo_study_spec_invalid", {{"reason", "sampler"}},
                             "TPE cannot exactly encode an integer dimension with more than "
                             "2^53 values");
                     }
@@ -1524,7 +1573,8 @@ private:
                     if (item.step().has_value()) {
                         const std::uint64_t count = real_grid_count(item);
                         if (count > kMaxExactlyRepresentableBins) {
-                            throw std::invalid_argument(
+                            throw TypedHpoError<std::invalid_argument>(
+                                "hpo_study_spec_invalid", {{"reason", "sampler"}},
                                 "TPE cannot exactly encode a stepped real dimension with more "
                                 "than 2^53 values");
                         }
@@ -1597,7 +1647,8 @@ private:
             std::clamp(scaled_low * (1.0 - unit) + scaled_high * unit, scaled_low, scaled_high);
         const double decoded = scaled * scale;
         if (!std::isfinite(decoded)) {
-            throw std::logic_error("TPE produced a non-finite continuous value");
+            throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                                  "TPE produced a non-finite continuous value");
         }
         return std::clamp(decoded, dimension.low(), dimension.high());
     }
@@ -1643,15 +1694,17 @@ private:
     static void validate_log_domain(const RelativeLogDomain& domain, const std::string& name) {
         if (!std::isfinite(domain.reference) || domain.reference <= 0.0 ||
             !std::isfinite(domain.span) || domain.span <= 0.0) {
-            throw std::invalid_argument("TPE log transform is not representable for dimension: " +
-                                        name);
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                "TPE log transform is not representable for dimension: " + name);
         }
     }
 
     static double normalize_log_offset(double offset, const RelativeLogDomain& domain) {
         const double normalized = detail::math::log1p(offset / domain.reference) / domain.span;
         if (!std::isfinite(normalized)) {
-            throw std::logic_error("TPE produced a non-finite relative log coordinate");
+            throw TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "TPE produced a non-finite relative log coordinate");
         }
         return std::clamp(static_cast<double>(normalized), 0.0, 1.0);
     }
@@ -1659,7 +1712,8 @@ private:
     static double normalize_log_value(double value, const RelativeLogDomain& domain) {
         const double normalized = stable_relative_log(value, domain.reference) / domain.span;
         if (!std::isfinite(normalized)) {
-            throw std::logic_error("TPE produced a non-finite log coordinate");
+            throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                                  "TPE produced a non-finite log coordinate");
         }
         return std::clamp(static_cast<double>(normalized), 0.0, 1.0);
     }
@@ -1686,9 +1740,10 @@ private:
         if (!valid_bin(0.0, 0.5, 1.0) ||
             !valid_bin(middle_ld, middle_ld + 0.5, middle_ld + 1.0) ||
             !valid_bin(count_ld - 1.0, count_ld - 0.5, count_ld)) {
-            throw std::invalid_argument(
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
                 "TPE log integer transform cannot represent every discrete bin: " +
-                dimension.name());
+                    dimension.name());
         }
     }
 
@@ -1709,7 +1764,8 @@ private:
         const RelativeLogDomain domain = log_integer_domain(dimension);
         const double offset = domain.reference * detail::math::expm1(domain.span * unit);
         if (!std::isfinite(offset)) {
-            throw std::logic_error("TPE produced a non-finite log-integer offset");
+            throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                                  "TPE produced a non-finite log-integer offset");
         }
         const std::uint64_t count = integer_count(dimension);
         if (offset <= 0.0) {
@@ -1743,7 +1799,8 @@ private:
         }
         const double decoded = static_cast<double>(value);
         if (!std::isfinite(decoded)) {
-            throw std::logic_error("TPE produced a non-finite log-real value");
+            throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                                  "TPE produced a non-finite log-real value");
         }
         return std::clamp(decoded, dimension.low(), dimension.high());
     }
@@ -1774,7 +1831,8 @@ private:
                     return normalized_ordinal(real_ordinal(item, real, encoding.count),
                                               encoding.count);
                 } else {
-                    throw std::logic_error("categorical dimension used as TPE numeric dimension");
+                    throw TypedHpoError<std::logic_error>(
+                        "hpo_invariant", {}, "categorical dimension used as TPE numeric dimension");
                 }
             },
             dimension);
@@ -1800,7 +1858,8 @@ private:
                     }
                     return real_at(item, decoded_ordinal(normalized, encoding.count));
                 } else {
-                    throw std::logic_error("categorical dimension used as TPE numeric dimension");
+                    throw TypedHpoError<std::logic_error>(
+                        "hpo_invariant", {}, "categorical dimension used as TPE numeric dimension");
                 }
             },
             dimension);
@@ -1829,7 +1888,8 @@ private:
                         real_ordinal(item, std::get<double>(value), encoding.count);
                     return normalized_bin(ordinal, encoding.count);
                 } else {
-                    throw std::logic_error("categorical dimension used as a TPE numeric bin");
+                    throw TypedHpoError<std::logic_error>(
+                        "hpo_invariant", {}, "categorical dimension used as a TPE numeric bin");
                 }
             },
             dimension);
@@ -1845,11 +1905,13 @@ private:
                     const auto found =
                         std::find(item.choices().begin(), item.choices().end(), value);
                     if (found == item.choices().end()) {
-                        throw std::logic_error("TPE categorical value is not a legal choice");
+                        throw TypedHpoError<std::logic_error>(
+                            "hpo_invariant", {}, "TPE categorical value is not a legal choice");
                     }
                     return static_cast<std::size_t>(found - item.choices().begin());
                 } else {
-                    throw std::logic_error("numeric dimension used as TPE categorical dimension");
+                    throw TypedHpoError<std::logic_error>(
+                        "hpo_invariant", {}, "numeric dimension used as TPE categorical dimension");
                 }
             },
             dimension);
@@ -1864,7 +1926,8 @@ private:
                 } else if constexpr (std::is_same_v<T, CategoricalDimension>) {
                     return item.choices().at(index);
                 } else {
-                    throw std::logic_error("numeric dimension used as TPE categorical dimension");
+                    throw TypedHpoError<std::logic_error>(
+                        "hpo_invariant", {}, "numeric dimension used as TPE categorical dimension");
                 }
             },
             dimension);
@@ -1881,7 +1944,8 @@ private:
                 } else if constexpr (std::is_same_v<T, CategoricalDimension>) {
                     return item.choices().front();
                 } else {
-                    throw std::logic_error("boolean dimension cannot be fixed");
+                    throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                                          "boolean dimension cannot be fixed");
                 }
             },
             dimension);
@@ -1970,28 +2034,34 @@ TpeSampler::TpeSampler(SearchSpace space,
       candidate_policy_(candidate_policy) {
     validate_config(config_);
     if (direction_ != ObjectiveDirection::Maximize && direction_ != ObjectiveDirection::Minimize) {
-        throw std::invalid_argument("TPE objective direction is invalid");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "TPE objective direction is invalid");
     }
     if (candidate_policy_ != CandidatePolicy::SamplerDefault &&
         candidate_policy_ != CandidatePolicy::WithoutReplacement &&
         candidate_policy_ != CandidatePolicy::Exhaustive) {
-        throw std::invalid_argument("TPE candidate policy is invalid");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}}, "TPE candidate policy is invalid");
     }
 
     std::optional<std::uint64_t> finite_cardinality;
     if (candidate_policy_ != CandidatePolicy::SamplerDefault) {
         finite_cardinality = space_.finite_cardinality();
         if (!finite_cardinality.has_value()) {
-            throw std::invalid_argument(
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
                 "finite TPE candidate policy requires a step on every varying real dimension");
         }
         if (max_candidates_ != 0 && max_candidates_ > *finite_cardinality) {
-            throw std::invalid_argument(
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
                 "finite TPE candidate budget must not exceed search-space cardinality");
         }
         if (candidate_policy_ == CandidatePolicy::Exhaustive &&
             max_candidates_ != *finite_cardinality) {
-            throw std::invalid_argument(
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
                 "exhaustive TPE candidate budget must equal search-space cardinality");
         }
     }
@@ -2018,7 +2088,8 @@ std::optional<Candidate> TpeSampler::ask() {
         return std::nullopt;
     }
     if (candidate_id == std::numeric_limits<std::uint64_t>::max())
-        throw std::overflow_error("TPE trial IDs exhausted");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid", {{"reason", "sampler"}},
+                                                 "TPE trial IDs exhausted");
     if (candidate_policy_ == CandidatePolicy::SamplerDefault && !impl_->has_varying_dimension_ &&
         generated != 0) {
         return std::nullopt;
@@ -2050,7 +2121,9 @@ std::optional<Candidate> TpeSampler::ask() {
         candidate = impl_->tpe_candidate(space_, candidate_id, config_);
         if (candidate.has_value()) {
             if (!impl_->reserve_candidate(space_, *candidate)) {
-                throw std::logic_error("TPE selected a finite candidate that was already reserved");
+                throw TypedHpoError<std::logic_error>(
+                    "hpo_invariant", {},
+                    "TPE selected a finite candidate that was already reserved");
             }
         } else {
             candidate = impl_->fallback_candidate(space_, candidate_id);
@@ -2060,11 +2133,12 @@ std::optional<Candidate> TpeSampler::ask() {
         return std::nullopt;
     }
     if (!space_.is_valid(*candidate)) {
-        throw std::logic_error("TPE generated an invalid candidate");
+        throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                              "TPE generated an invalid candidate");
     }
 
     if (!impl_->register_pending(space_, *candidate)) {
-        throw std::logic_error("duplicate TPE candidate id");
+        throw TypedHpoError<std::logic_error>("hpo_invariant", {}, "duplicate TPE candidate id");
     }
     impl_->generated_.store(generated + 1, std::memory_order_relaxed);
     fingerprint_candidate(impl_->fingerprint_, candidate->id, space_.dimensions().size(),
@@ -2079,14 +2153,17 @@ std::optional<Candidate> TpeSampler::ask() {
 
 void TpeSampler::tell(std::uint64_t candidate_id, double objective_value) {
     if (!std::isfinite(objective_value)) {
-        throw std::invalid_argument("TPE objective value must be finite");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "TPE objective value must be finite");
     }
 
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     const auto found = impl_->pending_.find(candidate_id);
     if (found == impl_->pending_.end()) {
-        throw std::invalid_argument("TPE candidate id is not outstanding: " +
-                                    std::to_string(candidate_id));
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "TPE candidate id is not outstanding: " + std::to_string(candidate_id));
     }
     const double score =
         direction_ == ObjectiveDirection::Maximize ? objective_value : -objective_value;
@@ -2103,8 +2180,9 @@ void TpeSampler::abandon(std::uint64_t candidate_id) {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     const auto found = impl_->pending_.find(candidate_id);
     if (found == impl_->pending_.end()) {
-        throw std::invalid_argument("TPE candidate id is not outstanding: " +
-                                    std::to_string(candidate_id));
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "TPE candidate id is not outstanding: " + std::to_string(candidate_id));
     }
     impl_->pending_.erase(found);
     impl_->pending_encodings_.erase(candidate_id);
@@ -2121,7 +2199,9 @@ bool TpeSampler::warm_start(const std::vector<WarmStartObservation>& observation
                 names_.emplace_back(dimension_name(dimension));
             for (const auto& value : values_)
                 if (!space.is_valid(value.candidate))
-                    throw std::invalid_argument("invalid TPE warm-start observation");
+                    throw TypedHpoError<std::invalid_argument>(
+                        "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                        "invalid TPE warm-start observation");
             std::sort(values_.begin(), values_.end(), [](const auto& left, const auto& right) {
                 return left.candidate.id < right.candidate.id;
             });
@@ -2148,19 +2228,25 @@ bool TpeSampler::warm_start(std::shared_ptr<const WarmStartSource> source,
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     if (impl_->generated_ != 0 || impl_->completed_ != 0 || impl_->next_id_ != 0 ||
         !impl_->pending_.empty())
-        throw std::logic_error("TPE warm start requires a pristine sampler");
+        throw TypedHpoError<std::logic_error>("hpo_invariant", {},
+                                              "TPE warm start requires a pristine sampler");
     if (!source || source->size() >= Impl::owned_marker)
-        throw std::invalid_argument("invalid TPE warm-start source");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}}, "invalid TPE warm-start source");
     std::uint64_t next_id = 0;
     for (std::uint64_t row = 0; row < source->size(); ++row) {
         const auto identifier = source->id(row);
         const auto objective = source->objective(row);
         if (identifier < next_id || identifier == std::numeric_limits<std::uint64_t>::max() ||
             (objective && !std::isfinite(*objective)))
-            throw std::invalid_argument("invalid TPE warm-start observation");
+            throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                       {{"reason", "sampler"}},
+                                                       "invalid TPE warm-start observation");
         for (std::size_t column = 0; column < space_.dimensions().size(); ++column)
             if (!dimension_contains(space_.dimensions()[column], source->parameter(row, column)))
-                throw std::invalid_argument("invalid TPE warm-start parameter");
+                throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                           {{"reason", "sampler"}},
+                                                           "invalid TPE warm-start parameter");
         next_id = identifier + 1;
     }
     const auto policy = candidate_policy_ == CandidatePolicy::Exhaustive
@@ -2201,7 +2287,8 @@ bool TpeSampler::warm_start(std::shared_ptr<const WarmStartSource> source,
 std::string TpeSampler::sampler_state() const {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     if (!impl_->pending_.empty())
-        throw std::logic_error("TPE sampler state requires no outstanding candidates");
+        throw TypedHpoError<std::logic_error>(
+            "hpo_invariant", {}, "TPE sampler state requires no outstanding candidates");
     const auto policy = candidate_policy_ == CandidatePolicy::Exhaustive
         ? CandidatePolicy::WithoutReplacement : candidate_policy_;
     return impl_->write_state(

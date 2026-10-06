@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Strategies stopped by an empty `runtime.error()` are no longer scored as successful
+  trials. A non-empty engine error text, a non-empty failure code, or failed run status
+  rejects the partial report before objective evaluation. Best trials and existing goldens
+  may therefore move for studies containing these previously silent failures.
+- Add `failure_code`, `failure_args`, and `failure_origin` after `error` in terminal trial
+  objects, including progress, trial files, and retained results. Forward engine codes
+  verbatim, validate scalar argument objects, and cap diagnostics at 4 KiB on a UTF-8
+  boundary. Optional getters preserve compatibility with older plugins and the exact ABI
+  version check remains unchanged.
+- Prefer checked strategy creation and input/override setters when exported. Rejected
+  settings fail closed with engine-owned `setting_rejected` metadata; older plugins retain
+  the legacy setter fallback.
+- Add typed C++ failure metadata and Python exception `.code`, `.args`, and `.origin`
+  without changing public call signatures or human-readable diagnostics. Initialization
+  and process errors now print one structured failure document on stdout, retaining exit
+  codes and stderr diagnostics.
+- Publish `hpo_failure_codes.json` and its checked version/hash diff in the Python package
+  and release assets. CI checks the unreleased diff; release packaging stamps its target
+  version without changing the catalog bytes.
+
 ## 0.9.0 — 2026-10-05
 
 - Vendor MIT-licensed CORE-MATH binary64 `log`, `log1p`, `exp`, `expm1`, `cos` and `erfc`.

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include "continuation.hpp"
 #include <pineforge/hpo/symbol_feeds.hpp>
 
@@ -22,7 +24,8 @@ inline constexpr std::size_t symbol_csv_field_max = 131072;
 inline constexpr const char* symbol_feed_canonicalization = "pf-symbol-feed-barc-close-le-v1";
 
 [[noreturn]] inline void symbol_feed_error(const std::string& message) {
-    throw std::invalid_argument("--symbol-feeds: " + message);
+    throw TypedHpoError<std::invalid_argument>(
+        "hpo_study_spec_invalid", {{"reason", "symbol_feeds"}}, "--symbol-feeds: " + message);
 }
 
 inline std::size_t symbol_utf8_length(const std::string& value) {
@@ -207,7 +210,8 @@ inline std::string symbol_numeric_unicode(std::string value) {
         const auto following = std::upper_bound(decimal_starts.begin(),
                                                 decimal_starts.end(), point);
         if (following == decimal_starts.begin() || point - *(following - 1) >= 10)
-            throw std::invalid_argument("not a number");
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "symbol_feeds"}}, "not a number");
         normalized += static_cast<char>('0' + point - *(following - 1));
     }
     return normalized;
@@ -224,7 +228,8 @@ inline std::string symbol_numeric_cell(std::string value, bool optional = false)
         if (value[index] == '_' && (index == 0 || index + 1 == value.size() ||
             value[index - 1] < '0' || value[index - 1] > '9' ||
             value[index + 1] < '0' || value[index + 1] > '9'))
-            throw std::invalid_argument("not a number");
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "symbol_feeds"}}, "not a number");
     }
     value.erase(std::remove(value.begin(), value.end(), '_'), value.end());
     return value;
@@ -234,22 +239,26 @@ inline double symbol_double(const std::string& cell) {
     const auto text = symbol_numeric_cell(cell);
     if (text.empty() || text.find_first_of("xXpP") != std::string::npos ||
         text.find('\0') != std::string::npos || text.find('(') != std::string::npos)
-        throw std::invalid_argument("not a number");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "symbol_feeds"}}, "not a number");
     char* end = nullptr;
     const auto number = std::strtod(text.c_str(), &end);
     if (end != text.c_str() + text.size())
-        throw std::invalid_argument("not a number");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "symbol_feeds"}}, "not a number");
     return number;
 }
 
 inline std::int64_t symbol_integer(const std::string& cell) {
     const auto text = symbol_numeric_cell(cell);
     if (text.empty() || text.find_first_not_of("+-0123456789") != std::string::npos)
-        throw std::invalid_argument("not a number");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "symbol_feeds"}}, "not a number");
     std::size_t consumed = 0;
     const auto number = std::stoll(text, &consumed);
     if (consumed != text.size())
-        throw std::invalid_argument("not a number");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "symbol_feeds"}}, "not a number");
     return number;
 }
 

@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Mapping
 
+from .error import HpoError
+
 try:
     import pineforge_codegen
     from pineforge_codegen import transpile_full
@@ -69,13 +71,22 @@ class TranspileResult:
         return self.generated_cpp
 
 
-class TranspileFailure(RuntimeError):
+class TranspileFailure(HpoError, RuntimeError):
     """Raised when an artifact build cannot proceed past transpilation."""
 
     def __init__(self, result: TranspileResult):
         self.result = result
         summary = "; ".join(d.message for d in result.diagnostics) or "transpile failed"
         super().__init__(summary)
+        self.with_failure("hpo_transpile_failed", {})
+        if any(
+            diagnostic.phase == "CONFIGURATION" for diagnostic in result.diagnostics
+        ):
+            self.with_failure("hpo_toolchain_unavailable", {"reason": "configuration"})
+        elif any(diagnostic.phase == "INTERNAL" for diagnostic in result.diagnostics):
+            self.with_failure(
+                "hpo_toolchain_unavailable", {"reason": "transpile_internal"}
+            )
 
 
 @dataclass(frozen=True)

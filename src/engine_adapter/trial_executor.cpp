@@ -1,3 +1,4 @@
+#include <pineforge/hpo/error.hpp>
 #include <pineforge/hpo/trial_executor.hpp>
 
 #include <algorithm>
@@ -127,18 +128,22 @@ bool strip_prefix(std::string_view* value, std::string_view prefix) noexcept {
 ReportSnapshot copy_report(const pf_report_t& report, bool capture_equity_curve,
                            bool capture_trades) {
     if (report.total_trades < 0) {
-        throw std::runtime_error("strategy returned a negative total_trades value");
+        throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
+                                                "strategy returned a negative total_trades value");
     }
     if (report.equity_curve_len < 0) {
-        throw std::runtime_error("strategy returned a negative equity_curve_len value");
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_report_invalid", {}, "strategy returned a negative equity_curve_len value");
     }
     if (report.equity_curve_len > 0 && report.equity_curve == nullptr) {
-        throw std::runtime_error("strategy returned a null non-empty equity curve");
+        throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
+                                                "strategy returned a null non-empty equity curve");
     }
 
     const auto curve_size = static_cast<std::uint64_t>(report.equity_curve_len);
     if (curve_size > std::vector<pf_equity_point_t>().max_size()) {
-        throw std::runtime_error("strategy equity curve is too large to snapshot");
+        throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
+                                                "strategy equity curve is too large to snapshot");
     }
 
     ReportSnapshot snapshot;
@@ -159,7 +164,8 @@ ReportSnapshot copy_report(const pf_report_t& report, bool capture_equity_curve,
     std::memcpy(&snapshot.metrics, &report.metrics, sizeof(snapshot.metrics));
     if (capture_trades && report.total_trades > 0) {
         if (!report.trades) {
-            throw std::runtime_error("strategy returned null non-empty trades");
+            throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
+                                                    "strategy returned null non-empty trades");
         }
         snapshot.trades.resize(static_cast<std::size_t>(report.total_trades));
         std::memcpy(snapshot.trades.data(), report.trades,
@@ -249,26 +255,35 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
       dataset_(std::move(dataset)),
       configuration_(std::move(configuration)) {
     if (!plugin_) {
-        throw std::invalid_argument("TrialExecutor requires a strategy plugin");
+        throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
+                                                   "TrialExecutor requires a strategy plugin");
     }
     if (!dataset_) {
-        throw std::invalid_argument("TrialExecutor requires a dataset");
+        throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
+                                                   "TrialExecutor requires a dataset");
     }
     if (dataset_->size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-        throw std::invalid_argument("dataset exceeds the PineForge C ABI bar-count limit");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_dataset_invalid", {}, "dataset exceeds the PineForge C ABI bar-count limit");
     }
     if (configuration_.magnifier_samples <= 0) {
-        throw std::invalid_argument("magnifier_samples must be positive");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "backtest"}},
+                                                   "magnifier_samples must be positive");
     }
     if (!valid_magnifier_distribution(configuration_.magnifier_distribution)) {
-        throw std::invalid_argument("invalid magnifier distribution");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "backtest"}}, "invalid magnifier distribution");
     }
     if (configuration_.symbol_feeds && !configuration_.symbol_feeds->empty()) {
         TrialResources validation(*plugin_, plugin_->create_strategy());
         plugin_->set_symbol_feeds(validation.strategy(), *configuration_.symbol_feeds);
         const auto error = plugin_->last_error(validation.strategy());
-        if (!error.empty())
-            throw std::invalid_argument("--symbol-feeds: " + error);
+        const auto code = plugin_->last_error_code(validation.strategy());
+        if (!error.empty() || (code && !code->empty()) ||
+            plugin_->last_run_status(validation.strategy()) == 1)
+            throw EngineError(code, plugin_->last_error_args(validation.strategy()),
+                              "--symbol-feeds: " + error);
         const auto canonical = [](std::string timeframe) {
             if (timeframe == "D" || timeframe == "W" || timeframe == "M" || timeframe == "S")
                 timeframe = "1" + timeframe;
@@ -280,10 +295,12 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
             });
         if (has_bars && !configuration_.script_timeframe.empty() &&
             canonical(configuration_.input_timeframe) != canonical(configuration_.script_timeframe))
-            throw std::invalid_argument("--symbol-feeds: request.security of another symbol "
-                "needs the chart's own bars as input; input '" + configuration_.input_timeframe +
-                "' aggregated to chart '" + configuration_.script_timeframe +
-                "' is not supported");
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "symbol_feeds"}},
+                "--symbol-feeds: request.security of another symbol "
+                "needs the chart's own bars as input; input '" +
+                    configuration_.input_timeframe + "' aggregated to chart '" +
+                    configuration_.script_timeframe + "' is not supported");
     }
 }
 
@@ -296,7 +313,8 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
                                                    const ParameterValues& strategy_overrides,
                                                    std::size_t bar_count) const {
     if (bar_count == 0 || bar_count > dataset_->size())
-        throw std::invalid_argument("prefix size must be within the dataset");
+        throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
+                                                   "prefix size must be within the dataset");
     TrialResources resources(*plugin_, plugin_->create_strategy());
     plugin_->set_chart_timezone(resources.strategy(), configuration_.chart_timezone);
     for (const auto& entry : strategy_overrides) {
@@ -317,10 +335,14 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
                                configuration_.magnifier_distribution, &resources.report);
 
     const std::string engine_error = plugin_->last_error(resources.strategy());
-    if (!engine_error.empty()) {
+    const auto engine_code = plugin_->last_error_code(resources.strategy());
+    if (!engine_error.empty() || (engine_code && !engine_code->empty()) ||
+        plugin_->last_run_status(resources.strategy()) == 1) {
         TrialExecutionResult failed;
         failed.status = TrialExecutionStatus::kEngineError;
         failed.error = engine_error;
+        failed.error_code = engine_code && !engine_code->empty() ? engine_code : std::nullopt;
+        failed.error_args = plugin_->last_error_args(resources.strategy());
         return failed;
     }
 

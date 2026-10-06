@@ -35,10 +35,33 @@ from .study_spec import (
     load_study_spec,
 )
 from .transpile import legacy_input_kind_version
+from .error import HpoError, failure_document
 
 
-class CliError(RuntimeError):
+class CliError(HpoError, RuntimeError):
     """A user-facing CLI configuration or execution error."""
+
+    code = "hpo_cli_usage"
+
+
+def _cli_error(code: str, args: dict[str, Any], message: str) -> CliError:
+    return CliError(message).with_failure(code, args)
+
+
+def _setting_error(
+    entrypoint: str, reason: str, message: str, input_title: str | None = None
+) -> CliError:
+    arguments = {"entrypoint": entrypoint, "reason": reason}
+    if input_title is not None:
+        arguments["input"] = input_title
+    return CliError(message).with_failure("setting_rejected", arguments, "engine")
+
+
+class _FailureArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        error = CliError(message)
+        print(json.dumps(failure_document(error, 2), separators=(",", ":")))
+        super().error(message)
 
 
 def _repository_root() -> Path:
@@ -50,14 +73,20 @@ def _resolve_engine_root(value: str | None) -> Path:
         resolved = Path(value).expanduser().resolve()
         if (resolved / "include" / "pineforge" / "pineforge.h").is_file():
             return resolved
-        raise CliError(f"--engine-root is not a pineforge-engine tree: {resolved}")
+        raise _cli_error(
+            "hpo_toolchain_unavailable",
+            {"reason": "configuration"},
+            f"--engine-root is not a pineforge-engine tree: {resolved}",
+        )
     environment = os.environ.get("PINEFORGE_ENGINE_ROOT")
     if environment:
         resolved = Path(environment).expanduser().resolve()
         if (resolved / "include" / "pineforge" / "pineforge.h").is_file():
             return resolved
-        raise CliError(
-            f"PINEFORGE_ENGINE_ROOT is not a pineforge-engine tree: {resolved}"
+        raise _cli_error(
+            "hpo_toolchain_unavailable",
+            {"reason": "configuration"},
+            f"PINEFORGE_ENGINE_ROOT is not a pineforge-engine tree: {resolved}",
         )
     root = _repository_root()
     for candidate in (
@@ -67,9 +96,11 @@ def _resolve_engine_root(value: str | None) -> Path:
         resolved = candidate.resolve()
         if (resolved / "include" / "pineforge" / "pineforge.h").is_file():
             return resolved
-    raise CliError(
+    raise _cli_error(
+        "hpo_toolchain_unavailable",
+        {"reason": "native_runner"},
         "pineforge-engine was not found; initialize external/pineforge-engine, "
-        "pass --engine-root, or set PINEFORGE_ENGINE_ROOT"
+        "pass --engine-root, or set PINEFORGE_ENGINE_ROOT",
     )
 
 
@@ -78,13 +109,21 @@ def _resolve_native(value: str | None) -> Path:
         resolved = Path(value).expanduser().resolve()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return resolved
-        raise CliError(f"--native is not an executable file: {resolved}")
+        raise _cli_error(
+            "hpo_toolchain_unavailable",
+            {"reason": "native_runner"},
+            f"--native is not an executable file: {resolved}",
+        )
     environment = os.environ.get("PINEFORGE_HPO_NATIVE")
     if environment:
         resolved = Path(environment).expanduser().resolve()
         if resolved.is_file() and os.access(resolved, os.X_OK):
             return resolved
-        raise CliError(f"PINEFORGE_HPO_NATIVE is not executable: {resolved}")
+        raise _cli_error(
+            "hpo_toolchain_unavailable",
+            {"reason": "native_runner"},
+            f"PINEFORGE_HPO_NATIVE is not executable: {resolved}",
+        )
     root = _repository_root()
     candidates = (
         root / "build" / "bin" / "pineforge-hpo-native",
@@ -98,9 +137,11 @@ def _resolve_native(value: str | None) -> Path:
     from_path = shutil.which("pineforge-hpo-native")
     if from_path:
         return Path(from_path).resolve()
-    raise CliError(
+    raise _cli_error(
+        "hpo_toolchain_unavailable",
+        {"reason": "native_runner"},
         "pineforge-hpo-native was not found; build the CMake target, pass --native, "
-        "or set PINEFORGE_HPO_NATIVE"
+        "or set PINEFORGE_HPO_NATIVE",
     )
 
 
@@ -114,14 +155,20 @@ def _file_sha256(path: Path) -> str:
 
 def _abi_scalar(value: object, *, where: str) -> str:
     if value is None:
-        raise CliError(f"{where} cannot be null")
+        raise _cli_error(
+            "hpo_study_spec_invalid", {"reason": "input"}, f"{where} cannot be null"
+        )
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, float):
         return format(value, ".17g")
     if isinstance(value, (str, int)):
         return str(value)
-    raise CliError(f"{where} must be a JSON scalar")
+    raise _cli_error(
+        "hpo_study_spec_invalid",
+        {"reason": "artifact_metadata"},
+        f"{where} must be a JSON scalar",
+    )
 
 
 def _artifact_json(artifact: StrategyArtifact) -> dict[str, Any]:
@@ -141,32 +188,50 @@ def _precompiled_artifact(
 ) -> tuple[dict[str, Any], tuple[Mapping[str, Any], ...]]:
     manifest_path = path.parent / "manifest.json"
     if not manifest_path.is_file():
-        raise CliError(
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
             "a precompiled strategy requires its adjacent manifest.json so "
-            "input names and types can be validated"
+            "input names and types can be validated",
         )
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise CliError(
-            f"cannot read artifact manifest {manifest_path}: {error}"
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"cannot read artifact manifest {manifest_path}: {error}",
         ) from error
     if not isinstance(manifest, Mapping) or manifest.get("schema_version") != 1:
-        raise CliError(f"unsupported artifact manifest: {manifest_path}")
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"unsupported artifact manifest: {manifest_path}",
+        )
     expected_sha256 = manifest.get("plugin_sha256")
     actual_sha256 = _file_sha256(path)
     if expected_sha256 != actual_sha256:
-        raise CliError(f"precompiled plugin hash does not match {manifest_path}")
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"precompiled plugin hash does not match {manifest_path}",
+        )
     raw_inputs = manifest.get("inputs")
     if not isinstance(raw_inputs, list) or not all(
         isinstance(item, Mapping) for item in raw_inputs
     ):
-        raise CliError(f"artifact manifest has an invalid input list: {manifest_path}")
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"artifact manifest has an invalid input list: {manifest_path}",
+        )
     artifact_key = manifest.get("artifact_key")
     request_key = manifest.get("request_key")
     if not isinstance(artifact_key, str) or len(artifact_key) != 64:
-        raise CliError(
-            f"artifact manifest has an invalid artifact key: {manifest_path}"
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"artifact manifest has an invalid artifact key: {manifest_path}",
         )
     provenance_path = path.parent / "provenance.json"
     _artifact_input_metadata(manifest_path)
@@ -174,8 +239,10 @@ def _precompiled_artifact(
         try:
             provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError) as error:
-            raise CliError(
-                f"cannot read artifact provenance {provenance_path}: {error}"
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "study"},
+                f"cannot read artifact provenance {provenance_path}: {error}",
             ) from error
         if not isinstance(provenance, Mapping) or any(
             provenance.get(field) != manifest.get(field)
@@ -187,8 +254,10 @@ def _precompiled_artifact(
                 "plugin_sha256",
             )
         ):
-            raise CliError(
-                f"artifact manifest disagrees with provenance: {provenance_path}"
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
+                f"artifact manifest disagrees with provenance: {provenance_path}",
             )
     generated_cpp_path = path.parent / "generated.cpp"
     artifact = {
@@ -234,19 +303,45 @@ def _validate_value_against_manifest(
     if not isinstance(input_type, str) or not _value_matches_input_type(
         value, input_type
     ):
-        raise CliError(f"{where} is incompatible with Pine input type {input_type!r}")
+        raise _setting_error(
+            "strategy_set_input",
+            {
+                "int": "expected_integer",
+                "float": "expected_finite_decimal",
+                "bool": "invalid_boolean",
+            }.get(input_type, "unparseable_value")
+            if isinstance(input_type, str)
+            else "unparseable_value",
+            f"{where} is incompatible with Pine input type {input_type!r}",
+            manifest.get("title"),
+        )
     if _is_number(value):
         minimum = manifest.get("min")
         maximum = manifest.get("max")
         if _is_number(minimum) and value < minimum:
-            raise CliError(f"{where} is below the Pine input minimum {minimum}")
+            raise _setting_error(
+                "strategy_set_input",
+                "value_below_minimum",
+                f"{where} is below the Pine input minimum {minimum}",
+                manifest.get("title"),
+            )
         if _is_number(maximum) and value > maximum:
-            raise CliError(f"{where} is above the Pine input maximum {maximum}")
+            raise _setting_error(
+                "strategy_set_input",
+                "value_above_maximum",
+                f"{where} is above the Pine input maximum {maximum}",
+                manifest.get("title"),
+            )
     options = manifest.get("options")
     if isinstance(options, list) and not any(
         _same_scalar(value, option) for option in options
     ):
-        raise CliError(f"{where} is not one of the Pine input options")
+        raise _setting_error(
+            "strategy_set_input",
+            "invalid_input_option",
+            f"{where} is not one of the Pine input options",
+            manifest.get("title"),
+        )
 
 
 def _validate_strategy_overrides(study: StudySpec) -> None:
@@ -282,31 +377,65 @@ def _validate_strategy_overrides(study: StudySpec) -> None:
     allowed = numeric | integer | boolean | set(enum_values)
     unknown = sorted(set(overrides) - allowed)
     if unknown:
-        raise CliError("unsupported strategy overrides: " + ", ".join(unknown))
+        raise _setting_error(
+            "strategy_set_override",
+            "unknown_key",
+            "unsupported strategy overrides: " + ", ".join(unknown),
+        )
     for name, value in overrides.items():
         text = _abi_scalar(value, where=f"strategy_overrides.{name}")
         if name in numeric:
             try:
                 parsed = float(text)
             except ValueError as error:
-                raise CliError(f"strategy_overrides.{name} must be numeric") from error
+                raise _setting_error(
+                    "strategy_set_override",
+                    "unparseable_value",
+                    f"strategy_overrides.{name} must be numeric",
+                ) from error
             if not math.isfinite(parsed):
-                raise CliError(f"strategy_overrides.{name} must be finite")
+                raise _setting_error(
+                    "strategy_set_override",
+                    "expected_finite_decimal",
+                    f"strategy_overrides.{name} must be finite",
+                )
             if name in {"initial_capital", "default_qty_value"} and parsed <= 0:
-                raise CliError(f"strategy_overrides.{name} must be positive")
+                raise _cli_error(
+                    "hpo_study_spec_invalid",
+                    {"reason": "overrides"},
+                    f"strategy_overrides.{name} must be positive",
+                )
             if name == "commission_value" and parsed < 0:
-                raise CliError(
-                    "strategy_overrides.commission_value must be non-negative"
+                raise _cli_error(
+                    "hpo_study_spec_invalid",
+                    {"reason": "overrides"},
+                    "strategy_overrides.commission_value must be non-negative",
                 )
         elif name in integer:
             if re.fullmatch(r"[+-]?\d+", text) is None:
-                raise CliError(f"strategy_overrides.{name} must be an integer")
+                raise _setting_error(
+                    "strategy_set_override",
+                    "unparseable_value",
+                    f"strategy_overrides.{name} must be an integer",
+                )
             if int(text) < 0:
-                raise CliError(f"strategy_overrides.{name} must be non-negative")
+                raise _cli_error(
+                    "hpo_study_spec_invalid",
+                    {"reason": "overrides"},
+                    f"strategy_overrides.{name} must be non-negative",
+                )
         elif name in boolean and text not in {"true", "false", "1", "0"}:
-            raise CliError(f"strategy_overrides.{name} must be true/false or 1/0")
+            raise _setting_error(
+                "strategy_set_override",
+                "invalid_boolean",
+                f"strategy_overrides.{name} must be true/false or 1/0",
+            )
         elif name in enum_values and text not in enum_values[name]:
-            raise CliError(f"strategy_overrides.{name} has an unsupported value")
+            raise _setting_error(
+                "strategy_set_override",
+                "invalid_enum_option",
+                f"strategy_overrides.{name} has an unsupported value",
+            )
 
 
 def _artifact_input_metadata(path: Path) -> tuple[str | None, bool]:
@@ -321,9 +450,11 @@ def _artifact_input_metadata(path: Path) -> tuple[str | None, bool]:
         version = codegen.get("version") if isinstance(codegen, dict) else None
         recorded_version = version if isinstance(version, str) else None
         if kinds_emitted and legacy_input_kind_version(recorded_version):
-            raise CliError(
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
                 "input_kind_schema: 1 contradicts recorded codegen version "
-                f"{recorded_version}; codegen >= 1.1.0 is required"
+                f"{recorded_version}; codegen >= 1.1.0 is required",
             )
         return recorded_version, kinds_emitted
     except (OSError, UnicodeError, ValueError, KeyError, TypeError):
@@ -342,32 +473,46 @@ def _validate_manifest_inputs(
     for item in inputs:
         title = item.get("title")
         if not isinstance(title, str) or not title:
-            raise CliError("artifact input manifest contains an invalid title")
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
+                "artifact input manifest contains an invalid title",
+            )
         if title in by_title and title in requested:
-            raise CliError(
-                f"artifact input manifest contains duplicate title {title!r}"
+            raise _setting_error(
+                "strategy_set_input",
+                "ambiguous_key",
+                f"artifact input manifest contains duplicate title {title!r}",
+                title,
             )
         by_title[title] = item
     unknown = sorted(requested - set(by_title))
     if unknown:
-        raise CliError(
+        raise _setting_error(
+            "strategy_set_input",
+            "unknown_key",
             "StudySpec references inputs not emitted by pineforge-codegen-oss: "
-            + ", ".join(unknown)
+            + ", ".join(unknown),
+            unknown[0],
         )
     for name, parameter in study.strategy.search_space.items():
         manifest = by_title[name]
         input_type = manifest.get("type")
         if input_type == "string" and not input_kinds_emitted:
-            raise CliError(
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
                 f"search_space.{name}: manifest cannot rule out input.symbol (D7); "
                 "manifest not stamped kind-capable by pineforge-hpo's builder; "
                 "rebuild the artifact with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0; "
-                f"codegen version {codegen_version or 'unknown'}"
+                f"codegen version {codegen_version or 'unknown'}",
             )
         if manifest.get("kind") == "symbol" or manifest.get("type") == "symbol":
-            raise CliError(
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
                 f"search_space.{name}: HPO over input.symbol is refused (D7); "
-                "only fixed other-symbol reads are supported"
+                "only fixed other-symbol reads are supported",
             )
         input_kind = manifest.get("kind")
         if input_type == "string" and input_kind not in (
@@ -378,10 +523,12 @@ def _validate_manifest_inputs(
             "session",
             "text_area",
         ):
-            raise CliError(
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
                 f"search_space.{name}: manifest cannot rule out input.symbol (D7); "
                 f"unrecognized input kind {input_kind!r}; "
-                f"codegen version {codegen_version or 'unknown'}"
+                f"codegen version {codegen_version or 'unknown'}",
             )
         if parameter.kind == "categorical":
             for index, choice in enumerate(parameter.choices):
@@ -395,9 +542,11 @@ def _validate_manifest_inputs(
             "bool": "boolean",
         }.get(input_type)
         if expected_kind != parameter.kind:
-            raise CliError(
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
                 f"search_space.{name} kind {parameter.kind!r} is incompatible "
-                f"with Pine input type {input_type!r}"
+                f"with Pine input type {input_type!r}",
             )
         if parameter.low is not None:
             _validate_value_against_manifest(
@@ -465,8 +614,10 @@ def _add_dimension(command: list[str], name: str, parameter: ParameterSpec) -> N
         for index, choice in enumerate(parameter.choices):
             value = _abi_scalar(choice, where=f"search_space.{name}.choices[{index}]")
             if value in serialized:
-                raise CliError(
-                    f"search_space.{name}: choices collide after strategy ABI serialization"
+                raise _cli_error(
+                    "hpo_study_spec_invalid",
+                    {"reason": "input"},
+                    f"search_space.{name}: choices collide after strategy ABI serialization",
                 )
             serialized.add(value)
             if isinstance(choice, bool):
@@ -479,7 +630,11 @@ def _add_dimension(command: list[str], name: str, parameter: ParameterSpec) -> N
                 option = "--categorical-choice"
             command.extend((option, name, value))
         return
-    raise CliError(f"search_space.{name}: unsupported kind {parameter.kind!r}")
+    raise _cli_error(
+        "hpo_study_spec_invalid",
+        {"reason": "input"},
+        f"search_space.{name}: unsupported kind {parameter.kind!r}",
+    )
 
 
 def _native_command(
@@ -490,28 +645,54 @@ def _native_command(
     artifact_key: str,
 ) -> list[str]:
     if study.objective.kind != "expression" or not study.objective.expression:
-        raise CliError(
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "objective"},
             "the executable MVP supports objective.kind=expression; custom C++ "
-            "objectives use the ObjectiveFn API"
+            "objectives use the ObjectiveFn API",
         )
     if study.sampler.kind not in {"grid", "random", "dlib_global", "tpe"}:
-        raise CliError(
-            "the executable supports sampler.kind=grid, random, dlib_global, or tpe"
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "sampler"},
+            "the executable supports sampler.kind=grid, random, dlib_global, or tpe",
         )
     if study.sampler.kind == "dlib_global" and study.sampler.seed > 2_147_483_647:
-        raise CliError(
-            "sampler.seed must be <= 2147483647 for portable dlib_global seeding"
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "sampler"},
+            "sampler.seed must be <= 2147483647 for portable dlib_global seeding",
         )
     if study.execution.isolation == "processes":
-        raise CliError("process isolation is reserved for the portfolio milestone")
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "study"},
+            "process isolation is reserved for the portfolio milestone",
+        )
     if study.execution.timeout_seconds is not None:
-        raise CliError("execution.timeout_seconds is not implemented in the MVP")
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "study"},
+            "execution.timeout_seconds is not implemented in the MVP",
+        )
     if study.execution.fail_fast:
-        raise CliError("execution.fail_fast is not implemented in the MVP")
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "study"},
+            "execution.fail_fast is not implemented in the MVP",
+        )
     if len(study.strategy.dataset_ids) != 1:
-        raise CliError("the executable MVP requires exactly one dataset per strategy")
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "study"},
+            "the executable MVP requires exactly one dataset per strategy",
+        )
     if len(study.datasets) != 1:
-        raise CliError("the executable MVP requires exactly one dataset per study")
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "study"},
+            "the executable MVP requires exactly one dataset per study",
+        )
     _validate_strategy_overrides(study)
 
     datasets = {dataset.id: dataset for dataset in study.datasets}
@@ -571,7 +752,11 @@ def _native_command(
         )
     if study.sampler.kind == "tpe":
         if not isinstance(study.sampler.config, TpeSamplerConfig):
-            raise CliError("sampler.kind=tpe requires a valid typed sampler.config")
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "sampler"},
+                "sampler.kind=tpe requires a valid typed sampler.config",
+            )
         config = study.sampler.config
         if config.history_switch is not None:
             command.extend(("--tpe-history-switch", str(config.history_switch)))
@@ -601,7 +786,11 @@ def _native_command(
             and parameter.kind == "real"
             and parameter.step is None
         ):
-            raise CliError(f"search_space.{name}: grid sampling a real requires step")
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "search_space"},
+                f"search_space.{name}: grid sampling a real requires step",
+            )
         _add_dimension(command, name, parameter)
     for name, value in study.strategy.fixed_inputs.items():
         command.extend(
@@ -619,6 +808,13 @@ def _native_command(
 
 
 def _write_json(path: Path, document: Mapping[str, Any]) -> None:
+    try:
+        _write_json_unchecked(path, document)
+    except OSError as error:
+        raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
+
+
+def _write_json_unchecked(path: Path, document: Mapping[str, Any]) -> None:
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
@@ -650,7 +846,11 @@ def _compile(args: argparse.Namespace) -> int:
     try:
         source = source_path.read_text(encoding="utf-8")
     except OSError as error:
-        raise CliError(f"cannot read Pine source {source_path}: {error}") from error
+        raise _cli_error(
+            "hpo_input_file_invalid",
+            {},
+            f"cannot read Pine source {source_path}: {error}",
+        ) from error
     artifact = _builder(args, _resolve_engine_root(args.engine_root)).build(
         source, filename=str(source_path)
     )
@@ -713,7 +913,11 @@ def prepare_run(
         try:
             source = source_path.read_text(encoding="utf-8")
         except OSError as error:
-            raise CliError(f"cannot read Pine source {source_path}: {error}") from error
+            raise _cli_error(
+                "hpo_input_file_invalid",
+                {},
+                f"cannot read Pine source {source_path}: {error}",
+            ) from error
         built = ArtifactBuilder(
             engine_root=_resolve_engine_root(
                 None if engine_root is None else str(engine_root)
@@ -798,23 +1002,58 @@ def _run(args: argparse.Namespace) -> int:
             ),
         )
     except OSError as error:
-        raise CliError(f"cannot start native runner: {error}") from error
+        raise _cli_error(
+            "hpo_toolchain_unavailable",
+            {"reason": "native_runner"},
+            f"cannot start native runner: {error}",
+        ) from error
     if completed.returncode in {WARM_START_EXIT, SPACE_EXHAUSTED_EXIT}:
         print(completed.stderr.strip(), file=sys.stderr)
+        if completed.stdout.strip():
+            print(completed.stdout, end="")
         return completed.returncode
     if completed.returncode not in {0, 2}:
         detail = (
             completed.stderr.strip() or completed.stdout.strip() or "no diagnostics"
         )
-        raise CliError(
+        error = CliError(
             f"native runner failed with exit {completed.returncode}: {detail}"
         )
+        try:
+            failure = json.loads(completed.stdout)["failure"]
+            failure_args = failure["args"]
+            if failure_args is not None and (
+                not isinstance(failure_args, dict)
+                or any(
+                    not isinstance(value, (str, int, float, bool, type(None)))
+                    or isinstance(value, float)
+                    and not math.isfinite(value)
+                    for value in failure_args.values()
+                )
+            ):
+                failure_args = None
+            if failure["origin"] not in {"hpo", "engine"} or not isinstance(
+                failure["code"], (str, type(None))
+            ):
+                raise ValueError("invalid failure metadata")
+            error.with_failure(failure["code"], failure_args, failure["origin"])
+        except (ValueError, KeyError, TypeError):
+            error.with_failure("hpo_unclassified_error", {})
+        raise error
     try:
         result = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
-        raise CliError(f"native runner returned invalid JSON: {error}") from error
+        raise _cli_error(
+            "hpo_plugin_invalid",
+            {"reason": "validation"},
+            f"native runner returned invalid JSON: {error}",
+        ) from error
     if not isinstance(result, dict):
-        raise CliError("native runner returned a non-object JSON result")
+        raise _cli_error(
+            "hpo_plugin_invalid",
+            {"reason": "validation"},
+            "native runner returned a non-object JSON result",
+        )
 
     dataset_id = study.strategy.dataset_ids[0]
     result.update(
@@ -856,7 +1095,7 @@ def _warm_encode(args: argparse.Namespace) -> int:
     ]
     if args.block_trials is not None:
         if args.block_trials <= 0:
-            raise CliError("--block-trials must be positive")
+            raise _cli_error("hpo_cli_usage", {}, "--block-trials must be positive")
         command.extend(("--block-trials", str(args.block_trials)))
     return subprocess.run(command, check=False).returncode
 
@@ -869,7 +1108,7 @@ def _add_build_options(parser: argparse.ArgumentParser) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _FailureArgumentParser(
         prog="pineforge-hpo",
         description="Compile PineScript strategies and run native PineForge HPO studies.",
     )
@@ -949,14 +1188,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(args.handler(args))
     except WarmStartError as error:
         print(f"pineforge-hpo: {error}", file=sys.stderr)
+        print(
+            json.dumps(failure_document(error, WARM_START_EXIT), separators=(",", ":"))
+        )
         return WARM_START_EXIT
     except SpaceExhaustedError as error:
         print(f"pineforge-hpo: {error}", file=sys.stderr)
+        print(
+            json.dumps(
+                failure_document(error, SPACE_EXHAUSTED_EXIT), separators=(",", ":")
+            )
+        )
         return SPACE_EXHAUSTED_EXIT
     except ArtifactBuildError as error:
         print(f"pineforge-hpo: {_format_artifact_error(error)}", file=sys.stderr)
+        print(json.dumps(failure_document(error, 1), separators=(",", ":")))
     except (CliError, StudySpecError) as error:
         print(f"pineforge-hpo: {error}", file=sys.stderr)
+        print(json.dumps(failure_document(error, 1), separators=(",", ":")))
+    except Exception as error:
+        import traceback
+
+        traceback.print_exc()
+        print(json.dumps(failure_document(error, 1), separators=(",", ":")))
     return 1
 
 

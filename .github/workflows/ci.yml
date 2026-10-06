@@ -67,6 +67,9 @@ jobs:
       - name: Build
         run: cmake --build build -j4
 
+      - name: Check failure catalog diff
+        run: python3 scripts/gen_catalog_diff.py --check
+
       - name: Test
         run: |
           ctest --test-dir build -V \
@@ -160,6 +163,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           submodules: true
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6

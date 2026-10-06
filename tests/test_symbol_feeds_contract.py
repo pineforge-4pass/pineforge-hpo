@@ -119,7 +119,8 @@ def main():
                     else 1
                 )
                 require(
-                    process.returncode == expected_exit and not process.stdout,
+                    process.returncode == expected_exit
+                    and json.loads(process.stdout)["failure"]["exit_code"] == expected_exit,
                     f"refusal did not fail before trials: {process.stderr!r}",
                 )
                 require(refused.encode() in process.stderr, process.stderr.decode())

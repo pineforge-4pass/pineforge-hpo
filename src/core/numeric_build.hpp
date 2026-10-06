@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include "sha256.hpp"
 #include "portable_math.hpp"
 #include "tpe_algorithm.hpp"
@@ -27,23 +29,33 @@ inline void require_portable_environment() {
     static_assert(sizeof(double) == 8 && std::numeric_limits<double>::digits == 53 &&
                   std::numeric_limits<double>::is_iec559, "TPE requires IEEE-754 binary64");
     if (FLT_EVAL_METHOD != 0 || std::fegetround() != FE_TONEAREST)
-        throw std::invalid_argument("portable TPE requires binary64 round-to-nearest evaluation");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_portable_math_unavailable", {{"requirement", "binary64_round_to_nearest"}},
+            "portable TPE requires binary64 round-to-nearest evaluation");
 #if defined(__FAST_MATH__) && __FAST_MATH__
-    throw std::invalid_argument("portable TPE refuses fast-math");
+    throw TypedHpoError<std::invalid_argument>("hpo_portable_math_unavailable",
+                                               {{"requirement", "no_fast_math"}},
+                                               "portable TPE refuses fast-math");
 #endif
 #if defined(__x86_64__)
     std::uint32_t control;
     __asm__("stmxcsr %0" : "=m"(control));
     if (control & ((1U << 15) | (1U << 6)))
-        throw std::invalid_argument("portable TPE requires gradual underflow (FTZ/DAZ off)");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_portable_math_unavailable", {{"requirement", "gradual_underflow"}},
+            "portable TPE requires gradual underflow (FTZ/DAZ off)");
     static const bool fma_available = __builtin_cpu_supports("fma");
     if (!fma_available)
-        throw std::invalid_argument("portable TPE requires x86-64 FMA3");
+        throw TypedHpoError<std::invalid_argument>("hpo_portable_math_unavailable",
+                                                   {{"requirement", "x86_64_fma3"}},
+                                                   "portable TPE requires x86-64 FMA3");
 #elif defined(__aarch64__)
     std::uint64_t control;
     __asm__("mrs %0, fpcr" : "=r"(control));
     if (control & ((std::uint64_t{1} << 24) | (std::uint64_t{1} << 19)))
-        throw std::invalid_argument("portable TPE requires gradual underflow (FZ off)");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_portable_math_unavailable", {{"requirement", "gradual_underflow"}},
+            "portable TPE requires gradual underflow (FZ off)");
 #endif
 }
 

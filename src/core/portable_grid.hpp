@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include "portable_math.hpp"
 
 #include <algorithm>
@@ -53,7 +55,9 @@ inline DoublePair integer_pair(std::uint64_t value) {
 inline std::uint64_t pair_floor_unsigned(DoublePair value) {
     if (!std::isfinite(value.high) || value.high < 0.0 || value.high > 0x1p64 ||
         (value.high == 0x1p64 && value.low >= 0.0))
-        throw std::overflow_error("grid coordinate exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid",
+                                                 {{"reason", "search_space"}},
+                                                 "grid coordinate exceeds uint64_t");
     const double integral = math::floor(value.high);
     const double residual = math::floor((value.high - integral) + value.low);
     const auto base = integral == 0x1p64 ? UINT64_MAX :
@@ -62,26 +66,33 @@ inline std::uint64_t pair_floor_unsigned(DoublePair value) {
     if (adjustment < 0.0) {
         const auto amount = static_cast<std::uint64_t>(-adjustment);
         if (amount > base)
-            throw std::overflow_error("negative grid coordinate");
+            throw TypedHpoError<std::overflow_error>(
+                "hpo_study_spec_invalid", {{"reason", "search_space"}}, "negative grid coordinate");
         return base - amount;
     }
     const auto amount = static_cast<std::uint64_t>(adjustment);
     if (amount > UINT64_MAX - base)
-        throw std::overflow_error("grid coordinate exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid",
+                                                 {{"reason", "search_space"}},
+                                                 "grid coordinate exceeds uint64_t");
     return base + amount;
 }
 
 inline std::uint64_t portable_grid_count(double low, double high, double step) {
     auto last = pair_floor_unsigned(grid_coordinate(high, low, step));
     if (last == UINT64_MAX)
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid",
+                                                 {{"reason", "search_space"}},
+                                                 "real dimension cardinality exceeds uint64_t");
     const auto next = last + 1;
     const double decoded = math::fma(static_cast<double>(next), step, low);
     if (std::isfinite(decoded) && decoded <= math::nextafter(high,
             std::numeric_limits<double>::infinity()))
         last = next;
     if (last == std::numeric_limits<std::uint64_t>::max())
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid",
+                                                 {{"reason", "search_space"}},
+                                                 "real dimension cardinality exceeds uint64_t");
     return last + 1;
 }
 

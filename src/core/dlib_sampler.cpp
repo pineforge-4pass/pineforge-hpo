@@ -1,3 +1,4 @@
+#include <pineforge/hpo/error.hpp>
 #include "pineforge/hpo/sampler.hpp"
 
 #include <algorithm>
@@ -30,7 +31,8 @@ std::uint64_t integer_count(const IntegerDimension& dimension) {
         static_cast<std::uint64_t>(dimension.high()) - static_cast<std::uint64_t>(dimension.low());
     const std::uint64_t quotient = span / static_cast<std::uint64_t>(dimension.step());
     if (quotient == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("integer dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid", {{"reason", "sampler"}},
+                                                 "integer dimension cardinality exceeds uint64_t");
     }
     return quotient + 1;
 }
@@ -60,7 +62,8 @@ std::uint64_t real_grid_count(const RealDimension& dimension) {
     const long double scaled = std::isfinite(span) ? span / step : high / step - low / step;
     const long double floored = std::floor(scaled);
     if (floored >= static_cast<long double>(std::numeric_limits<std::uint64_t>::max())) {
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid", {{"reason", "sampler"}},
+                                                 "real dimension cardinality exceeds uint64_t");
     }
     std::uint64_t last_index = static_cast<std::uint64_t>(floored);
     const std::uint64_t next_index = last_index + 1;
@@ -71,7 +74,8 @@ std::uint64_t real_grid_count(const RealDimension& dimension) {
         last_index = next_index;
     }
     if (last_index == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("real dimension cardinality exceeds uint64_t");
+        throw TypedHpoError<std::overflow_error>("hpo_study_spec_invalid", {{"reason", "sampler"}},
+                                                 "real dimension cardinality exceeds uint64_t");
     }
     return last_index + 1;
 }
@@ -88,7 +92,8 @@ double real_at(const RealDimension& dimension, std::uint64_t index) {
 
 std::int64_t log_integer_at(const IntegerDimension& dimension, double coordinate) {
     if (!std::isfinite(coordinate)) {
-        throw std::runtime_error("dlib returned an invalid log-integer coordinate");
+        throw TypedHpoError<std::runtime_error>("hpo_invariant", {},
+                                                "dlib returned an invalid log-integer coordinate");
     }
     const long double value = std::exp(static_cast<long double>(coordinate));
     if (value <= static_cast<long double>(dimension.low())) {
@@ -103,7 +108,8 @@ std::int64_t log_integer_at(const IntegerDimension& dimension, double coordinate
 
 double log_real_at(const RealDimension& dimension, double coordinate) {
     if (!std::isfinite(coordinate)) {
-        throw std::runtime_error("dlib returned an invalid log-real coordinate");
+        throw TypedHpoError<std::runtime_error>("hpo_invariant", {},
+                                                "dlib returned an invalid log-real coordinate");
     }
     const double value = static_cast<double>(std::exp(static_cast<long double>(coordinate)));
     return std::clamp(value, dimension.low(), dimension.high());
@@ -113,7 +119,8 @@ constexpr std::uint64_t kMaxExactlyRepresentableDiscreteValues = std::uint64_t{1
 
 std::uint64_t discrete_coordinate(double value, std::uint64_t count) {
     if (!std::isfinite(value) || count == 0) {
-        throw std::runtime_error("dlib returned an invalid discrete coordinate");
+        throw TypedHpoError<std::runtime_error>("hpo_invariant", {},
+                                                "dlib returned an invalid discrete coordinate");
     }
     const double rounded = std::round(value);
     if (rounded <= 0.0) {
@@ -239,10 +246,12 @@ public:
 private:
     void append_discrete(std::uint64_t count) {
         if (count < 2) {
-            throw std::logic_error("dlib discrete coordinates require at least two values");
+            throw TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "dlib discrete coordinates require at least two values");
         }
         if (count > kMaxExactlyRepresentableDiscreteValues) {
-            throw std::invalid_argument(
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
                 "dlib cannot exactly encode a discrete dimension with more than 2^53 values");
         }
         lower_bounds_.push_back(0.0);
@@ -274,9 +283,10 @@ private:
                             const double transformed_high =
                                 static_cast<double>(std::log(high + 0.5L));
                             if (!(transformed_low < transformed_high)) {
-                                throw std::invalid_argument(
+                                throw TypedHpoError<std::invalid_argument>(
+                                    "hpo_study_spec_invalid", {{"reason", "sampler"}},
                                     "dlib log integer bounds collapse in double precision: " +
-                                    item.name());
+                                        item.name());
                             }
                             append_continuous(transformed_low, transformed_high);
                             encodings_.push_back({Encoding::Kind::LogIntegerCoordinate, count});
@@ -291,9 +301,10 @@ private:
                             const double transformed_low = std::log(item.low());
                             const double transformed_high = std::log(item.high());
                             if (!(transformed_low < transformed_high)) {
-                                throw std::invalid_argument(
+                                throw TypedHpoError<std::invalid_argument>(
+                                    "hpo_study_spec_invalid", {{"reason", "sampler"}},
                                     "dlib log real bounds collapse in double precision: " +
-                                    item.name());
+                                        item.name());
                             }
                             append_continuous(transformed_low, transformed_high);
                             encodings_.push_back({Encoding::Kind::LogContinuousReal, 0});
@@ -354,7 +365,9 @@ DlibGlobalSampler::DlibGlobalSampler(SearchSpace space,
       max_candidates_(max_candidates),
       impl_(nullptr) {
     if (seed_ > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
-        throw std::invalid_argument("dlib seed must be in the range [0, 2147483647]");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "dlib seed must be in the range [0, 2147483647]");
     }
     impl_ = std::make_unique<Impl>(space_, seed_);
 }
@@ -384,12 +397,13 @@ std::optional<Candidate> DlibGlobalSampler::ask() {
 
     Candidate candidate = impl_->decode(space_, generated, point);
     if (!space_.is_valid(candidate)) {
-        throw std::runtime_error("dlib produced a candidate outside the search space");
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_invariant", {}, "dlib produced a candidate outside the search space");
     }
     const auto inserted =
         impl_->pending_.emplace(generated, Impl::PendingRequest{std::move(request)});
     if (!inserted.second) {
-        throw std::logic_error("duplicate dlib candidate id");
+        throw TypedHpoError<std::logic_error>("hpo_invariant", {}, "duplicate dlib candidate id");
     }
     impl_->generated_.store(generated + 1, std::memory_order_relaxed);
     impl_->outstanding_.fetch_add(1, std::memory_order_relaxed);
@@ -398,14 +412,17 @@ std::optional<Candidate> DlibGlobalSampler::ask() {
 
 void DlibGlobalSampler::tell(std::uint64_t candidate_id, double objective_value) {
     if (!std::isfinite(objective_value)) {
-        throw std::invalid_argument("dlib objective value must be finite");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "sampler"}},
+                                                   "dlib objective value must be finite");
     }
 
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     const auto found = impl_->pending_.find(candidate_id);
     if (found == impl_->pending_.end()) {
-        throw std::invalid_argument("dlib candidate id is not outstanding: " +
-                                    std::to_string(candidate_id));
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "dlib candidate id is not outstanding: " + std::to_string(candidate_id));
     }
     if (found->second.request != nullptr) {
         const double dlib_value =
@@ -421,8 +438,9 @@ void DlibGlobalSampler::abandon(std::uint64_t candidate_id) {
     std::lock_guard<std::mutex> lock(impl_->mutex_);
     const auto found = impl_->pending_.find(candidate_id);
     if (found == impl_->pending_.end()) {
-        throw std::invalid_argument("dlib candidate id is not outstanding: " +
-                                    std::to_string(candidate_id));
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "dlib candidate id is not outstanding: " + std::to_string(candidate_id));
     }
     impl_->pending_.erase(found);
     impl_->outstanding_.fetch_sub(1, std::memory_order_relaxed);

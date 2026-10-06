@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -59,7 +61,7 @@ struct ExpressionEvaluation {
 };
 
 /// Parse error raised while compiling a metric expression.
-class ExpressionError : public std::runtime_error {
+class ExpressionError : public TypedHpoError<> {
 public:
     /// Constructs an error whose `what()` text includes the byte offset.
     ExpressionError(std::string message, std::size_t offset);

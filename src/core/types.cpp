@@ -1,4 +1,5 @@
 #include "pineforge/hpo/types.hpp"
+#include <pineforge/hpo/error.hpp>
 
 #include <cmath>
 #include <iomanip>
@@ -45,7 +46,9 @@ std::string serialize_parameter_value(const ParameterValue& value) {
                 return std::to_string(item);
             } else if constexpr (std::is_same_v<T, double>) {
                 if (!std::isfinite(item)) {
-                    throw std::invalid_argument("cannot serialize a non-finite real parameter");
+                    throw TypedHpoError<std::invalid_argument>(
+                        "hpo_study_spec_invalid", {{"reason", "input"}},
+                        "cannot serialize a non-finite real parameter");
                 }
                 std::ostringstream out;
                 out.imbue(std::locale::classic());

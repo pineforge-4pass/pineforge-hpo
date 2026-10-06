@@ -735,6 +735,14 @@ The native executable accepts additional flags without extending StudySpec v1:
   already-terminal trials plus that record, then `_exit(3)` without worker joins.
   The entire study aborts; other still-running/unstarted trials are excluded.
 
+All terminal trials additionally expose `failure_code`, `failure_args`, and
+`failure_origin` after `error`. These are `null` on success; failures retain typed,
+component-owned metadata independently of the human diagnostic. See
+[Stable failure codes](failure-codes.md) for the scalar/cap rules, initialization
+failure document, optional engine getters, and checked-setting fallback. A strategy
+stopped by an empty `runtime.error()` is an `engine_error`, never a scored partial
+success.
+
 All terminal trials expose `backtest.magnifier_sample_ticks_total` (zero when
 unavailable). The status set is `ok`, `constraint_violation`, `objective_error`,
 `constraint_error`, `engine_error`, `trial_error`, and `trial_timeout`. Stop reasons

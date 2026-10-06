@@ -1,0 +1,77 @@
+name: Release assets
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-assets-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out released source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.14'
+
+      - name: Validate version and stamp catalog diff
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          test "$RELEASE_TAG" = "v$(tr -d '\n' < VERSION)"
+          python scripts/gen_catalog_diff.py --release-version "${RELEASE_TAG#v}"
+          python scripts/gen_catalog_diff.py --check --release-version "${RELEASE_TAG#v}"
+
+      - name: Build Python package and catalog assets
+        run: |
+          python -m pip install build
+          python -m build
+          cp python/pineforge_hpo/hpo_failure_codes*.json dist/
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import zipfile
+          wheel = next(Path("dist").glob("*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              for name in ("hpo_failure_codes.json", "hpo_failure_codes_diff.json"):
+                  assert archive.read("pineforge_hpo/" + name) == Path("dist", name).read_bytes()
+              assert json.loads(archive.read("pineforge_hpo/hpo_failure_codes_diff.json"))["to"]["version"]
+          PY
+
+      - name: Upload release assets
+        env:
+          RELEASE_ID: ${{ github.event.release.id }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import mimetypes
+          import os
+          from pathlib import Path
+          import urllib.parse
+          import urllib.request
+          for asset in sorted(Path("dist").iterdir()):
+              url = ("https://uploads.github.com/repos/" + os.environ["GH_REPOSITORY"]
+                     + "/releases/" + os.environ["RELEASE_ID"] + "/assets?"
+                     + urllib.parse.urlencode({"name": asset.name}))
+              request = urllib.request.Request(url, data=asset.read_bytes(), method="POST",
+                  headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                           "Content-Type": mimetypes.guess_type(asset.name)[0]
+                               or "application/octet-stream",
+                           "Accept": "application/vnd.github+json"})
+              with urllib.request.urlopen(request) as response:
+                  assert response.status == 201
+              print("Uploaded " + asset.name)
+          PY

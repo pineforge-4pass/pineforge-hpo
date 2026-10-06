@@ -91,7 +91,8 @@ def run(
     )
     if expected:
         require(
-            not completed.stdout and not progress_path.read_text(),
+            json.loads(completed.stdout)["failure"]["exit_code"] == expected
+            and not progress_path.read_text(),
             "init refusal emitted a result or billable trial",
         )
         require(not trials_path.exists(), "init refusal opened/truncated trials output")

@@ -24,6 +24,8 @@ def check_progress(result: dict, lines: list[dict]) -> None:
     require(len({trial["trial_id"] for trial in lines}) == len(lines), "duplicate progress IDs")
     require(all(expected.get(trial["trial_id"]) == trial for trial in lines),
             "progress objects differ from final trial objects")
+    require(all({"failure_code", "failure_args", "failure_origin"}.issubset(trial)
+                for trial in lines), "terminal records lack failure metadata")
 
 
 def process(native: Path, plugin: Path, csv: Path, progress: int, *extra: str,
@@ -129,7 +131,9 @@ def main() -> int:
                             '{"syminfo": {"mincontract": 0}}'):
                 symbol_file.write_text(content)
                 completed = invoke(native, plugin, csv, "--syminfo", str(symbol_file))
-                require(completed.returncode == 1 and completed.stdout == "" and
+                require(completed.returncode == 1 and
+                        json.loads(completed.stdout)["failure"]["code"] ==
+                        "hpo_study_spec_invalid" and
                         "syminfo.mincontract must be a positive finite number" in completed.stderr,
                         f"invalid mincontract was not rejected visibly: {content}: "
                         f"{completed.stderr}")
@@ -266,6 +270,10 @@ def main() -> int:
                 require(time.monotonic() - started < 3, "watchdog joined the hung worker")
                 result = json.loads(stdout)
                 require(result == json.loads(final.read_text()), "timeout final file differs")
+                require(all(trial["failure_code"] == "hpo_trial_timeout" and
+                            trial["failure_origin"] == "hpo" and trial["failure_args"] == {}
+                            for trial in result["trials"] if trial["status"] == "trial_timeout"),
+                        "timeout record lacks stable failure metadata")
                 require(result["stop_reason"] == "trial_timeout", "wrong timeout stop reason")
                 require(sum(trial["status"] == "trial_timeout" for trial in result["trials"]) == 1,
                         "watchdog did not record exactly one timed-out trial")
@@ -288,9 +296,10 @@ def main() -> int:
                     child.wait()
             require(child.returncode == 3, f"progress I/O disabled the watchdog: {stderr}")
             result = json.loads(stdout)
-            require(result["stop_reason"] == "trial_timeout", "timeout final JSON missing")
-            require(sum(trial["status"] == "trial_timeout" for trial in result["trials"]) == 1,
-                    "progress I/O changed the timeout terminal table")
+            require(result["failure"]["code"] == "hpo_output_io_failed",
+                    "progress I/O failure lost its stable code")
+            require(result["failure"]["exit_code"] == 3 and not result["ok"],
+                    "progress I/O failure changed the timeout exit code")
         else:
             raise RuntimeError(f"unknown test case: {case}")
     print(f"PASS native runner {case}")

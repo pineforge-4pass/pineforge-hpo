@@ -1,5 +1,7 @@
 #pragma once
 
+#include <pineforge/hpo/error.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -56,14 +58,20 @@ public:
         std::uint64_t count, position;
         std::array<std::uint64_t, 312> words{};
         if (!(input >> marker >> count) || marker != "MT64" || count != words.size())
-            throw std::invalid_argument("invalid canonical MT state header");
+            throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                       {{"reason", "sampler"}},
+                                                       "invalid canonical MT state header");
         for (auto& word : words)
             if (!(input >> word))
-                throw std::invalid_argument("invalid canonical MT state word");
+                throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                           {{"reason", "sampler"}},
+                                                           "invalid canonical MT state word");
         if (!(input >> position) || position > words.size() ||
             ((words[0] & 0xffffffff80000000ULL) == 0 &&
              std::all_of(words.begin() + 1, words.end(), [](auto word) { return word == 0; })))
-            throw std::invalid_argument("invalid canonical MT state position/zero state");
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                "invalid canonical MT state position/zero state");
         words_ = words;
         position_ = static_cast<std::uint32_t>(position);
     }

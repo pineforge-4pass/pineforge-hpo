@@ -113,6 +113,10 @@ struct TrialExecutionResult {
     TrialExecutionStatus status = TrialExecutionStatus::kEngineError;
     /// Strategy error text when status is TrialExecutionStatus::kEngineError.
     std::string error;
+    /// Engine-owned failure code; absent for plugins without the optional getter.
+    std::optional<std::string> error_code;
+    /// Raw engine argument JSON; consumers must validate it before serialization.
+    std::optional<std::string> error_args;
     /// Detached report populated when execution succeeds.
     ReportSnapshot report;
 

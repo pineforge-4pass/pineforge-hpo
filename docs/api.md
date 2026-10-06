@@ -12,6 +12,7 @@ samplers.
 
 - [README and quick start](../README.md)
 - [StudySpec v1](study-spec.md)
+- [Stable failure codes and checked settings](failure-codes.md)
 - [Architecture](architecture.md)
 - [Deterministic batching and prefix pruning](batching.md)
 - [Finite candidate policies](adr/0003-finite-candidate-policies.md)

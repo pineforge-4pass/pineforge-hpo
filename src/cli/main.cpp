@@ -1,4 +1,5 @@
 #include <pineforge/hpo/dataset.hpp>
+#include <pineforge/hpo/error.hpp>
 #include <pineforge/hpo/objective.hpp>
 #include <pineforge/hpo/pruner.hpp>
 #include <pineforge/hpo/sampler.hpp>
@@ -7,11 +8,12 @@
 #include <pineforge/hpo/trial_executor.hpp>
 #include <pineforge/hpo/types.hpp>
 
-#include "json.hpp"
-#include "continuation.hpp"
-#include "symbol_feeds.hpp"
-#include "batch_executor.hpp"
 #include "../core/ordinal_set.hpp"
+#include "batch_executor.hpp"
+#include "continuation.hpp"
+#include "failure_json.hpp"
+#include "json.hpp"
+#include "symbol_feeds.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -24,9 +26,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <exception>
 #include <filesystem>
-#include <functional>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -124,6 +127,7 @@ struct TrialRecord {
     pfh::Candidate candidate;
     std::string status = "pending";
     std::string error;
+    pfh::detail::FailureDetails failure;
     bool feasible = false;
     std::optional<double> objective;
     std::vector<std::optional<double>> constraint_values;
@@ -153,7 +157,8 @@ extern "C" void request_stop(int) {
 }
 
 [[noreturn]] void usage_error(const std::string& message) {
-    throw std::invalid_argument(message + "\nRun `pineforge-hpo-native --help` for usage.");
+    throw pfh::TypedHpoError<std::invalid_argument>(
+        "hpo_cli_usage", {}, message + "\nRun `pineforge-hpo-native --help` for usage.");
 }
 
 std::string require_value(int argc, char** argv, int& index, const std::string& option) {
@@ -167,7 +172,8 @@ std::int64_t parse_i64(const std::string& text, const std::string& where) {
     try {
         const auto value = std::stoll(text, &consumed);
         if (consumed != text.size())
-            throw std::invalid_argument("trailing characters");
+            throw pfh::TypedHpoError<std::invalid_argument>("hpo_cli_usage", {},
+                                                            "trailing characters");
         return value;
     } catch (const std::exception&) {
         usage_error(where + " requires an integer, got `" + text + "`");
@@ -182,7 +188,8 @@ std::uint64_t parse_u64(const std::string& text, const std::string& where) {
     try {
         const auto value = std::stoull(text, &consumed);
         if (consumed != text.size())
-            throw std::invalid_argument("trailing characters");
+            throw pfh::TypedHpoError<std::invalid_argument>("hpo_cli_usage", {},
+                                                            "trailing characters");
         return value;
     } catch (const std::exception&) {
         usage_error(where + " requires a non-negative integer, got `" + text + "`");
@@ -194,7 +201,8 @@ double parse_double(const std::string& text, const std::string& where) {
     try {
         const double value = std::stod(text, &consumed);
         if (consumed != text.size() || !std::isfinite(value)) {
-            throw std::invalid_argument("invalid finite number");
+            throw pfh::TypedHpoError<std::invalid_argument>("hpo_cli_usage", {},
+                                                            "invalid finite number");
         }
         return value;
     } catch (const std::exception&) {
@@ -678,16 +686,19 @@ std::string parameter_json(const pfh::ParameterValue& value) {
 pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
     std::ifstream input(file, std::ios::binary);
     if (!input)
-        throw std::invalid_argument("cannot open symbol info: " + file.string());
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_input_file_invalid", {}, "cannot open symbol info: " + file.string());
     std::string content;
     char buffer[4096];
     while (input.read(buffer, sizeof(buffer)) || input.gcount() != 0) {
         content.append(buffer, static_cast<std::size_t>(input.gcount()));
         if (content.size() > 1024 * 1024)
-            throw std::invalid_argument("symbol info exceeds 1 MiB");
+            throw pfh::TypedHpoError<std::invalid_argument>("hpo_input_file_invalid", {},
+                                                            "symbol info exceeds 1 MiB");
     }
     if (input.bad())
-        throw std::invalid_argument("cannot read symbol info: " + file.string());
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_input_file_invalid", {}, "cannot read symbol info: " + file.string());
     const auto document = pfh::detail::parse_json(content);
     const auto* wrapped = document.find("syminfo");
     const auto& symbol = wrapped ? *wrapped : document;
@@ -698,7 +709,9 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
             return std::nullopt;
         const double parsed = value->real();
         if (parsed <= 0.0)
-            throw std::invalid_argument(std::string("syminfo.") + name + " must be positive");
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "backtest"}},
+                std::string("syminfo.") + name + " must be positive");
         return parsed;
     };
     // The catalog carries `"mincontract": null` when the lot size is unknown: absent, no grid.
@@ -710,15 +723,18 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
             return std::nullopt;
         const char* const message = "syminfo.mincontract must be a positive finite number";
         if (value->kind != pfh::detail::Json::Kind::Number)
-            throw std::invalid_argument(message);
+            throw pfh::TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}}, message);
         double parsed = 0.0;
         try {
             parsed = value->real();
         } catch (const std::exception&) {
-            throw std::invalid_argument(message);
+            throw pfh::TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}}, message);
         }
         if (!(parsed > 0.0))
-            throw std::invalid_argument(message);
+            throw pfh::TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                            {{"reason", "study"}}, message);
         return parsed;
     };
     const auto text = [&](const char* name) -> std::string {
@@ -727,7 +743,9 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
             return {};
         auto parsed = value->text();
         if (parsed.find('\0') != std::string::npos)
-            throw std::invalid_argument(std::string("syminfo.") + name + " contains NUL");
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "backtest"}},
+                std::string("syminfo.") + name + " contains NUL");
         return parsed;
     };
     info.mintick = number("mintick");
@@ -818,7 +836,13 @@ std::string render_trial(const TrialRecord& trial) {
             out << ", ";
         out << "\"" << json_escape(name) << "\": " << json_number(value);
     }
-    out << "}, \"error\": \"" << json_escape(trial.error) << "\"";
+    out << "}, \"error\": \"" << json_escape(pfh::detail::capped_error(trial.error)) << "\""
+        << ", \"failure_code\": "
+        << (trial.failure.code ? "\"" + json_escape(*trial.failure.code) + "\"" : "null")
+        << ", \"failure_args\": "
+        << pfh::detail::canonical_failure_args(trial.failure.args).value_or("null")
+        << ", \"failure_origin\": "
+        << (trial.failure.origin.empty() ? "null" : "\"" + trial.failure.origin + "\"");
     if (trial.pruning_enabled) {
         out << ", \"pruning\": {\"method\": \"prefix_rerun\", \"rungs_completed\": "
             << trial.rung_scores.size()
@@ -933,12 +957,14 @@ public:
         if (!options_.trials_file.empty()) {
             trials_file_.open(options_.trials_file, std::ios::binary | std::ios::trunc);
             if (!trials_file_)
-                throw std::runtime_error("cannot open --trials-file");
+                throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
+                                                             "cannot open --trials-file");
         }
         if (options_.progress_fd >= 0) {
             struct stat descriptor {};
             if (::fstat(options_.progress_fd, &descriptor) != 0)
-                throw std::runtime_error("cannot inspect --progress-fd");
+                throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
+                                                             "cannot inspect --progress-fd");
             if (S_ISFIFO(descriptor.st_mode)) {
                 progress_atomic_limit_ = ::fpathconf(options_.progress_fd, _PC_PIPE_BUF);
                 if (progress_atomic_limit_ <= 0)
@@ -947,7 +973,8 @@ public:
             progress_flags_ = ::fcntl(options_.progress_fd, F_GETFL);
             if (progress_flags_ < 0 ||
                 ::fcntl(options_.progress_fd, F_SETFL, progress_flags_ | O_NONBLOCK) != 0)
-                throw std::runtime_error("cannot make --progress-fd nonblocking");
+                throw pfh::TypedHpoError<std::runtime_error>(
+                    "hpo_output_io_failed", {}, "cannot make --progress-fd nonblocking");
         }
         if (options_.progress_fd >= 0 || has_trials_file_ ||
             options_.trial_timeout_seconds > 0.0)
@@ -1024,8 +1051,8 @@ public:
     }
 
     void check_error() const {
-        if (!error_.empty())
-            throw std::runtime_error(error_);
+        if (error_exception_)
+            std::rethrow_exception(error_exception_);
     }
 
     double serialization_seconds() const noexcept { return serialization_seconds_; }
@@ -1082,21 +1109,26 @@ private:
                         if (!stopped_at)
                             stopped_at = Clock::now();
                         if (seconds_since(*stopped_at) >= 2.0)
-                            throw std::runtime_error("--progress-fd reader stalled after stop");
+                            throw pfh::TypedHpoError<std::runtime_error>(
+                                "hpo_output_io_failed", {},
+                                "--progress-fd reader stalled after stop");
                     }
                     continue;
                 }
-                throw std::runtime_error("failed waiting for writable --progress-fd");
+                throw pfh::TypedHpoError<std::runtime_error>(
+                    "hpo_output_io_failed", {}, "failed waiting for writable --progress-fd");
             }
             if (count <= 0)
-                throw std::runtime_error("failed writing terminal trial to --progress-fd");
+                throw pfh::TypedHpoError<std::runtime_error>(
+                    "hpo_output_io_failed", {}, "failed writing terminal trial to --progress-fd");
             written += static_cast<std::size_t>(count);
         }
         if (has_trials_file_) {
             trials_file_ << line;
             trials_file_.flush();
             if (!trials_file_)
-                throw std::runtime_error("failed writing terminal trial to --trials-file");
+                throw pfh::TypedHpoError<std::runtime_error>(
+                    "hpo_output_io_failed", {}, "failed writing terminal trial to --trials-file");
         }
     }
 
@@ -1111,6 +1143,7 @@ private:
             auto record = make_trial_record(trial.candidate, options_);
             record.status = "trial_timeout";
             record.error = "trial exceeded --trial-timeout-seconds";
+            record.failure = {"hpo_trial_timeout", "{}", "hpo"};
             archive_.add(record);
             if ((options_.progress_fd >= 0 || has_trials_file_) && !progress_failed_)
                 pending_.emplace(trial_id, render_trial(record) + "\n");
@@ -1143,6 +1176,7 @@ private:
                     } catch (const std::exception& error) {
                         std::lock_guard<std::mutex> failed_lock(mutex_);
                         error_ = error.what();
+                        error_exception_ = std::current_exception();
                         progress_failed_ = true;
                         pending_.clear();
                         changed_.notify_all();
@@ -1154,10 +1188,7 @@ private:
                 if (timed_out_) {
                     auto trials = archive_.retained();
                     lock.unlock();
-                    if (!error_.empty()) {
-                        std::cerr << "pineforge-hpo-native: " << error_ << '\n';
-                        std::cerr.flush();
-                    }
+                    check_error();
                     timeout_result_(trials);
                     ::_exit(3);
                 }
@@ -1168,10 +1199,13 @@ private:
             if (timed_out_) {
                 std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
                 std::cerr.flush();
+                std::cout << pfh::detail::failure_document(error, 3);
+                std::cout.flush();
                 ::_exit(3);
             }
             std::lock_guard<std::mutex> lock(mutex_);
             error_ = error.what();
+            error_exception_ = std::current_exception();
             progress_failed_ = true;
             reason_.store(StopReason::kCancelled);
             changed_.notify_all();
@@ -1193,6 +1227,7 @@ private:
     int progress_flags_ = -1;
     long progress_atomic_limit_ = 0;
     std::string error_;
+    std::exception_ptr error_exception_;
     bool progress_failed_ = false;
     bool timed_out_ = false;
     bool done_ = false;
@@ -1226,7 +1261,9 @@ void validate_metric_identifiers(const std::vector<pfh::MetricExpression*>& expr
     for (const auto* expression : expressions) {
         for (const auto& identifier : expression->identifiers()) {
             if (!schema.metric(identifier).has_value()) {
-                throw std::invalid_argument("unknown report metric in expression: " + identifier);
+                throw pfh::TypedHpoError<std::invalid_argument>(
+                    "hpo_study_spec_invalid", {{"reason", "objective"}},
+                    "unknown report metric in expression: " + identifier);
             }
         }
     }
@@ -1252,7 +1289,9 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
         auto serialized = space.serialize_candidate(record.candidate);
         for (const auto& [key, value] : options.fixed_inputs) {
             if (!serialized.emplace(key, value).second) {
-                throw std::invalid_argument("fixed input overlaps search dimension: " + key);
+                throw pfh::TypedHpoError<std::invalid_argument>(
+                    "hpo_study_spec_invalid", {{"reason", "input"}},
+                    "fixed input overlaps search dimension: " + key);
             }
         }
         for (std::size_t rung = 0; rung < bar_counts.size(); ++rung) {
@@ -1265,6 +1304,7 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
             if (!execution.succeeded()) {
                 record.status = "engine_error";
                 record.error = execution.error;
+                record.failure = {execution.error_code, execution.error_args, "engine"};
                 reset_pruning_report(record);
                 return record;
             }
@@ -1282,12 +1322,14 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
             if (!score.valid) {
                 record.status = "objective_error";
                 record.error = score.diagnostic;
+                record.failure = {"hpo_metric_expression_failed", "{}", "hpo"};
                 reset_pruning_report(record);
                 return record;
             }
             if (!std::isfinite(score.value)) {
                 record.status = "objective_error";
                 record.error = "objective result is non-finite and cannot be ranked";
+                record.failure = {"hpo_metric_expression_failed", "{}", "hpo"};
                 reset_pruning_report(record);
                 return record;
             }
@@ -1307,12 +1349,14 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
                 if (!result.valid) {
                     record.status = "constraint_error";
                     record.error = result.diagnostic;
+                    record.failure = {"hpo_metric_expression_failed", "{}", "hpo"};
                     record.feasible = false;
                     break;
                 }
                 if (!std::isfinite(result.value)) {
                     record.status = "constraint_error";
                     record.error = "constraint result is non-finite";
+                    record.failure = {"hpo_metric_expression_failed", "{}", "hpo"};
                     record.feasible = false;
                     break;
                 }
@@ -1326,6 +1370,7 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
     } catch (const std::exception& error) {
         record.status = "trial_error";
         record.error = error.what();
+        record.failure = pfh::detail::exception_failure(error);
     }
     return record;
 }
@@ -1587,20 +1632,32 @@ std::optional<std::size_t> best_trial(const Options& options,
     return best_index;
 }
 
-void write_results(const Options& options, const std::string& json) {
-    std::cout << json;
-    std::cout.flush();
-    if (!std::cout)
-        throw std::runtime_error("failed writing result JSON to stdout");
+void write_result_file(const Options& options, const std::string& json) {
     if (!options.output.empty()) {
         std::ofstream output(options.output, std::ios::binary | std::ios::trunc);
         if (!output)
-            throw std::runtime_error("cannot open output file: " + options.output.string());
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_output_io_failed", {}, "cannot open output file: " + options.output.string());
         output << json;
         output.flush();
         if (!output)
-            throw std::runtime_error("failed writing output file: " + options.output.string());
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_output_io_failed", {},
+                "failed writing output file: " + options.output.string());
     }
+}
+
+void publish_result(const std::string& json) {
+    std::cout << json;
+    std::cout.flush();
+    if (!std::cout)
+        throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
+                                                     "failed writing result JSON to stdout");
+}
+
+void write_results(const Options& options, const std::string& json) {
+    write_result_file(options, json);
+    publish_result(json);
 }
 
 void validate_search_input_kinds(const Options& options) {
@@ -1618,15 +1675,21 @@ void validate_search_input_kinds(const Options& options) {
         manifest = pfh::detail::parse_json(pfh::detail::read_document(manifest_path),
                                          256 * 1024 * 1024);
         if (manifest->kind != pfh::detail::Json::Kind::Object)
-            throw std::runtime_error("expected an object");
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_study_spec_invalid", {{"reason", "study"}}, "expected an object");
         const auto* inputs = manifest->find("inputs");
         if (!inputs || inputs->kind != pfh::detail::Json::Kind::Array)
-            throw std::runtime_error("missing input metadata");
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_study_spec_invalid", {{"reason", "input"}}, "missing input metadata");
     } catch (const std::exception& error) {
         if (!required)
             return;
-        throw std::invalid_argument(manifest_path.string() + ": cannot rule out input.symbol "
-            "(D7): " + error.what() + "; engine/codegen >= 1.1.0 metadata is required");
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "input_symbol"}},
+            manifest_path.string() +
+                ": cannot rule out input.symbol "
+                "(D7): " +
+                error.what() + "; engine/codegen >= 1.1.0 metadata is required");
     }
     const auto* kind_schema = manifest->find("input_kind_schema");
     const bool symbol_kinds = (kind_schema && kind_schema->kind == pfh::detail::Json::Kind::Number &&
@@ -1656,8 +1719,10 @@ void validate_search_input_kinds(const Options& options) {
          version_suffix.find("dev") == 0 || version_suffix.find(".dev") == 0);
     if (symbol_kinds && known_version &&
         (codegen_major < 1 || (codegen_major == 1 && codegen_minor < 1) || initial_prerelease)) {
-        throw std::invalid_argument("input_kind_schema: 1 contradicts recorded codegen version " +
-            codegen_version + "; codegen >= 1.1.0 is required");
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "input"}},
+            "input_kind_schema: 1 contradicts recorded codegen version " + codegen_version +
+                "; codegen >= 1.1.0 is required");
     }
     const auto provenance_path = options.strategy.parent_path() / "provenance.json";
     if (std::filesystem::is_regular_file(provenance_path)) {
@@ -1669,15 +1734,18 @@ void validate_search_input_kinds(const Options& options) {
             if ((recorded == nullptr) != (verified == nullptr) ||
                 (recorded && (recorded->kind != verified->kind ||
                               recorded->value != verified->value))) {
-                throw std::invalid_argument("artifact manifest disagrees with provenance: " +
-                                            field);
+                throw pfh::TypedHpoError<std::invalid_argument>(
+                    "hpo_study_spec_invalid", {{"reason", "artifact_metadata"}},
+                    "artifact manifest disagrees with provenance: " + field);
             }
         }
         const auto* identity = provenance.find("request_identity");
         const auto* codegen = identity ? identity->find("codegen") : nullptr;
         const auto* version = codegen ? codegen->find("version") : nullptr;
         if (version && version->text() != codegen_version)
-            throw std::invalid_argument("artifact codegen version disagrees with provenance");
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "artifact_metadata"}},
+                "artifact codegen version disagrees with provenance");
     }
     for (const auto& dimension : options.dimensions) {
         const auto* categorical = std::get_if<pfh::CategoricalDimension>(&dimension);
@@ -1692,42 +1760,53 @@ void validate_search_input_kinds(const Options& options) {
             const auto* title = input.find("title");
             if (title && title->value == pfh::dimension_name(dimension)) {
                 if (selected)
-                    throw std::invalid_argument(manifest_path.string() + ": duplicate input " +
-                                                title->value + " used by search dimension");
+                    throw pfh::TypedHpoError<std::invalid_argument>(
+                        "hpo_study_spec_invalid", {{"reason", "input"}},
+                        manifest_path.string() + ": duplicate input " + title->value +
+                            " used by search dimension");
                 selected = &input;
             }
         }
         const auto* type = selected ? selected->find("type") : nullptr;
         const auto* kind = selected ? selected->find("kind") : nullptr;
         if (type && type->value == "string" && !symbol_kinds)
-            throw std::invalid_argument(manifest_path.string() +
-                ": cannot rule out input.symbol '" + std::string(pfh::dimension_name(dimension)) +
-                "' (D7); manifest not stamped kind-capable by pineforge-hpo's builder; "
-                "rebuild the artifact with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0; "
-                "codegen version " + codegen_version);
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "input_symbol"}},
+                manifest_path.string() + ": cannot rule out input.symbol '" +
+                    std::string(pfh::dimension_name(dimension)) +
+                    "' (D7); manifest not stamped kind-capable by pineforge-hpo's builder; "
+                    "rebuild the artifact with pineforge-hpo >= 0.8.0 and codegen >= 1.1.0; "
+                    "codegen version " +
+                    codegen_version);
         if ((kind && kind->value == "symbol") || (type && type->value == "symbol"))
-            throw std::invalid_argument("HPO over input.symbol '" +
-                std::string(pfh::dimension_name(dimension)) + "' is refused (D7); "
-                "only fixed other-symbol reads are supported");
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "input_symbol"}},
+                "HPO over input.symbol '" + std::string(pfh::dimension_name(dimension)) +
+                    "' is refused (D7); "
+                    "only fixed other-symbol reads are supported");
         const bool ordinary_string = kind && kind->kind == pfh::detail::Json::Kind::String &&
             (kind->value == "string" || kind->value == "color" || kind->value == "timeframe" ||
              kind->value == "session" || kind->value == "text_area");
         const bool unknown_kind = kind && kind->kind != pfh::detail::Json::Kind::Null &&
                                   !ordinary_string;
         if (needs_kind && (!type || type->kind != pfh::detail::Json::Kind::String))
-            throw std::invalid_argument(manifest_path.string() + ": missing input type for " +
-                                        std::string(pfh::dimension_name(dimension)));
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "input"}},
+                manifest_path.string() + ": missing input type for " +
+                    std::string(pfh::dimension_name(dimension)));
         if (needs_kind && type->value != "int" && type->value != "float" &&
             type->value != "bool" && type->value != "string" &&
             type->value != "source" && type->value != "enum")
-            throw std::invalid_argument("search_space." +
-                std::string(pfh::dimension_name(dimension)) +
-                ".choices[0] is incompatible with Pine input type '" + type->value + "'");
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "input"}},
+                "search_space." + std::string(pfh::dimension_name(dimension)) +
+                    ".choices[0] is incompatible with Pine input type '" + type->value + "'");
         if (type && type->value == "string" && unknown_kind)
-            throw std::invalid_argument(manifest_path.string() +
-                ": cannot rule out input.symbol '" + std::string(pfh::dimension_name(dimension)) +
-                "' (D7); unrecognized input kind" +
-                "; codegen version " + codegen_version);
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "input_symbol"}},
+                manifest_path.string() + ": cannot rule out input.symbol '" +
+                    std::string(pfh::dimension_name(dimension)) +
+                    "' (D7); unrecognized input kind" + "; codegen version " + codegen_version);
     }
 }
 
@@ -1737,7 +1816,9 @@ int run(Options options) {
     pfh::Pruner pruner(options.pruner, options.pruner_rungs, options.pruner_eta,
                        options.direction == Direction::kMinimize);
     if (options.batch_lag && options.sampler == "tpe" && !options.tpe_config.constant_liar)
-        throw std::invalid_argument("lag-one TPE requires constant liar enabled");
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "lag-one TPE requires constant liar enabled");
     pfh::SearchSpace space(options.dimensions);
     std::optional<std::uint64_t> finite_cardinality;
     try {
@@ -1748,7 +1829,8 @@ int run(Options options) {
             throw;
     }
     if (options.sampler == "grid" && !finite_cardinality.has_value()) {
-        throw std::invalid_argument(
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
             "grid sampling requires a step on every varying real dimension");
     }
     const unsigned symbol_sources = static_cast<unsigned>(!options.symbol_feeds_path.empty()) +
@@ -1789,7 +1871,8 @@ int run(Options options) {
     }
     if (options.candidate_policy != pfh::CandidatePolicy::SamplerDefault) {
         if (!finite_cardinality.has_value()) {
-            throw std::invalid_argument(
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "study"}},
                 "finite candidate policy requires a step on every varying real dimension");
         }
         const auto remaining = *finite_cardinality -
@@ -1799,15 +1882,17 @@ int run(Options options) {
                 options.max_trials != remaining)))
             throw pfh::detail::WarmStartError("finite budget does not fit remaining space");
         if (options.max_trials > *finite_cardinality) {
-            throw std::invalid_argument(
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "study"}},
                 "finite candidate budget must not exceed search-space cardinality");
         }
         if (options.candidate_policy == pfh::CandidatePolicy::Exhaustive &&
             options.max_trials != remaining) {
-            throw std::invalid_argument(
-                options.warm_history ?
-                "exhaustive candidate budget must equal remaining search-space cardinality" :
-                "exhaustive candidate budget must equal search-space cardinality");
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "study"}},
+                options.warm_history
+                    ? "exhaustive candidate budget must equal remaining search-space cardinality"
+                    : "exhaustive candidate budget must equal search-space cardinality");
         }
     }
     pfh::MetricExpression objective(options.objective);
@@ -1822,7 +1907,9 @@ int run(Options options) {
     recorded_metrics.reserve(options.recorded_metrics.size());
     for (const auto& name : options.recorded_metrics) {
         if (!pfh::ReportSnapshot{}.metric(name))
-            throw std::invalid_argument("unknown report metric to record: " + name);
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "objective"}},
+                "unknown report metric to record: " + name);
         recorded_metrics.emplace_back(name);
     }
     for (auto& metric : recorded_metrics)
@@ -2018,7 +2105,8 @@ int run(Options options) {
 
     state.shutdown();
     if (archive.completed == 0 && !state.stopped())
-        throw std::runtime_error("sampler produced no candidates");
+        throw pfh::TypedHpoError<std::runtime_error>("hpo_invariant", {},
+                                                     "sampler produced no candidates");
 
     const auto trials = archive.retained();
     const auto best_index = best_trial(options, trials);
@@ -2028,12 +2116,14 @@ int run(Options options) {
                                      duplicate_proposals_skipped.load(), state.stop_reason(),
                                      &archive);
     const auto write_start = RunState::Clock::now();
-    write_results(options, json);
+    state.check_error();
+    write_result_file(options, json);
     const auto write_end = RunState::Clock::now();
     if (!options.scheduler_stats.empty()) {
         std::ofstream stats(options.scheduler_stats);
         if (!stats)
-            throw std::runtime_error("cannot open scheduler stats file");
+            throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
+                                                         "cannot open scheduler stats file");
         stats << "{\"worker_seconds\":" << json_number(capacity)
               << ",\"busy_seconds\":" << json_number(workers.busy_seconds())
               << ",\"idle_seconds\":"
@@ -2051,9 +2141,10 @@ int run(Options options) {
               << json_number(std::chrono::duration<double>(write_end - write_start).count())
               << "}\n";
         if (!stats)
-            throw std::runtime_error("failed writing scheduler stats file");
+            throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
+                                                         "failed writing scheduler stats file");
     }
-    state.check_error();
+    publish_result(json);
     return best_index ? 0 : 2;
 }
 
@@ -2157,19 +2248,24 @@ int main(int argc, char** argv) {
         sigemptyset(&action.sa_mask);
         if (::sigaction(SIGTERM, &action, nullptr) != 0 ||
             ::sigaction(SIGINT, &action, nullptr) != 0)
-            throw std::runtime_error("cannot install cooperative stop handlers");
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_invariant", {}, "cannot install cooperative stop handlers");
         action.sa_handler = SIG_IGN;
         if (::sigaction(SIGPIPE, &action, nullptr) != 0)
-            throw std::runtime_error("cannot install progress I/O error handler");
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_invariant", {}, "cannot install progress I/O error handler");
         return run(parse_options(argc, argv));
     } catch (const pfh::detail::WarmStartError& error) {
         std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
+        std::cout << pfh::detail::failure_document(error, 4);
         return 4;
     } catch (const pfh::detail::SpaceExhausted& error) {
         std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
+        std::cout << pfh::detail::failure_document(error, 5);
         return 5;
     } catch (const std::exception& error) {
         std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
+        std::cout << pfh::detail::failure_document(error, 1);
         return 1;
     }
 }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .error import HpoError
+
 from dataclasses import dataclass, field
 from fractions import Fraction
 import json
@@ -23,12 +25,13 @@ class ValidationIssue:
         return f"{self.path}: {self.message}"
 
 
-class StudySpecError(ValueError):
+class StudySpecError(HpoError, ValueError):
     """Aggregate error containing every issue found in one StudySpec."""
 
     def __init__(self, issues: list[ValidationIssue] | tuple[ValidationIssue, ...]):
         self.issues = tuple(issues)
         super().__init__("; ".join(str(issue) for issue in self.issues))
+        self.with_failure("hpo_study_spec_invalid", {"reason": "study"})
 
 
 @dataclass(frozen=True)
@@ -1023,7 +1026,7 @@ def load_study_spec(
     except OSError as error:
         raise StudySpecError(
             [ValidationIssue("$", f"cannot read {spec_path}: {error}")]
-        ) from error
+        ).with_failure("hpo_input_file_invalid", {}) from error
     try:
         document = json.loads(
             source,

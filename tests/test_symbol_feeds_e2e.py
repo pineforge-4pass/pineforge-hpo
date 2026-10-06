@@ -197,7 +197,7 @@ if selected <= open
         refused.returncode == 1
         and b"manifest not stamped kind-capable" in refused.stderr
         and b"codegen version unknown" in refused.stderr
-        and not refused.stdout,
+        and json.loads(refused.stdout)["ok"] is False,
         refused.stderr.decode(),
     )
     print(
@@ -302,7 +302,7 @@ if selected <= open
         require(
             refused.returncode == 1
             and refusal.encode() in refused.stderr
-            and not refused.stdout,
+            and json.loads(refused.stdout)["ok"] is False,
             refused.stderr.decode(),
         )
         manifest["inputs"].pop()
@@ -333,7 +333,7 @@ if selected <= open
     require(
         refused.returncode == 1
         and message.encode() in refused.stderr
-        and not refused.stdout,
+        and json.loads(refused.stdout)["ok"] is False,
         refused.stderr.decode(),
     )
     print(
@@ -508,7 +508,7 @@ if eth4 < threshold or eth4 <= ethD
         refused.returncode == 1
         and b"input.symbol" in refused.stderr
         and b"D7" in refused.stderr
-        and not refused.stdout
+        and json.loads(refused.stdout)["ok"] is False
         and not refused_trials.exists(),
         refused.stderr.decode(),
     )

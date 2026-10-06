@@ -54,7 +54,10 @@ class TrialOutputTests(unittest.TestCase):
         self.assertEqual([line["trial_id"] for line in lines], list(range(3000)))
         for line in lines:
             self.assertTrue({"trial_id", "status", "objective", "feasible", "parameters",
-                             "backtest"}.issubset(line))
+                             "backtest", "failure_code", "failure_args", "failure_origin"}.issubset(line))
+            self.assertIsNone(line["failure_code"])
+            self.assertIsNone(line["failure_args"])
+            self.assertIsNone(line["failure_origin"])
             self.assertTrue({"input_bars_processed", "script_bars_processed",
                              "magnifier_sample_ticks_total"}.issubset(line["backtest"]))
         return json.loads(completed.stdout), lines

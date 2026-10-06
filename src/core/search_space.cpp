@@ -1,4 +1,5 @@
 #include "pineforge/hpo/search_space.hpp"
+#include <pineforge/hpo/error.hpp>
 #include "portable_grid.hpp"
 
 #include <algorithm>
@@ -15,7 +16,9 @@ namespace {
 
 void require_name(const std::string& name) {
     if (name.empty()) {
-        throw std::invalid_argument("dimension name must not be empty");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "dimension name must not be empty");
     }
 }
 
@@ -50,8 +53,9 @@ std::uint64_t integer_count(const IntegerDimension& dimension) {
         static_cast<std::uint64_t>(dimension.high()) - static_cast<std::uint64_t>(dimension.low());
     const std::uint64_t quotient = span / static_cast<std::uint64_t>(dimension.step());
     if (quotient == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("integer dimension cardinality exceeds uint64_t: " +
-                                  dimension.name());
+        throw TypedHpoError<std::overflow_error>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
+            "integer dimension cardinality exceeds uint64_t: " + dimension.name());
     }
     return quotient + 1;
 }
@@ -86,7 +90,8 @@ double real_at(const RealDimension& dimension, std::uint64_t index, std::uint64_
         decoded = dimension.high();
     }
     if (!std::isfinite(decoded) || decoded < dimension.low() || decoded > dimension.high()) {
-        throw std::logic_error("real grid decoder escaped dimension bounds: " + dimension.name());
+        throw TypedHpoError<std::logic_error>(
+            "hpo_invariant", {}, "real grid decoder escaped dimension bounds: " + dimension.name());
     }
     return decoded;
 }
@@ -94,9 +99,10 @@ double real_at(const RealDimension& dimension, std::uint64_t index, std::uint64_
 void validate_real_grid_injective(const RealDimension& dimension, std::uint64_t count) {
     constexpr std::uint64_t kMaxExactlyRepresentableOrdinals = std::uint64_t{1} << 53U;
     if (count > kMaxExactlyRepresentableOrdinals) {
-        throw std::invalid_argument(
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
             "stepped real dimension has more than 2^53 exactly indexable values: " +
-            dimension.name());
+                dimension.name());
     }
     if (count <= 1) {
         return;
@@ -110,9 +116,10 @@ void validate_real_grid_injective(const RealDimension& dimension, std::uint64_t 
             // serialize_parameter_value uses max_digits10, so distinct finite
             // binary64 values necessarily have distinct round-trippable ABI text.
             if (!(current > previous)) {
-                throw std::invalid_argument(
+                throw TypedHpoError<std::invalid_argument>(
+                    "hpo_study_spec_invalid", {{"reason", "search_space"}},
                     "stepped real dimension has grid points that collapse to the same ABI value: " +
-                    dimension.name());
+                        dimension.name());
             }
             previous = current;
         }
@@ -137,10 +144,11 @@ void validate_real_grid_injective(const RealDimension& dimension, std::uint64_t 
                                                           : 0.0;
     const double largest_gap = std::max(std::abs(gap_up), std::abs(gap_down));
     if (static_cast<double>(*dimension.step()) <= largest_gap) {
-        throw std::invalid_argument(
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
             "stepped real grid is too large to prove unique binary64 ABI values; use integer "
             "ticks or a larger step: " +
-            dimension.name());
+                dimension.name());
     }
 }
 
@@ -204,10 +212,11 @@ std::uint64_t dimension_ordinal(const Dimension& dimension,
                 const double real = std::get<double>(value);
                 if (item.low() == item.high()) {
                     if (serialize_parameter_value(real) != serialize_parameter_value(item.low())) {
-                        throw std::invalid_argument(
+                        throw TypedHpoError<std::invalid_argument>(
+                            "hpo_study_spec_invalid", {{"reason", "search_space"}},
                             "real parameter is not the canonical fixed "
                             "value: " +
-                            item.name());
+                                item.name());
                     }
                     return 0;
                 }
@@ -215,14 +224,16 @@ std::uint64_t dimension_ordinal(const Dimension& dimension,
                     detail::grid_coordinate(real, item.low(), *item.step()));
                 if (!std::isfinite(rounded) || rounded < 0.0 ||
                     rounded >= static_cast<double>(count)) {
-                    throw std::invalid_argument("real parameter is outside its finite grid: " +
-                                                item.name());
+                    throw TypedHpoError<std::invalid_argument>(
+                        "hpo_study_spec_invalid", {{"reason", "search_space"}},
+                        "real parameter is outside its finite grid: " + item.name());
                 }
                 const auto ordinal = static_cast<std::uint64_t>(rounded);
                 const double canonical = real_at(item, ordinal, count);
                 if (serialize_parameter_value(real) != serialize_parameter_value(canonical)) {
-                    throw std::invalid_argument("real parameter is not a canonical grid value: " +
-                                                item.name());
+                    throw TypedHpoError<std::invalid_argument>(
+                        "hpo_study_spec_invalid", {{"reason", "search_space"}},
+                        "real parameter is not a canonical grid value: " + item.name());
                 }
                 return ordinal;
             } else if constexpr (std::is_same_v<T, BooleanDimension>) {
@@ -230,8 +241,9 @@ std::uint64_t dimension_ordinal(const Dimension& dimension,
             } else {
                 const auto found = std::find(item.choices().begin(), item.choices().end(), value);
                 if (found == item.choices().end()) {
-                    throw std::invalid_argument("categorical parameter is not a declared choice: " +
-                                                item.name());
+                    throw TypedHpoError<std::invalid_argument>(
+                        "hpo_study_spec_invalid", {{"reason", "search_space"}},
+                        "categorical parameter is not a declared choice: " + item.name());
                 }
                 return static_cast<std::uint64_t>(found - item.choices().begin());
             }
@@ -246,16 +258,24 @@ IntegerDimension::IntegerDimension(
     : name_(std::move(name)), low_(low), high_(high), step_(step), log_(log) {
     require_name(name_);
     if (low_ > high_) {
-        throw std::invalid_argument("integer dimension low must not exceed high");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "integer dimension low must not exceed high");
     }
     if (step_ <= 0) {
-        throw std::invalid_argument("integer dimension step must be positive");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "integer dimension step must be positive");
     }
     if (log_ && (low_ <= 0 || high_ <= 0)) {
-        throw std::invalid_argument("log integer dimension bounds must be positive");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "log integer dimension bounds must be positive");
     }
     if (log_ && step_ != 1) {
-        throw std::invalid_argument("log integer dimension requires step = 1");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "log integer dimension requires step = 1");
     }
 }
 
@@ -274,23 +294,34 @@ RealDimension::RealDimension(
     : name_(std::move(name)), low_(low), high_(high), step_(step), log_(log) {
     require_name(name_);
     if (!std::isfinite(low_) || !std::isfinite(high_)) {
-        throw std::invalid_argument("real dimension bounds must be finite");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "real dimension bounds must be finite");
     }
     if (low_ > high_) {
-        throw std::invalid_argument("real dimension low must not exceed high");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "real dimension low must not exceed high");
     }
     if (step_.has_value() && (!std::isfinite(*step_) || *step_ <= 0.0)) {
-        throw std::invalid_argument("real dimension step must be finite and positive");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
+            "real dimension step must be finite and positive");
     }
     if (step_.has_value() && low_ < high_ && low_ + *step_ == low_) {
-        throw std::invalid_argument(
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
             "real dimension step is too small to produce a distinct double value");
     }
     if (log_ && (low_ <= 0.0 || high_ <= 0.0)) {
-        throw std::invalid_argument("log real dimension bounds must be positive");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "log real dimension bounds must be positive");
     }
     if (log_ && step_.has_value()) {
-        throw std::invalid_argument("log real dimension does not support a step");
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}},
+                                                   "log real dimension does not support a step");
     }
     if (step_.has_value() && low_ < high_) {
         validate_real_grid_injective(*this, real_grid_count(*this));
@@ -335,20 +366,27 @@ CategoricalDimension::CategoricalDimension(std::string name, std::vector<Paramet
     : name_(std::move(name)), choices_(std::move(choices)) {
     require_name(name_);
     if (choices_.empty()) {
-        throw std::invalid_argument("categorical dimension must have at least one choice");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
+            "categorical dimension must have at least one choice");
     }
     std::set<std::string> abi_values;
     for (std::size_t i = 0; i < choices_.size(); ++i) {
         if (!finite_parameter_value(choices_[i])) {
-            throw std::invalid_argument("categorical choices must be finite");
+            throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                       {{"reason", "search_space"}},
+                                                       "categorical choices must be finite");
         }
         for (std::size_t j = 0; j < i; ++j) {
             if (same_parameter_value(choices_[i], choices_[j])) {
-                throw std::invalid_argument("categorical choices must be unique");
+                throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                           {{"reason", "search_space"}},
+                                                           "categorical choices must be unique");
             }
         }
         if (!abi_values.insert(serialize_parameter_value(choices_[i])).second) {
-            throw std::invalid_argument(
+            throw TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "search_space"}},
                 "categorical choices must be unique after strategy-ABI serialization");
         }
     }
@@ -395,7 +433,9 @@ SearchSpace::SearchSpace(std::vector<Dimension> dimensions) {
 void SearchSpace::add(Dimension dimension) {
     const std::string_view name = dimension_name(dimension);
     if (find(name) != nullptr) {
-        throw std::invalid_argument("duplicate dimension name: " + std::string(name));
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
+            "duplicate dimension name: " + std::string(name));
     }
     dimensions_.push_back(std::move(dimension));
 }
@@ -451,7 +491,8 @@ std::map<std::string, std::string> SearchSpace::serialize_candidate(const Candid
         for (const auto& issue : issues) {
             message << "; " << issue.parameter << ": " << issue.message;
         }
-        throw std::invalid_argument(message.str());
+        throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",
+                                                   {{"reason", "search_space"}}, message.str());
     }
 
     std::map<std::string, std::string> serialized;
@@ -469,7 +510,9 @@ std::optional<std::uint64_t> SearchSpace::finite_cardinality() const {
             return std::nullopt;
         }
         if (total > std::numeric_limits<std::uint64_t>::max() / *count) {
-            throw std::overflow_error("finite search-space cardinality exceeds uint64_t");
+            throw TypedHpoError<std::overflow_error>(
+                "hpo_study_spec_invalid", {{"reason", "search_space"}},
+                "finite search-space cardinality exceeds uint64_t");
         }
         total *= *count;
     }
@@ -479,11 +522,13 @@ std::optional<std::uint64_t> SearchSpace::finite_cardinality() const {
 Candidate SearchSpace::candidate_at(std::uint64_t ordinal, std::uint64_t id) const {
     const auto total = finite_cardinality();
     if (!total.has_value()) {
-        throw std::invalid_argument(
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
             "finite search-space indexing requires a step on every varying real dimension");
     }
     if (ordinal >= *total) {
-        throw std::out_of_range("finite search-space ordinal is out of range");
+        throw TypedHpoError<std::out_of_range>("hpo_invariant", {},
+                                               "finite search-space ordinal is out of range");
     }
 
     Candidate candidate;
@@ -503,13 +548,16 @@ Candidate SearchSpace::candidate_at(std::uint64_t ordinal, std::uint64_t id) con
 std::uint64_t SearchSpace::candidate_ordinal(const Candidate& candidate) const {
     const auto total = finite_cardinality();
     if (!total.has_value()) {
-        throw std::invalid_argument(
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
             "finite search-space indexing requires a step on every varying real dimension");
     }
 
     const auto issues = validate(candidate);
     if (!issues.empty()) {
-        throw std::invalid_argument("cannot index an invalid search-space candidate");
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "search_space"}},
+            "cannot index an invalid search-space candidate");
     }
 
     std::uint64_t ordinal = 0;
@@ -520,7 +568,8 @@ std::uint64_t SearchSpace::candidate_ordinal(const Candidate& candidate) const {
         ordinal = ordinal * count + index;
     }
     if (ordinal >= *total) {
-        throw std::logic_error("finite search-space encoder produced an out-of-range ordinal");
+        throw TypedHpoError<std::logic_error>(
+            "hpo_invariant", {}, "finite search-space encoder produced an out-of-range ordinal");
     }
     return ordinal;
 }
