@@ -35,6 +35,17 @@ int main(int argc, char** argv) {
                 "index did not load both bars");
         require(std::isnan(symbols->front().feeds.front().bars.front().volume),
                 "missing volume is not na");
+        const auto capacity_csv = directory / "capacity.csv";
+        std::ofstream(capacity_csv) << "\xef\xbb\xbftimestamp,open,high,low,close,note\r\n"
+                                      "1700000000000,10,11,9,10,\"a\nb\"\r\n"
+                                      "\r\n"
+                                      "1700000060000,20,21,19,20,c\r\n"
+                                      "1700000120000,30,31,29,30,d";
+        const auto capacity_feed = detail::load_symbol_feed(capacity_csv, "E", "1");
+        require(capacity_feed.bars.size() == 3 && capacity_feed.close_ms.size() == 3,
+                "row reservation changed CSV records");
+        require(capacity_feed.bars.capacity() == 3 && capacity_feed.close_ms.capacity() == 3,
+                "feed vectors retained growth capacity instead of one exact copy");
         const auto record = detail::symbol_feeds_record(*symbols);
         require(detail::field(detail::field(record, "symbols"), "BINANCE:ETHUSDT")
                     .find("facts") != nullptr, "facts missing from fingerprint");

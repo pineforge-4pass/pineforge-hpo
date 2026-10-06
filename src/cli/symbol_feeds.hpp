@@ -299,6 +299,28 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
         symbol_feed_error(where + ": no column " + missing);
     SymbolFeed feed;
     feed.timeframe = timeframe;
+    if (!input.eof()) {
+        const auto rows_begin = input.tellg();
+        if (rows_begin == std::streampos(-1))
+            symbol_feed_error(where + ": cannot read CSV");
+        auto count_line = line;
+        std::size_t row_count = 0;
+        try {
+            while (symbol_csv_row(input, cells, count_line, where)) {
+                if (!cells.empty() && ++row_count > static_cast<std::size_t>(INT32_MAX))
+                    symbol_feed_error(where + ": exceeds the C ABI bar-count limit");
+            }
+        } catch (const std::invalid_argument&) {
+        }
+        if (input.bad())
+            symbol_feed_error(where + ": cannot read CSV");
+        input.clear();
+        input.seekg(rows_begin);
+        if (!input)
+            symbol_feed_error(where + ": cannot read CSV");
+        feed.bars.reserve(row_count);
+        feed.close_ms.reserve(row_count);
+    }
     const auto field_cell = [&](const std::string& name) -> std::string {
         const auto found = columns.find(name);
         return found == columns.end() || found->second >= cells.size() ? "" : cells[found->second];
