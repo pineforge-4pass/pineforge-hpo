@@ -66,6 +66,7 @@ def main():
     def run(label, executable, artifact, extra=(), exit_code=0):
         command = [
             str(executable.resolve()),
+            "run",
             "--strategy",
             str(artifact.plugin_path),
             "--ohlcv",
