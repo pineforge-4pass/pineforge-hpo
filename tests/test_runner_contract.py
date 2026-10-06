@@ -88,10 +88,13 @@ def main() -> int:
             harness = ast.parse((root / "external/pineforge-engine/docker/run_json.py").read_text())
             function = next(node for node in harness.body if isinstance(node, ast.FunctionDef)
                             and node.name == "apply_syminfo")
-            setters = [node.func.attr for node in ast.walk(function)
-                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                       and node.func.attr.startswith("strategy_set_syminfo_")
-                       and node.func.attr != "strategy_set_syminfo_metadata"]
+            setters = []
+            for node in ast.walk(function):
+                name = (node.attr if isinstance(node, ast.Attribute) else
+                        node.value if isinstance(node, ast.Constant) else None)
+                if (isinstance(name, str) and name.startswith("strategy_set_syminfo_")
+                        and name != "strategy_set_syminfo_metadata"):
+                    setters.append(name)
             require(setters == ["strategy_set_syminfo_mintick", "strategy_set_syminfo_pointvalue",
                                 "strategy_set_syminfo_timezone", "strategy_set_syminfo_session"],
                     "pinned harness changed the four-setter order")

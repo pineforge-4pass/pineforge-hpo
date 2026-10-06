@@ -24,6 +24,25 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def legacy_result_bytes(result):
+    trials = json.loads(result)["trials"]
+    for trial in trials:
+        require(
+            trial["status"] == "ok"
+            and trial["error"] == ""
+            and all(
+                trial[name] is None
+                for name in ("failure_code", "failure_args", "failure_origin")
+            ),
+            "valid no-feed trial gained failure metadata",
+        )
+    additions = (
+        b', "failure_code": null, "failure_args": null, "failure_origin": null'
+    )
+    require(result.count(additions) == len(trials), "trial metadata shape changed")
+    return result.replace(additions, b"")
+
+
 def main():
     from pineforge_hpo.study_spec import load_study_spec
     from pineforge_hpo.warm_binary import encode_warm_block
@@ -136,14 +155,15 @@ def main():
             plain.stdout == empty.stdout, "empty index changed no-feed result bytes"
         )
         if args.baseline:
+            current_version = (ROOT / "VERSION").read_text().strip().encode()
             old, _ = run(feeds=False, native=args.baseline)
             require(
                 old.stdout.replace(
                     b'"pineforge_hpo_version": "0.8.0"',
-                    b'"pineforge_hpo_version": "0.9.0"',
+                    b'"pineforge_hpo_version": "' + current_version + b'"',
                 )
-                == plain.stdout,
-                "no-feed result differs from v0.8 beyond release version",
+                == legacy_result_bytes(plain.stdout),
+                "no-feed result differs from v0.8 beyond version and additive failure fields",
             )
             random_now, _ = run("--sampler", "random", "--seed", "170905", feeds=False)
             random_old, _ = run(
@@ -152,9 +172,9 @@ def main():
             require(
                 random_old.stdout.replace(
                     b'"pineforge_hpo_version": "0.8.0"',
-                    b'"pineforge_hpo_version": "0.9.0"',
-                ) == random_now.stdout,
-                "random result differs from v0.8 beyond release version",
+                    b'"pineforge_hpo_version": "' + current_version + b'"',
+                ) == legacy_result_bytes(random_now.stdout),
+                "random result differs from v0.8 beyond version and additive failure fields",
             )
         index.write_text(json.dumps(document))
         parent_process, parent_trials = run()
