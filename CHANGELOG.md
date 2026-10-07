@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.0 (Unreleased)
+## 0.11.0 (2026-10-07)
 
 - License changed to the PineForge Source License 1.2.
   Releases up to 0.10.0 remain under Apache-2.0.
