@@ -443,8 +443,11 @@ objective, and constraint inputs.
 
 ## Licensing boundary
 
-Original `pineforge-hpo` code is Apache-2.0. `pineforge-engine` is a separate
-Apache-2.0 runtime dependency. `pineforge-codegen`, from
+Starting with v0.11.0, original `pineforge-hpo` code is licensed under the
+[PineForge Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
+Releases up to and including v0.10.0
+were released under Apache-2.0 and remain available under that license.
+`pineforge-engine` is a separate Apache-2.0 runtime dependency. `pineforge-codegen`, from
 `pineforge-codegen-oss`, is a separate source-available dependency with its own
 terms. The direct-PineScript convenience path does not relicense codegen under
 Apache-2.0. Precompiled plugin users can run the native HPO layer without

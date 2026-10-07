@@ -1,10 +1,13 @@
 # Legal and dependency boundary
 
-The original source code in this repository is licensed under the Apache
-License, Version 2.0. See [LICENSE](LICENSE).
+Starting with v0.11.0, the original source code in this repository is licensed
+under the PineForge Source License 1.2. See [LICENSE](LICENSE) for the controlling
+text. Releases up to and including v0.10.0 were released under Apache-2.0 and
+remain available under that license. For commercial licensing of HPO and codegen,
+see <https://license.pineforge.dev>.
 
 `pineforge-hpo` is designed to operate on compiled strategy plugins through the
-public PineForge C ABI. That Apache-2.0 path does not require redistributing a
+public PineForge C ABI. That compiled-plugin path does not require redistributing a
 PineScript transpiler.
 
 The optional direct-PineScript workflow may invoke the separately licensed
@@ -13,7 +16,7 @@ The optional direct-PineScript workflow may invoke the separately licensed
 repository, and users are responsible for complying with its terms. The
 submodule need not be initialized when running an already compiled strategy
 plugin. Git submodules preserve independent copyright and license boundaries;
-their contents are not bundled into the Apache-2.0 HPO core.
+their contents are not bundled into the HPO core.
 
 The native optimizer integrates dlib's global function search. CMake downloads
 the pinned dlib v20.0.1 source archive from its official repository by default;

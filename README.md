@@ -704,13 +704,54 @@ Additional design and validation material:
 
 ## License
 
-Original code in this repository is licensed under the
-[Apache License 2.0](LICENSE). dlib 20.0.1 is used under the Boost Software License 1.0;
-notices are recorded in [LEGAL.md](LEGAL.md) and
+Starting with v0.11.0, original code in this repository is source-available under the
+[PineForge Source License 1.2](LICENSE); the `LICENSE` file is the controlling text.
+The licensor is pineforge, LLC. Releases up to and including v0.10.0 were released
+under Apache-2.0 and remain available under that license.
+
+- **Free for noncommercial use:** any noncommercial purpose, and use by a
+  charitable organization, educational institution, public research
+  organization, public safety or health organization, environmental
+  protection organization or government institution for its teaching,
+  research and other operations.
+- **Free for Personal Trading:** a natural person may research, develop or
+  backtest strategies and execute trades for their own account with their
+  own capital. Their own account includes joint and household accounts
+  (spouse or domestic partner, dependants), retirement and other
+  tax-advantaged accounts and a revocable trust for their benefit; their own
+  capital includes margin and other ordinary borrowing from a broker or
+  lender. A company's or fund's account is not a personal account, even if
+  the person wholly owns the company. An account that a proprietary-trading
+  firm or funded-trader program provides or allocates to them, including a
+  challenge, evaluation or simulated account, is not their own account, and
+  its capital, real or simulated, is not their own capital, so trading it is
+  investment management, not Personal Trading.
+- **Investment management is never free**, except Personal Trading:
+  managing, advising on or trading investment capital, or researching
+  strategies for it, whether the capital is a friend's, clients' or
+  investors', an endowment, a pension fund, a public fund, a foundation's
+  treasury or an account a proprietary-trading firm or funded-trader program
+  provides or allocates (a challenge, evaluation or simulated account
+  included), is Commercial Use for every individual and every organization,
+  noncommercial organizations included.
+- **Commercial Use needs a commercial license:** besides investment
+  management, any other use that is not free, such as use by, for or on
+  behalf of a company, fund, partnership or other organization (including an
+  individual's work for one); embedding the software or its output in, or
+  distributing either bundled with, a product or service made available to
+  others; or operating a hosted, software-as-a-service or other public-facing
+  service through which others run the software or receive its output.
+
+This is source-available, not OSI open source. Obtain a commercial license at
+<https://license.pineforge.dev>. One commercial license covers both codegen and HPO.
+
+dlib 20.0.1 is used under the Boost Software License 1.0; CORE-MATH is used under
+the MIT license. Third-party notices are recorded in [NOTICE](NOTICE),
+[LEGAL.md](LEGAL.md) and
 [THIRD_PARTY_LICENSES](https://github.com/pineforge-4pass/pineforge-hpo/tree/main/THIRD_PARTY_LICENSES/).
 
 The optional PineScript bridge invokes the `pineforge-codegen` distribution from the
 `pineforge-codegen-oss` repository. That separately distributed project has its own
-source-available license and commercial-use terms; it is not relicensed under Apache-2.0.
+source-available license and commercial-use terms; it is not relicensed by this repository.
 Running `pineforge-hpo-native` with an already compiled strategy plugin does not require
 the transpiler. See [LEGAL.md](LEGAL.md) for the dependency boundary.
