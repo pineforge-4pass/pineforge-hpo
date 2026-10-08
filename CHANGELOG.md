@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 (Unreleased)
 
 - Add opt-in `--no-improvement-trials N` to native and Python `run`. Count ordered
   terminal trials after the first feasible finite result, resetting only on a
@@ -10,11 +10,13 @@
   improvements still affect final best. Enabled results include part-local
   `early_stop` metadata. Watchdog/output failures and observed cancellation/deadline
   keep priority. Explicit batch size is required for worker-independent stop trials.
-- Observe final enabled cancellation/deadline state at evaluation completion,
-  before checkpoint serialization and worker/output cleanup.
+- Move the patience-enabled coordinator's final cancellation/deadline observation
+  to evaluation completion, before checkpoint serialization and worker/output cleanup.
 - Validation note: the initial app-shaped plateau had 201 finite candidates, all
   tried before the trigger. It proves patience arithmetic and precedence on a real
   compiled strategy, not proposal behavior in a real app study.
+- Open validation items: comparison with the actual deployed executable, and
+  downstream app parser acceptance of `no_improvement` and `early_stop`.
 
 ## 0.11.0 (2026-10-07)
 
