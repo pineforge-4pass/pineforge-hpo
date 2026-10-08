@@ -988,6 +988,8 @@ def _run(args: argparse.Namespace) -> int:
         command.extend(
             ("--trials-file", str(Path(args.trials_file).expanduser().resolve()))
         )
+    if args.no_improvement_trials:
+        command.extend(("--no-improvement-trials", str(args.no_improvement_trials)))
     try:
         completed = subprocess.run(
             command,
@@ -1106,6 +1108,15 @@ def _add_build_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--eigen-include", help="Eigen include directory")
 
 
+def _uint64_argument(value: str) -> int:
+    if not value.isascii() or not value.isdecimal():
+        raise argparse.ArgumentTypeError("expected an unsigned 64-bit integer")
+    number = int(value)
+    if number > (1 << 64) - 1:
+        raise argparse.ArgumentTypeError("expected an unsigned 64-bit integer")
+    return number
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _FailureArgumentParser(
         prog="pineforge-hpo",
@@ -1139,6 +1150,12 @@ def _parser() -> argparse.ArgumentParser:
         "--progress-fd", type=int, help="terminal new trials descriptor"
     )
     run_parser.add_argument("--trials-file", help="write only new trials as JSONL")
+    run_parser.add_argument(
+        "--no-improvement-trials",
+        type=_uint64_argument,
+        default=0,
+        help="stop after N ordered trials without a strict feasible improvement (0 disables)",
+    )
     _add_build_options(run_parser)
     run_parser.set_defaults(handler=_run)
     info_parser = commands.add_parser(
