@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in `--no-improvement-trials N` to native and Python `run`. Count ordered
+  terminal trials after the first feasible finite result, resetting only on a
+  strictly better feasible objective. Continuation resets count and reference best
+  to the new part. Absent/zero stays off with unchanged output/checkpoint formats.
+- On `no_improvement`, finish and report all already-proposed batches; tail
+  improvements still affect final best. Enabled results include part-local
+  `early_stop` metadata. Watchdog/output failures and observed cancellation/deadline
+  keep priority. Explicit batch size is required for worker-independent stop trials.
+
 ## 0.11.0 (2026-10-07)
 
 - License changed to the PineForge Source License 1.2.

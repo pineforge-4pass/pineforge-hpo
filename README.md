@@ -339,7 +339,7 @@ Use the per-trial cap to bound a non-returning engine call. All trials now inclu
 The existing statuses `ok`, `constraint_violation`, `objective_error`,
 `constraint_error`, `engine_error`, and `trial_error` remain unchanged;
 `trial_timeout` is added. The `stop_reason` set is `trial_budget_reached`,
-`search_space_exhausted`, `sampler_stopped`, `cancelled`, `deadline`, and
+`search_space_exhausted`, `sampler_stopped`, `no_improvement`, `cancelled`, `deadline`, and
 `trial_timeout`. Exit codes are **0** when a best feasible trial exists, **1** for
 initialization/I/O errors, **2** when no trial is feasible, and **3** for a trial
 timeout even if an earlier trial was feasible. Cooperative stops, timeouts, and
@@ -348,8 +348,33 @@ those destinations remain writable; a progress I/O failure then exits 1. Timeout
 output includes exactly one timed-out trial and excludes other still-running
 trials. Initialization or result-output failures can prevent final publication.
 
-These controls are native-only. StudySpec's reserved `timeout_seconds` remains
-rejected, and the Python CLI does not relay signals or progress descriptors.
+`--no-improvement-trials N` stops after N ordered terminal trials without a strictly
+better feasible, finite objective. Both the native `run` command and the Python
+`run` wrapper accept this unsigned 64-bit integer; absent or `0` disables it.
+Counting starts only after the first feasible result in the current invocation.
+Ties, infeasible results, errors, and pruned trials do not reset the count.
+No-improvement is judged against the best found in THIS part, not the lineage's best ever.
+Continuation resets both the count and its reference best; warm history still trains
+the sampler. No patience state is added to `sampler_checkpoint_v2`.
+
+When patience triggers, `stop_reason` is `no_improvement`. The runner finishes and
+reports the current batch and all already-proposed queued batches, then stops
+submitting work. Tail improvements remain eligible for the final best and do not
+retract the stop. With batch size B and lag L, at most `(L+1)*B-1` trials follow the
+trigger, fewer near budget or exhaustion. The default batch size remains the worker count.
+To get the same stop trial with a different number of workers, pass an explicit batch size.
+Keep the seed, lag, artifact, data, objective, sampler configuration and numerical
+build fixed as well. Watchdog/output failures and observed cancellation/deadline
+take precedence; otherwise patience wins a tie with budget or exhaustion.
+
+Only enabled studies add `early_stop`: `patience_trials`, `trigger_trial_id` (null
+if untriggered), `drained_through_trial_id` (the last terminal ID consumed by ordered
+feedback, null if none), and `reference_scope: "part"`. External interruption can
+leave a partial drain. Disabled result/progress/trial and checkpoint formats are
+unchanged. See [the batching contract](docs/batching.md#no-improvement-stopping).
+
+The wall-time and per-trial timeout controls are native-only. StudySpec's reserved
+`timeout_seconds` remains rejected, and the Python CLI does not relay signals.
 Launchers can use public `pineforge_hpo.prepare_run(study_path, engine_root,
 cache_dir)` to obtain `(native_argv, artifact_json)` without starting the native
 process, then append native flags and execute directly. Optional keyword arguments
