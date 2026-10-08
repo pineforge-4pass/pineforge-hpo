@@ -2002,7 +2002,6 @@ int run(Options options) {
     const auto evaluate_batches = [&](auto propose, auto feedback) {
         std::deque<std::vector<std::future<TrialRecord>>> pending;
         std::uint64_t proposed = 0;
-        std::uint64_t proposed_frontier = 0;
         bool exhausted = false;
         const auto submit_batch = [&] {
             if (state.stopped()) {
@@ -2026,7 +2025,6 @@ int run(Options options) {
                     break;
                 }
                 ++proposed;
-                proposed_frontier = candidate->id;
                 batch.push_back(workers.submit([&, candidate = std::move(*candidate), cuts] {
                     if (!state.begin(candidate)) {
                         state.skip(candidate.id);
@@ -2066,7 +2064,7 @@ int run(Options options) {
                     continue;
                 if (options.no_improvement_trials && no_improvement.observe(
                         trial.trial_id, trial.status == "ok" && trial.feasible,
-                        trial.objective, proposed_frontier)) {
+                        trial.objective)) {
                     // Keep worker claims and all queued feedback through the latched
                     // frontier. Patience must never set RunState's cancellation flag.
                     exhausted = true;

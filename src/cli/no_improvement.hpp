@@ -10,7 +10,6 @@ namespace pineforge::hpo::detail {
 struct NoImprovementSnapshot {
     std::uint64_t patience_trials = 0;
     std::optional<std::uint64_t> trigger_trial_id;
-    std::optional<std::uint64_t> proposed_frontier;
     std::optional<std::uint64_t> drained_through_trial_id;
 };
 
@@ -23,8 +22,7 @@ public:
         state_.patience_trials = patience;
     }
 
-    bool observe(std::uint64_t trial_id, bool feasible, std::optional<double> objective,
-                 std::uint64_t proposed_frontier) {
+    bool observe(std::uint64_t trial_id, bool feasible, std::optional<double> objective) {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (state_.patience_trials == 0)
             return false;
@@ -44,7 +42,6 @@ public:
             ++non_improving_;
         if (non_improving_ == state_.patience_trials) {
             state_.trigger_trial_id = trial_id;
-            state_.proposed_frontier = proposed_frontier;
             return true;
         }
         return false;
