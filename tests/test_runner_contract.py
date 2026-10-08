@@ -85,7 +85,9 @@ def main() -> int:
                        "1700000000000,100,102,99,101,10\n"
                        "1700000060000,101,103,100,102,11\n")
         if case == "syminfo":
-            harness = ast.parse((root / "external/pineforge-engine/docker/run_json.py").read_text())
+            engine = Path(os.environ.get("PINEFORGE_ENGINE_ROOT",
+                                         root / "external/pineforge-engine"))
+            harness = ast.parse((engine / "docker/run_json.py").read_text())
             function = next(node for node in harness.body if isinstance(node, ast.FunctionDef)
                             and node.name == "apply_syminfo")
             setters = []

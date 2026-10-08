@@ -76,6 +76,25 @@ jobs:
             -R '^pineforge_hpo_(serial_golden|portable_math_accuracy|portable_math_contraction)$'
           ctest --test-dir build --output-on-failure
 
+      - name: Report patience capability and skips
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          log = Path("build/Testing/Temporary/LastTest.log")
+          if not log.is_file():
+              raise SystemExit("Patience CTest log unavailable; inspect the Test step.")
+          else:
+              lines = log.read_text().splitlines()
+              for marker in ("NO_IMPROVEMENT_LATE_READER_CAPABILITY ",
+                             "NO_IMPROVEMENT_SKIP_SUMMARY "):
+                  matches = [line for line in lines if marker in line]
+                  if not matches:
+                      raise SystemExit(f"Missing {marker.strip()}; inspect the Test step.")
+                  print("\n".join(matches))
+          PY
+
       - name: Cross-vendor reproducibility and Intel checkpoint restore
         run: |
           uname -m

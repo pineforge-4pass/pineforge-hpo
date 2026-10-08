@@ -13,6 +13,7 @@
 #include "continuation.hpp"
 #include "failure_json.hpp"
 #include "json.hpp"
+#include "no_improvement.hpp"
 #include "symbol_feeds.hpp"
 
 #include <algorithm>
@@ -99,6 +100,7 @@ struct Options {
     std::string chart_timezone;
     std::uint64_t seed = 0;
     std::uint64_t max_trials = 0;
+    std::uint64_t no_improvement_trials = 0;
     unsigned workers = 1;
     int progress_fd = -1;
     double max_wall_seconds = 0.0;
@@ -275,6 +277,7 @@ void print_help() {
               << "  --sampler grid|random|tpe|dlib_global  default: grid\n"
               << "  --candidate-policy sampler_default|without_replacement|exhaustive\n"
               << "  --max-trials N              0: grid exhaustive; adaptive deadline only\n"
+              << "  --no-improvement-trials N   ordered patience; 0 disables (default)\n"
               << "  --seed N                    sampler seed; dlib max 2147483647\n"
               << "  --workers N                 execution threads\n"
               << "  --batch-size N              proposals per batch; default: workers\n"
@@ -319,6 +322,8 @@ void print_help() {
                  "completed trials remain.\n"
               << "Study wall cap: stop_reason deadline. "
                  "Trial cap: status/stop_reason trial_timeout.\n"
+              << "Stop reasons: trial_budget_reached, search_space_exhausted, sampler_stopped,\n"
+              << "              no_improvement, cancelled, deadline, trial_timeout.\n"
               << "Exit codes: 0 best feasible trial; 1 initialization/I/O error;\n"
               << "            2 no feasible trial; 3 trial timeout (no worker join);\n"
               << "            4 warm-start incompatible; 5 space exhausted.\n";
@@ -388,6 +393,11 @@ Options parse_options(int argc, char** argv) {
             out.candidate_policy = parse_candidate_policy(require_value(argc, argv, i, option));
         } else if (option == "--max-trials") {
             out.max_trials = parse_u64(require_value(argc, argv, i, option), option);
+        } else if (option == "--no-improvement-trials") {
+            const auto value = require_value(argc, argv, i, option);
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+                usage_error(option + " requires an unsigned 64-bit integer");
+            out.no_improvement_trials = parse_u64(value, option);
         } else if (option == "--trials-out") {
             out.trials_out = require_value(argc, argv, i, option);
             if (out.trials_out != "all" && out.trials_out != "best-k" && out.trials_out != "none")
@@ -1378,7 +1388,8 @@ std::string render_results(const Options& options,
                            const std::optional<std::size_t>& best_index,
                            std::uint64_t duplicate_proposals_skipped,
                            const std::string& requested_stop_reason = {},
-                           const TrialArchive* archive = nullptr) {
+                           const TrialArchive* archive = nullptr,
+                           const pfh::detail::NoImprovementSnapshot& early_stop = {}) {
     const bool finite_space = std::all_of(space.dimensions().begin(), space.dimensions().end(),
         [](const pfh::Dimension& dimension) {
             return std::visit([](const auto& item) {
@@ -1610,7 +1621,17 @@ std::string render_results(const Options& options,
         }
     }
     out << ",\n  \"trials_out\":\"" << options.trials_out << "\",\n"
-        << "  \"best_k\":" << options.best_k << "\n}\n";
+        << "  \"best_k\":" << options.best_k;
+    if (early_stop.patience_trials) {
+        out << ",\n  \"early_stop\": {\"patience_trials\": " << early_stop.patience_trials
+            << ", \"trigger_trial_id\": "
+            << (early_stop.trigger_trial_id ? std::to_string(*early_stop.trigger_trial_id) : "null")
+            << ", \"drained_through_trial_id\": "
+            << (early_stop.drained_through_trial_id
+                    ? std::to_string(*early_stop.drained_through_trial_id) : "null")
+            << ", \"reference_scope\": \"part\"}";
+    }
+    out << "\n}\n";
     return out.str();
 }
 
@@ -1957,13 +1978,15 @@ int run(Options options) {
     constraint_policy.non_finite_result = pfh::NonFinitePolicy::Reject;
 
     TrialArchive archive(options, space, finite_cardinality.has_value());
+    pfh::detail::NoImprovementStop no_improvement(
+        options.no_improvement_trials, options.direction == Direction::kMinimize);
     std::atomic<std::uint64_t> duplicate_proposals_skipped{0};
     RunState state(options, started, archive, [&](const std::vector<TrialRecord>& completed,
                                                 std::exception_ptr failure) {
         write_results(options, append_process_failure(
             render_results(options, space, finite_cardinality, completed,
                            best_trial(options, completed), duplicate_proposals_skipped.load(),
-                           "trial_timeout", &archive), failure, 3));
+                           "trial_timeout", &archive, no_improvement.snapshot()), failure, 3));
         print_process_failure(failure);
     });
     const auto direction = options.direction == Direction::kMaximize
@@ -2041,6 +2064,13 @@ int run(Options options) {
                 feedback(trial);
                 if (trial.status == "pending")
                     continue;
+                if (options.no_improvement_trials && no_improvement.observe(
+                        trial.trial_id, trial.status == "ok" && trial.feasible,
+                        trial.objective)) {
+                    // Keep worker claims and all queued feedback through the latched
+                    // frontier. Patience must never set RunState's cancellation flag.
+                    exhausted = true;
+                }
                 pruner.observe(trial.rung_scores);
             }
             if (!exhausted)
@@ -2064,6 +2094,8 @@ int run(Options options) {
     if (options.sampler == "dlib_global") {
         pfh::DlibGlobalSampler sampler(space, options.seed, direction, options.max_trials);
         evaluate_adaptive(sampler);
+        if (options.no_improvement_trials)
+            state.stopped();
     } else if (options.sampler == "tpe") {
         const auto policy = options.warm_history &&
             options.candidate_policy == pfh::CandidatePolicy::Exhaustive
@@ -2087,6 +2119,9 @@ int run(Options options) {
             }
         }
         evaluate_adaptive(sampler);
+        // Observe external stops at evaluation completion, before checkpointing/cleanup.
+        if (options.no_improvement_trials)
+            state.stopped();
         if (sampler.outstanding() == 0)
             options.tpe_sampler_state = sampler.sampler_state();
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
@@ -2121,6 +2156,8 @@ int run(Options options) {
                 return candidate;
             }
         }, [](const TrialRecord&) {});
+        if (options.no_improvement_trials)
+            state.stopped();
     }
     workers.close();
     const double capacity = workers.elapsed_seconds() * worker_count;
@@ -2135,9 +2172,13 @@ int run(Options options) {
 
     const auto render_start = RunState::Clock::now();
     const auto progress_failure = state.progress_error();
+    const auto early_stop = no_improvement.snapshot();
+    std::string stop_reason = state.stop_reason();
+    if (stop_reason.empty() && early_stop.trigger_trial_id)
+        stop_reason = "no_improvement";
     const auto json = append_process_failure(
         render_results(options, space, finite_cardinality, trials, best_index,
-                       duplicate_proposals_skipped.load(), state.stop_reason(), &archive),
+                       duplicate_proposals_skipped.load(), stop_reason, &archive, early_stop),
         progress_failure, 1);
     const auto write_start = RunState::Clock::now();
     write_result_file(options, json);

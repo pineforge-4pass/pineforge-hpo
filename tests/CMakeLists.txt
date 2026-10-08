@@ -303,6 +303,12 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_batching.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_no_improvement
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_no_improvement.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_no_improvement PROPERTIES TIMEOUT 600)
         add_test(NAME pineforge_hpo_trial_outputs
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>

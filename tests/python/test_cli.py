@@ -388,6 +388,75 @@ class CliTests(unittest.TestCase):
 
     @mock.patch("pineforge_hpo.cli.subprocess.run")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_run_forwards_patience_and_keeps_off_argv(
+        self, builder_type: mock.Mock, run: mock.Mock
+    ) -> None:
+        builder_type.return_value.build.return_value = self._artifact()
+        native_result = {
+            "ok": True,
+            "trials": [],
+            "best_trial_id": 0,
+            "best_value": 1.5,
+        }
+        commands = []
+        for value in (None, "0", "1", str((1 << 64) - 1)):
+            with self.subTest(value=value):
+                result = dict(native_result)
+                if value not in (None, "0"):
+                    result["early_stop"] = {
+                        "patience_trials": int(value),
+                        "trigger_trial_id": None,
+                        "drained_through_trial_id": 0,
+                        "reference_scope": "part",
+                    }
+                run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=json.dumps(result), stderr=""
+                )
+                arguments = [
+                    "run",
+                    str(self.study_path),
+                    "--engine-root",
+                    str(self.root),
+                    "--native",
+                    str(self.native),
+                ]
+                if value is not None:
+                    arguments += ["--no-improvement-trials", value]
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(main(arguments), 0)
+                command = run.call_args.args[0]
+                commands.append(command)
+                document = json.loads(stdout.getvalue())
+                if value in (None, "0"):
+                    self.assertNotIn("--no-improvement-trials", command)
+                    self.assertNotIn("early_stop", document)
+                else:
+                    self.assertEqual(
+                        command[command.index("--no-improvement-trials") + 1], value
+                    )
+                    self.assertEqual(document["early_stop"], result["early_stop"])
+        self.assertEqual(commands[0], commands[1])
+
+    def test_patience_parser_rejects_non_uint64(self) -> None:
+        for value in ("-1", " -1", "1.5", "1e2", str(1 << 64), "", "NaN"):
+            with self.subTest(value=value):
+                stderr = io.StringIO()
+                with (
+                    contextlib.redirect_stderr(stderr),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    _parser().parse_args(
+                        ["run", str(self.study_path), "--no-improvement-trials", value]
+                    )
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("--no-improvement-trials", stderr.getvalue())
+                self.assertIn("expected an unsigned 64-bit integer", stderr.getvalue())
+                self.assertNotIn("unrecognized arguments", stderr.getvalue())
+
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_builds_once_and_emits_augmented_result(
         self, builder_type: mock.Mock, run: mock.Mock
     ) -> None:

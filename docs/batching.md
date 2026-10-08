@@ -154,8 +154,8 @@ cumulative bill. The application should use cumulative counters for compute
 metering and still count a pruned row as a trial unless its owner changes that
 policy. The progress line contains the same complete object as the final row.
 
-Stop checks remain before each logical batch/proposal and before each worker
-claim. A stopped queued trial does not run or emit a terminal row. The existing
+Cancellation/deadline checks remain before each logical batch/proposal and before each worker
+claim. A queued trial skipped by those stops does not run or emit a terminal row. The existing
 0.2.0 progress writer and timeout watchdog are retained, including exit code 3
 and no join after a hung trial. `--trial-timeout-seconds` spans the entire trial,
 including every prefix rerun; it does not restart at each rung. A surviving
@@ -164,6 +164,66 @@ work, so raise the trial timeout when enabling pruning if needed.
 `strategy_request_abort` is available in ABI 4,
 but prefix pruning makes decisions between completed exact runs, not halfway
 through a report; this release does not replace the runner watchdog contract.
+
+## No-improvement stopping
+
+Pass `--no-improvement-trials N` to native `run` or the Python `run` wrapper.
+N is an unsigned 64-bit integer; absent or zero disables patience. Negative,
+fractional and overflowing values are argument errors. The first feasible finite
+objective in the new part establishes a reference best with count zero. Each
+subsequent ordered terminal trial consumes one count unless its feasible finite
+objective is strictly better in the study's maximize/minimize direction. Ties,
+infeasible results, errors and pruned rows never reset the count. Before the first
+feasible new-part result, nothing counts toward patience.
+
+No-improvement is judged against the best found in THIS part, not the lineage's best ever.
+Warm continuation resets both count and reference best. Parents initialize the
+sampler as before; patience is not serialized into the sampler checkpoint. Exact
+TPE continuation still requires a matching complete checkpoint/numerical build and
+a matching future lag-zero schedule. Random continuation reseeds and excludes
+parent candidates; future lag-one TPE rebuilds history. Patience does not strengthen
+those existing continuation contracts.
+
+The coordinator checks patience in ordered completion/feedback, independently of
+worker arrival and progress-write timing. On the Nth non-improving terminal it
+latches that global trial ID and freezes the current and queued batches, whose
+highest already-proposed ID is F. It submits no further batch and drains those
+batches, including every sampler reservation and terminal record through F.
+Patience never cancels worker claims.
+Later improvements remain in the report and can become best, but cannot unlatch
+the trigger. For fixed batch B and lag L, the tail is bounded by `(L+1)*B-1`, with
+smaller tails possible at budget/exhaustion boundaries.
+
+The implicit batch size remains the number of workers.
+To get the same stop trial with a different number of workers, pass an explicit batch size.
+All other replay inputs listed above must also match. Fatal watchdog/output failure
+has priority, followed by observed cancellation/deadline, latched `no_improvement`,
+and natural budget/exhaustion. In particular, a trigger on the last budgeted trial
+still reports `no_improvement`. The real watchdog retains `trial_timeout` and exit 3;
+its timed-out trial is not recovered. Cancellation/deadline can interrupt the drain
+using their existing worker-claim behavior.
+When a progress pipe is full, the writer can observe cancellation or a deadline during
+the final drain with patience enabled or disabled, and the result reports that observed stop.
+
+Enabled final study results add this object:
+
+```json
+"early_stop": {
+  "patience_trials": 200,
+  "trigger_trial_id": null,
+  "drained_through_trial_id": 127,
+  "reference_scope": "part"
+}
+```
+
+The trigger is null until latched. `drained_through_trial_id` is the last terminal
+ID consumed by ordered feedback, or null before any such result; after an ordinary
+patience drain it equals F. A watchdog or other external stop may report only a
+partial drain. This snapshot is synchronized with the watchdog's final writer.
+Fatal watchdog metadata may name trigger or drain IDs absent from the fatal result's trial list.
+Off studies omit the object and retain prior output/checkpoint formats and Python
+native argv. A normal patience stop has a feasible new-part result and exits 0;
+a study with no feasible result remains unarmed and retains exit 2 at natural stop.
 
 ## Measurements (2026-10-03)
 

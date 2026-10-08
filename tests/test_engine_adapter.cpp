@@ -3,6 +3,7 @@
 #if defined(PINEFORGE_HPO_FAKE_PLUGIN)
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -10,9 +11,11 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 
@@ -54,6 +57,22 @@ double parse_or(const std::map<std::string, std::string>& values,
                 double fallback) {
     const auto found = values.find(key);
     return found == values.end() ? fallback : std::strtod(found->second.c_str(), nullptr);
+}
+
+// A data-driven external-engine fixture. Values depend on the candidate, never on
+// invocation order, worker count, sampler feedback, or the runner's stop settings.
+std::string sequence_value(const FakeStrategy& state, const char* key, int index) {
+    const auto found = state.inputs.find(key);
+    if (found == state.inputs.end())
+        return {};
+    std::vector<std::string> values;
+    std::istringstream stream(found->second);
+    std::string value;
+    while (std::getline(stream, value, ','))
+        values.push_back(value);
+    if (values.empty() || index < 0)
+        return {};
+    return values[static_cast<std::size_t>(index) % values.size()];
 }
 
 void allocate_curve(pf_report_t* report, int64_t count, double base) {
@@ -268,6 +287,24 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
         state->error = "symbol setters did not follow inputs/overrides and harness order";
         return;
     }
+    if (state->inputs.count("GateAtLength") &&
+        length == parse_or(state->inputs, "GateAtLength", -1.0)) {
+        const int entered = static_cast<int>(parse_or(state->inputs, "GateEnteredFd", -1.0));
+        const int release = static_cast<int>(parse_or(state->inputs, "GateReleaseFd", -1.0));
+        char token = 'G';
+        if (::write(entered, &token, 1) != 1) {
+            state->error = "cannot notify test trial gate";
+            return;
+        }
+        ssize_t count;
+        do {
+            count = ::read(release, &token, 1);
+        } while (count < 0 && errno == EINTR);
+        if (count != 1) {
+            state->error = "test trial gate closed without release";
+            return;
+        }
+    }
     if (length == parse_or(state->inputs, "HangAtLength", -1.0)) {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -275,6 +312,15 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(
         static_cast<int>(parse_or(state->inputs, "DelayMs", 0.0))));
+    const auto delay = sequence_value(*state, "SequenceDelayMs", length);
+    if (!delay.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::stoi(delay)));
+    }
+    const auto sequence_score = sequence_value(*state, "SequenceScore", length);
+    if (sequence_score == "error") {
+        state->error = "deliberate candidate engine failure";
+        return;
+    }
     const double initial_capital = parse_or(state->overrides, "initial_capital", 100'000.0);
     const double timezone_bonus = state->chart_timezone == "Asia/Taipei" ? 1'000.0 : 0.0;
     const double symbol_bonus = state->syminfo_stage == 0 ? 0.0 :
@@ -291,8 +337,10 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
         for (const auto& bar : feed.second)
             feed_bonus += bar.close;
     }
-    const double score = static_cast<double>(length) + initial_capital / 1'000.0 + timezone_bonus +
-        symbol_bonus + metadata_bonus + feed_bonus;
+    const double score = sequence_score.empty()
+        ? static_cast<double>(length) + initial_capital / 1'000.0 + timezone_bonus +
+              symbol_bonus + metadata_bonus + feed_bonus
+        : std::strtod(sequence_score.c_str(), nullptr);
 
     report->total_trades = length;
     report->net_profit = score;
@@ -321,6 +369,13 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     report->metrics.equity.max_equity_drawdown = 12.5;
     report->metrics.equity.open_pl = 3.5;
     allocate_curve(report, 2, initial_capital);
+    const auto trace = state->inputs.find("CompletionTraceFd");
+    if (trace != state->inputs.end()) {
+        const auto line = std::to_string(length) + "\n";
+        if (::write(std::stoi(trace->second), line.data(), line.size()) !=
+            static_cast<ssize_t>(line.size()))
+            state->error = "cannot write test completion trace";
+    }
 }
 
 PF_API const char* strategy_get_last_error(pf_strategy_t strategy) {

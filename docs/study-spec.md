@@ -747,8 +747,11 @@ All terminal trials expose `backtest.magnifier_sample_ticks_total` (zero when
 unavailable). The status set is `ok`, `constraint_violation`, `objective_error`,
 `constraint_error`, `engine_error`, `trial_error`, and `trial_timeout`. Stop reasons
 are `trial_budget_reached`, `search_space_exhausted`, `sampler_stopped`,
-`cancelled`, `deadline`, and `trial_timeout`; cooperative stops override the usual
-budget/coverage reason without fabricating pending records.
+`no_improvement`, `cancelled`, `deadline`, and `trial_timeout`; cooperative stops
+and a latched patience stop override the usual budget/coverage reason without
+fabricating pending records.
+When a progress pipe is full, the writer can observe cancellation or a deadline during
+the final drain with patience enabled or disabled, and the result reports that observed stop.
 
 Exit codes are 0 if a feasible best trial exists, 1 for initialization/I/O failure,
 2 if no feasible trial exists, and 3 on a trial timeout even if an earlier trial
@@ -758,7 +761,9 @@ paths. `trials_completed` includes the timeout terminal record; coverage and bes
 selection use only the terminal table. Timeout records cannot be feasible and
 make `exhaustive_equivalent` false.
 
-These controls are not forwarded by the Python CLI. The public Python preparation
+The wall and per-trial timeout controls are not forwarded by the Python CLI.
+The Python `run` wrapper does forward `--no-improvement-trials` when nonzero.
+The public Python preparation
 API `prepare_run(study_path, engine_root, cache_dir)` returns native argv and
 artifact JSON without launching, so callers may append the controls and execute
 the native process directly. Optional `native`, `compiler`, and `eigen_include`
@@ -784,6 +789,7 @@ key, and search-space definition:
 | `remaining_candidates` | Finite cardinality minus unique attempted vectors; absent/null for a non-finite space. |
 | `search_space_exhausted` | Whether no unattempted vector remains in a finite space. |
 | `stop_reason` | Machine-readable reason that candidate generation stopped. |
+| `early_stop` | Present only when `--no-improvement-trials` is enabled; see the [patience and drain fields](batching.md). |
 | `full_parameter_coverage` | Every vector in the declared finite domain has a terminal trial record. |
 | `exhaustive_equivalent` | Full parameter coverage and every trial status is `ok` or `constraint_violation`. |
 
