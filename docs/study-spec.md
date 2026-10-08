@@ -750,6 +750,8 @@ are `trial_budget_reached`, `search_space_exhausted`, `sampler_stopped`,
 `no_improvement`, `cancelled`, `deadline`, and `trial_timeout`; cooperative stops
 and a latched patience stop override the usual budget/coverage reason without
 fabricating pending records.
+When a progress pipe is full, the writer can observe cancellation or a deadline during
+the final drain with patience enabled or disabled, and the result reports that observed stop.
 
 Exit codes are 0 if a feasible best trial exists, 1 for initialization/I/O failure,
 2 if no feasible trial exists, and 3 on a trial timeout even if an earlier trial

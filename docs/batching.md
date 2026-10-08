@@ -186,9 +186,10 @@ those existing continuation contracts.
 
 The coordinator checks patience in ordered completion/feedback, independently of
 worker arrival and progress-write timing. On the Nth non-improving terminal it
-latches that global trial ID and the highest already-proposed ID F. It submits no
-further batch and drains the current and queued batches, including every sampler
-reservation and terminal record through F. Patience never cancels worker claims.
+latches that global trial ID and freezes the current and queued batches, whose
+highest already-proposed ID is F. It submits no further batch and drains those
+batches, including every sampler reservation and terminal record through F.
+Patience never cancels worker claims.
 Later improvements remain in the report and can become best, but cannot unlatch
 the trigger. For fixed batch B and lag L, the tail is bounded by `(L+1)*B-1`, with
 smaller tails possible at budget/exhaustion boundaries.
@@ -201,6 +202,8 @@ and natural budget/exhaustion. In particular, a trigger on the last budgeted tri
 still reports `no_improvement`. The real watchdog retains `trial_timeout` and exit 3;
 its timed-out trial is not recovered. Cancellation/deadline can interrupt the drain
 using their existing worker-claim behavior.
+When a progress pipe is full, the writer can observe cancellation or a deadline during
+the final drain with patience enabled or disabled, and the result reports that observed stop.
 
 Enabled final study results add this object:
 
