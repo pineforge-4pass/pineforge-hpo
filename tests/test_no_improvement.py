@@ -140,7 +140,10 @@ class NoImprovementTests(unittest.TestCase):
         self.assertEqual(final.read_bytes(), completed.stdout)
         self.assertEqual(progress_path.read_bytes(), trials_path.read_bytes())
         rows = [json.loads(line) for line in progress_path.read_bytes().splitlines()]
-        self.assertEqual(rows, result["trials"])
+        if result["trials_out"] == "all":
+            self.assertEqual(rows, result["trials"])
+        else:
+            self.assertTrue(all(row in rows for row in result["summary"]["best_k"]))
         self.assertEqual(result["trials_completed"], len(rows))
         self.assertEqual(len({row["trial_id"] for row in rows}), len(rows))
         self.assertTrue(all(row["status"] != "pending" for row in rows))
@@ -247,6 +250,24 @@ class NoImprovementTests(unittest.TestCase):
             actual = self.run_cli(upper=7, budget=0, patience=patience)
             self.assert_stopped_prefix(reference, actual, patience, 4, 0)
             self.assertTrue(actual[0]["search_space_exhausted"])
+
+    def test_metadata_without_completions(self):
+        result, _ = self.run_cli("--max-wall-seconds", "0.000000001", patience=1, expected=2)
+        self.assertEqual(result["trials_completed"], 0)
+        self.assertEqual(result["stop_reason"], "deadline")
+        self.assertEqual(result["early_stop"], {"patience_trials": 1, "trigger_trial_id": None,
+                         "drained_through_trial_id": None, "reference_scope": "part"})
+
+    def test_tail_best_with_limited_output(self):
+        settings = dict(score="10,10,10,50,10,10,10,10", patience=1, budget=24, lag=1)
+        ordinary, original = self.run_cli(**settings)
+        self.assertGreater(ordinary["best_trial_id"], ordinary["early_stop"]["trigger_trial_id"])
+        for mode in ("none", "best-k"):
+            result, directory = self.run_cli("--trials-out", mode, "--best-k", "1", **settings)
+            for field in ("early_stop", "stop_reason", "trials_completed", "best_value", "best_trial_id"):
+                self.assertEqual(result[field], ordinary[field])
+            self.assertEqual((original / "progress.jsonl").read_bytes(),
+                             (directory / "progress.jsonl").read_bytes())
 
     def test_disabled_raw_bytes(self):
         for sampler in ("grid", "random", "tpe", "dlib_global"):
@@ -429,11 +450,13 @@ class NoImprovementTests(unittest.TestCase):
                                          pass_fds=(write_fd,))
                 if broken_progress:
                     os.close(write_fd)
+                stdout = stderr = None
+                started = time.monotonic()
                 try:
-                    started = time.monotonic()
                     if case.startswith("cancel") or broken_progress:
                         observed = b""
                         while observed.count(b"\n") < 2:
+                            self.assertIsNone(child.poll(), "runner exited before live progress")
                             self.assertLess(time.monotonic() - started, 5,
                                             "first complete batch did not emit progress")
                             if read_fd is None:
@@ -461,11 +484,13 @@ class NoImprovementTests(unittest.TestCase):
                     if read_fd is not None:
                         os.close(read_fd)
                     progress.close()
-                (directory / "stdout").write_bytes(stdout)
-                (directory / "stderr").write_bytes(stderr)
-                (directory / "process.json").write_text(json.dumps({
-                    "returncode": child.returncode, "wall_seconds": time.monotonic() - started,
-                }) + "\n")
+                    if stdout is None:
+                        stdout, stderr = child.communicate(timeout=2)
+                    (directory / "stdout").write_bytes(stdout)
+                    (directory / "stderr").write_bytes(stderr)
+                    (directory / "process.json").write_text(json.dumps({
+                        "returncode": child.returncode, "wall_seconds": time.monotonic() - started,
+                    }) + "\n")
                 result = json.loads(stdout)
                 expected_exit = 3 if watchdog else 1 if "error" in case else 0
                 self.assertEqual(child.returncode, expected_exit, stderr)
