@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.0 (Unreleased)
+## 0.12.0 (2026-10-08)
 
 - Add opt-in `--no-improvement-trials N` to native and Python `run`. Count ordered
   terminal trials after the first feasible finite result, resetting only on a
