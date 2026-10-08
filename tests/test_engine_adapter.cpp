@@ -3,6 +3,7 @@
 #if defined(PINEFORGE_HPO_FAKE_PLUGIN)
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 
@@ -285,6 +287,24 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
         state->error = "symbol setters did not follow inputs/overrides and harness order";
         return;
     }
+    if (state->inputs.count("GateAtLength") &&
+        length == parse_or(state->inputs, "GateAtLength", -1.0)) {
+        const int entered = static_cast<int>(parse_or(state->inputs, "GateEnteredFd", -1.0));
+        const int release = static_cast<int>(parse_or(state->inputs, "GateReleaseFd", -1.0));
+        char token = 'G';
+        if (::write(entered, &token, 1) != 1) {
+            state->error = "cannot notify test trial gate";
+            return;
+        }
+        ssize_t count;
+        do {
+            count = ::read(release, &token, 1);
+        } while (count < 0 && errno == EINTR);
+        if (count != 1) {
+            state->error = "test trial gate closed without release";
+            return;
+        }
+    }
     if (length == parse_or(state->inputs, "HangAtLength", -1.0)) {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -349,6 +369,13 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     report->metrics.equity.max_equity_drawdown = 12.5;
     report->metrics.equity.open_pl = 3.5;
     allocate_curve(report, 2, initial_capital);
+    const auto trace = state->inputs.find("CompletionTraceFd");
+    if (trace != state->inputs.end()) {
+        const auto line = std::to_string(length) + "\n";
+        if (::write(std::stoi(trace->second), line.data(), line.size()) !=
+            static_cast<ssize_t>(line.size()))
+            state->error = "cannot write test completion trace";
+    }
 }
 
 PF_API const char* strategy_get_last_error(pf_strategy_t strategy) {

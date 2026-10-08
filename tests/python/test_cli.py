@@ -424,10 +424,16 @@ class CliTests(unittest.TestCase):
 
     def test_patience_parser_rejects_non_uint64(self) -> None:
         for value in ("-1", " -1", "1.5", "1e2", str(1 << 64), "", "NaN"):
-            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()), \
-                    contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
-                _parser().parse_args(["run", str(self.study_path),
-                                      "--no-improvement-trials", value])
+            with self.subTest(value=value):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()), \
+                        self.assertRaises(SystemExit) as raised:
+                    _parser().parse_args(["run", str(self.study_path),
+                                          "--no-improvement-trials", value])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("--no-improvement-trials", stderr.getvalue())
+                self.assertIn("expected an unsigned 64-bit integer", stderr.getvalue())
+                self.assertNotIn("unrecognized arguments", stderr.getvalue())
 
     @mock.patch("pineforge_hpo.cli.subprocess.run")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
