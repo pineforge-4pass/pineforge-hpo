@@ -11,7 +11,9 @@ never fetch/build a reference or normalize version/build fields.
 from __future__ import annotations
 
 import array
+import errno
 import fcntl
+import functools
 import hashlib
 import json
 import math
@@ -49,6 +51,87 @@ def process_threads(pid):
                 for path in tasks.iterdir()}
     except (FileNotFoundError, ProcessLookupError):
         return {}
+
+
+@functools.lru_cache(maxsize=1)
+def late_reader_capability():
+    """Probe OS facilities with a helper, never the product's admission outcome."""
+    def report(status, reason, **details):
+        result = dict(status=status, available=status == "available", reason=reason,
+                      platform=sys.platform, **details)
+        print("NO_IMPROVEMENT_LATE_READER_CAPABILITY " + json.dumps(result), flush=True)
+        return result
+
+    if not sys.platform.startswith("linux"):
+        return report("unavailable", "Linux /proc task wait channels required")
+    missing = [name for module, name in ((fcntl, "F_SETPIPE_SZ"),
+               (fcntl, "F_GETPIPE_SZ"), (termios, "FIONREAD")) if not hasattr(module, name)]
+    if missing:
+        return report("unavailable", "pipe controls missing", missing=missing)
+    if not Path("/proc/self/task").is_dir():
+        return report("unavailable", "/proc task directory unavailable")
+
+    read_fd, write_fd = os.pipe()
+    child = None
+    try:
+        try:
+            fcntl.fcntl(read_fd, fcntl.F_SETPIPE_SZ, 4096)
+            capacity = fcntl.fcntl(read_fd, fcntl.F_GETPIPE_SZ)
+            queued = array.array("i", [0])
+            fcntl.ioctl(read_fd, termios.FIONREAD, queued, True)
+        except OSError as error:
+            if error.errno not in {errno.EACCES, errno.EPERM, errno.EINVAL, errno.ENOSYS,
+                                  errno.ENOTTY, errno.ENOTSUP}:
+                raise
+            return report("unavailable", "pipe controls unavailable", errno=error.errno)
+        if capacity != 4096:
+            return report("unavailable", "4096-byte pipe capacity unavailable", capacity=capacity)
+
+        # A full pipe blocks the helper's writer while its main thread joins it.
+        # This checks cross-process wchan visibility without a native behavior hook.
+        helper = ("import os,sys,threading; "
+                  "writer=threading.Thread(target=os.write,args=(int(sys.argv[1]),b'x'*8192)); "
+                  "writer.start(); writer.join()")
+        child = subprocess.Popen([sys.executable, "-S", "-c", helper, str(write_fd)],
+                                 pass_fds=(write_fd,), stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 5
+        tasks = {}
+        while time.monotonic() < deadline:
+            if child.poll() is not None:
+                _, diagnostic = child.communicate()
+                report("error", "capability helper exited", returncode=child.returncode)
+                raise AdmissionError(f"capability helper failed: {diagnostic!r}")
+            fcntl.ioctl(read_fd, termios.FIONREAD, queued, True)
+            try:
+                tasks = {int(path.name): (path / "wchan").read_text().strip()
+                         for path in Path(f"/proc/{child.pid}/task").iterdir()}
+            except (FileNotFoundError, PermissionError) as error:
+                if child.poll() is not None:
+                    raise AdmissionError("capability helper exited before /proc read") from error
+                return report("unavailable", "child task wait channels unreadable",
+                              errno=error.errno)
+            if (len(tasks) == 2 and queued[0] == capacity
+                    and "futex" in tasks.get(child.pid, "")
+                    and any("pipe" in state for tid, state in tasks.items() if tid != child.pid)):
+                return report("available", "pipe controls and child wait channels observed",
+                              capacity=capacity, tasks=tasks)
+            time.sleep(0.01)
+        hidden = all(state in {"", "0"} for state in tasks.values())
+        named = all(state and not state.isdecimal() for state in tasks.values())
+        if len(tasks) == 2 and queued[0] == capacity and (hidden or named):
+            return report("unavailable", "required futex/pipe wait-channel symbols unavailable",
+                          tasks=tasks)
+        report("error", "capability helper ordering not established", tasks=tasks,
+               queued_bytes=queued[0])
+        raise AdmissionError("capability helper ordering not established; not a capability skip")
+    finally:
+        if child is not None:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=5)
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def supplied_reference():
@@ -329,7 +412,7 @@ class NoImprovementTests(unittest.TestCase):
     def test_supplied_reference_off_bytes(self):
         reference = supplied_reference()
         if reference is None:
-            self.skipTest("no caller-supplied reference; no reference comparison performed")
+            self.skipTest("supplied reference unavailable: no reference comparison performed")
         (self.directory / "reference.json").write_text(json.dumps({
             "path": str(reference), "sha256": hashlib.sha256(reference.read_bytes()).hexdigest(),
             "contract": "literal bytes before release version stamping; no normalization",
@@ -347,7 +430,7 @@ class NoImprovementTests(unittest.TestCase):
     def test_pre_feature_unknown_option_is_not_a_value_diagnostic(self):
         reference = supplied_reference()
         if reference is None:
-            self.skipTest("no caller-supplied pre-feature reference; negative control not run")
+            self.skipTest("supplied reference unavailable: pre-feature negative control not run")
         old, path = self.run_cli(native=reference, patience="-1", expected=1)
         self.assertEqual(old["failure"]["code"], "hpo_cli_usage")
         diagnostic = (path / "stderr").read_text()
@@ -647,14 +730,20 @@ class NoImprovementTests(unittest.TestCase):
         if patience:
             self.assertEqual(result["early_stop"]["trigger_trial_id"], 1 if patience == 1 else None)
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux FIFO/proc admission required")
-    def test_late_deadline_during_progress_drain(self):
+    def require_late_reader_capability(self):
+        capability = late_reader_capability()
+        if capability["status"] == "unavailable":
+            self.skipTest("late-reader capability unavailable: " + capability["reason"])
+        self.assertTrue(capability["available"], capability)
+
+    def test_late_deadline_during_trials_file_drain(self):
+        self.require_late_reader_capability()
         for patience in (0, 1, 8):
             with self.subTest(patience=patience):
                 self.slow_terminal_reader(patience, "deadline")
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux FIFO/proc admission required")
-    def test_late_signal_during_progress_drain(self):
+    def test_late_signal_during_trials_file_drain(self):
+        self.require_late_reader_capability()
         for patience in (0, 1, 8):
             with self.subTest(patience=patience):
                 self.slow_terminal_reader(patience, "signal")
@@ -785,4 +874,14 @@ class NoImprovementTests(unittest.TestCase):
 
 if __name__ == "__main__":
     NATIVE, PLUGIN = (Path(sys.argv.pop(1)).resolve() for _ in range(2))
-    unittest.main()
+    program = unittest.main(verbosity=2, exit=False)
+    skips = [{"test": test.id(), "reason": reason} for test, reason in program.result.skipped]
+    print("NO_IMPROVEMENT_SKIP_SUMMARY " + json.dumps({
+        "total": len(skips),
+        "late_reader_capability": sum(item["reason"].startswith("late-reader capability unavailable:")
+                                      for item in skips),
+        "supplied_reference": sum(item["reason"].startswith("supplied reference unavailable:")
+                                  for item in skips),
+        "skips": skips,
+    }), flush=True)
+    sys.exit(0 if program.result.wasSuccessful() else 1)
