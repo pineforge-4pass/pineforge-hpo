@@ -2094,6 +2094,8 @@ int run(Options options) {
     if (options.sampler == "dlib_global") {
         pfh::DlibGlobalSampler sampler(space, options.seed, direction, options.max_trials);
         evaluate_adaptive(sampler);
+        if (options.no_improvement_trials)
+            state.stopped();
     } else if (options.sampler == "tpe") {
         const auto policy = options.warm_history &&
             options.candidate_policy == pfh::CandidatePolicy::Exhaustive
@@ -2117,6 +2119,9 @@ int run(Options options) {
             }
         }
         evaluate_adaptive(sampler);
+        // Observe external stops at evaluation completion, before checkpointing/cleanup.
+        if (options.no_improvement_trials)
+            state.stopped();
         if (sampler.outstanding() == 0)
             options.tpe_sampler_state = sampler.sampler_state();
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
@@ -2151,6 +2156,8 @@ int run(Options options) {
                 return candidate;
             }
         }, [](const TrialRecord&) {});
+        if (options.no_improvement_trials)
+            state.stopped();
     }
     workers.close();
     const double capacity = workers.elapsed_seconds() * worker_count;
@@ -2165,8 +2172,6 @@ int run(Options options) {
 
     const auto render_start = RunState::Clock::now();
     const auto progress_failure = state.progress_error();
-    if (options.no_improvement_trials)
-        state.stopped();
     const auto early_stop = no_improvement.snapshot();
     std::string stop_reason = state.stop_reason();
     if (stop_reason.empty() && early_stop.trigger_trial_id)
