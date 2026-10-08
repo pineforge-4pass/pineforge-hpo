@@ -217,6 +217,7 @@ The trigger is null until latched. `drained_through_trial_id` is the last termin
 ID consumed by ordered feedback, or null before any such result; after an ordinary
 patience drain it equals F. A watchdog or other external stop may report only a
 partial drain. This snapshot is synchronized with the watchdog's final writer.
+Fatal watchdog metadata may name trigger or drain IDs absent from the fatal result's trial list.
 Off studies omit the object and retain prior output/checkpoint formats and Python
 native argv. A normal patience stop has a feasible new-part result and exits 0;
 a study with no feasible result remains unarmed and retains exit 2 at natural stop.

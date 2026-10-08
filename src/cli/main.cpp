@@ -322,6 +322,8 @@ void print_help() {
                  "completed trials remain.\n"
               << "Study wall cap: stop_reason deadline. "
                  "Trial cap: status/stop_reason trial_timeout.\n"
+              << "Stop reasons: trial_budget_reached, search_space_exhausted, sampler_stopped,\n"
+              << "              no_improvement, cancelled, deadline, trial_timeout.\n"
               << "Exit codes: 0 best feasible trial; 1 initialization/I/O error;\n"
               << "            2 no feasible trial; 3 trial timeout (no worker join);\n"
               << "            4 warm-start incompatible; 5 space exhausted.\n";

@@ -93,7 +93,8 @@ unavailable. Symbol info is also available to C++ consumers through
 Trial statuses are `ok`, `constraint_violation`, `objective_error`,
 `constraint_error`, `engine_error`, `trial_error`, and `trial_timeout`. Stop reasons
 are `trial_budget_reached`, `search_space_exhausted`, `sampler_stopped`,
-`cancelled` (SIGTERM/SIGINT), `deadline` (study cap), and `trial_timeout`.
+`no_improvement` (enabled patience), `cancelled` (SIGTERM/SIGINT), `deadline`
+(study cap), and `trial_timeout`.
 
 Exit codes remain 0 (a feasible best trial), 1 (initialization/I/O failure), and
 2 (no feasible trial); 3 denotes a trial timeout regardless of earlier feasible

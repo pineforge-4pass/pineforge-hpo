@@ -10,6 +10,11 @@
   improvements still affect final best. Enabled results include part-local
   `early_stop` metadata. Watchdog/output failures and observed cancellation/deadline
   keep priority. Explicit batch size is required for worker-independent stop trials.
+- Observe final enabled cancellation/deadline state at evaluation completion,
+  before checkpoint serialization and worker/output cleanup.
+- Validation note: the initial app-shaped plateau had 201 finite candidates, all
+  tried before the trigger. It proves patience arithmetic and precedence on a real
+  compiled strategy, not proposal behavior in a real app study.
 
 ## 0.11.0 (2026-10-07)
 
