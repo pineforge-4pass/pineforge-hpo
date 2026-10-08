@@ -371,7 +371,7 @@ Only enabled studies add `early_stop`: `patience_trials`, `trigger_trial_id` (nu
 if untriggered), `drained_through_trial_id` (the last terminal ID consumed by ordered
 feedback, null if none), and `reference_scope: "part"`. External interruption can
 leave a partial drain. Disabled result/progress/trial and checkpoint formats are
-unchanged. See [the batching contract](docs/batching.md#no-improvement-stopping).
+unchanged. See [the batching contract](docs/batching.md).
 
 The wall-time and per-trial timeout controls are native-only. StudySpec's reserved
 `timeout_seconds` remains rejected, and the Python CLI does not relay signals.
