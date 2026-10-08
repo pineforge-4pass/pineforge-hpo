@@ -3,6 +3,9 @@
 
 Set PFH_NO_IMPROVEMENT_EVIDENCE to retain every command, stdout, stderr, final
 document, progress stream and trial stream. No runner internals are imported.
+For literal reference comparisons before release version stamping, supply both
+PFH_NO_IMPROVEMENT_REFERENCE and PFH_NO_IMPROVEMENT_REFERENCE_SHA256. The tests
+never fetch/build a reference or normalize version/build fields.
 """
 
 from __future__ import annotations
@@ -565,7 +568,7 @@ class NoImprovementTests(unittest.TestCase):
                 "--fixed-input", "BatchPrefixJitter", "0",
                 "--fixed-input", "SequenceScore", "10",
                 "--fixed-input", "CompletionTraceFd", str(arrivals.fileno()),
-                "--categorical-choice", "ReaderPayload", "m" * 16384,
+                "--categorical-choice", "Payload", "m" * 16384,
                 "--progress-fd", str(progress.fileno()), "--trials-file", str(fifo),
                 "--output", str(final),
             ]
