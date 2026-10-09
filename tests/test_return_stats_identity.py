@@ -1,6 +1,10 @@
 """Return-statistics build identity: bound to the generated compile commands, fail-closed otherwise.
 
-Usage: test_return_stats_identity.py REPOSITORY_ROOT DLIB_SOURCE_DIR
+Usage: test_return_stats_identity.py REPOSITORY_ROOT DLIB_SOURCE_DIR [--list] [--only TOKEN[,TOKEN...]]
+
+Without options every scenario runs, in the same order as before. `--list` prints the scenario
+tokens of this host (one per line, nothing is run); `--only` runs just the named tokens, in plan
+order, and ends with PASS-PARTIAL instead of PASS.
 
 The identity is derived from the compile command that the build system generated for each reducer
 translation unit. This test keeps its own implementation of the declared normalization rule and
@@ -879,28 +883,80 @@ def scenario_real_core(repository, dlib, base, generator):
           "configuration flags; TPE flag identity is byte-identical with X added")
 
 
+GENERATOR_TOKEN = {"Unix Makefiles": "makefiles", "Ninja": "ninja"}
+
+
+def synthetic_group(base):
+    baseline = scenario_synthetic_bound(base)
+    scenario_synthetic_sensitivity(base, baseline)
+    scenario_synthetic_normalization(base, baseline)
+    scenario_synthetic_fail_closed(base)
+
+
+def scenario_plan(dlib, generators):
+    """Every scenario of the default run as (token, step(base)), in the default order.
+
+    The default run executes all of them. `--only` selects a subset by token so that the long
+    real-project scenarios can be split into separately receipted proofs, and `--list` prints the
+    tokens, so a proof can show that its parts are exactly the default run's scenarios. Each
+    scenario writes only into its own subdirectories of `base`: a subset runs the same code on
+    the same inputs as the corresponding part of the default run.
+    """
+    steps = [("text_hygiene", lambda base: scenario_text_hygiene(REPOSITORY)),
+             ("synthetic", synthetic_group)]
+    for generator in generators:
+        label = GENERATOR_TOKEN[generator]
+        steps.append((f"fixture:{label}",
+                      lambda base, g=generator: scenario_fixture(REPOSITORY, base, g)))
+        steps.append((f"executed:{label}",
+                      lambda base, g=generator: scenario_executed_command(REPOSITORY, base, g)))
+    steps.append(("not_circular",
+                  lambda base: scenario_not_circular(REPOSITORY, base, generators[0])))
+    steps.append(("api", lambda base: scenario_api(REPOSITORY, base, generators[0])))
+    for generator in generators:
+        steps.append((f"real_core:{GENERATOR_TOKEN[generator]}",
+                      lambda base, g=generator: scenario_real_core(
+                          REPOSITORY, dlib, base / g.replace(" ", "-"), g)))
+    return steps
+
+
 def main():
     global REPOSITORY
-    if len(sys.argv) != 3:
+    arguments = sys.argv[1:]
+    listing = "--list" in arguments
+    arguments = [argument for argument in arguments if argument != "--list"]
+    only = None
+    if "--only" in arguments:
+        at = arguments.index("--only")
+        if at + 1 >= len(arguments):
+            print(__doc__)
+            return 2
+        only = [token for token in arguments[at + 1].split(",") if token]
+        del arguments[at:at + 2]
+    if len(arguments) != 2:
         print(__doc__)
         return 2
-    REPOSITORY, dlib = (Path(argument).resolve() for argument in sys.argv[1:3])
-    scenario_text_hygiene(REPOSITORY)
+    REPOSITORY, dlib = (Path(argument).resolve() for argument in arguments)
+    plan = scenario_plan(dlib, available_generators())
+    tokens = [token for token, _ in plan]
+    if listing:
+        print("\n".join(tokens))
+        return 0
+    if only is not None:
+        require(only and len(set(only)) == len(only) and set(only) <= set(tokens),
+                f"--only needs distinct known tokens; known: {tokens}")
     with tempfile.TemporaryDirectory(prefix="pfh-rsi-") as temporary:
         base = Path(temporary)
-        baseline = scenario_synthetic_bound(base)
-        scenario_synthetic_sensitivity(base, baseline)
-        scenario_synthetic_normalization(base, baseline)
-        scenario_synthetic_fail_closed(base)
-        generators = available_generators()
-        for generator in generators:
-            scenario_fixture(REPOSITORY, base, generator)
-            scenario_executed_command(REPOSITORY, base, generator)
-        scenario_not_circular(REPOSITORY, base, generators[0])
-        scenario_api(REPOSITORY, base, generators[0])
-        for generator in generators:
-            scenario_real_core(REPOSITORY, dlib, base / generator.replace(" ", "-"), generator)
-    print("PASS: return-statistics build identity")
+        for token, step in plan:
+            if only is None or token in only:
+                print(f"SCENARIO {token}", flush=True)
+                step(base)
+                print(f"SCENARIO-DONE {token}", flush=True)
+    if only is None:
+        print("PASS: return-statistics build identity")
+    else:
+        print("PASS-PARTIAL: return-statistics build identity, selected scenarios: "
+              + ",".join(only))
     return 0
 
 

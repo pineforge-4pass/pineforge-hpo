@@ -1,6 +1,10 @@
 """Sobol numeric build identity: bound to the generated compile commands, fail-closed otherwise.
 
-Usage: test_sobol_identity.py REPOSITORY_ROOT DLIB_SOURCE_DIR
+Usage: test_sobol_identity.py REPOSITORY_ROOT DLIB_SOURCE_DIR [--list] [--only TOKEN[,TOKEN...]]
+
+Without options every scenario runs, in the same order as before. `--list` prints the scenario
+tokens of this host (one per line, nothing is run); `--only` runs just the named tokens, in plan
+order, and ends with PASS-PARTIAL instead of PASS.
 
 The identity is derived from the compile command that the build system generated for each Sobol
 C++ translation unit and each C translation unit of the portable-math target. This test keeps an
@@ -1138,27 +1142,71 @@ def available_generators():
     return found
 
 
+GENERATOR_TOKEN = {"Unix Makefiles": "makefiles", "Ninja": "ninja"}
+
+
+def scenario_plan(dlib, generators):
+    """Every scenario of the default run as (token, step(base)), in the default order.
+
+    The default run executes all of them. `--only` selects a subset by token so that the long
+    real-project scenarios can be split into separately receipted proofs, and `--list` prints the
+    tokens, so a proof can show that its parts are exactly the default run's scenarios. Each
+    scenario writes only into its own subdirectories of `base`: a subset runs the same code on
+    the same inputs as the corresponding part of the default run.
+    """
+    steps = [("text_hygiene", lambda base: scenario_text_hygiene(REPOSITORY)),
+             ("providers_complete", lambda base: scenario_providers_complete(REPOSITORY)),
+             ("synthetic", scenario_synthetic),
+             ("fail_closed", scenario_fail_closed),
+             ("same_rule_as_x", scenario_same_rule_as_x)]
+    for generator in generators:
+        label = GENERATOR_TOKEN[generator]
+        steps.append((f"fixture:{label}", lambda base, g=generator: scenario_fixture(base, g)))
+        steps.append((f"executed:{label}", lambda base, g=generator: scenario_executed(base, g)))
+    steps.append(("not_circular", lambda base: scenario_not_circular()))
+    for generator in generators:
+        steps.append((f"real_core:{GENERATOR_TOKEN[generator]}",
+                      lambda base, g=generator: scenario_real_core(
+                          REPOSITORY, dlib, base / g.replace(" ", "-"), g)))
+    return steps
+
+
 def main():
     global REPOSITORY
-    if len(sys.argv) != 3:
+    arguments = sys.argv[1:]
+    listing = "--list" in arguments
+    arguments = [argument for argument in arguments if argument != "--list"]
+    only = None
+    if "--only" in arguments:
+        at = arguments.index("--only")
+        if at + 1 >= len(arguments):
+            print(__doc__)
+            return 2
+        only = [token for token in arguments[at + 1].split(",") if token]
+        del arguments[at:at + 2]
+    if len(arguments) != 2:
         print(__doc__)
         return 2
-    REPOSITORY, dlib = (Path(argument).resolve() for argument in sys.argv[1:3])
-    scenario_text_hygiene(REPOSITORY)
-    scenario_providers_complete(REPOSITORY)
+    REPOSITORY, dlib = (Path(argument).resolve() for argument in arguments)
+    plan = scenario_plan(dlib, available_generators())
+    tokens = [token for token, _ in plan]
+    if listing:
+        print("\n".join(tokens))
+        return 0
+    if only is not None:
+        require(only and len(set(only)) == len(only) and set(only) <= set(tokens),
+                f"--only needs distinct known tokens; known: {tokens}")
     with tempfile.TemporaryDirectory(prefix="pfh-sobol-") as temporary:
         base = Path(temporary)
-        scenario_synthetic(base)
-        scenario_fail_closed(base)
-        scenario_same_rule_as_x(base)
-        generators = available_generators()
-        for generator in generators:
-            scenario_fixture(base, generator)
-            scenario_executed(base, generator)
-        scenario_not_circular()
-        for generator in generators:
-            scenario_real_core(REPOSITORY, dlib, base / generator.replace(" ", "-"), generator)
-    print("PASS: sobol numeric build identity")
+        for token, step in plan:
+            if only is None or token in only:
+                print(f"SCENARIO {token}", flush=True)
+                step(base)
+                print(f"SCENARIO-DONE {token}", flush=True)
+    if only is None:
+        print("PASS: sobol numeric build identity")
+    else:
+        print("PASS-PARTIAL: sobol numeric build identity, selected scenarios: " + ",".join(only))
     return 0
 
 
