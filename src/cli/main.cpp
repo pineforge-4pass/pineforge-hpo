@@ -2,6 +2,7 @@
 #include <pineforge/hpo/error.hpp>
 #include <pineforge/hpo/objective.hpp>
 #include <pineforge/hpo/pruner.hpp>
+#include <pineforge/hpo/return_stats.hpp>
 #include <pineforge/hpo/return_stats_identity.hpp>
 #include <pineforge/hpo/sampler.hpp>
 #include <pineforge/hpo/search_space.hpp>
@@ -57,6 +58,11 @@
 #include <unistd.h>
 
 namespace pfh = pineforge::hpo;
+
+// Both headers are included here on purpose: the contract bound into the identity at build time
+// and the reducer's own constant must agree, and neither header may define the other's names.
+static_assert(pfh::return_stats_contract() == pfh::kReturnStatsContract,
+              "the return-statistics identity is bound to a different contract than the reducer");
 
 #ifndef PINEFORGE_HPO_VERSION
 #define PINEFORGE_HPO_VERSION "unknown"
@@ -1669,16 +1675,23 @@ std::string render_results(const Options& options,
             << ", \"reference_scope\": \"part\"}";
     }
     if (options.return_stats_bar || options.return_stats_monthly) {
+        // An empty identity is never a valid return_stats result. Admission refuses an unbound
+        // build before any trial, so this guard is unreachable in a correct run; it keeps the
+        // invariant local to the place that writes the object.
+        if (!pfh::return_stats_identity_bound() ||
+            pfh::return_stats_numeric_build_identity().empty())
+            throw pfh::TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "return statistics need a bound build identity");
         // One object per result, with the statistics' own build identity on every sampler path.
         // It is not the TPE checkpoint identity above and never derived from it.
         out << ",\n  \"return_stats\": {\"contract\": \""
-            << json_escape(std::string(pfh::return_stats_contract())) << "\", \"series\": [";
+            << json_escape(std::string(pfh::kReturnStatsContract)) << "\", \"series\": [";
         if (options.return_stats_bar)
             out << "\"bar\"";
         if (options.return_stats_monthly)
             out << (options.return_stats_bar ? ", " : "") << "\"monthly\"";
         out << "], \"chart_timezone\": \"" << json_escape(options.chart_timezone)
-            << "\", \"risk_free_annual\": " << json_number(0.02)  // contract constant
+            << "\", \"risk_free_annual\": " << json_number(pfh::kReturnStatsRiskFreeAnnual)
             << ", \"numeric_build_identity\": \""
             << json_escape(std::string(pfh::return_stats_numeric_build_identity())) << "\"}";
     }
@@ -2036,6 +2049,11 @@ int run(Options options) {
                 options.return_stats_monthly = true;
         }
     }
+    // Fail closed before the plugin, the dataset, the progress files or any trial: statistics
+    // from a build with an unbound identity would carry no claim-bearing identity. A run that
+    // requests none never reaches this line's body.
+    if (options.return_stats_bar || options.return_stats_monthly)
+        pfh::require_return_stats_identity();
 
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
     auto dataset = std::make_shared<pfh::Dataset>(pfh::Dataset::load_csv(options.ohlcv));

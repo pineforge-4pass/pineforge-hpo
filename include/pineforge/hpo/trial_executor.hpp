@@ -57,6 +57,17 @@ struct BacktestConfiguration {
     std::shared_ptr<const SymbolFeeds> symbol_feeds;
 };
 
+/// Refuses return statistics in a build whose identity is unbound.
+///
+/// Return statistics are published only by a build whose identity is bound to the compile
+/// commands that produced the reducer (see docs/internal/return-stats-identity.md). When it is
+/// not, because of a multi-configuration generator, a compiler launcher, a disabled compilation
+/// database, a CMake older than 3.19 and the like, this throws `hpo_toolchain_unavailable`
+/// (reason `native_runner`) whose text names the exact unbound reason. Every ordinary run, which
+/// requests no return statistics, never calls it and is unaffected. TrialExecutor calls it when a
+/// series is requested; the command line calls it earlier, before any plugin or dataset is loaded.
+void require_return_stats_identity();
+
 /// Published fields of one return-statistics series, in wire order: count, skipped,
 /// periods_per_year, mean, std, sharpe_per_period, skew, kurt_raw, status.
 ///

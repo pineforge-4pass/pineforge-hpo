@@ -538,7 +538,8 @@ and Sortino ratios, so they are `metrics.equity.sharpe_monthly` and
 Return statistics of the equity curve are available as eighteen metric names,
 `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,sharpe_per_period,skew,kurt_raw,status}`,
 computed only for the series an expression or `--record-metric` names (nothing else changes when
-none is named). The Sharpe value is per period and unannualized; see
+none is named; a build whose statistics identity cannot be bound refuses them and still runs
+everything else). The Sharpe value is per period and unannualized; see
 [Return statistics](docs/study-spec.md#return-statistics-legacy-mode) and
 [docs/return-stats.md](docs/return-stats.md) for definitions, status codes and what is not claimed.
 

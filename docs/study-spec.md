@@ -485,7 +485,7 @@ When any series is requested the result carries one object:
 ```json
 "return_stats": {"contract": "pineforge-hpo-return-stats/v1", "series": ["bar", "monthly"],
                  "chart_timezone": "UTC", "risk_free_annual": 0.02,
-                 "numeric_build_identity": "pineforge-hpo-return-stats-build/v1:sha256:..."}
+                 "numeric_build_identity": "pineforge-hpo-return-stats-build/v2:sha256:..."}
 ```
 
 `series` lists the requested series. `numeric_build_identity` names the build that computed the
@@ -497,7 +497,15 @@ is no new per-trial key; the values are entries of each trial's `metrics` object
 names. A part reports only its own trials: warm-started ancestors keep their rows exactly as
 they were, and binary parents carry no statistics. This feature does not decide which trials a
 later selection or deflated-Sharpe step may count, how constraints or pruning treat these
-metrics, or how parts merge. If a build fails the reducer's own contraction probe, the run stops
+metrics, or how parts merge.
+
+A build whose statistics identity cannot be bound exactly, because it used a multi-configuration
+generator, a compiler launcher or wrapper, response files, a disabled compilation database, a
+CMake older than 3.19 or another listed situation, still builds and runs every ordinary study with
+unchanged results. A run that names a `returns.*` metric is refused before the plugin, the
+dataset, any output file or any trial, with the registered `hpo_toolchain_unavailable` failure
+(`args.reason` is `native_runner`); its diagnostic text names the exact unbound reason. An empty
+identity is never published. If a build fails the reducer's own contraction probe, the run stops
 at start with `hpo_invariant`.
 
 ## Sampler

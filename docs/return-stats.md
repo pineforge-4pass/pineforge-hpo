@@ -148,13 +148,22 @@ including status, is null for it.
   NaN, published as null); `--record-metric` and expression validation use it, so a near-miss
   name is an unknown metric. The request follows from the identifiers of the objective,
   constraints and recorded metrics.
-* `TrialExecutor` runs `return_stats_contraction_free()` once at construction when a series is
-  requested, and stops with `hpo_invariant` if it fails. This is a sanity probe, not an
-  attestation.
-* `main.cpp` writes the result-level `return_stats` object with the identity from
-  `return_stats_identity.hpp`. That header and `return_stats.hpp` each define
-  `kReturnStatsContract`, so no translation unit may include both; the executor includes the
-  reducer header, the command line the identity header.
+* `TrialExecutor` first calls `require_return_stats_identity()` and then runs
+  `return_stats_contraction_free()` once at construction when a series is requested. The first
+  throws `hpo_toolchain_unavailable` (reason `native_runner`, the exact unbound reason in the
+  text) when the build's statistics identity is unbound; the second throws `hpo_invariant` if the
+  probe fails, a sanity check and not an attestation. The command line calls the first before it
+  loads the plugin or the dataset or opens any output file, so an unbound build refuses a request
+  before any trial. A run that requests nothing never calls either.
+* `main.cpp` writes the result-level `return_stats` object with the contract and the fixed
+  risk-free rate from `return_stats.hpp` and the identity from `return_stats_identity.hpp`. The
+  two headers no longer share a name and are included together, with a `static_assert` that the
+  contract bound into the identity equals the reducer's constant; an empty identity can never be
+  written.
+* `CMakeLists.txt` makes the identity generation target an unconditional dependency of the engine
+  adapter and the command line, so every supported build constructs its own generated header
+  before compiling them. The default build writes `compile_commands.json` into the build
+  directory, which the identity reads.
 
 ## Proof still to be produced (nothing run yet)
 

@@ -45,6 +45,8 @@ option(PINEFORGE_HPO_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" O
 option(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER "Build with ThreadSanitizer" OFF)
 option(PINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN "Fail instead of skipping unknown serial goldens" OFF)
 option(PINEFORGE_HPO_REQUIRE_MPFR "Require MPFR for exact portable-math tests" OFF)
+option(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY
+    "Fail the identity tests when the return-statistics build identity is unbound" OFF)
 if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
 endif()
@@ -205,12 +207,30 @@ endif()
 # above), and the per-source flags that keep its arithmetic uncontracted. Only per-source
 # properties of the reducer are written, so numeric_build_flags.txt above is unaffected. Keep this
 # after the last CMAKE_CXX_FLAGS change and do not set properties of the reducer source later.
+#
+# The identity reads the compilation database, so the default build now writes
+# compile_commands.json into the build directory (one extra file, accepted; the helper switches it
+# on only when the project left CMAKE_EXPORT_COMPILE_COMMANDS undefined). An explicit OFF, a
+# multi-configuration generator, a compiler launcher and the other situations listed in
+# docs/internal/return-stats-identity.md leave the identity unbound: the build and every ordinary
+# run are unaffected, and only a run that requests return statistics is refused.
+#
+# The consumers are the targets that include return_stats_identity.hpp: the engine adapter (the
+# executor refuses statistics without a bound identity) and the command line (admission and the
+# emitted identity). Their dependency on the generation target is unconditional, so every
+# supported build constructs its own generated header before compiling them.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReturnStatsIdentity.cmake")
-# CONSUMERS is passed only when the command-line target exists: the helper rejects the keyword
-# without a value (a core-only build has no consumer).
+# CONSUMERS is passed only with a value: the helper rejects a valueless keyword (a core-only
+# build has no consumer).
 set(PFH_RSI_CONSUMER_ARGUMENTS "")
-if(TARGET pineforge-hpo-native)
-    list(APPEND PFH_RSI_CONSUMER_ARGUMENTS CONSUMERS pineforge-hpo-native)
+set(PFH_RSI_CONSUMER_TARGETS "")
+foreach(PFH_RSI_CONSUMER IN ITEMS pineforge_hpo_engine_adapter pineforge-hpo-native)
+    if(TARGET ${PFH_RSI_CONSUMER})
+        list(APPEND PFH_RSI_CONSUMER_TARGETS ${PFH_RSI_CONSUMER})
+    endif()
+endforeach()
+if(PFH_RSI_CONSUMER_TARGETS)
+    list(APPEND PFH_RSI_CONSUMER_ARGUMENTS CONSUMERS ${PFH_RSI_CONSUMER_TARGETS})
 endif()
 pfh_return_stats_identity(
     TARGET pineforge_hpo_core

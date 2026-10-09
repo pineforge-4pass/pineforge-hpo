@@ -87,6 +87,22 @@ target_compile_options(pineforge_hpo_test_return_stats PRIVATE
     -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_return_stats COMMAND pineforge_hpo_test_return_stats)
 
+# Both public headers in one translation unit, and the real build's generated identity read back
+# against its own descriptor. The generation target is an unconditional build dependency.
+add_executable(pineforge_hpo_test_return_stats_headers test_return_stats_headers.cpp)
+add_dependencies(pineforge_hpo_test_return_stats_headers ${PFH_RETURN_STATS_IDENTITY_TARGET})
+target_include_directories(pineforge_hpo_test_return_stats_headers PRIVATE
+    "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
+target_link_libraries(pineforge_hpo_test_return_stats_headers PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_return_stats_headers PRIVATE
+    -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_return_stats_headers
+    COMMAND pineforge_hpo_test_return_stats_headers)
+if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+    set_tests_properties(pineforge_hpo_return_stats_headers PROPERTIES
+        ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+endif()
+
 add_executable(pineforge_hpo_test_candidate_list test_candidate_list.cpp)
 target_include_directories(pineforge_hpo_test_candidate_list PRIVATE
     "${PROJECT_SOURCE_DIR}/src/cli")
@@ -306,7 +322,22 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/test_return_stats_identity.py"
                     "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
-            set_tests_properties(pineforge_hpo_return_stats_identity PROPERTIES TIMEOUT 900)
+            set_tests_properties(pineforge_hpo_return_stats_identity PROPERTIES TIMEOUT 1800)
+            # Fresh configurations of the whole project (explicit-OFF and multi-configuration
+            # trees) plus a verbose rebuild of the real reducer object: serial, long.
+            add_test(NAME pineforge_hpo_return_stats_integration
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/test_return_stats_integration.py"
+                    $<TARGET_FILE:pineforge-hpo-native>
+                    $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                    "${CMAKE_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${PINEFORGE_ENGINE_ROOT}"
+                    "${dlib_SOURCE_DIR}")
+            set_tests_properties(pineforge_hpo_return_stats_integration PROPERTIES
+                TIMEOUT 3600 RUN_SERIAL TRUE)
+            if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+                set_property(TEST pineforge_hpo_return_stats_integration APPEND PROPERTY
+                    ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+            endif()
         endif()
         add_test(NAME pineforge_hpo_symbol_feeds_contract
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_symbol_feeds_contract.py"
@@ -339,6 +370,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         set_tests_properties(pineforge_hpo_return_stats_cli PROPERTIES TIMEOUT 900)
+        if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+            set_property(TEST pineforge_hpo_return_stats_cli APPEND PROPERTY
+                ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+        endif()
         add_test(NAME pineforge_hpo_trial_outputs
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>

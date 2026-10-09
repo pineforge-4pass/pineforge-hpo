@@ -9,7 +9,12 @@
   object and the result bytes are unchanged. A requested run adds those names to each trial's
   `metrics` and one result-level `return_stats` object with its own build identity on every
   sampler path (independent of the TPE checkpoint identity). A trial without a report has every
-  requested metric null. Execution proof is pending.
+  requested metric null. A build whose statistics identity cannot be bound (multi-configuration
+  generator, compiler launcher, explicit compile-database OFF, CMake older than 3.19, ...) still
+  builds and runs every ordinary study unchanged, and refuses a request for these metrics before
+  any trial with `hpo_toolchain_unavailable` (reason `native_runner`) naming the exact unbound
+  reason. The default build now also writes `compile_commands.json` into the build directory (one
+  extra file). Execution proof is pending.
 - `--sampler candidates`: an explicitly given `--max-trials 0` is refused (N is at least 1); the
   budget may still be omitted, and zero keeps its "no cap" meaning for every other sampler.
 

@@ -1,5 +1,6 @@
 #include <pineforge/hpo/error.hpp>
 #include <pineforge/hpo/return_stats.hpp>
+#include <pineforge/hpo/return_stats_identity.hpp>
 #include <pineforge/hpo/trial_executor.hpp>
 
 #include <algorithm>
@@ -14,6 +15,22 @@
 
 namespace pineforge {
 namespace hpo {
+
+// The identity header carries the contract bound at build time and the reducer header its own
+// constant; a build bound to another contract must not compile.
+static_assert(return_stats_contract() == kReturnStatsContract,
+              "the return-statistics identity is bound to a different contract than the reducer");
+
+void require_return_stats_identity() {
+    if (return_stats_identity_bound() && !return_stats_numeric_build_identity().empty())
+        return;
+    const std::string_view reason = return_stats_identity_unbound_reason();
+    throw TypedHpoError<std::runtime_error>(
+        "hpo_toolchain_unavailable", {{"reason", "native_runner"}},
+        "return statistics are unavailable in this build: its identity is unbound (" +
+            std::string(reason.empty() ? std::string_view("identity_missing") : reason) + ")");
+}
+
 namespace {
 
 std::optional<double> trade_metric(const pf_trade_stats_t& metrics,
@@ -322,8 +339,10 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
             "hpo_study_spec_invalid", {{"reason", "backtest"}}, "invalid magnifier distribution");
     }
     if (configuration_.return_stats_bar || configuration_.return_stats_monthly) {
+        // Fail closed before any strategy handle exists: no claim-bearing identity, no statistics.
+        require_return_stats_identity();
         // Fail-closed sanity probe of the reducer's own build (multiply-add not contracted). It
-        // is not an attestation; the statistics identity and the spot proofs bind the build.
+        // is not an attestation; the statistics identity and the proof runs bind the build.
         if (!return_stats_contraction_free())
             throw TypedHpoError<std::logic_error>(
                 "hpo_invariant", {},
