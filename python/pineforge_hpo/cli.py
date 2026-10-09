@@ -650,11 +650,12 @@ def _native_command(
             "the executable MVP supports objective.kind=expression; custom C++ "
             "objectives use the ObjectiveFn API",
         )
-    if study.sampler.kind not in {"grid", "random", "dlib_global", "tpe"}:
+    if study.sampler.kind not in {"grid", "random", "dlib_global", "tpe", "candidates"}:
         raise _cli_error(
             "hpo_study_spec_invalid",
             {"reason": "sampler"},
-            "the executable supports sampler.kind=grid, random, dlib_global, or tpe",
+            "the executable supports sampler.kind=grid, random, dlib_global, tpe, "
+            "or candidates",
         )
     if study.sampler.kind == "dlib_global" and study.sampler.seed > 2_147_483_647:
         raise _cli_error(
@@ -749,7 +750,17 @@ def _native_command(
                 str(study.execution.pruner_eta),
             )
         )
-    if study.sampler.kind == "tpe":
+    if study.sampler.kind == "candidates":
+        if study.sampler.candidates_file is None:
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "sampler"},
+                "sampler.kind=candidates requires sampler.config.candidates_file",
+            )
+        # --max-trials was passed above from the required positive sampler.trials; native
+        # admission refuses a value that is not the list length N.
+        command.extend(("--candidates", str(study.sampler.candidates_file)))
+    elif study.sampler.kind == "tpe":
         if not isinstance(study.sampler.config, TpeSamplerConfig):
             raise _cli_error(
                 "hpo_study_spec_invalid",
@@ -875,6 +886,10 @@ def prepare_run(
         if preflight.sampler.kind == "dlib_global":
             raise WarmStartError(
                 "warm-start incompatible: dlib_global is not supported"
+            )
+        if preflight.sampler.kind == "candidates":
+            raise WarmStartError(
+                "warm-start incompatible: candidates continuation is not supported"
             )
         history = warm_start_metadata(
             preflight, warm_start, native=native, defer_symbol_feeds=True

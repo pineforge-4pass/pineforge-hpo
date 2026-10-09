@@ -492,6 +492,7 @@ objects are shown in the [schema documentation](docs/study-spec.md).
 | `random` | Broad, inexpensive exploration | Seeded `std::mt19937_64`; supports continuous and log dimensions. |
 | `dlib_global` | Model-based search over mixed numeric spaces | Native batched ask/tell through dlib global function search. |
 | `tpe` | Adaptive refinement over mixed spaces | Native Parzen marginals, categorical probabilities, and constant-liar batches. |
+| `candidates` | Re-scoring a known list of complete vectors | Evaluates each line of an ordered JSONL list once, duplicates included; the whole file is validated before any trial. See [Candidate list](docs/study-spec.md#candidate-list). |
 
 TPE and dlib are adaptive: proposal order depends on the seed, logical batch size, and
 fixed feedback lag, not worker timing. Set `execution.batch_size` explicitly to replay

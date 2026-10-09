@@ -108,6 +108,7 @@ class SamplerSpec:
     trials: int
     candidate_policy: str = "sampler_default"
     config: TpeSamplerConfig | None = None
+    candidates_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -593,16 +594,21 @@ def _parse_objective(value: Any, issues: list[ValidationIssue]) -> ObjectiveSpec
     )
 
 
-def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
+def _parse_sampler(
+    value: Any, base_dir: Path, issues: list[ValidationIssue]
+) -> SamplerSpec:
     path = "$.sampler"
     raw = _object(value, path, issues)
     _check_unknown(
         raw, {"kind", "seed", "trials", "candidate_policy", "config"}, path, issues
     )
     kind = _nonempty_string(raw.get("kind"), f"{path}.kind", issues)
-    if kind and kind not in {"grid", "random", "dlib_global", "tpe"}:
+    if kind and kind not in {"grid", "random", "dlib_global", "tpe", "candidates"}:
         issues.append(
-            ValidationIssue(f"{path}.kind", "must be grid, random, dlib_global, or tpe")
+            ValidationIssue(
+                f"{path}.kind",
+                "must be grid, random, dlib_global, tpe, or candidates",
+            )
         )
     seed = raw.get("seed")
     trials = raw.get("trials")
@@ -631,7 +637,19 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
         candidate_policy = "sampler_default"
     raw_config = _object(raw.get("config", {}), f"{path}.config", issues)
     config: TpeSamplerConfig | None = None
-    if kind == "tpe":
+    candidates_file: Path | None = None
+    if kind == "candidates":
+        # The list is read only by the native runner. A relative path resolves against the
+        # study file's directory, like every other path in the study.
+        config_path = f"{path}.config"
+        _check_unknown(raw_config, {"candidates_file"}, config_path, issues)
+        candidates_file = _resolve_path(
+            raw_config.get("candidates_file"),
+            f"{config_path}.candidates_file",
+            base_dir,
+            issues,
+        )
+    elif kind == "tpe":
         config_path = f"{path}.config"
         _check_unknown(
             raw_config,
@@ -748,6 +766,7 @@ def _parse_sampler(value: Any, issues: list[ValidationIssue]) -> SamplerSpec:
         trials=trials,
         candidate_policy=str(candidate_policy),
         config=config,
+        candidates_file=candidates_file,
     )
 
 
@@ -870,7 +889,7 @@ def _validate_candidate_policy(
         return
 
     if sampler.kind not in {"grid", "tpe"}:
-        if sampler.kind in {"random", "dlib_global"}:
+        if sampler.kind in {"random", "dlib_global", "candidates"}:
             issues.append(
                 ValidationIssue(
                     "$.sampler.candidate_policy",
@@ -1116,9 +1135,17 @@ def load_study_spec(
         )
 
     objective = _parse_objective(root.get("objective"), issues)
-    sampler = _parse_sampler(root.get("sampler"), issues)
+    sampler = _parse_sampler(root.get("sampler"), spec_path.parent, issues)
     _validate_candidate_policy(strategy, sampler, issues, continuation=continuation)
     execution = _parse_execution(root.get("execution"), issues)
+    if sampler.kind == "candidates" and execution.pruner != "none":
+        # A pruned row has only a prefix score, so a listed vector could end without a
+        # full-window score. The native runner refuses the combination as well.
+        issues.append(
+            ValidationIssue(
+                "$.execution.pruner", "must be none when sampler.kind is candidates"
+            )
+        )
 
     if (
         sampler.kind == "tpe"
@@ -1139,6 +1166,15 @@ def load_study_spec(
             issues.append(
                 ValidationIssue(
                     "$.strategies[0]", f"file does not exist: {strategy_path}"
+                )
+            )
+        if sampler.candidates_file is not None and not sampler.candidates_file.is_file():
+            # Existence only; the list itself is validated by the native runner. The path is
+            # not echoed.
+            issues.append(
+                ValidationIssue(
+                    "$.sampler.config.candidates_file",
+                    "candidate list file does not exist",
                 )
             )
         for index, dataset in enumerate(datasets):

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Add the `candidates` sampler (native `--sampler candidates --candidates FILE`; StudySpec
+  `sampler.kind: "candidates"` with `sampler.config.candidates_file`). It evaluates an ordered
+  JSONL list of complete parameter vectors, preserving duplicates with trial ID equal to the
+  zero-based position. The whole list is validated before any plugin, dataset or trial work
+  (initial input caps 50,000 occurrences, 32 MiB, 64 KiB per line; they bound input only). A
+  final `candidate_list` object reports source and list SHA-256, evaluated and scored counts,
+  `complete` (every position terminal, not every score valid) and missing ranges. A candidate
+  result can seed TPE as rebuilt history through the existing loader. Candidate policy other
+  than `sampler_default`, a pruner, positive patience and warm start are refused. Runs that do
+  not use the new flags keep their bytes. Execution proof is pending.
+
 ## 0.12.0 (2026-10-08)
 
 - Add opt-in `--no-improvement-trials N` to native and Python `run`. Count ordered

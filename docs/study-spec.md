@@ -105,7 +105,7 @@ pineforge-hpo run path/to/study.json \
 | `strategies` | Must contain exactly one strategy object. |
 | `datasets` | The executable path requires exactly one referenced dataset. |
 | `objective` | Must use `kind="expression"`. |
-| `sampler` | `grid`, `random`, `dlib_global`, or `tpe`, plus its candidate policy. |
+| `sampler` | `grid`, `random`, `dlib_global`, `tpe`, or `candidates`, plus its candidate policy. |
 | `execution` | Sequential or threaded native execution. |
 | `symbol_feeds` | Optional index path or inline index; fixed other-symbol reads only. |
 
@@ -448,9 +448,9 @@ CLI does not resolve registered objective names yet.
 ## Sampler
 
 Every sampler requires an explicit non-negative `seed` and positive `trials`.
-The optional `candidate_policy` defaults to `sampler_default`. Only `tpe`
-accepts a non-empty `config`; other sampler kinds reject it instead of silently
-ignoring configuration.
+The optional `candidate_policy` defaults to `sampler_default`. Only `tpe` (typed model
+options) and `candidates` (`candidates_file`) accept a non-empty `config`; other sampler kinds
+reject it instead of silently ignoring configuration.
 
 ### Candidate policy
 
@@ -528,6 +528,69 @@ Failed and infeasible requests are abandoned because dlib has no native hard-
 constraint contract. Only genuine feasible objective values train the model or
 participate in reported best-trial selection. A future constraint-aware sampler
 may add explicit violation magnitudes instead of fabricated objective scores.
+
+### Candidate list
+
+```json
+{"kind": "candidates", "seed": 0, "trials": 3,
+ "config": {"candidates_file": "candidates.jsonl"}}
+```
+
+`candidates` evaluates every occurrence of an ordered list of **complete** parameter vectors,
+once each, through the ordinary trial path. It is the native `--sampler candidates
+--candidates FILE`. Trial ID `i` is the zero-based occurrence position `i`. Duplicates are
+kept: the same vector on two lines runs twice and yields two rows with two IDs; nothing is
+deduplicated, cached or fanned out, and the study is billed per occurrence by whoever bills.
+
+- **File** `pineforge_candidates_v1`: UTF-8 JSON Lines, one flat object per line whose keys are
+  exactly the search-dimension names and whose values are scalars. No header, comment or blank
+  line; one final LF is optional and CRLF is accepted. A number is read by the warm-start
+  importer's rules (an integer dimension needs an integer token, a real dimension accepts any
+  JSON number, a number may match a *real* categorical choice, a finite space requires the
+  exact lattice value). Duplicate JSON keys, `NaN`/`Infinity`, invalid UTF-8 and nesting over
+  32 are refused. A fixed input may not share a name with a search dimension.
+- **Config.** `sampler.config.candidates_file` is required and is the only config key. A
+  relative path resolves against the StudySpec file's directory, like every other study path.
+  Python only checks that the file exists; the native runner reads and validates it.
+- **Budget.** `sampler.trials` stays a required positive integer and must equal the number of
+  lines N the native runner admits; a different value is refused before any trial. The native
+  CLI accepts `--max-trials` absent or `0` (N is used) or exactly N. `seed` is required and
+  recorded; it never changes a value.
+- **Admission** happens once, before any plugin, dataset or trial work: the whole file is
+  validated, or nothing runs. Initial caps are 50,000 occurrences, 32 MiB per file and 64 KiB
+  per line, and at least one occurrence. They bound **input only**; they do not bound output
+  size, resident memory, billing, or whether a wide result can be re-imported (the importer
+  refuses documents above 256 MiB, and warm loading keeps its own limits and refusals).
+  Failures use existing codes: `hpo_input_file_invalid` (path, file type, size, line length,
+  UTF-8, JSON), `hpo_study_spec_invalid` with reason `sampler` (empty list, count, budget),
+  `search_space` (a vector against the space) or `input` (fixed-input overlap), and
+  `hpo_cli_usage`. A diagnostic names a 1-based line number and a declared dimension name at
+  most; it never contains the path or a list value.
+- **Refused combinations:** a candidate policy other than `sampler_default`, a pruner other than
+  `none`, a positive `--no-improvement-trials` (zero is accepted), and `--warm-start` (exit 4,
+  `hpo_warm_start_rejected`). There is no resume for a candidate list in this release and no
+  Python-side rewriting or merging of histories.
+- **Rows** are ordinary rows. Constraint violations and engine errors on admitted vectors are
+  terminal rows, not admission errors, and the run continues past them. Cancellation, deadline,
+  trial timeout and output errors behave as for every sampler. A list that ends normally reports
+  `stop_reason: "trial_budget_reached"` at N, even when it happens to cover a whole finite space.
+- **`candidate_list`** is a top-level object present only for this sampler:
+  `{"format","source_sha256","list_sha256","count","evaluated","scored","complete",
+  "unevaluated_ranges"}`. `source_sha256` hashes the exact file bytes; `list_sha256` hashes
+  `pineforge_candidates_v1\n` followed by the canonical key of each vector plus `\n` in order, so
+  whitespace, key order and number spelling do not change it (and a zero's sign does not either:
+  the original bytes are what `source_sha256` distinguishes) while duplicates and order do.
+  `evaluated` counts every position with a terminal row, `scored` only `ok` and
+  `constraint_violation`, and `unevaluated_ranges` lists the missing positions as ascending
+  inclusive `[first, last]` ranges. **`complete` means every position has a terminal row, not
+  that every score is valid.** Coverage is kept for `trials_out` `all`, `best-k` and `none` and
+  after a timeout, so consumers must test `candidate_list.complete`, never `stop_reason` alone.
+- **Use as TPE history.** A candidate result with `trials_out=all`, its `--trials-file`, or a
+  binary history made from them is an ordinary parent for the existing loader: the child reports
+  `warm_start_model: "rebuilt_history"`, never an uninterrupted checkpoint, and the usual
+  space-hash, status, capacity and size refusals apply. The space hash does not certify the
+  dataset, window or fixed inputs, so the caller must use the same scoring context; native
+  cannot refuse a wrong-window parent until the window is recorded in result provenance.
 
 ### TPE
 
@@ -790,6 +853,7 @@ key, and search-space definition:
 | `search_space_exhausted` | Whether no unattempted vector remains in a finite space. |
 | `stop_reason` | Machine-readable reason that candidate generation stopped. |
 | `early_stop` | Present only when `--no-improvement-trials` is enabled; see the [patience and drain fields](batching.md). |
+| `candidate_list` | Present only for `sampler: "candidates"`; list identity and terminal-position coverage, see [Candidate list](#candidate-list). |
 | `full_parameter_coverage` | Every vector in the declared finite domain has a terminal trial record. |
 | `exhaustive_equivalent` | Full parameter coverage and every trial status is `ok` or `constraint_violation`. |
 
@@ -1146,6 +1210,7 @@ binary plus independently encoded new-trial chunks for subsequent continuation.
 - account-equity aggregation and allocation optimization;
 - registered custom-objective lookup from JSON;
 - persistence, resume, and worker recovery;
+- continuation or resume of a `candidates` list (its results can seed TPE history only);
 - conditional/hierarchical spaces;
 - multi-objective directions and Pareto output;
 - walk-forward folds;

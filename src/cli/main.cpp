@@ -10,6 +10,7 @@
 
 #include "../core/ordinal_set.hpp"
 #include "batch_executor.hpp"
+#include "candidate_list.hpp"
 #include "continuation.hpp"
 #include "failure_json.hpp"
 #include "json.hpp"
@@ -71,6 +72,8 @@ struct Options {
     std::filesystem::path trials_file;
     std::filesystem::path warm_start;
     std::shared_ptr<const pfh::detail::WarmHistory> warm_history;
+    std::filesystem::path candidates;
+    std::shared_ptr<const pfh::detail::CandidateList> candidate_list;
     std::shared_ptr<const std::string> space_json;
     std::string space_hash;
     bool tpe_warm_restored = false;
@@ -274,7 +277,10 @@ void print_help() {
               << "  --symbol-feeds FILE        fixed other-symbol feed index (loaded once)\n"
               << "  --strategy-override NAME VALUE\n\n"
               << "Study options:\n"
-              << "  --sampler grid|random|tpe|dlib_global  default: grid\n"
+              << "  --sampler grid|random|tpe|dlib_global|candidates  default: grid\n"
+              << "  --candidates FILE           candidates: ordered JSONL of complete parameter\n"
+              << "                              vectors, validated whole before any trial;\n"
+              << "                              --max-trials absent or exactly the line count\n"
               << "  --candidate-policy sampler_default|without_replacement|exhaustive\n"
               << "  --max-trials N              0: grid exhaustive; adaptive deadline only\n"
               << "  --no-improvement-trials N   ordered patience; 0 disables (default)\n"
@@ -386,9 +392,11 @@ Options parse_options(int argc, char** argv) {
         } else if (option == "--sampler") {
             out.sampler = require_value(argc, argv, i, option);
             if (out.sampler != "grid" && out.sampler != "random" && out.sampler != "tpe" &&
-                out.sampler != "dlib_global") {
-                usage_error("--sampler must be grid, random, tpe, or dlib_global");
+                out.sampler != "dlib_global" && out.sampler != "candidates") {
+                usage_error("--sampler must be grid, random, tpe, dlib_global, or candidates");
             }
+        } else if (option == "--candidates") {
+            out.candidates = require_value(argc, argv, i, option);
         } else if (option == "--candidate-policy") {
             out.candidate_policy = parse_candidate_policy(require_value(argc, argv, i, option));
         } else if (option == "--max-trials") {
@@ -592,6 +600,9 @@ Options parse_options(int argc, char** argv) {
         usage_error("--ohlcv is required");
     if (out.objective.empty())
         usage_error("--objective is required");
+    pfh::detail::require_candidate_list_settings(
+        out.sampler == "candidates", !out.candidates.empty(), out.candidate_policy, out.pruner,
+        out.no_improvement_trials, !out.warm_start.empty());
     if ((out.sampler == "random" || out.sampler == "tpe" || out.sampler == "dlib_global") &&
         out.max_trials == 0 && out.max_wall_seconds == 0.0) {
         usage_error(out.sampler + " sampling requires --max-trials or --max-wall-seconds");
@@ -884,6 +895,8 @@ public:
     TrialArchive(const Options& options, const pfh::SearchSpace& space, bool finite)
         : options_(options), space_(space), finite_(finite),
           ordinals_(finite ? space.finite_cardinality().value_or(0) : 0) {
+        if (options.candidate_list)
+            coverage_.emplace(options.candidate_list->size());
         if (options.warm_history) {
             objective_coverage = options.warm_history->completed ==
                 options.warm_history->size();
@@ -894,7 +907,12 @@ public:
         }
     }
 
+    // Called only under RunState's mutex (finish() and the single timeout record), so the
+    // coverage needs no lock of its own and a position is never recorded twice.
     void add(const TrialRecord& record) {
+        if (coverage_)
+            coverage_->record(record.trial_id, record.status == "ok" ||
+                                                   record.status == "constraint_violation");
         ++completed;
         ++counts[record.status];
         objective_coverage = objective_coverage &&
@@ -940,6 +958,11 @@ public:
             ? completed : ordinals_.size();
     }
 
+    // Terminal-position coverage of the candidate list; nullptr for every other sampler.
+    const pfh::detail::CandidateCoverage* coverage() const {
+        return coverage_ ? &*coverage_ : nullptr;
+    }
+
     std::uint64_t completed = 0;
     std::map<std::string, std::uint64_t> counts;
     bool objective_coverage = true;
@@ -951,6 +974,7 @@ private:
     pfh::detail::OrdinalSet ordinals_;
     std::vector<TrialRecord> all_;
     std::vector<TrialRecord> best_;
+    std::optional<pfh::detail::CandidateCoverage> coverage_;
 };
 
 class RunState final {
@@ -1401,6 +1425,8 @@ std::string render_results(const Options& options,
             }, dimension);
         });
     const auto sampler_implementation = [&]() -> const char* {
+        if (options.sampler == "candidates")
+            return pfh::detail::candidate_list_implementation.data();
         if (options.sampler == "tpe") {
             return options.candidate_policy == pfh::CandidatePolicy::SamplerDefault
                        ? "pineforge_product_tpe_v3_bounded"
@@ -1438,7 +1464,7 @@ std::string render_results(const Options& options,
     const bool exhaustive_equivalent = full_parameter_coverage && terminal_objective_coverage;
     const std::string stop_reason = !requested_stop_reason.empty()
         ? requested_stop_reason
-        : search_space_exhausted
+        : search_space_exhausted && options.sampler != "candidates"
             ? "search_space_exhausted"
             : (trials_requested && trials_completed >= trials_requested
                 ? "trial_budget_reached" : "sampler_stopped");
@@ -1631,6 +1657,9 @@ std::string render_results(const Options& options,
                     ? std::to_string(*early_stop.drained_through_trial_id) : "null")
             << ", \"reference_scope\": \"part\"}";
     }
+    if (options.candidate_list && archive && archive->coverage())
+        out << ",\n  \"candidate_list\": "
+            << pfh::detail::candidate_list_json(*options.candidate_list, *archive->coverage());
     out << "\n}\n";
     return out.str();
 }
@@ -1873,6 +1902,15 @@ int run(Options options) {
         throw pfh::TypedHpoError<std::invalid_argument>(
             "hpo_study_spec_invalid", {{"reason", "sampler"}},
             "grid sampling requires a step on every varying real dimension");
+    }
+    if (options.sampler == "candidates") {
+        // Whole-file admission before any symbol feed, plugin, dataset or trial work.
+        auto list = pfh::detail::load_candidate_list(options.candidates, space,
+                                                     options.fixed_inputs);
+        pfh::detail::require_candidate_list_budget(options.max_trials, list.size());
+        options.max_trials = list.size();
+        options.candidate_list =
+            std::make_shared<const pfh::detail::CandidateList>(std::move(list));
     }
     const unsigned symbol_sources = static_cast<unsigned>(!options.symbol_feeds_path.empty()) +
         static_cast<unsigned>(!options.symbol_feeds_spec.empty());
@@ -2125,6 +2163,10 @@ int run(Options options) {
         if (sampler.outstanding() == 0)
             options.tpe_sampler_state = sampler.sampler_state();
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
+    } else if (options.sampler == "candidates") {
+        pfh::detail::CandidateListCursor cursor(*options.candidate_list);
+        evaluate_batches([&]() -> std::optional<pfh::Candidate> { return cursor.next(); },
+                         [](const TrialRecord&) {});
     } else {
         std::unique_ptr<pfh::Sampler> sampler;
         if (options.sampler == "grid")
