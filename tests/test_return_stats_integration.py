@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -210,6 +211,8 @@ class MainBuildTests(Base):
             tokens = shlex.split(line)
             if "&&" in tokens:  # Makefile generator: "cd <dir> && <compiler> ..."
                 tokens = tokens[len(tokens) - tokens[::-1].index("&&"):]
+            while tokens and re.fullmatch(r"\[\d+/\d+\]", tokens[0]):  # Ninja: "[3/9] <cmd>"
+                tokens = tokens[1:]
             executed = tokens
         self.assertIsNotNone(executed, "the verbose build never printed the reducer command")
         source_display = "<src>/src/core/return_stats.cpp"
