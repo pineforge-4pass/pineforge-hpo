@@ -615,6 +615,24 @@ class CandidateListCliTests(unittest.TestCase):
         self.assertNotIn(2, {item for first, last in block["unevaluated_ranges"]
                              for item in range(first, last + 1)})
 
+    def test_fatal_progress_failure_keeps_coverage(self) -> None:
+        vectors = [vector(length) for length in range(10, 40)]
+        path = self.write_list(vectors)
+        read_fd, write_fd = os.pipe()
+        os.close(read_fd)  # the reader is gone: the first progress write fails
+        try:
+            completed = self.run_cli(path, "--workers", 2, "--progress-fd", write_fd,
+                                     "--fixed-input", "DelayMs", "30", pass_fds=(write_fd,),
+                                     expected=1)
+        finally:
+            os.close(write_fd)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["failure"]["code"], "hpo_output_io_failed")
+        present = [trial["trial_id"] for trial in result["trials"]]
+        self.assertEqual(present, sorted(present))
+        # Whatever finished before the stop was observed is reported, and nothing else.
+        self.assert_block(result, vectors, evaluated=len(present), scored=len(present))
+
     # ---- C -> TPE: history import through the current importer ----------------------------------
 
     def tpe_child(self, parent: Path, *extra, expected=0):
