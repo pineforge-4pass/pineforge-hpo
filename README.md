@@ -535,6 +535,13 @@ and Sortino ratios, so they are `metrics.equity.sharpe_monthly` and
 `metrics.equity.sortino_monthly`; the pre-1.0 names `metrics.equity.sharpe_tv` and
 `metrics.equity.sortino_tv` remain accepted aliases, so existing StudySpecs keep working.
 
+Return statistics of the equity curve are available as eighteen metric names,
+`returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,sharpe_per_period,skew,kurt_raw,status}`,
+computed only for the series an expression or `--record-metric` names (nothing else changes when
+none is named). The Sharpe value is per period and unannualized; see
+[Return statistics](docs/study-spec.md#return-statistics-legacy-mode) and
+[docs/return-stats.md](docs/return-stats.md) for definitions, status codes and what is not claimed.
+
 Applications embedding the C++ library can instead implement
 `ObjectiveFn<Observation>`. The generic objective contract is independent of a PineForge
 report; the executable CLI currently resolves expression objectives only.

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add the `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,sharpe_per_period,
+  skew,kurt_raw,status}` metrics (contract `pineforge-hpo-return-stats/v1`, legacy mode). They are
+  computed from the engine's ordered equity curve while the report is alive, only for the series an
+  objective, constraint or `--record-metric` names; with none named there is no reduction, no new
+  object and the result bytes are unchanged. A requested run adds those names to each trial's
+  `metrics` and one result-level `return_stats` object with its own build identity on every
+  sampler path (independent of the TPE checkpoint identity). A trial without a report has every
+  requested metric null. Execution proof is pending.
+- `--sampler candidates`: an explicitly given `--max-trials 0` is refused (N is at least 1); the
+  budget may still be omitted, and zero keeps its "no cap" meaning for every other sampler.
+
 - Add the `candidates` sampler (native `--sampler candidates --candidates FILE`; StudySpec
   `sampler.kind: "candidates"` with `sampler.config.candidates_file`). It evaluates an ordered
   JSONL list of complete parameter vectors, preserving duplicates with trial ID equal to the

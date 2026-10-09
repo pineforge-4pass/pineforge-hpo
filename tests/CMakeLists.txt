@@ -81,6 +81,12 @@ target_link_libraries(pineforge_hpo_test_warm_binary PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_warm_binary PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_warm_binary COMMAND pineforge_hpo_test_warm_binary)
 
+add_executable(pineforge_hpo_test_return_stats test_return_stats.cpp)
+target_link_libraries(pineforge_hpo_test_return_stats PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_return_stats PRIVATE
+    -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_return_stats COMMAND pineforge_hpo_test_return_stats)
+
 add_executable(pineforge_hpo_test_candidate_list test_candidate_list.cpp)
 target_include_directories(pineforge_hpo_test_candidate_list PRIVATE
     "${PROJECT_SOURCE_DIR}/src/cli")
@@ -296,6 +302,11 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             add_test(NAME pineforge_hpo_numeric_flags
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_numeric_flags.py"
                     "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
+            add_test(NAME pineforge_hpo_return_stats_identity
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/test_return_stats_identity.py"
+                    "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
+            set_tests_properties(pineforge_hpo_return_stats_identity PROPERTIES TIMEOUT 900)
         endif()
         add_test(NAME pineforge_hpo_symbol_feeds_contract
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_symbol_feeds_contract.py"
@@ -322,6 +333,12 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         set_tests_properties(pineforge_hpo_candidate_list_cli PROPERTIES TIMEOUT 900)
+        add_test(NAME pineforge_hpo_return_stats_cli
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_return_stats_cli.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_return_stats_cli PROPERTIES TIMEOUT 900)
         add_test(NAME pineforge_hpo_trial_outputs
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>

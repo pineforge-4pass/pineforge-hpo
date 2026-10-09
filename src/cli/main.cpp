@@ -2,6 +2,7 @@
 #include <pineforge/hpo/error.hpp>
 #include <pineforge/hpo/objective.hpp>
 #include <pineforge/hpo/pruner.hpp>
+#include <pineforge/hpo/return_stats_identity.hpp>
 #include <pineforge/hpo/sampler.hpp>
 #include <pineforge/hpo/search_space.hpp>
 #include <pineforge/hpo/strategy_plugin.hpp>
@@ -103,6 +104,11 @@ struct Options {
     std::string chart_timezone;
     std::uint64_t seed = 0;
     std::uint64_t max_trials = 0;
+    // Presence of --max-trials, kept apart from the zero that means "not given" elsewhere.
+    bool max_trials_given = false;
+    // Return-statistics series named by an objective, constraint or recorded metric.
+    bool return_stats_bar = false;
+    bool return_stats_monthly = false;
     std::uint64_t no_improvement_trials = 0;
     unsigned workers = 1;
     int progress_fd = -1;
@@ -300,6 +306,10 @@ void print_help() {
               << "  --division-by-zero reject|ieee\n"
               << "  --non-finite reject|allow\n\n"
               << "  --record-metric PATH        additional report metric; repeatable\n"
+              << "                              returns.{bar,monthly}.{count,skipped,"
+                 "periods_per_year,\n"
+              << "                              mean,std,sharpe_per_period,skew,kurt_raw,status}\n"
+              << "                              are return statistics, computed only when named\n"
               << "  --max-wall-seconds S        positive study wall limit; cooperative stop\n"
               << "  --trial-timeout-seconds T   positive per-trial limit; exits 3 on timeout\n\n"
               << "TPE options:\n"
@@ -401,6 +411,7 @@ Options parse_options(int argc, char** argv) {
             out.candidate_policy = parse_candidate_policy(require_value(argc, argv, i, option));
         } else if (option == "--max-trials") {
             out.max_trials = parse_u64(require_value(argc, argv, i, option), option);
+            out.max_trials_given = true;
         } else if (option == "--no-improvement-trials") {
             const auto value = require_value(argc, argv, i, option);
             if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
@@ -1657,6 +1668,20 @@ std::string render_results(const Options& options,
                     ? std::to_string(*early_stop.drained_through_trial_id) : "null")
             << ", \"reference_scope\": \"part\"}";
     }
+    if (options.return_stats_bar || options.return_stats_monthly) {
+        // One object per result, with the statistics' own build identity on every sampler path.
+        // It is not the TPE checkpoint identity above and never derived from it.
+        out << ",\n  \"return_stats\": {\"contract\": \""
+            << json_escape(std::string(pfh::return_stats_contract())) << "\", \"series\": [";
+        if (options.return_stats_bar)
+            out << "\"bar\"";
+        if (options.return_stats_monthly)
+            out << (options.return_stats_bar ? ", " : "") << "\"monthly\"";
+        out << "], \"chart_timezone\": \"" << json_escape(options.chart_timezone)
+            << "\", \"risk_free_annual\": " << json_number(0.02)  // contract constant
+            << ", \"numeric_build_identity\": \""
+            << json_escape(std::string(pfh::return_stats_numeric_build_identity())) << "\"}";
+    }
     if (options.candidate_list && archive && archive->coverage())
         out << ",\n  \"candidate_list\": "
             << pfh::detail::candidate_list_json(*options.candidate_list, *archive->coverage());
@@ -1907,6 +1932,13 @@ int run(Options options) {
         // Whole-file admission before any symbol feed, plugin, dataset or trial work.
         auto list = pfh::detail::load_candidate_list(options.candidates, space,
                                                      options.fixed_inputs);
+        // An explicit budget must be N and N is positive, so an explicit 0 is refused; zero
+        // keeps its "not given" meaning for every other sampler.
+        if (options.max_trials_given && options.max_trials == 0)
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                "the trial budget (0) must be omitted or equal the candidate list length (" +
+                    std::to_string(list.size()) + ")");
         pfh::detail::require_candidate_list_budget(options.max_trials, list.size());
         options.max_trials = list.size();
         options.candidate_list =
@@ -1994,6 +2026,16 @@ int run(Options options) {
     for (auto& metric : recorded_metrics)
         expressions.push_back(&metric);
     validate_metric_identifiers(expressions);
+    // The return-statistics series follow from the identifiers alone: nothing requested means
+    // the executor does no reduction and the result carries no return_stats object.
+    for (const auto* expression : expressions) {
+        for (const auto& identifier : expression->identifiers()) {
+            if (identifier.rfind("returns.bar.", 0) == 0)
+                options.return_stats_bar = true;
+            else if (identifier.rfind("returns.monthly.", 0) == 0)
+                options.return_stats_monthly = true;
+        }
+    }
 
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
     auto dataset = std::make_shared<pfh::Dataset>(pfh::Dataset::load_csv(options.ohlcv));
@@ -2005,6 +2047,8 @@ int run(Options options) {
     configuration.magnifier_samples = options.magnifier_samples;
     configuration.magnifier_distribution = options.magnifier_distribution;
     configuration.capture_equity_curve = false;
+    configuration.return_stats_bar = options.return_stats_bar;
+    configuration.return_stats_monthly = options.return_stats_monthly;
     configuration.symbol_feeds = options.symbol_feeds;
     if (!options.syminfo.empty())
         configuration.symbol_info = read_symbol_info(options.syminfo);

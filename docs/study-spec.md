@@ -411,6 +411,7 @@ Metric lookup supports:
 - `metrics.longs.<trade-stat>`;
 - `metrics.shorts.<trade-stat>`;
 - `metrics.equity.<equity-stat>`;
+- the eighteen `returns.{bar,monthly}.*` names of [Return statistics](#return-statistics-legacy-mode);
 - `report.total_trades`, `report.net_profit`, `report.input_bars_processed`,
   `report.script_bars_processed`, `report.magnifier_sample_ticks_total`, and
   their short aliases (without the `report.` prefix).
@@ -444,6 +445,60 @@ enabled.
 The JSON loader recognizes a future `kind="registered"` shape, and the C++
 library exposes `ObjectiveFn<Observation>` for custom functions. The executable
 CLI does not resolve registered objective names yet.
+
+### Return statistics (legacy mode)
+
+Eighteen metric names, `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,
+sharpe_per_period,skew,kurt_raw,status}`, can be used in an objective or constraint expression or
+with `--record-metric`. They are computed from the engine's own ordered `(time_ms, equity)` curve
+while the report is still alive, and **only for the series an expression names**: with no
+`returns.*` name nothing is reduced, no `return_stats` object is written and every byte of the
+result is what it was before. Contract: `pineforge-hpo-return-stats/v1`, legacy mode only (the
+curve is used as the engine produced it; no anchor is added).
+
+| Series | Returns | Period basis P |
+| --- | --- | --- |
+| `bar` | simple returns between adjacent curve points | `(n - 1) / span_years` for `n >= 3` and a positive span, `span_years = (last_time - first_time) / (365.25 * 86400 * 1000)` |
+| `monthly` | simple returns between the last points of consecutive UTC calendar-month buckets | `12` whenever the series can be formed |
+
+A return is `current / prior - 1` in binary64 when the prior equity is positive; a prior at or
+below zero increments `skipped`. `count` is the number of valid returns and does not depend on P.
+The risk-free rate is fixed at 0.02 per year (`0.02 / P` per period), `std` is the sample
+deviation, `skew` and `kurt_raw` are population-moment values (a normal distribution gives 3),
+`mean` is raw and `sharpe_per_period` is the excess ratio, **not annualized**. Multiply by
+`sqrt(periods_per_year)` to compare it with the engine's `sharpe_bar` or `sharpe_monthly`; the
+two agree on the common valid domain (finite equities, positive prior equity, `n >= 3` with a
+positive span for bars, at least two returns and a positive deviation), within floating-point
+summation order.
+
+An undefined field is JSON `null`. `status` is one number per series: `4` an input equity is not
+finite, `7` monthly for a chart timezone other than UTC (bar is unaffected; every monthly field is
+null), `8` a derived return, sum, moment or ratio is not finite, `6` the period or time basis is
+unavailable, `1` fewer than four valid returns, `2` zero variance, `0` otherwise. **`status` is 0
+if and only if every other field of the series is finite**, so a fully finite series with skipped
+returns or a tiny variance has status 0 and a consumer decides what to do with it. A trial
+without a report (an engine error) has every requested metric null, status included. The chart
+timezone is the request's own `--chart-timezone`; nothing changes process timezone state.
+
+When any series is requested the result carries one object:
+
+```json
+"return_stats": {"contract": "pineforge-hpo-return-stats/v1", "series": ["bar", "monthly"],
+                 "chart_timezone": "UTC", "risk_free_annual": 0.02,
+                 "numeric_build_identity": "pineforge-hpo-return-stats-build/v1:sha256:..."}
+```
+
+`series` lists the requested series. `numeric_build_identity` names the build that computed the
+statistics (reducer source digest, compiler identity and version, translation-unit compile flags
+and the contract string). It is the same value on the grid, random, TPE and candidates paths, is
+unrelated to the TPE checkpoint identity, and names a build rather than attesting its arithmetic:
+equal arithmetic across builds or architectures is claimed only for the pairs a proof tested. There
+is no new per-trial key; the values are entries of each trial's `metrics` object under the spelled
+names. A part reports only its own trials: warm-started ancestors keep their rows exactly as
+they were, and binary parents carry no statistics. This feature does not decide which trials a
+later selection or deflated-Sharpe step may count, how constraints or pruning treat these
+metrics, or how parts merge. If a build fails the reducer's own contraction probe, the run stops
+at start with `hpo_invariant`.
 
 ## Sampler
 
@@ -554,8 +609,9 @@ deduplicated, cached or fanned out.
   Python only checks that the file exists; the native runner reads and validates it.
 - **Budget.** `sampler.trials` stays a required positive integer and must equal the number of
   lines N the native runner admits; a different value is refused before any trial. The native
-  CLI accepts `--max-trials` absent or `0` (N is used) or exactly N. `seed` is required and
-  recorded; it never changes a value.
+  CLI accepts `--max-trials` absent (N is used) or exactly N; an explicit `--max-trials 0` is
+  refused like any other mismatch (N is at least 1), whereas zero keeps its "no cap" meaning for
+  the other samplers. `seed` is required and recorded; it never changes a value.
 - **Admission** happens once, before any plugin, dataset or trial work: the whole file is
   validated, or nothing runs. Initial caps are 50,000 occurrences, 32 MiB per file and 64 KiB
   per line, and at least one occurrence. They bound **input only**; they do not bound output

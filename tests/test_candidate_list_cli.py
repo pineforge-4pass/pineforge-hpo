@@ -257,16 +257,25 @@ class CandidateListCliTests(unittest.TestCase):
                             third["candidate_list"]["list_sha256"])
         self.assertEqual(third["trials"][0]["parameters"], vectors[1])
 
-    def test_budget_is_absent_zero_or_exactly_the_list_length(self) -> None:
+    def test_budget_is_absent_or_exactly_the_list_length_and_explicit_zero_is_refused(self) -> None:
         vectors = [vector(length) for length in (11, 12, 13, 14)]
         path = self.write_list(vectors)
         absent = self.run_cli(path)
         self.assertEqual(json.loads(absent.stdout)["trials_requested"], 4)
-        self.assertEqual(self.run_cli(path, "--max-trials", "0").stdout, absent.stdout)
         self.assertEqual(self.run_cli(path, "--max-trials", "4").stdout, absent.stdout)
-        for wrong in ("3", "5", "1000"):
-            self.assert_refusal(self.run_cli(path, "--max-trials", wrong, expected=1),
-                                "hpo_study_spec_invalid", "sampler", 1)
+        trials_file = self.directory / "never-created.ndjson"
+        # An explicit budget must equal N and N is positive: a given 0 is a mismatch like any
+        # other, never the "not given" sentinel it is elsewhere. Refused whole, before any trial.
+        for wrong in ("0", "00", "3", "5", "1000"):
+            with self.subTest(budget=wrong):
+                refused = self.run_cli(path, "--max-trials", wrong, "--trials-file", trials_file,
+                                       expected=1)
+                self.assert_refusal(refused, "hpo_study_spec_invalid", "sampler", 1)
+                self.assertFalse(trials_file.exists(), "trial work started before the refusal")
+        # Other samplers keep the meaning of zero: no cap, bounded by their own rules.
+        grid = self.run_cli(None, "--max-trials", "0", sampler="grid", space=INTEGER_SPACE,
+                            expected=0)
+        self.assertEqual(json.loads(grid.stdout)["trials_completed"], 100)
         # The seed is recorded and changes no value.
         seeded = self.run_cli(path, "--seed", "999")
         self.assertEqual(json.loads(seeded.stdout)["seed"], 999)
@@ -432,6 +441,11 @@ class CandidateListCliTests(unittest.TestCase):
         loaded = self.run_cli(good, expected=1, strategy=bogus, ohlcv=missing_data,
                               space=INTEGER_SPACE)
         self.assertEqual(json.loads(loaded.stdout)["failure"]["code"], "hpo_plugin_invalid")
+        # An explicit zero budget is refused as a budget error, ahead of the plugin load.
+        self.assert_refusal(
+            self.run_cli(good, "--max-trials", "0", expected=1, strategy=bogus,
+                         ohlcv=missing_data, space=INTEGER_SPACE),
+            "hpo_study_spec_invalid", "sampler", 1)
         empty = self.directory / "empty.jsonl"
         empty.write_bytes(b"")
         self.assert_refusal(self.run_cli(empty, expected=1, strategy=bogus, ohlcv=missing_data,

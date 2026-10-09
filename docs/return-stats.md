@@ -1,12 +1,13 @@
 # X return statistics: reducer contract (legacy mode)
 
-**Status: code and tests are committed but have never been compiled or executed.** Every
-execution claim in this page is deferred to the spot proof listed at the end. The reducer is
-not wired into the trial executor, the command line or the build; the integration needs are
-listed below. This page implements the pinned contract `pineforge-hpo-return-stats/v1`,
-revision 1 (authority: TOP's methods-x dispositions of 2026-10-09, pin file SHA-256
+**Status: the reducer, its wiring into the executor, the command line and the build, and all
+tests are committed but have never been compiled or executed.** Every execution claim in this
+page is deferred to the spot proof listed at the end. This page implements the pinned contract
+`pineforge-hpo-return-stats/v1`, revision 1 (authority: TOP's methods-x dispositions of
+2026-10-09, pin file SHA-256
 `e0c6f0f4c4855f6c27886fd86f976c68aba8ee395b7803a4bd1d6208ebd34753`). Selected-window mode
-waits for the frozen window interface and is not implemented here.
+waits for the frozen window interface and is not implemented here. User-facing definitions are in
+[Return statistics](study-spec.md#return-statistics-legacy-mode).
 
 ## What the reducer is
 
@@ -130,25 +131,28 @@ including status, is null for it.
   independent of the TPE checkpoint identity. This reducer neither reads nor changes
   `numeric_build_identity` or `kTpeAlgorithmRevision`.
 
-## Integration needs (shared seams not edited here)
+## Integration (wired, unexecuted)
 
-* `CMakeLists.txt`: add `src/core/return_stats.cpp` to `pineforge_hpo_core` and give that
-  source the per-source options of the other numeric sources
-  (`-fno-fast-math;-ffp-contract=off`, and likely `-frounding-math;-fno-builtin;-fno-lto` for
-  consistency); the identity lane decides how the flags enter the statistics identity.
-* `tests/CMakeLists.txt`: register `test_return_stats.cpp` linked to `PineForgeHPO::core`
-  (which carries `Threads::Threads`) with `-fno-fast-math -ffp-contract=off` and
-  `-Wall -Wextra -Wpedantic`, as a CTest case.
-* `src/engine_adapter/trial_executor.cpp`: call `compute_return_stats` inside `copy_report`
-  while the report still owns the curve, using
-  `make_equity_points_view(curve, n, &pf_equity_point_t::time_ms, &pf_equity_point_t::equity)`,
-  and store only the resulting fields in the report snapshot.
-* Metric resolution (`ReportSnapshot::metric()` and `--record-metric` validation), the
-  request derivation, the once-per-result `return_stats` object, and public documentation
-  (`docs/api.md`, `docs/study-spec.md`, `README.md`, `CHANGELOG.md`) belong to the single
-  integration lane.
-* Refuse to start (or fail a trial) when `return_stats_contraction_free()` returns false; the
-  policy and the typed error code are the integration lane's choice.
+* `CMakeLists.txt` compiles `src/core/return_stats.cpp` into `pineforge_hpo_core` and calls the
+  build-identity helper, whose per-source options (`-fno-fast-math -ffp-contract=off
+  -frounding-math -fno-builtin -fno-lto`) are bound into the statistics identity. The TPE flag
+  recipe and `numeric_build_identity` are not touched.
+* `trial_executor.cpp` calls `compute_return_stats` inside `copy_report` while the report still
+  owns the curve, through an in-place view built with `offsetof` over `pf_equity_point_t`, for the
+  requested series only, and stores nine numbers per series in the snapshot. Nothing of the curve
+  is copied or kept. The chart timezone is the executor configuration's own. A trial that failed
+  in the engine never reaches the reducer.
+* `ReportSnapshot::metric()` resolves the eighteen names (a series that was not computed reads
+  NaN, published as null); `--record-metric` and expression validation use it, so a near-miss
+  name is an unknown metric. The request follows from the identifiers of the objective,
+  constraints and recorded metrics.
+* `TrialExecutor` runs `return_stats_contraction_free()` once at construction when a series is
+  requested, and stops with `hpo_invariant` if it fails. This is a sanity probe, not an
+  attestation.
+* `main.cpp` writes the result-level `return_stats` object with the identity from
+  `return_stats_identity.hpp`. That header and `return_stats.hpp` each define
+  `kReturnStatsContract`, so no translation unit may include both; the executor includes the
+  reducer header, the command line the identity header.
 
 ## Proof still to be produced (spot only, nothing run yet)
 

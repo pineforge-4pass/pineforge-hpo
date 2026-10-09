@@ -334,6 +334,11 @@ list SHA-256, count, evaluated, scored, `complete`, `unevaluated_ranges`); no ot
 carries it and no trial row changes. A strict consumer must accept both additions as it accepts
 `early_stop`, and must read `candidate_list.complete` rather than infer coverage from
 `stop_reason` or `trials_completed`. See the [Candidate list](study-spec.md#candidate-list).
+The return-statistics metrics (`returns.{bar,monthly}.*`, see
+[Return statistics](study-spec.md#return-statistics-legacy-mode)) add keys to a trial's `metrics`
+object and one result-level `return_stats` object only when an expression or `--record-metric`
+names them; otherwise nothing changes. A strict consumer must accept the object as it accepts
+`early_stop`.
 All prior result fields retain their types.
 Top-level counts, best trial, and coverage describe the entire study. When the
 Cartesian product exceeds uint64, default adaptive sampling accepts it and

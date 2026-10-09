@@ -124,5 +124,6 @@ Seams a second new sampler must touch, in the order this lane touched them:
 4. Python checks only that the list file exists; a missing file is therefore a spec issue
    (before the artifact build) while every content problem is a native admission failure after
    the artifact build.
-5. The explicit-budget rule reads `--max-trials 0` as absent, so `--max-trials 0` and no flag
-   are the same for this sampler.
+5. Resolved in the integrated lane: `--max-trials` presence is tracked separately from the
+   pre-existing zero sentinel, so an explicit `--max-trials 0` is refused for this sampler
+   (`hpo_study_spec_invalid`, reason `sampler`) and keeps its meaning for every other sampler.

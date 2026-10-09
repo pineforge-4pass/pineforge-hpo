@@ -2,7 +2,9 @@
 
 #include <pineforge/pineforge.h>
 
+#include <array>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -41,10 +43,35 @@ struct BacktestConfiguration {
     bool capture_equity_curve = true;
     /// Whether ReportSnapshot owns the complete C-ABI trade records (off in the HPO hot loop).
     bool capture_trades = false;
+    /// Computes the `returns.bar.*` statistics from the report's equity curve (see
+    /// docs/return-stats.md). Both return-statistics flags false, the default, means no
+    /// reduction, no canary and no stored value: the executor behaves as before.
+    bool return_stats_bar = false;
+    /// Computes the `returns.monthly.*` statistics; the chart timezone above selects the
+    /// calendar (only UTC is defined) and is read from this configuration, never from the
+    /// process environment.
+    bool return_stats_monthly = false;
     /// Optional instrument metadata, applied after inputs and overrides.
     std::optional<SymbolInfo> symbol_info;
     /// Fixed other-symbol bars loaded once, validated before trials, and shared read-only.
     std::shared_ptr<const SymbolFeeds> symbol_feeds;
+};
+
+/// Published fields of one return-statistics series, in wire order: count, skipped,
+/// periods_per_year, mean, std, sharpe_per_period, skew, kurt_raw, status.
+///
+/// Every entry is NaN, which the metric layer publishes as null, until the series is computed.
+/// The values are the only thing kept: the equity curve they came from is not copied.
+struct ReturnStatsFields {
+    /// True when the series was requested and computed from a report's equity curve.
+    bool computed = false;
+    /// Field values in wire order; NaN stands for null.
+    std::array<double, 9> values{{
+        std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN(),
+        std::numeric_limits<double>::quiet_NaN()}};
 };
 
 /// @brief Owning report snapshot detached from strategy and C-ABI report lifetimes.
@@ -90,6 +117,10 @@ struct ReportSnapshot {
     std::vector<pf_equity_point_t> equity_curve;
     /// Optional owned trade records controlled by BacktestConfiguration::capture_trades.
     std::vector<pf_trade_t> trades;
+    /// Bar-return statistics, computed before the report was released when requested.
+    ReturnStatsFields return_bar;
+    /// Monthly-return statistics, computed before the report was released when requested.
+    ReturnStatsFields return_monthly;
 
     /// Resolves a canonical objective path without allocating a string map.
     ///
@@ -98,6 +129,9 @@ struct ReportSnapshot {
     /// are converted losslessly to double for objective arithmetic. Unknown paths return
     /// `std::nullopt`. `metrics.equity.sharpe_tv` and `metrics.equity.sortino_tv`, the
     /// pre-1.0 engine names of `sharpe_monthly` and `sortino_monthly`, resolve as aliases.
+    /// The eighteen names `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,
+    /// sharpe_per_period,skew,kurt_raw,status}` always resolve; a series that was not computed
+    /// (not requested, or no report) reads NaN, which is published as null.
     std::optional<double> metric(std::string_view path) const noexcept;
 };
 

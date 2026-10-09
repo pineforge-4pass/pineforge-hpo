@@ -1,4 +1,5 @@
 #include <pineforge/hpo/error.hpp>
+#include <pineforge/hpo/return_stats.hpp>
 #include <pineforge/hpo/trial_executor.hpp>
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace pineforge {
@@ -125,8 +127,43 @@ bool strip_prefix(std::string_view* value, std::string_view prefix) noexcept {
     return true;
 }
 
-ReportSnapshot copy_report(const pf_report_t& report, bool capture_equity_curve,
-                           bool capture_trades) {
+void store_series(ReturnStatsFields* target, const ReturnSeriesStats& stats) noexcept {
+    target->computed = true;
+    for (std::size_t index = 0; index < kReturnStatisticCount; ++index)
+        target->values[index] = stats.value(static_cast<ReturnStatistic>(index));
+}
+
+// Reads the engine-owned canonical curve in place, for the requested series only. It runs while
+// the C-ABI report is still alive; only the resulting numbers are kept in the snapshot.
+void compute_report_return_stats(const pf_report_t& report,
+                                 const BacktestConfiguration& configuration,
+                                 ReportSnapshot* snapshot) {
+    static_assert(std::is_same<decltype(pf_equity_point_t::equity), double>::value,
+                  "the reducer reads the curve equity as binary64");
+    static_assert(std::is_integral<decltype(pf_equity_point_t::time_ms)>::value &&
+                      std::is_signed<decltype(pf_equity_point_t::time_ms)>::value &&
+                      sizeof(pf_equity_point_t::time_ms) == sizeof(std::int64_t),
+                  "the reducer reads the curve time as a signed 64-bit integer");
+    EquityPointsView view;
+    view.records = report.equity_curve;
+    view.count = static_cast<std::size_t>(report.equity_curve_len);
+    view.stride = sizeof(pf_equity_point_t);
+    view.time_offset = offsetof(pf_equity_point_t, time_ms);
+    view.equity_offset = offsetof(pf_equity_point_t, equity);
+    ReturnStatsRequest request;
+    request.bar = configuration.return_stats_bar;
+    request.monthly = configuration.return_stats_monthly;
+    request.chart_timezone = configuration.chart_timezone;
+    const ReturnStatsResult result = compute_return_stats(view, request);
+    if (result.bar)
+        store_series(&snapshot->return_bar, *result.bar);
+    if (result.monthly)
+        store_series(&snapshot->return_monthly, *result.monthly);
+}
+
+ReportSnapshot copy_report(const pf_report_t& report, const BacktestConfiguration& configuration) {
+    const bool capture_equity_curve = configuration.capture_equity_curve;
+    const bool capture_trades = configuration.capture_trades;
     if (report.total_trades < 0) {
         throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
                                                 "strategy returned a negative total_trades value");
@@ -175,6 +212,8 @@ ReportSnapshot copy_report(const pf_report_t& report, bool capture_equity_curve,
         snapshot.equity_curve.assign(report.equity_curve,
                                      report.equity_curve + report.equity_curve_len);
     }
+    if (configuration.return_stats_bar || configuration.return_stats_monthly)
+        compute_report_return_stats(report, configuration, &snapshot);
     return snapshot;
 }
 
@@ -245,6 +284,13 @@ std::optional<double> ReportSnapshot::metric(std::string_view path) const noexce
     leaf = path;
     if (strip_prefix(&leaf, "metrics.equity."))
         return equity_metric(metrics.equity, leaf);
+    // Only a name that matched nothing above reaches the return statistics, so the existing
+    // metrics pay nothing for them.
+    if (const auto resolved = parse_return_stats_metric(path)) {
+        const ReturnStatsFields& series =
+            resolved->series == ReturnSeries::Bar ? return_bar : return_monthly;
+        return series.values[static_cast<std::size_t>(resolved->statistic)];
+    }
     return std::nullopt;
 }
 
@@ -274,6 +320,14 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
     if (!valid_magnifier_distribution(configuration_.magnifier_distribution)) {
         throw TypedHpoError<std::invalid_argument>(
             "hpo_study_spec_invalid", {{"reason", "backtest"}}, "invalid magnifier distribution");
+    }
+    if (configuration_.return_stats_bar || configuration_.return_stats_monthly) {
+        // Fail-closed sanity probe of the reducer's own build (multiply-add not contracted). It
+        // is not an attestation; the statistics identity and the spot proofs bind the build.
+        if (!return_stats_contraction_free())
+            throw TypedHpoError<std::logic_error>(
+                "hpo_invariant", {},
+                "return statistics need a build without floating-point contraction");
     }
     if (configuration_.symbol_feeds && !configuration_.symbol_feeds->empty()) {
         TrialResources validation(*plugin_, plugin_->create_strategy());
@@ -348,8 +402,7 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
 
     TrialExecutionResult succeeded;
     succeeded.status = TrialExecutionStatus::kSucceeded;
-    succeeded.report = copy_report(resources.report, configuration_.capture_equity_curve,
-                                   configuration_.capture_trades);
+    succeeded.report = copy_report(resources.report, configuration_);
     return succeeded;
 }
 

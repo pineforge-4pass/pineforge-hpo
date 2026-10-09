@@ -125,6 +125,7 @@ add_library(pineforge_hpo_core STATIC
     src/core/dlib_sampler.cpp
     src/core/objective.cpp
     src/core/pruner.cpp
+    src/core/return_stats.cpp
     src/core/sampler.cpp
     src/core/search_space.cpp
     src/core/tpe_sampler.cpp
@@ -199,6 +200,23 @@ if(PINEFORGE_HPO_BUILD_NATIVE_CLI)
     target_compile_options(pineforge-hpo-native PRIVATE
         -Wall -Wextra -Wpedantic)
 endif()
+
+# Return-statistics reducer: its own build identity (independent of the TPE checkpoint identity
+# above), and the per-source flags that keep its arithmetic uncontracted. Only per-source
+# properties of the reducer are written, so numeric_build_flags.txt above is unaffected. Keep this
+# after the last CMAKE_CXX_FLAGS change and do not set properties of the reducer source later.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReturnStatsIdentity.cmake")
+set(PFH_RSI_CONSUMERS "")
+if(TARGET pineforge-hpo-native)
+    list(APPEND PFH_RSI_CONSUMERS pineforge-hpo-native)
+endif()
+pfh_return_stats_identity(
+    TARGET pineforge_hpo_core
+    SOURCES src/core/return_stats.cpp
+    HEADERS include/pineforge/hpo/return_stats.hpp
+    CONTRACT "pineforge-hpo-return-stats/v1"
+    SOURCE_OPTIONS -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
+    CONSUMERS ${PFH_RSI_CONSUMERS})
 
 if(PINEFORGE_HPO_ENABLE_SANITIZERS)
     foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native
