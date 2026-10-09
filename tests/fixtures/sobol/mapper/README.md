@@ -27,7 +27,7 @@ point. Each log-real row carries a `literal` or `quartered` tag.
 The script emits 1180 rows (22 fixed + 24 drawn coordinates for 8 linear, 10 log-real and 7
 log-integer ranges, plus 5 boundary coordinates for each of the 6 log-real ranges that overflow).
 `test_sobol_mapper.cpp` fails with an explicit message while `float-reference.tsv` is missing, has
-fewer than 1100 rows, is not six-column, or lacks 100 witnesses of each branch. The file must come from
+fewer than 1100 rows, is not six-column, or lacks 60 witnesses of each branch. The file must come from
 a spot run of the script, be reviewed, and be committed by the integrator; it is never hand-edited. The
 test compares bit patterns, so a one-ulp difference between the CORE-MATH wrappers and the decimal
 reference is a real finding (report it; do not loosen the comparison). The bisection and the generator

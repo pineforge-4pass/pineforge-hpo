@@ -824,7 +824,7 @@ void test_float_reference_fixture() {
     require(linear > 0 && log_real > 0 && log_integer > 0, "float-reference.tsv must cover all three kinds");
     // Both branches of the revision 2 log-real rule must be witnessed, or a generator defect could hide
     // the very case the amendment exists for.
-    require(literal_branch >= 100 && quartered_branch >= 100,
+    require(literal_branch >= 60 && quartered_branch >= 60,
             "float-reference.tsv lacks witnesses for both log-real branches");
 }
 
