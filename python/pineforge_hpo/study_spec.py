@@ -639,8 +639,8 @@ def _parse_sampler(
     config: TpeSamplerConfig | None = None
     candidates_file: Path | None = None
     if kind == "candidates":
-        # The list is read only by the native runner. A relative path resolves against the
-        # study file's directory, like every other path in the study.
+        # The list is read only by the native runner. A relative path resolves
+        # against the study file's directory, like every other path in the study.
         config_path = f"{path}.config"
         _check_unknown(raw_config, {"candidates_file"}, config_path, issues)
         candidates_file = _resolve_path(
@@ -1168,9 +1168,10 @@ def load_study_spec(
                     "$.strategies[0]", f"file does not exist: {strategy_path}"
                 )
             )
-        if sampler.candidates_file is not None and not sampler.candidates_file.is_file():
-            # Existence only; the list itself is validated by the native runner. The path is
-            # not echoed.
+        listed = sampler.candidates_file
+        if listed is not None and not listed.is_file():
+            # Existence only; the native runner validates the list. The path is not
+            # echoed.
             issues.append(
                 ValidationIssue(
                     "$.sampler.config.candidates_file",

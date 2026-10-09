@@ -540,7 +540,7 @@ may add explicit violation magnitudes instead of fabricated objective scores.
 once each, through the ordinary trial path. It is the native `--sampler candidates
 --candidates FILE`. Trial ID `i` is the zero-based occurrence position `i`. Duplicates are
 kept: the same vector on two lines runs twice and yields two rows with two IDs; nothing is
-deduplicated, cached or fanned out, and the study is billed per occurrence by whoever bills.
+deduplicated, cached or fanned out.
 
 - **File** `pineforge_candidates_v1`: UTF-8 JSON Lines, one flat object per line whose keys are
   exactly the search-dimension names and whose values are scalars. No header, comment or blank

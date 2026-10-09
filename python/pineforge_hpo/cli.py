@@ -757,8 +757,8 @@ def _native_command(
                 {"reason": "sampler"},
                 "sampler.kind=candidates requires sampler.config.candidates_file",
             )
-        # --max-trials was passed above from the required positive sampler.trials; native
-        # admission refuses a value that is not the list length N.
+        # --max-trials was passed above from the required positive sampler.trials;
+        # native admission refuses a value that is not the list length N.
         command.extend(("--candidates", str(study.sampler.candidates_file)))
     elif study.sampler.kind == "tpe":
         if not isinstance(study.sampler.config, TpeSamplerConfig):
