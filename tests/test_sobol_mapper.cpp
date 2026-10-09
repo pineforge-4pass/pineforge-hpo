@@ -18,6 +18,7 @@
 // first_index/budget/cursor limits, pure repeated indexed points, duplicates, the 1024-column limit,
 // the published unscrambled prefix through the sampler, and independent float reference fixtures.
 #include "sobol_engine.hpp"
+#include "portable_math.hpp"
 #include "sobol_mapper.hpp"
 #include "sobol_sampler.hpp"
 
@@ -189,7 +190,8 @@ std::vector<std::vector<std::string>> read_tsv(const std::string& path) {
 void test_contract_constants() {
     require(detail::kSobolMapperContract == "pineforge_sobol_mapper_v1",
             "mapper contract string changed; identity binders must be told");
-    require(detail::kSobolMapperRevision == 1, "mapper revision changed without a test update");
+    require(detail::kSobolMapperRevision == 2,
+            "mapper revision changed without a test update (2 = four-factor log-real overflow rule)");
     require(detail::kSobolMaxColumns == 1024, "column ceiling is part of the pinned contract");
     require(detail::kSobolLogIntegerMaxLow == (std::int64_t{1} << 52), "log-integer low bound");
     require(detail::kSobolLogIntegerMaxSpan == (std::uint64_t{1} << 53), "log-integer span bound");
@@ -535,15 +537,182 @@ void test_real_mappings_stay_in_range_and_monotone() {
     }
 }
 
-void test_log_real_geometric_mean_and_overflow_split() {
-    // low * exp(L*u) with L = log(high) - log(low) because high/low is not finite.
+// ---- log-real, mapper revision 2 (AR amendment 2026-10-09 14:10) --------------------------------
+//
+// Test-local statement of the pinned rule, restated with plain statements and the same CORE-MATH
+// wrappers the product uses. mapper_reference.py (Python floats plus a 900-digit decimal exp, run on
+// spot) stays the arithmetic authority; these helpers pin the operation ORDER and the branch choice.
+struct LogRealRule {
+    double low;
+    double high;
+    double log_ratio;
+};
+
+LogRealRule log_real_rule(double low, double high) {
+    const double relative_span = (high - low) / low;
+    const double log_ratio = std::isfinite(relative_span)
+                                 ? detail::math::log1p(relative_span)
+                                 : detail::math::log(high) - detail::math::log(low);
+    return {low, high, log_ratio};
+}
+
+// The revision 1 formula for the case where exp is finite: low * exp(z), clamped.
+double rule_literal(const LogRealRule& rule, double unit) {
+    return std::clamp(rule.low * detail::math::exp(rule.log_ratio * unit), rule.low, rule.high);
+}
+
+// q = exp(z * 0.25), then ((((low * q) * q) * q) * q), clamped. Left-to-right, no regrouping.
+double rule_quartered(const LogRealRule& rule, double unit) {
+    const double exponent = rule.log_ratio * unit;
+    const double quarter = detail::math::exp(exponent * 0.25);
+    volatile double first = rule.low * quarter;
+    volatile double second = first * quarter;
+    volatile double third = second * quarter;
+    volatile double fourth = third * quarter;
+    return std::clamp(static_cast<double>(fourth), rule.low, rule.high);
+}
+
+bool exp_is_finite(const LogRealRule& rule, double unit) {
+    return std::isfinite(detail::math::exp(rule.log_ratio * unit));
+}
+
+struct LogRealPair {
+    double low;
+    double high;
+};
+
+// Pairs whose high / low is not finite, so exp(L * u) overflows for large u.
+std::vector<LogRealPair> overflowing_pairs() {
+    constexpr double kDenormMin = std::numeric_limits<double>::denorm_min();
+    constexpr double kNormMin = std::numeric_limits<double>::min();
+    constexpr double kMaxFinite = std::numeric_limits<double>::max();
+    return {{kDenormMin, kMaxFinite}, {kNormMin, kMaxFinite}, {kDenormMin, 1e300},
+            {kNormMin, 1e300},        {1e-300, 1e300},        {kDenormMin, 1.0}};
+}
+
+void test_log_real_literal_path_is_unchanged() {
+    // Where exp(z) is finite the product must be the revision 1 value, bit for bit.
+    TestRng rng{2026};
+    std::vector<std::uint64_t> grid = {0, 0x800, 0x4000000000000000ULL, 0x8000000000000000ULL, kMax};
+    for (int i = 0; i < 400; ++i) {
+        grid.push_back(rng.next());
+    }
+    std::vector<LogRealPair> pairs = overflowing_pairs();
+    pairs.push_back({1.0, 100.0});
+    pairs.push_back({1e-5, 1e5});
+    pairs.push_back({1e-300, 1e8});  // finite high / low: the log1p form, never overflows
+    std::size_t literal_rows = 0;
+    for (const LogRealPair& pair : pairs) {
+        const SobolDimensionMap map = make_map(RealDimension("r", pair.low, pair.high, std::nullopt, true));
+        const LogRealRule rule = log_real_rule(pair.low, pair.high);
+        for (const std::uint64_t x : grid) {
+            const double unit = detail::sobol_unit53(x);
+            if (!exp_is_finite(rule, unit)) {
+                continue;
+            }
+            require(bits_of(as_real(map.value_at(x))) == bits_of(rule_literal(rule, unit)),
+                    "literal-finite path changed; low=" + hex64(bits_of(pair.low)) + " x=" + hex64(x));
+            ++literal_rows;
+        }
+    }
+    require(literal_rows > 500, "too few literal-path rows were exercised");
+}
+
+void test_log_real_quartered_witnesses() {
+    // The amendment's witness: the smallest positive subnormal .. the largest finite double, unit 63/64.
+    // Half of L * 63/64 (about 715.7) already exceeds the largest finite exp argument (709.78), so the
+    // revision 1 half-exponent fallback would itself overflow and the clamp would fabricate `high`.
+    const std::vector<std::uint64_t> coordinates = {
+        0x8000000000000000ULL,  // u = 1/2
+        0xC000000000000000ULL,  // u = 3/4
+        0xE000000000000000ULL,  // u = 7/8
+        0xFC00000000000000ULL,  // u = 63/64
+        0xFFFFFFFF00000000ULL,  // high-index coordinate of column 1, n = 2^32-1
+        0xFFFFFFFFFFFFF800ULL,  // maximal 53-bit unit
+        0xFFFFFFFFFFFFFFFFULL};
+    constexpr double kLn10 = 2.302585092994045684;
+    std::size_t quartered_rows = 0;
+    for (const LogRealPair& pair : overflowing_pairs()) {
+        const SobolDimensionMap map = make_map(RealDimension("r", pair.low, pair.high, std::nullopt, true));
+        const LogRealRule rule = log_real_rule(pair.low, pair.high);
+        const long double ln_low = std::log(static_cast<long double>(pair.low));
+        const long double ln_ratio = std::log(static_cast<long double>(pair.high)) - ln_low;
+        for (const std::uint64_t x : coordinates) {
+            const double unit = detail::sobol_unit53(x);
+            const double value = as_real(map.value_at(x));
+            const std::string where = " low=" + hex64(bits_of(pair.low)) + " high=" + hex64(bits_of(pair.high)) +
+                                      " x=" + hex64(x);
+            require(std::isfinite(value) && value >= pair.low && value <= pair.high, "value left its range;" + where);
+            require(value > 0.0, "value must be positive;" + where);
+            const bool overflow = !exp_is_finite(rule, unit);
+            require(bits_of(value) == bits_of(overflow ? rule_quartered(rule, unit) : rule_literal(rule, unit)),
+                    "value differs from the pinned operation order;" + where);
+            quartered_rows += overflow ? 1U : 0U;
+            if (unit <= 0.984375) {
+                // No premature high-end saturation: the interior point stays far below `high`, and its
+                // decimal order of magnitude is the log-uniform one (host long double only as a sanity
+                // bound; the bit-exact authority is float-reference.tsv).
+                require(value < pair.high, "interior point saturated to `high`;" + where);
+                const long double expected_log10 =
+                    (ln_low + ln_ratio * static_cast<long double>(unit)) / static_cast<long double>(kLn10);
+                require(std::fabs(static_cast<long double>(std::log10(value)) - expected_log10) < 1e-9L,
+                        "log-uniform position is wrong;" + where);
+            }
+        }
+    }
+    require(quartered_rows >= 25, "the quartered branch was not exercised enough");
+}
+
+void test_log_real_branch_boundary_both_sides() {
+    // For each overflowing pair, bisect the 53-bit unit grid for the last k whose exp is finite and
+    // check the grid points around it: literal at or below k, quartered above, and a monotone, in-range
+    // result across the switch (one grid step changes the value by about L * 2^-53, far above the
+    // few-ulp difference between the two constructions).
+    constexpr std::uint64_t kGridTop = (std::uint64_t{1} << 53) - 1;
+    for (const LogRealPair& pair : overflowing_pairs()) {
+        const SobolDimensionMap map = make_map(RealDimension("r", pair.low, pair.high, std::nullopt, true));
+        const LogRealRule rule = log_real_rule(pair.low, pair.high);
+        const auto finite_at = [&](std::uint64_t k) {
+            return exp_is_finite(rule, static_cast<double>(k) * 0x1p-53);
+        };
+        require(finite_at(0) && !finite_at(kGridTop), "pair must overflow somewhere on the unit grid");
+        std::uint64_t good = 0;
+        std::uint64_t bad = kGridTop;
+        while (bad - good > 1) {
+            const std::uint64_t middle = good + (bad - good) / 2;
+            (finite_at(middle) ? good : bad) = middle;
+        }
+        double previous = 0.0;
+        for (const std::uint64_t k : {good - 1, good, good + 1, good + 2}) {
+            const std::uint64_t x = k << 11U;
+            const double unit = detail::sobol_unit53(x);
+            const double value = as_real(map.value_at(x));
+            const std::string where = " low=" + hex64(bits_of(pair.low)) + " k=" + std::to_string(k);
+            const bool literal = k <= good;
+            require(bits_of(value) == bits_of(literal ? rule_literal(rule, unit) : rule_quartered(rule, unit)),
+                    "wrong branch at the overflow boundary;" + where);
+            require(std::isfinite(value) && value >= pair.low && value <= pair.high && value > 0.0,
+                    "boundary value left its range;" + where);
+            require(value >= previous, "mapping lost monotonicity across the branch switch;" + where);
+            previous = value;
+            // The low 11 bits of the coordinate are ignored, on both sides of the switch.
+            require(bits_of(as_real(map.value_at(x | 0x7FFULL))) == bits_of(value),
+                    "the low 11 bits must not matter;" + where);
+        }
+    }
+}
+
+void test_log_real_geometric_mean_and_finite_span() {
+    // [1e-300, 1e300]: u = 0.5 gives z = 690.78 < 709.78, so the literal path returns about 1.
     const SobolDimensionMap map = make_map(RealDimension("r", 1e-300, 1e300, std::nullopt, true));
-    const double middle = as_real(map.value_at(0x8000000000000000ULL));
-    require(std::fabs(middle - 1.0) < 1e-9, "u = 0.5 is the geometric mean, 1");
-    // u = 0.875: exp(L*u) overflows binary64, the half-exponent split must still land near 1e225.
+    require(std::fabs(as_real(map.value_at(0x8000000000000000ULL)) - 1.0) < 1e-9, "u = 0.5 is the geometric mean");
+    // u = 0.875 overflows exp (z = 1208.9): four quarter factors must land near 1e225, not at 1e300.
     const double upper = as_real(map.value_at(0xE000000000000000ULL));
-    require(std::fabs(std::log10(upper) - 225.0) < 1e-6, "overflow split keeps the log-uniform position");
+    require(std::fabs(std::log10(upper) - 225.0) < 1e-6, "overflow branch keeps the log-uniform position");
     require(as_real(map.value_at(kMax)) <= 1e300, "top stays within the upper bound");
+    // A finite high / low takes the log1p form and can never overflow exp.
+    const SobolDimensionMap finite_span = make_map(RealDimension("r", 1e-300, 1e8, std::nullopt, true));
+    require(as_real(finite_span.value_at(kMax)) <= 1e8, "finite-span top stays within the upper bound");
 }
 
 void test_log_integer_cases_and_representability_limits() {
@@ -614,23 +783,32 @@ void test_float_reference_fixture() {
                 "on spot and commit the reviewed output (see tests/fixtures/sobol/mapper/README.md)");
     }
     const auto rows = read_tsv(path);
-    require(rows.size() >= 800, "float-reference.tsv has fewer than 800 data rows; regenerate it");
+    // The script emits 1180 rows (22 fixed + 24 drawn coordinates for 8 linear, 10 log-real and 7
+    // log-integer ranges, plus 5 boundary coordinates for each of the 6 log-real ranges that overflow).
+    require(rows.size() >= 1100, "float-reference.tsv has fewer than 1100 data rows; regenerate it");
     std::size_t linear = 0;
     std::size_t log_real = 0;
     std::size_t log_integer = 0;
+    std::size_t literal_branch = 0;
+    std::size_t quartered_branch = 0;
     for (const auto& row : rows) {
-        require(row.size() == 5, "malformed float-reference row");
+        require(row.size() == 6, "malformed float-reference row (expected 6 columns, revision 2)");
         const std::uint64_t x = std::stoull(row[3], nullptr, 16);
         if (row[0] == "linear" || row[0] == "logreal") {
             const bool log = row[0] == "logreal";
+            require(log ? (row[5] == "literal" || row[5] == "quartered") : row[5] == "-",
+                    "unexpected branch tag " + row[5] + " on a " + row[0] + " row");
             const double low = double_of(std::stoull(row[1], nullptr, 16));
             const double high = double_of(std::stoull(row[2], nullptr, 16));
             const std::uint64_t expected = std::stoull(row[4], nullptr, 16);
             const SobolDimensionMap map = make_map(RealDimension("r", low, high, std::nullopt, log));
             const std::uint64_t got = bits_of(as_real(map.value_at(x)));
             require(got == expected, row[0] + " mismatch: low=" + row[1] + " high=" + row[2] + " x=" + row[3] +
-                                         " got=" + hex64(got) + " expected=" + row[4]);
+                                         " got=" + hex64(got) + " expected=" + row[4] + " branch=" + row[5]);
             ++(log ? log_real : linear);
+            if (log) {
+                ++(row[5] == "literal" ? literal_branch : quartered_branch);
+            }
         } else if (row[0] == "logint") {
             const std::int64_t low = std::stoll(row[1]);
             const std::int64_t high = std::stoll(row[2]);
@@ -644,6 +822,10 @@ void test_float_reference_fixture() {
         }
     }
     require(linear > 0 && log_real > 0 && log_integer > 0, "float-reference.tsv must cover all three kinds");
+    // Both branches of the revision 2 log-real rule must be witnessed, or a generator defect could hide
+    // the very case the amendment exists for.
+    require(literal_branch >= 100 && quartered_branch >= 100,
+            "float-reference.tsv lacks witnesses for both log-real branches");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -966,7 +1148,10 @@ int main() {
         {"stepped_real_matches_lattice", test_stepped_real_matches_lattice},
         {"linear_real_exact_cases", test_linear_real_exact_cases},
         {"real_mappings_stay_in_range_and_monotone", test_real_mappings_stay_in_range_and_monotone},
-        {"log_real_geometric_mean_and_overflow_split", test_log_real_geometric_mean_and_overflow_split},
+        {"log_real_literal_path_is_unchanged", test_log_real_literal_path_is_unchanged},
+        {"log_real_quartered_witnesses", test_log_real_quartered_witnesses},
+        {"log_real_branch_boundary_both_sides", test_log_real_branch_boundary_both_sides},
+        {"log_real_geometric_mean_and_finite_span", test_log_real_geometric_mean_and_finite_span},
         {"log_integer_cases_and_representability_limits", test_log_integer_cases_and_representability_limits},
         {"repeated_indexed_mapping_is_bitwise_stable", test_repeated_indexed_mapping_is_bitwise_stable},
         {"float_reference_fixture", test_float_reference_fixture},

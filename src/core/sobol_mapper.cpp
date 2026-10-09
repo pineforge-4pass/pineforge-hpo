@@ -91,17 +91,35 @@ double linear_real(double low, double high, double unit) noexcept {
     return std::clamp(sampled, low, high);
 }
 
-// low * exp(L * u), L fixed per dimension (N6). The literal formula overflows binary64 only when
-// high / low exceeds the largest double; there exp(L * u) is +inf for large u, which the clamp would
-// turn into `high`. In exactly that case the exponential is applied as two half-exponent factors, so
-// the result is finite and log-uniform. Whenever the literal formula is finite it is used unchanged.
+// low * exp(z), z = L * u with L fixed per dimension (N6), mapper revision 2 (AR amendment of
+// 2026-10-09 14:10).
+//
+// The literal product is used whenever exp(z) is finite, so those results are byte-identical to
+// revision 1. exp(z) overflows binary64 only when high / low is not finite (L = log(high) - log(low),
+// at most about 1454.2 for [smallest subnormal, DBL_MAX]); the clamp would then turn +inf into `high`,
+// fabricating an endpoint for an interior point. In exactly that case q = exp(z * 0.25) is computed
+// once (z * 0.25 is exact, and L_max / 4 is far inside exp's finite domain, so q is finite) and the
+// result is built by four ordered binary64 multiplications starting from the positive endpoint `low`:
+//   v1 = low * q, v2 = v1 * q, v3 = v2 * q, v4 = v3 * q,
+// followed by the bounds clamp. The half-exponent form of revision 1 is NOT used: half of
+// L * (63/64) already exceeds the largest finite exp argument (about 709.78) for the smallest
+// subnormal and DBL_MAX, so it could itself overflow.
+//
+// Order is part of the contract: no reassociation, no extended intermediate precision, and no
+// formula chosen by host. Each product goes through a volatile object so no compiler can regroup the
+// chain (a pure multiplication chain cannot be contracted, but regrouping would change rounding); the
+// -fno-fast-math recipe and its identity binding remain required and are not replaced by this barrier.
 double log_real(double low, double high, double log_ratio, double unit) noexcept {
     const double exponent = log_ratio * unit;
     const double growth = math::exp(exponent);
     double value;
     if (std::isinf(growth)) {
-        const double half = math::exp(exponent * 0.5);
-        value = (low * half) * half;
+        const double quarter = math::exp(exponent * 0.25);
+        volatile double factor1 = low * quarter;
+        volatile double factor2 = factor1 * quarter;
+        volatile double factor3 = factor2 * quarter;
+        volatile double factor4 = factor3 * quarter;
+        value = factor4;
     } else {
         value = low * growth;
     }

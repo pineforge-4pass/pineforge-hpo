@@ -35,7 +35,12 @@ namespace pineforge::hpo::detail {
 inline constexpr std::string_view kSobolMapperContract = "pineforge_sobol_mapper_v1";
 
 /// Revision of the mapping arithmetic. Bump on ANY change of a mapped value, even by one ulp.
-inline constexpr std::uint32_t kSobolMapperRevision = 1;
+/// The Sobol identity (descriptor hash, src/cli/sobol_continuation.hpp) binds this value.
+///   1: first draft, never released. Log-real exp overflow used two half-exponent factors, which can
+///      itself overflow (smallest subnormal .. DBL_MAX near unit 63/64).
+///   2: log-real exp overflow uses q = exp(z * 0.25) and four ordered multiplications from `low`
+///      (AR amendment 2026-10-09 14:10). Results where exp(z) is finite are byte-identical to 1.
+inline constexpr std::uint32_t kSobolMapperRevision = 2;
 
 // The column ceiling (columns 0..1023, 1024 varying dimensions) is the engine's detail::kSobolMaxColumns
 // in sobol_engine.hpp; it is deliberately not redefined here (a second inline constexpr of the same
