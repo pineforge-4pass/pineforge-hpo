@@ -14,9 +14,13 @@
 #   - the first token must be the compiler whose driver bytes are bound (same file after symlinks);
 #   - dropped: -c, -MD, -MMD, -MP, -MG, and -o, -MF, -MT, -MQ with their argument;
 #   - rewritten, location only: the source file and the path of -I, -isystem, -iquote, -idirafter,
-#     -iframework, -F, -isysroot, -B, --sysroot= and -include/-imacros; a path inside the build
-#     tree becomes <build>/..., one inside the source tree <src>/..., any other stays verbatim;
-#     a forced include also carries the SHA-256 of its content;
+#     -iframework, -F, -isysroot, -B, --sysroot= and -include/-imacros, in the separate form
+#     (option, then path) and in the joined form (option and path in one token); a path inside the
+#     build tree becomes <build>/..., one inside the source tree <src>/..., any other stays
+#     verbatim; a forced include also carries the SHA-256 of its content. The joined forms go
+#     beyond the rule of the return-statistics generator, which has no joined forced include in
+#     its commands; the portable-math target is compiled with -include<abs>/portable.h, which
+#     would otherwise make the identity depend on the checkout path;
 #   - every other token (-D, -U, -O, -f, -m, -std, -W, ...) is kept verbatim.
 # A response file, a list-splitting character (semicolon, bracket), a forced include that cannot
 # be read or a launcher in front of the compiler is not normalized: the caller reports it unbound.
@@ -260,7 +264,25 @@ function(pfh_ccb_bind_sources out_blocks label database files target compiler_re
                 set(pending "path")
                 continue()
             endif()
-            if("${token}" MATCHES "^(-I|-F|-B|--sysroot=)(.+)$")
+            # Joined forced include, as the portable-math target passes it: -include<file>. The
+            # remainder must not start with a dash, which excludes -include-pch and the like.
+            if("${token}" MATCHES "^(-include|-imacros)([^-].*)$")
+                set(joined_option "${CMAKE_MATCH_1}")
+                set(joined_file "${CMAKE_MATCH_2}")
+                if(NOT IS_ABSOLUTE "${joined_file}")
+                    set(joined_file "${entry_directory}/${joined_file}")
+                endif()
+                if(NOT EXISTS "${joined_file}")
+                    _pfh_ccb_refuse(forced_include_unresolved)
+                endif()
+                file(SHA256 "${joined_file}" include_digest)
+                pfh_ccb_rewrite_path(rewritten "${joined_file}" "${entry_directory}"
+                    "${source_root}" "${build_root}")
+                string(APPEND block "arg ${joined_option}${rewritten}#sha256=${include_digest}\n")
+                continue()
+            endif()
+            if("${token}" MATCHES
+                    "^(-I|-F|-B|--sysroot=|-isystem|-iquote|-idirafter|-iframework|-isysroot)(.+)$")
                 set(joined_option "${CMAKE_MATCH_1}")
                 pfh_ccb_rewrite_path(rewritten "${CMAKE_MATCH_2}" "${entry_directory}"
                     "${source_root}" "${build_root}")

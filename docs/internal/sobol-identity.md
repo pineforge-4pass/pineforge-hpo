@@ -74,8 +74,13 @@ reordered: the compiler token must be the bound driver; `-c`, `-MD`, `-MMD`, `-M
 `-o`, `-MF`, `-MT`, `-MQ` with their arguments are dropped, and none of them can change
 arithmetic; the source file and the path of `-I`, `-isystem`, `-iquote`, `-idirafter`,
 `-iframework`, `-F`, `-isysroot`, `-B`, `--sysroot=`, `-include` and `-imacros` are rewritten by
-location only (`<build>/...`, `<src>/...`, other paths verbatim); every other token is kept
-verbatim. There is no allowlist of tolerated flags and no numeric flag remainder. A moved tree,
+location only (`<build>/...`, `<src>/...`, other paths verbatim), in the separate form (option,
+then path) and in the joined form (path in the same token); a forced include also carries the
+SHA-256 of its content; every other token is kept verbatim. The joined forms go beyond the rule of
+the return-statistics identity, whose commands have none: the portable-math target is compiled
+with `-include` followed directly by the absolute path of `portable.h`, which without them would
+make the identity depend on the checkout path. There is no allowlist of tolerated flags and no
+numeric flag remainder. A moved tree,
 other object or dependency-file names, `-MMD` instead of `-MD` and a compiler reached through a
 copy or a symlink with equal bytes all give the same digest; every added, removed or reordered
 flag or definition gives a different one.
@@ -282,6 +287,12 @@ The tests check the build binding. These stay independent requirements:
 
 ## Remaining limits
 
+- Path-valued options outside the lists above (for example `-iprefix`, `-iwithprefix`,
+  `-fdebug-prefix-map=`) are kept verbatim: with an absolute path in them the identity depends on
+  that location. None of them is in the current commands.
+- The core target's usage requirements (dlib and the threads library) reach the Sobol units' commands and are
+  bound as generated; a change of those requirements moves the Sobol identity although no Sobol
+  source changed.
 - The lookup of a unit's command uses its object path (`<target>.dir`); a CMake that names
   objects differently leaves the identity unbound, not wrong.
 - The math target's sources are read at the end of the top-level directory; sources added later

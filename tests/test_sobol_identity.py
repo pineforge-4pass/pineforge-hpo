@@ -33,7 +33,11 @@ _spec.loader.exec_module(X)
 
 require, run = X.require, X.run
 sha256_file, sha256_text = X.sha256_file, X.sha256_text
-rewrite_path, normalize = X.rewrite_path, X.normalize
+rewrite_path = X.rewrite_path
+
+JOINED_INCLUDE = re.compile(r"^(-include|-imacros)([^-].*)$")
+JOINED_OPTIONS = re.compile(
+    r"^(-I|-F|-B|--sysroot=|-isystem|-iquote|-idirafter|-iframework|-isysroot)(.+)$")
 
 CONTRACT = "portable-sobol-v1"
 FORMAT = "pineforge-hpo-sobol-identity/v1"
@@ -71,7 +75,8 @@ set(PFH_TEST_LATE_MATH_OPTION "" CACHE STRING "")
 set(PFH_TEST_LATE_CXX_FLAGS "" CACHE STRING "")
 set(PFH_TEST_LATE_C_FLAGS "" CACHE STRING "")
 add_library(x_math STATIC math/m1.c math/m2.c)
-target_compile_options(x_math PRIVATE -fno-fast-math -ffp-contract=off -frounding-math)
+target_compile_options(x_math PRIVATE -fno-fast-math -ffp-contract=off -frounding-math
+    "-include${CMAKE_CURRENT_SOURCE_DIR}/third_party/core_math/portable.h")
 set_target_properties(x_math PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 add_library(x_core STATIC src/core/sobol_engine.cpp src/core/sobol_identity.cpp
     src/core/sobol_mapper.cpp src/core/sobol_sampler.cpp)
@@ -134,6 +139,58 @@ pfh_sobol_identity(
 # ---------------------------------------------------------------------------------------------
 # Independent recomputation of the descriptor from the ingredients and the database.
 # ---------------------------------------------------------------------------------------------
+
+
+def normalize(entry, source_path, source_root, build_root):
+    """The declared rule of cmake/CompileCommandBinding.cmake, implemented independently.
+
+    It is the rule of the return-statistics identity test plus the joined forms of the forced
+    includes and path options. Returns (compiler token, kept lines, dropped tokens)."""
+    directory = entry["directory"]
+    tokens = shlex.split(entry["command"])
+    compiler, tokens = tokens[0], tokens[1:]
+    lines, dropped, pending = [], [], ""
+
+    def forced(path):
+        resolved = path if os.path.isabs(path) else os.path.join(directory, path)
+        return rewrite_path(path, directory, source_root, build_root) + "#sha256=" + \
+            sha256_file(resolved)
+
+    for token in tokens:
+        if pending == "drop":
+            dropped.append(token)
+            pending = ""
+        elif pending == "path":
+            lines.append(rewrite_path(token, directory, source_root, build_root))
+            pending = ""
+        elif pending == "include":
+            lines.append(forced(token))
+            pending = ""
+        elif token.startswith("@"):
+            raise AssertionError("response file in a bound command")
+        elif token in X.DROP_FLAGS:
+            dropped.append(token)
+        elif token in X.DROP_WITH_ARGUMENT:
+            dropped.append(token)
+            pending = "drop"
+        elif token in X.INCLUDE_OPTIONS:
+            lines.append(token)
+            pending = "include"
+        elif token in X.PATH_OPTIONS:
+            lines.append(token)
+            pending = "path"
+        elif JOINED_INCLUDE.match(token):
+            option, value = JOINED_INCLUDE.match(token).groups()
+            lines.append(option + forced(value))
+        elif JOINED_OPTIONS.match(token):
+            option, value = JOINED_OPTIONS.match(token).groups()
+            lines.append(option + rewrite_path(value, directory, source_root, build_root))
+        elif token == source_path:
+            lines.append(rewrite_path(token, directory, source_root, build_root))
+        else:
+            lines.append(token)
+    require(pending == "", "a command ended inside an option argument")
+    return compiler, lines, dropped
 
 
 def parse_ingredients(path):
@@ -260,8 +317,9 @@ class World:
                   "-c", f"{root}/{rel}"]
         if kind == "cxx":
             return [self.cxx.as_posix(), "-std=gnu++17"] + common
-        return [self.cc.as_posix(), "-std=gnu11", "-include",
-                f"{root}/third_party/core_math/portable.h"] + common
+        # The real portable-math target passes the forced include in the joined form.
+        return [self.cc.as_posix(), "-std=gnu11",
+                f"-include{root}/third_party/core_math/portable.h"] + common
 
     def ingredients(self, **overrides):
         root = self.root.as_posix()
@@ -511,6 +569,9 @@ def scenario_fail_closed(base):
         ("unsupported_character", {"entries": tokens("-DPFH_X=[1]", kind="c")}),
         ("forced_include_unresolved", {"entries": tokens("-include", "missing-forced.h",
                                                          kind="c")}),
+        ("forced_include_unresolved", {"entries": tokens("-include/nonexistent/forced.h",
+                                                         kind="c")}),
+        ("forced_include_unresolved", {"entries": tokens("-imacros/nonexistent/macros.h")}),
         ("ingredients_incomplete", {"drop": ("core.target",)}),
         ("ingredients_incomplete", {"drop": ("c.path",)}),
         ("contract_mismatch", {"contract": "portable-sobol-v9"}),
@@ -817,6 +878,15 @@ def scenario_real_core(repository, dlib, base, generator):
     target = "pineforge_hpo_core"
     descriptor, digest = identity_of(build, target, *definitions, generator=generator, source=source)
     require_strict(descriptor, minimum_c=7)
+    require("arg -include<src>/third_party/core_math/portable.h#sha256=" in descriptor,
+            "the joined forced include of the math target is not normalized")
+    require(source.as_posix() not in descriptor and build.as_posix() not in descriptor,
+            "the descriptor of the real project contains its own location")
+    relocated = base / "deeper-tree" / "copy"
+    copy_tree(repository, relocated, with_sobol)
+    _, relocated_digest = identity_of(base / "deeper-build" / "b", target, *definitions,
+                                      generator=generator, source=relocated)
+    require(relocated_digest == digest, "the identity of the real project depends on its location")
     database = read_database(build)
     for entry in database:
         sobol_unit = (f"/{target}.dir/" in entry["command"]
