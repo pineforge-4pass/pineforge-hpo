@@ -62,6 +62,17 @@ def helper_inventory(repository):
     return lists["CXX_SOURCES"], lists["HEADERS"]
 
 
+def provider_inventory(repository):
+    """The shared-helper providers the helper binds besides the four Sobol units."""
+    text = (repository / "cmake/SobolIdentity.cmake").read_text()
+    return re.search(r"set\(_PFH_SOBOL_PROVIDER_SOURCES\s+(.*?)\)", text, re.S).group(1).split()
+
+
+SHARED_HELPER_HEADERS = ("src/core/numeric_build.hpp", "src/core/portable_math.hpp",
+                         "src/core/portable_grid.hpp")
+STRICT_RECIPE = '"-fno-fast-math;-ffp-contract=off;-frounding-math;-fno-builtin;-fno-lto"'
+
+
 FIXTURE_CMAKE = """\
 cmake_minimum_required(VERSION 3.19)
 project(PfhSobolFixture C CXX)
@@ -74,12 +85,17 @@ set(PFH_TEST_LATE_SOURCE_OPTION "" CACHE STRING "")
 set(PFH_TEST_LATE_MATH_OPTION "" CACHE STRING "")
 set(PFH_TEST_LATE_CXX_FLAGS "" CACHE STRING "")
 set(PFH_TEST_LATE_C_FLAGS "" CACHE STRING "")
+set(PFH_TEST_LATE_PROVIDER_OPTION "" CACHE STRING "")
 add_library(x_math STATIC math/m1.c math/m2.c)
 target_compile_options(x_math PRIVATE -fno-fast-math -ffp-contract=off -frounding-math
     "-include${CMAKE_CURRENT_SOURCE_DIR}/third_party/core_math/portable.h")
 set_target_properties(x_math PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
 add_library(x_core STATIC src/core/sobol_engine.cpp src/core/sobol_identity.cpp
-    src/core/sobol_mapper.cpp src/core/sobol_sampler.cpp)
+    src/core/sobol_mapper.cpp src/core/sobol_sampler.cpp
+    src/core/search_space.cpp src/core/tpe_sampler.cpp)
+# The two providers carry the same per-source recipe as in the real project.
+set_source_files_properties(src/core/search_space.cpp src/core/tpe_sampler.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off;-frounding-math;-fno-builtin;-fno-lto")
 add_executable(x_probe probe.cpp)
 target_link_libraries(x_probe PRIVATE x_core x_math)
 pfh_sobol_identity(TARGET x_core PORTABLE_MATH_TARGET x_math CONSUMERS x_probe)
@@ -102,6 +118,10 @@ if(PFH_TEST_LATE_CXX_FLAGS)
 endif()
 if(PFH_TEST_LATE_C_FLAGS)
     string(APPEND CMAKE_C_FLAGS " ${PFH_TEST_LATE_C_FLAGS}")
+endif()
+if(PFH_TEST_LATE_PROVIDER_OPTION)
+    set_property(SOURCE src/core/tpe_sampler.cpp APPEND PROPERTY COMPILE_OPTIONS
+        ${PFH_TEST_LATE_PROVIDER_OPTION})
 endif()
 """
 FIXTURE_IDENTITY_CPP = (
@@ -194,23 +214,25 @@ def normalize(entry, source_path, source_root, build_root):
 
 
 def parse_ingredients(path):
-    values, cxx, c, headers = {}, [], [], []
+    values, cxx, c, headers, providers = {}, [], [], [], []
     for line in Path(path).read_text().splitlines():
         if not line:
             continue
         key, _, value = line.partition("=")
         if key == "source.cxx":
             cxx.append(value)
+        elif key == "source.provider":
+            providers.append(value)
         elif key == "source.c":
             c.append(value)
         elif key == "header":
             headers.append(value)
         else:
             values[key] = value
-    return values, cxx, c, headers
+    return values, cxx, c, headers, providers
 
 
-def independent_descriptor(emitted, ing, cxx, c, headers, database):
+def independent_descriptor(emitted, ing, cxx, c, headers, providers, database):
     """Rebuild the descriptor of a bound build; only the compiler probe lines are borrowed."""
     def borrowed(name):
         return re.search(rf"^{re.escape(name)}=(.*)$", emitted, re.M).group(1)
@@ -219,7 +241,11 @@ def independent_descriptor(emitted, ing, cxx, c, headers, database):
     build_root = os.path.normpath(ing["build.root"])
     real = {"cxx": os.path.realpath(ing["cxx.path"]), "c": os.path.realpath(ing["c.path"])}
     blocks = []
-    for kind, sources, target in (("cxx", cxx, ing["core.target"]), ("c", c, ing["math.target"])):
+    # Providers are compiled by the core target with the C++ driver; their label differs.
+    groups = (("cxx", "cxx", cxx, ing["core.target"]),
+              ("provider", "cxx", providers, ing["core.target"]),
+              ("c", "c", c, ing["math.target"]))
+    for kind, driver, sources, target in groups:
         for source in sources:
             source = os.path.normpath(source)
             matches = [e for e in database if os.path.normpath(e["file"]) == source
@@ -227,14 +253,14 @@ def independent_descriptor(emitted, ing, cxx, c, headers, database):
             require(len(matches) == 1, f"expected one compile command for {source}: {matches}")
             compiler, lines, dropped = normalize(matches[0], source, source_root, build_root)
             token_real = os.path.realpath(os.path.join(matches[0]["directory"], compiler))
-            require(token_real == real[kind], f"{source}: the command uses another compiler")
+            require(token_real == real[driver], f"{source}: the command uses another compiler")
             for token in dropped:
                 require(token in X.DROP_FLAGS | X.DROP_WITH_ARGUMENT or not token.startswith("-"),
                         f"normalization dropped a flag-like token: {token}")
             display = rewrite_path(source, build_root, source_root, build_root)
             blocks.append(f"command {kind} {display}\n" + "".join(f"arg {l}\n" for l in lines))
     file_text = ""
-    for label, paths in (("source", cxx + c), ("header", headers)):
+    for label, paths in (("source", cxx + providers + c), ("header", headers)):
         entries = sorted(
             f"{label} {rewrite_path(p, build_root, source_root, build_root)} "
             f"sha256={sha256_file(p)}" for p in set(paths))
@@ -259,8 +285,9 @@ def check_outputs(directory, ingredients_path, database):
     digest = (directory / "sobol_identity.txt").read_text().strip()
     header = (directory / "sobol_identity_generated.hpp").read_text()
     require("kBound = true;" in header, f"unexpectedly unbound:\n{emitted}")
-    ing, cxx, c, headers = parse_ingredients(ingredients_path)
-    rebuilt = independent_descriptor(emitted, ing, cxx, c, headers, database)
+    ing, cxx, c, headers, providers = parse_ingredients(ingredients_path)
+    require(providers, "the ingredients carry no shared-helper provider")
+    rebuilt = independent_descriptor(emitted, ing, cxx, c, headers, providers, database)
     require(rebuilt == emitted, f"descriptor differs from the independent rule:\n{emitted}\n---\n{rebuilt}")
     require(digest == sha256_text(emitted), "the digest is not the SHA-256 of the descriptor")
     require(f'kBuildDigest[] = "{digest}";' in header, "the header lacks the digest")
@@ -276,8 +303,19 @@ def require_strict(descriptor, minimum_c=1):
     blocks = blocks_of(descriptor)
     cxx = [b for b in blocks if b.startswith("command cxx ")]
     c = [b for b in blocks if b.startswith("command c ")]
+    providers = [b for b in blocks if b.startswith("command provider ")]
     require(len(cxx) == 4, f"expected four bound C++ units, got {len(cxx)}")
     require(len(c) >= minimum_c, f"too few bound C units: {len(c)}")
+    expected = provider_inventory(REPOSITORY)
+    require(len(providers) == len(expected),
+            f"expected {len(expected)} bound providers, got {len(providers)}")
+    for relative in expected:
+        require(any(b.splitlines()[0].endswith(f"<src>/{relative}") for b in providers),
+                f"the provider {relative} has no bound command")
+        require(f"\nsource <src>/{relative} sha256=" in descriptor,
+                f"the provider {relative} has no bound source digest")
+    # Every bound command, the providers' included, carries the strict arithmetic recipe: a
+    # provider without it would still be bound, but it would be a finding worth a failure here.
     for block in blocks:
         for flag in STRICT:
             require(f"arg {flag}\n" in block, f"{flag} missing from {block.splitlines()[0]}")
@@ -296,7 +334,8 @@ class World:
     def __init__(self, base, name):
         self.root = base / name
         self.cxx_rel, self.headers_rel = helper_inventory(REPOSITORY)
-        for rel in self.cxx_rel + list(self.C_SOURCES) + self.headers_rel:
+        self.provider_rel = provider_inventory(REPOSITORY)
+        for rel in self.cxx_rel + self.provider_rel + list(self.C_SOURCES) + self.headers_rel:
             path = self.root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(f"// {rel}\n")
@@ -308,14 +347,20 @@ class World:
         self.cc.write_bytes(b"FAKE-CC-1\n")
         self.out = self.root / "build/out"
 
+    def groups(self, c_rel=None):
+        """The three translation-unit groups: Sobol units, shared-helper providers, C units."""
+        return (("cxx", self.cxx_rel), ("provider", self.provider_rel),
+                ("c", list(self.C_SOURCES) if c_rel is None else c_rel))
+
     def args(self, kind, rel):
         root = self.root.as_posix()
-        obj = f"CMakeFiles/{'x_core' if kind == 'cxx' else 'x_math'}.dir/{rel}.o"
+        cplus = kind in ("cxx", "provider")  # providers are core units built by the C++ driver
+        obj = f"CMakeFiles/{'x_core' if cplus else 'x_math'}.dir/{rel}.o"
         common = ["-DPFH_A=1", f"-I{root}/include", "-isystem", f"{root}/build/_deps/dep/include",
                   "-O2", "-DNDEBUG", "-fno-fast-math", "-ffp-contract=off", "-frounding-math",
                   "-fno-builtin", "-fno-lto", "-MD", "-MT", obj, "-MF", obj + ".d", "-o", obj,
                   "-c", f"{root}/{rel}"]
-        if kind == "cxx":
+        if cplus:
             return [self.cxx.as_posix(), "-std=gnu++17"] + common
         # The real portable-math target passes the forced include in the joined form.
         return [self.cc.as_posix(), "-std=gnu11",
@@ -338,12 +383,13 @@ class World:
         return values
 
     def generate(self, mutate=None, entries=None, drop=(), c_sources=None, headers=None,
-                 **overrides):
+                 providers=None, **overrides):
         root = self.root.as_posix()
         c_rel = list(self.C_SOURCES) if c_sources is None else c_sources
+        provider_rel = self.provider_rel if providers is None else providers
         if entries is None:
             entries = []
-            for kind, rels in (("cxx", self.cxx_rel), ("c", c_rel)):
+            for kind, rels in self.groups(c_rel):
                 for rel in rels:
                     args = self.args(kind, rel)
                     if mutate:
@@ -360,6 +406,7 @@ class World:
             values.pop(key)
         lines = [f"{k}={v}" for k, v in values.items()]
         lines += [f"source.cxx={root}/{rel}" for rel in self.cxx_rel]
+        lines += [f"source.provider={root}/{rel}" for rel in provider_rel]
         lines += [f"source.c={root}/{rel}" for rel in c_rel]
         lines += [f"header={root}/{rel}" for rel in (headers or self.headers_rel)]
         ingredients = self.root / "build/ingredients.txt"
@@ -416,6 +463,58 @@ def scenario_text_hygiene(repository):
     print("PASS: helpers model no flags and touch no target-wide property; runtime refuses in order")
 
 
+INCLUDE_LINE = re.compile(r'(?m)^\s*#\s*include\s+[<"]([^>"]+)[>"]')
+
+
+def static_closure(repository, start):
+    """Project files reachable from `start` through #include lines, from text alone.
+
+    It needs no compiler and no build: it answers which shipped translation units can emit a copy
+    of a shared inline helper. Angle-bracket and quoted names resolve against the including file's
+    directory and the project include roots; anything else is a system header."""
+    roots = [repository / name for name in ("include", "src/core", "src/cli")]
+    seen, stack = set(), [repository / start]
+    while stack:
+        path = Path(os.path.normpath(stack.pop()))
+        if path in seen:
+            continue
+        seen.add(path)
+        for name in INCLUDE_LINE.findall(path.read_text(errors="replace")):
+            for candidate in [path.parent / name, *(root / name for root in roots)]:
+                candidate = Path(os.path.normpath(candidate))
+                if candidate.is_file() and repository in candidate.parents:
+                    stack.append(candidate)
+                    break
+    return {path.relative_to(repository).as_posix() for path in seen}
+
+
+def scenario_providers_complete(repository):
+    """Every shipped unit that can emit a shared inline helper is a Sobol unit or a provider."""
+    cxx_rel, _ = helper_inventory(repository)
+    providers = set(provider_inventory(repository))
+    covered = set(cxx_rel) | providers
+    shipped = sorted(path.relative_to(repository).as_posix()
+                     for pattern in ("src/core/*.cpp", "src/engine_adapter/*.cpp", "src/cli/*.cpp")
+                     for path in repository.glob(pattern))
+    require("src/core/tpe_sampler.cpp" in shipped and "src/cli/main.cpp" in shipped,
+            "the shipped translation-unit scan found too little")
+    for unit in shipped:
+        reaches = sorted(set(SHARED_HELPER_HEADERS) & static_closure(repository, unit))
+        if reaches:
+            require(unit in covered,
+                    f"{unit} includes {reaches}, so it can emit a shared inline helper, but it is "
+                    "neither a Sobol unit nor a listed provider in cmake/SobolIdentity.cmake")
+    for provider in sorted(providers):
+        require(set(SHARED_HELPER_HEADERS) & static_closure(repository, provider),
+                f"{provider} is listed as a provider but reaches no shared helper header")
+    # The providers carry the strict recipe in the root, so a regression there is also visible.
+    root_text = (repository / "CMakeLists.txt").read_text()
+    for provider in sorted(providers):
+        require(provider in root_text, f"the root does not mention the provider {provider}")
+    print(f"PASS: {len(shipped)} shipped translation units scanned; the shared-helper providers "
+          f"are exactly {sorted(providers)}")
+
+
 def scenario_synthetic(base):
     world = World(base, "w-base")
     first = world.generate()
@@ -443,6 +542,13 @@ def scenario_synthetic(base):
         "c-contract-removed": only("exp.c", lambda a: [t for t in a if t != "-ffp-contract=off"]),
         "c-canary-unit": only("portable_math_canary.c", lambda a: a + ["-mfma"]),
         "c-standard": only("log.c", lambda a: ["-std=c11" if t == "-std=gnu11" else t for t in a]),
+        # The shared-helper providers: a change of their generated command moves the identity too.
+        "provider-flag-added": only("tpe_sampler.cpp", lambda a: a + ["-fno-trapping-math"]),
+        "provider-contract-removed": only("search_space.cpp",
+                                          lambda a: [t for t in a if t != "-ffp-contract=off"]),
+        "provider-definition": only("tpe_sampler.cpp", lambda a: a + ["-DPFH_B=1"]),
+        "provider-optimization": only("search_space.cpp",
+                                      lambda a: ["-O3" if t == "-O2" else t for t in a]),
     }
     digests = {"baseline": digest}
     for name, mutate in perturbations.items():
@@ -458,6 +564,7 @@ def scenario_synthetic(base):
     original = edit.generate()["digest"]
     require(original == digest, "an identical world in another place differs")
     for rel in (edit.cxx_rel[0], edit.cxx_rel[2], World.C_SOURCES[1], World.C_SOURCES[2],
+                *edit.provider_rel,
                 "src/core/sobol_mapper.hpp", "src/core/sobol_table_joe_kuo_d6_1024.inc",
                 "src/core/portable_grid.hpp", "src/core/numeric_build.hpp",
                 "third_party/core_math/log/dint.h", "third_party/core_math/portable.h"):
@@ -491,7 +598,8 @@ def scenario_synthetic(base):
         args[args.index("-MD")] = "-MMD"
         args[args.index("-MT") + 1] = "other/object-name.o"
         args[args.index("-MF") + 1] = "other/object-name.dep"
-        args[args.index("-o") + 1] = f"CMakeFiles/{'x_core' if kind == 'cxx' else 'x_math'}.dir/z.o"
+        owner = "x_math" if kind == "c" else "x_core"
+        args[args.index("-o") + 1] = f"CMakeFiles/{owner}.dir/z.o"
         return args
 
     require(World(base, "w-noop").generate(mutate=rename)["digest"] == digest,
@@ -502,7 +610,7 @@ def scenario_synthetic(base):
 
     def aliased(kind, rel, args):
         args = list(args)
-        args[0] = (alias.root / ("tools/cxx-alias" if kind == "cxx" else "tools/cc-link")).as_posix()
+        args[0] = (alias.root / ("tools/cc-link" if kind == "c" else "tools/cxx-alias")).as_posix()
         return args
 
     result = alias.generate(mutate=aliased, **{
@@ -518,7 +626,7 @@ def scenario_fail_closed(base):
         def build(world):
             root = world.root.as_posix()
             entries = []
-            for k, rels in (("cxx", world.cxx_rel), ("c", world.C_SOURCES)):
+            for k, rels in world.groups():
                 for rel in rels:
                     args = world.args(k, rel)
                     if k == kind and rel == rels[0]:
@@ -541,6 +649,17 @@ def scenario_fail_closed(base):
             if entry["file"].endswith("log.c"):
                 entry["command"] = entry["command"].replace(
                     world.cc.as_posix(), world.cxx.as_posix(), 1)
+        return entries
+
+    def missing_provider(world):
+        return [e for e in tokens()(world) if not e["file"].endswith("tpe_sampler.cpp")]
+
+    def provider_wrong_compiler(world):
+        entries = tokens()(world)
+        for entry in entries:
+            if entry["file"].endswith("search_space.cpp"):
+                entry["command"] = entry["command"].replace(
+                    world.cxx.as_posix(), world.cc.as_posix(), 1)
         return entries
 
     cases = [
@@ -578,13 +697,26 @@ def scenario_fail_closed(base):
         ("compiler_is_script", {"script": "cxx"}),
         ("compiler_is_script", {"script": "cc"}),
         ("reducer_file_missing", {"missing_header": True}),
+        # The shared-helper providers fail closed like every other bound unit.
+        ("compile_command_missing", {"entries": missing_provider}),
+        ("compiler_mismatch", {"entries": provider_wrong_compiler}),
+        ("response_file", {"entries": tokens("@flags.rsp", kind="provider")}),
+        ("unsupported_character", {"entries": tokens("-DPFH_X=a;b", kind="provider")}),
+        ("forced_include_unresolved", {"entries": tokens("-include/nonexistent/forced.h",
+                                                         kind="provider")}),
+        ("ingredients_incomplete", {"providers": []}),
+        ("reducer_file_missing", {"missing_provider_file": True}),
     ]
     for number, (reason, spec) in enumerate(cases):
         world = World(base, f"w-closed-{number}")
-        entries, drop, headers, overrides = None, (), None, {}
+        entries, drop, headers, overrides, providers = None, (), None, {}, None
         for key, value in spec.items():
             if key == "entries":
                 entries = value(world) if callable(value) else value
+            elif key == "providers":
+                providers = value
+            elif key == "missing_provider_file":
+                (world.root / world.provider_rel[0]).unlink()
             elif key == "drop":
                 drop = value
             elif key == "script":
@@ -593,7 +725,8 @@ def scenario_fail_closed(base):
                 headers = [*world.headers_rel, "include/missing.hpp"]
             else:
                 overrides[key] = value
-        result = world.generate(entries=entries, drop=drop, headers=headers, **overrides)
+        result = world.generate(entries=entries, drop=drop, headers=headers, providers=providers,
+                                **overrides)
         require(not result["bound"], f"{reason} #{number}: the build was bound")
         require(result["reason"] == reason, f"#{number}: reason {result['reason']}, wanted {reason}")
         require(result["digest"] == "", f"{reason}: digest not empty")
@@ -672,7 +805,7 @@ def write_fixture(directory):
     (directory / "math").mkdir()
     (directory / "CMakeLists.txt").write_text(FIXTURE_CMAKE.replace("@REPOSITORY@", REPOSITORY.as_posix()))
     cxx_rel, headers_rel = helper_inventory(REPOSITORY)
-    for rel in cxx_rel:
+    for rel in cxx_rel + provider_inventory(REPOSITORY):
         body = FIXTURE_IDENTITY_CPP if rel.endswith("sobol_identity.cpp") else \
             f'extern "C" int pfh_fixture_{Path(rel).stem}() {{ return 1; }}\n'
         (directory / rel).write_text(body)
@@ -716,6 +849,8 @@ def scenario_fixture(base, generator):
         "late-math-target-option": ["-DPFH_TEST_LATE_MATH_OPTION=-fno-signed-zeros"],
         "late-cxx-flags": ["-DPFH_TEST_LATE_CXX_FLAGS=-fno-associative-math"],
         "late-c-flags": ["-DPFH_TEST_LATE_C_FLAGS=-fno-associative-math"],
+        # A provider's own late per-source option: it reaches the provider block only.
+        "late-provider-option": ["-DPFH_TEST_LATE_PROVIDER_OPTION=-fno-trapping-math"],
     }
     expected = {
         "dependency-usage-requirement": ["-fno-strict-aliasing", "-DPFH_X_DEPENDENCY_PROVIDED=1"],
@@ -723,6 +858,7 @@ def scenario_fixture(base, generator):
         "late-math-target-option": ["-fno-signed-zeros"],
         "late-cxx-flags": ["-fno-associative-math"],
         "late-c-flags": ["-fno-associative-math"],
+        "late-provider-option": ["-fno-trapping-math"],
     }
     digests = {"baseline": digest}
     for name, definitions in variants.items():
@@ -730,6 +866,13 @@ def scenario_fixture(base, generator):
             base / f"fx-{tag}-{name}", "x_core", *definitions, generator=generator, source=source)
         for token in expected[name]:
             require(f"arg {token}\n" in variant_descriptor, f"{name}: {token} is not bound")
+        if name == "late-provider-option":
+            blocks = {b.splitlines()[0]: b for b in blocks_of(variant_descriptor)}
+            hit = blocks["command provider <src>/src/core/tpe_sampler.cpp"]
+            require("arg -fno-trapping-math\n" in hit, "the provider block lacks its late option")
+            require(not any("arg -fno-trapping-math\n" in b for head, b in blocks.items()
+                            if head != "command provider <src>/src/core/tpe_sampler.cpp"),
+                    "a provider's late option leaked into another unit's command")
         digests[name] = result
     for build_type, flags in (("Debug", []),
                               ("FeedAudit", ["-DCMAKE_C_FLAGS_FEEDAUDIT=-O1"]),
@@ -859,8 +1002,11 @@ def scenario_real_core(repository, dlib, base, generator):
             build_target(build, "pineforge_hpo_core_return_stats_identity")
         builds[label] = (source, build)
 
-    def foreign_bytes(label):
-        build = builds[label][1]
+    def foreign_bytes_of(build, label):
+        """The TPE flag files and the return-statistics outputs of one configured tree."""
+        build_target(build, "pineforge_hpo_numeric_flags")
+        if has_x:
+            build_target(build, "pineforge_hpo_core_return_stats_identity")
         files = [build / "generated" / CONFIGURATION / "CXX" / n
                  for n in ("numeric_build_flags.txt", "numeric_build_flags.hpp")]
         if has_x:
@@ -870,7 +1016,11 @@ def scenario_real_core(repository, dlib, base, generator):
             require(path.is_file(), f"{path.name} was not generated in the {label} tree")
         return tuple(path.read_bytes() for path in files)
 
-    require(foreign_bytes("sobol") == foreign_bytes("baseline"),
+    def foreign_bytes(label):
+        return foreign_bytes_of(builds[label][1], label)
+
+    baseline_foreign = foreign_bytes("baseline")
+    require(foreign_bytes("sobol") == baseline_foreign,
             "adding Sobol changed the TPE flag bytes or the return-statistics descriptor/identity")
     require(not (builds["baseline"][1] / GENERATED).exists(), "the baseline carries Sobol outputs")
 
@@ -888,19 +1038,30 @@ def scenario_real_core(repository, dlib, base, generator):
                                       generator=generator, source=relocated)
     require(relocated_digest == digest, "the identity of the real project depends on its location")
     database = read_database(build)
+    bound = {os.path.normpath(source / m.group(1)) for m in re.finditer(
+        r"(?m)^(?:source|header) <src>/(\S+) sha256=", descriptor)}
+    bound_units = {os.path.normpath(source / m.group(1)) for m in re.finditer(
+        r"(?m)^command (?:cxx|provider) <src>/(\S+)$", descriptor)}
+    shared = {os.path.normpath(source / header) for header in SHARED_HELPER_HEADERS}
     for entry in database:
-        sobol_unit = (f"/{target}.dir/" in entry["command"]
-                      and Path(entry["file"]).name.startswith("sobol_"))
+        in_core = f"/{target}.dir/" in entry["command"]
+        sobol_unit = in_core and Path(entry["file"]).name.startswith("sobol_")
         math_unit = "/pineforge_hpo_portable_math.dir/" in entry["command"]
         if sobol_unit or math_unit:
             closure = include_closure(entry, source)
-            bound = {os.path.normpath(source / m.group(1)) for m in re.finditer(
-                r"(?m)^(?:source|header) <src>/(\S+) sha256=", descriptor)}
             missing = sorted(p for p in closure if p not in bound)
             require(not missing, f"headers included but not bound for {entry['file']}: {missing}")
+        elif in_core and entry["file"].endswith(".cpp"):
+            # Any other core unit that can emit a shared inline helper must be a bound provider.
+            if include_closure(entry, source) & shared:
+                require(os.path.normpath(entry["file"]) in bound_units,
+                        f"{entry['file']} can emit a shared inline helper but is not bound")
     build_target(build, target)
     roots = (os.path.normpath(source), os.path.normpath(build))
+    # The mapper, both shared-helper providers (their actual commands are what the linker's copy
+    # of a shared inline helper was compiled with) and one math C unit.
     for tgt, rel in ((target, "src/core/sobol_mapper.cpp"),
+                     *((target, provider) for provider in provider_inventory(repository)),
                      ("pineforge_hpo_portable_math", "third_party/core_math/log/log.c")):
         path = os.path.normpath(source / rel)
         entry = [e for e in database if os.path.normpath(e["file"]) == path
@@ -921,15 +1082,49 @@ def scenario_real_core(repository, dlib, base, generator):
     for name, rel, text in (("math-source", "third_party/core_math/log/log.c", "// edited\n"),
                             ("mapper-header", "src/core/sobol_mapper.hpp", "// edited\n"),
                             ("table", "src/core/sobol_table_joe_kuo_d6_1024.inc", "// edited\n"),
-                            ("canary-source", "src/core/portable_math_canary.c", "// edited\n")):
+                            ("canary-source", "src/core/portable_math_canary.c", "// edited\n"),
+                            # The shared-helper providers: a source edit moves the Sobol digest
+                            # and leaves the TPE flag files and the X outputs byte-identical.
+                            ("provider-source-tpe", "src/core/tpe_sampler.cpp", "// edited\n"),
+                            ("provider-source-grid", "src/core/search_space.cpp", "// edited\n")):
         tree = base / f"core-{name}"
         copy_tree(repository, tree, with_sobol)
         (tree / rel).write_text((tree / rel).read_text() + text)
-        _, moved[name] = identity_of(base / f"core-build-{name}", target, *definitions,
+        edited_build = base / f"core-build-{name}"
+        _, moved[name] = identity_of(edited_build, target, *definitions,
                                      generator=generator, source=tree)
+        if name.startswith("provider-source"):
+            require(foreign_bytes_of(edited_build, name) == baseline_foreign,
+                    f"{name}: a provider source edit changed the TPE flag or X bytes")
+
+    # A provider flag change: edit the root's per-source recipe of the two providers. The Sobol
+    # digest moves, both provider commands carry the option, and the TPE flag files and the
+    # return-statistics outputs stay byte-identical (per-source options never entered either).
+    def provider_flag(destination):
+        with_sobol(destination)
+        path = destination / "CMakeLists.txt"
+        text = path.read_text()
+        recipe = ('COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off;-frounding-math;'
+                  '-fno-builtin;-fno-lto")')
+        require(text.count(recipe) == 1, "the providers' per-source recipe is not in the root")
+        path.write_text(text.replace(recipe, recipe[:-2] + ';-fno-trapping-math")'))
+
+    flag_tree = base / "core-provider-flag"
+    copy_tree(repository, flag_tree, provider_flag)
+    flag_build = base / "core-build-provider-flag"
+    flag_descriptor, moved["provider-flag"] = identity_of(flag_build, target, *definitions,
+                                                         generator=generator, source=flag_tree)
+    for unit in ("tpe_sampler.cpp", "search_space.cpp"):
+        head = f"command provider <src>/src/core/{unit}\n"
+        hit = [b for b in blocks_of(flag_descriptor) if b.startswith(head)]
+        require(len(hit) == 1 and "arg -fno-trapping-math\n" in hit[0],
+                f"the changed per-source option of {unit} is not in its bound command")
+    require(foreign_bytes_of(flag_build, "provider-flag") == baseline_foreign,
+            "a provider flag change moved the TPE flag bytes or the X outputs")
     require(len({digest, *moved.values()}) == len(moved) + 1, f"collision: {moved}")
     print(f"PASS [{generator}]: real combined target: actual C++ and C commands, header closure, "
-          f"executed commands, {len(moved)} perturbations, TPE/X bytes unchanged "
+          f"provider closure, executed commands, {len(moved)} perturbations (provider flag and "
+          f"source edits included), TPE/X bytes unchanged "
           f"({'integrated' if integrated else 'snippet appended'} tree)")
 
 
@@ -950,6 +1145,7 @@ def main():
         return 2
     REPOSITORY, dlib = (Path(argument).resolve() for argument in sys.argv[1:3])
     scenario_text_hygiene(REPOSITORY)
+    scenario_providers_complete(REPOSITORY)
     with tempfile.TemporaryDirectory(prefix="pfh-sobol-") as temporary:
         base = Path(temporary)
         scenario_synthetic(base)

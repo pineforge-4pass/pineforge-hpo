@@ -8,6 +8,9 @@
 #   - the compile command that the build system generated for each Sobol C++ translation unit and
 #     for each C translation unit of the portable-math target (compilation database entries,
 #     normalized by cmake/CompileCommandBinding.cmake);
+#   - the same for every provider: a shipped core translation unit that includes a header with the
+#     shared inline helpers (cmake/SobolIdentity.cmake explains why), plus its source digest. This
+#     is a conservative coupling: a provider's command or source edit moves the Sobol identity;
 #   - the bytes of the C++ compiler driver and of the C compiler driver, separately;
 #   - the digest of every listed source, header, the generated Joe-Kuo table and the forced
 #     includes of the commands.
@@ -73,6 +76,7 @@ function(pfh_sobol_bind)
     endif()
 
     set(cxx_sources "")
+    set(provider_sources "")
     set(c_sources "")
     set(headers "")
     string(REPLACE "\n" ";" lines "${text}")
@@ -85,6 +89,8 @@ function(pfh_sobol_bind)
             set(value "${CMAKE_MATCH_2}")
             if(key STREQUAL "source.cxx")
                 list(APPEND cxx_sources "${value}")
+            elseif(key STREQUAL "source.provider")
+                list(APPEND provider_sources "${value}")
             elseif(key STREQUAL "source.c")
                 list(APPEND c_sources "${value}")
             elseif(key STREQUAL "header")
@@ -106,7 +112,9 @@ function(pfh_sobol_bind)
     if(NOT "${in_contract}" STREQUAL "${PFH_SOBOL_CONTRACT}")
         pfh_sobol_refuse(contract_mismatch)
     endif()
-    if(NOT cxx_sources OR NOT c_sources)
+    # Providers are required: an ingredients file without them would bind a narrower set than the
+    # one the contract states, so it is refused rather than accepted.
+    if(NOT cxx_sources OR NOT c_sources OR NOT provider_sources)
         pfh_sobol_refuse(ingredients_incomplete)
     endif()
 
@@ -139,11 +147,12 @@ function(pfh_sobol_bind)
 
     # Sources and headers: project-relative name and content digest.
     list(REMOVE_DUPLICATES cxx_sources)
+    list(REMOVE_DUPLICATES provider_sources)
     list(REMOVE_DUPLICATES c_sources)
     list(REMOVE_DUPLICATES headers)
     set(file_text "")
     set(source_entries "")
-    foreach(path IN LISTS cxx_sources c_sources)
+    foreach(path IN LISTS cxx_sources provider_sources c_sources)
         if(NOT EXISTS "${path}")
             pfh_sobol_refuse(reducer_file_missing)
         endif()
@@ -175,10 +184,16 @@ function(pfh_sobol_bind)
     pfh_ccb_bind_sources(cxx_blocks cxx "${database_text}" "${database_files}"
         "${in_core.target}" "${cxx_real}" "${in_source.root}" "${in_build.root}" ${cxx_sources})
     pfh_sobol_forward()
+    # Providers are compiled by the same target with the same driver; the label keeps them apart
+    # from the four Sobol units in the descriptor and in the tests that count them.
+    pfh_ccb_bind_sources(provider_blocks provider "${database_text}" "${database_files}"
+        "${in_core.target}" "${cxx_real}" "${in_source.root}" "${in_build.root}"
+        ${provider_sources})
+    pfh_sobol_forward()
     pfh_ccb_bind_sources(c_blocks c "${database_text}" "${database_files}"
         "${in_math.target}" "${cc_real}" "${in_source.root}" "${in_build.root}" ${c_sources})
     pfh_sobol_forward()
-    set(blocks ${cxx_blocks} ${c_blocks})
+    set(blocks ${cxx_blocks} ${provider_blocks} ${c_blocks})
     list(SORT blocks)
     set(command_text "")
     foreach(block IN LISTS blocks)

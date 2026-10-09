@@ -118,9 +118,12 @@ void consistency() {
     const auto blocks = command_blocks(descriptor);
     int cxx = 0;
     int c = 0;
+    int provider = 0;
     for (const auto& block : blocks) {
         if (block.rfind("command cxx ", 0) == 0)
             ++cxx;
+        else if (block.rfind("command provider ", 0) == 0)
+            ++provider;
         else if (block.rfind("command c ", 0) == 0)
             ++c;
         check(block.find("arg -ffp-contract=off\n") != std::string::npos,
@@ -131,6 +134,19 @@ void consistency() {
     }
     check(cxx == 4, "four bound C++ translation units, got " + std::to_string(cxx));
     check(c >= 7, "the whole portable-math target is bound, got " + std::to_string(c));
+    // Conservative provider coupling: every shipped core unit that can emit the linker's copy of a
+    // shared inline helper is bound by command and source digest, strict flags or not (the loop
+    // above requires the strict recipe of all of today's providers, so a new provider without it
+    // is noticed here).
+    check(provider == 2, "two bound shared-helper providers, got " + std::to_string(provider));
+    for (const char* name : {"search_space.cpp", "tpe_sampler.cpp"}) {
+        check(descriptor.find(std::string("command provider <src>/src/core/") + name + "\n") !=
+                  std::string::npos,
+              std::string("bound provider command ") + name);
+        check(descriptor.find(std::string("\nsource <src>/src/core/") + name + " sha256=") !=
+                  std::string::npos,
+              std::string("bound provider source digest ") + name);
+    }
     for (const char* name : {"sobol_engine.cpp", "sobol_mapper.cpp", "sobol_sampler.cpp",
                              "sobol_identity.cpp"})
         check(descriptor.find(std::string("command cxx <src>/src/core/") + name + "\n") !=
