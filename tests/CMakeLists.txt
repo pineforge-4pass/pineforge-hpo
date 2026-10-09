@@ -81,6 +81,13 @@ target_link_libraries(pineforge_hpo_test_warm_binary PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_warm_binary PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_warm_binary COMMAND pineforge_hpo_test_warm_binary)
 
+add_executable(pineforge_hpo_test_candidate_list test_candidate_list.cpp)
+target_include_directories(pineforge_hpo_test_candidate_list PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/cli")
+target_link_libraries(pineforge_hpo_test_candidate_list PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_candidate_list PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_candidate_list COMMAND pineforge_hpo_test_candidate_list)
+
 add_executable(pineforge_hpo_test_finite_search_space test_finite_search_space.cpp)
 target_link_libraries(pineforge_hpo_test_finite_search_space PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_finite_search_space PRIVATE
@@ -309,6 +316,12 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         set_tests_properties(pineforge_hpo_no_improvement PROPERTIES TIMEOUT 600)
+        add_test(NAME pineforge_hpo_candidate_list_cli
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_candidate_list_cli.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_candidate_list_cli PROPERTIES TIMEOUT 900)
         add_test(NAME pineforge_hpo_trial_outputs
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>
