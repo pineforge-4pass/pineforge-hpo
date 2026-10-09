@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add the `sobol` sampler (native `--sampler sobol [--sobol-scramble digital_shift|none]`; StudySpec
+  `sampler.kind: "sobol"` with `sampler.config.scramble`). It issues the 64-bit Gray-code Sobol
+  sequence (Joe-Kuo criterion-6 direction numbers for dimensions 2 to 1024, vendored verbatim with
+  their BSD licence in `NOTICE` and `THIRD_PARTY_LICENSES/sobol_joe_kuo.txt`) over the name-sorted
+  varying dimensions, with an optional seeded 64-bit digital shift. The trial ID is the sequence
+  index; sampling is with replacement (duplicates are distinct occurrences, nothing is excluded,
+  reseeded or skipped, and a finite space never stops the run early). A top-level `sobol` object
+  carries the descriptor, its identity and the part's index range. `--warm-start` accepts only a
+  complete Sobol result with a matching identity and verifies every parent row against the
+  generator; other histories are refused with exit 4. Spaces with a floating-point column need a
+  build whose Sobol numeric identity is bound and are refused before any trial otherwise. Runs
+  without the new options keep their bytes. No quality advantage is claimed. Execution proof is
+  pending.
+
 - Add the `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,sharpe_per_period,
   skew,kurt_raw,status}` metrics (contract `pineforge-hpo-return-stats/v1`, legacy mode). They are
   computed from the engine's ordered equity curve while the report is alive, only for the series an

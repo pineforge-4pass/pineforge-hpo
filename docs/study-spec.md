@@ -105,7 +105,7 @@ pineforge-hpo run path/to/study.json \
 | `strategies` | Must contain exactly one strategy object. |
 | `datasets` | The executable path requires exactly one referenced dataset. |
 | `objective` | Must use `kind="expression"`. |
-| `sampler` | `grid`, `random`, `dlib_global`, `tpe`, or `candidates`, plus its candidate policy. |
+| `sampler` | `grid`, `random`, `dlib_global`, `tpe`, `candidates`, or `sobol`, plus its candidate policy. |
 | `execution` | Sequential or threaded native execution. |
 | `symbol_feeds` | Optional index path or inline index; fixed other-symbol reads only. |
 
@@ -512,7 +512,7 @@ at start with `hpo_invariant`.
 
 Every sampler requires an explicit non-negative `seed` and positive `trials`.
 The optional `candidate_policy` defaults to `sampler_default`. Only `tpe` (typed model
-options) and `candidates` (`candidates_file`) accept a non-empty `config`; other sampler kinds
+options), `candidates` (`candidates_file`) and `sobol` (`scramble`) accept a non-empty `config`; other sampler kinds
 reject it instead of silently ignoring configuration.
 
 ### Candidate policy
@@ -655,6 +655,79 @@ deduplicated, cached or fanned out.
   space-hash, status, capacity and size refusals apply. The space hash does not certify the
   dataset, window or fixed inputs, so the caller must use the same scoring context; native
   cannot refuse a wrong-window parent until the window is recorded in result provenance.
+
+### Sobol
+
+```json
+{"kind": "sobol", "seed": 20260718, "trials": 1024, "config": {"scramble": "digital_shift"}}
+```
+
+`sobol` evaluates a low-discrepancy sequence: the 64-bit Gray-code Sobol sequence over the
+varying dimensions, with direction numbers from the Joe and Kuo criterion-6 table (rows for
+dimensions 2 to 1024, dimension 1 implicit; see `NOTICE`). It is native `--sampler sobol
+[--sobol-scramble digital_shift|none]`, and `sampler.config.scramble` is the only config key
+(default `digital_shift`). No quality or speed advantage over another sampler is claimed.
+
+- **Columns.** The varying dimensions (an integer or real with `low < high`, every Boolean, a
+  categorical with two or more choices) sorted by byte-wise UTF-8 name are the Sobol columns; at
+  most 1024. A constant takes no column, and declaration order is irrelevant.
+- **Points.** Index `n` counts from 0 and includes index 0; nothing is skipped or thinned. With
+  `digital_shift` every column's 64-bit word is XOR-ed with a SplitMix64 word keyed by `seed`
+  (an unsigned 64-bit integer, kept exact as a decimal string in results); `none` ignores the
+  seed. A discrete dimension takes the high word of the exact 128-bit product of the word and its
+  count, on the same lattice as the finite-space candidate decoder; a continuous one takes the 53
+  high bits as a unit. Linear, log and stepped reals and log integers follow the documented
+  binary64 rules; a log integer needs `1 <= low <= 2^52` and `high - low + 1 <= 2^53`.
+- **IDs and replacement.** The trial ID is the raw index. Sampling is with replacement: a
+  duplicate parameter vector is a distinct occurrence, nothing is rejected, redrawn, reseeded,
+  excluded because a parent already tried it, or skipped, and objective feedback is ignored. A
+  finite space's coverage fields stay truthful facts but never stop the run: a list of 64 trials
+  over a four-point space is 64 rows with `stop_reason: "trial_budget_reached"`. Normal budget,
+  wall-limit, patience, pruner, cancel and timeout semantics apply.
+- **Refused before any trial** (`hpo_study_spec_invalid`, reason `sampler`, exit 1): more than
+  1024 varying dimensions, an integer range with 2^64 values, a log-integer range outside the
+  limits above, an invalid scramble. A candidate policy other than `sampler_default`, neither
+  `trials` nor a wall limit, and a scramble given with another sampler are usage errors. The
+  existing uint64 trial-ID rules stay explicit and no new ceiling is added: the largest ID issued
+  is 2^64 - 2.
+- **Numeric identity.** A space with a stepped-real, linear-real, log-real or log-integer column
+  computes through binary64 math and needs a build whose Sobol numeric identity (prefix
+  `portable-sobol-v1`, its own component, unrelated to the TPE checkpoint and the return-statistics
+  identities) is bound, in a portable floating-point environment. Otherwise the run is refused
+  before any plugin, dataset or trial work with `hpo_toolchain_unavailable` (reason
+  `native_runner`, the exact unbound reason in the text) or `hpo_portable_math_unavailable`. A
+  space of integers, Booleans and categoricals has `numeric_build_identity: null` and is always
+  available.
+- **Result.** A top-level `sobol` object, present only for this sampler:
+  `{contract, table{name, subset_sha256, upstream_sha256}, word_bits, scramble, seed, columns,
+  numeric_build_identity, mapper{contract, revision}, identity, first_index, next_index,
+  exact_stream}`. `seed`, `first_index` and `next_index` are decimal strings (`seed` is null for
+  `none`). `identity` is the SHA-256 of the canonical JSON of the descriptor (including the space
+  hash, the numeric identity and the mapper revision); `next_index` is one more than this part's
+  largest terminal trial ID and counts every terminal trial whether or not its row is retained
+  (`trials_out` best-k and none included, and a timed-out or fatal result too).
+- **Continuation.** `--warm-start` accepts only a complete Sobol result (`trials_out` all, at most
+  256 MiB, earlier parts in `warm_start_trials`) whose identity equals the new run's. Rows-only
+  files, arrays, JSONL, binary history, results of other samplers, summaries and any identity
+  mismatch are refused with exit 4 (`hpo_warm_start_rejected`), with no fallback mode and no new
+  checkpoint format. Every parent row, ancestors included, must equal the generator at its trial
+  ID, and the claimed indices and `exact_stream` are recomputed from the rows: a claim that
+  contradicts them is refused in either direction. An unsorted row array is accepted (row order
+  has no meaning), a repeated ID is not, a parent with no row at all is refused, and a parent
+  whose largest ID is 2^64 - 2 or whose budget would pass 2^64 - 2 is refused. The child starts at
+  the parent's largest ID plus one and never refills a hole. The generic loader's own limits
+  (document size, subnormal parameters, capacity) still apply and are not relaxed; this is not a
+  claim that arbitrary history continues exactly.
+- **What the claims are.** (P) A row with trial ID `t` holds the point fixed by the run identity
+  and `t` alone, whatever the workers, batch size, lag, failures or other rows. (E) If the parent
+  rows are exactly IDs 0 to `m - 1` and the identities match, the continuation's rows equal rows
+  `m` onward of an uninterrupted run (parameters only; `exact_stream` is true). A gapped,
+  cancelled or timed-out parent keeps only point-by-ID meaning (`exact_stream` false). Whole
+  result objects, counters, the best trial, `stop_reason` and `early_stop` are not claimed to
+  concatenate. With a fixed batch size and lag and no external stop, repeated runs and any worker
+  count give identical result bytes; with patience enabled the terminal frontier follows the
+  configured drain, so the stream claims are qualified by those fixed replay inputs. Equality
+  across architectures is claimed only for host pairs a proof tested.
 
 ### TPE
 
@@ -917,6 +990,7 @@ key, and search-space definition:
 | `search_space_exhausted` | Whether no unattempted vector remains in a finite space. |
 | `stop_reason` | Machine-readable reason that candidate generation stopped. |
 | `early_stop` | Present only when `--no-improvement-trials` is enabled; see the [patience and drain fields](batching.md). |
+| `sobol` | Present only for `sampler: "sobol"`; descriptor, identity and this part's index range, see [Sobol](#sobol). |
 | `candidate_list` | Present only for `sampler: "candidates"`; list identity and terminal-position coverage, see [Candidate list](#candidate-list). |
 | `full_parameter_coverage` | Every vector in the declared finite domain has a terminal trial record. |
 | `exhaustive_equivalent` | Full parameter coverage and every trial status is `ok` or `constraint_violation`. |
