@@ -115,6 +115,11 @@ off.
 - Environment variables that the compiler reads, `-specs` files, the machine that `-march=native`
   resolves to, and the CPU that runs the process beyond the checks above.
 - Other translation units that call the Sobol functions, and their flags.
+- Which copy of a shared inline function runs. `require_portable_environment()` and the probe
+  `runtime_math_fingerprint()` are inline functions of `numeric_build.hpp`, also compiled into the
+  TPE sampler unit; the linker keeps one copy, which may come from that unit, whose command is
+  not bound here. Both units use the same strict recipe today, and the probe digest in the string
+  would change if the copy's results did, but nothing in the descriptor ties the copy to a command.
 - The vendored raw Joe-Kuo text file: the generated `.inc` it produced is bound by content and
   the subset digest constant is in the string; their agreement is the table-generation check.
 - The correctness of the arithmetic, repeat and worker-count invariance (1, 4, 16 workers), and
