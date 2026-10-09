@@ -47,6 +47,8 @@ option(PINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN "Fail instead of skipping unknown ser
 option(PINEFORGE_HPO_REQUIRE_MPFR "Require MPFR for exact portable-math tests" OFF)
 option(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY
     "Fail the identity tests when the return-statistics build identity is unbound" OFF)
+option(PINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY
+    "Fail the Sobol tests when the Sobol numeric build identity is unbound" OFF)
 if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
 endif()
@@ -130,6 +132,9 @@ add_library(pineforge_hpo_core STATIC
     src/core/return_stats.cpp
     src/core/sampler.cpp
     src/core/search_space.cpp
+    src/core/sobol_engine.cpp
+    src/core/sobol_mapper.cpp
+    src/core/sobol_sampler.cpp
     src/core/tpe_sampler.cpp
     src/core/types.cpp
 )
@@ -239,6 +244,30 @@ pfh_return_stats_identity(
     CONTRACT "pineforge-hpo-return-stats/v1"
     SOURCE_OPTIONS -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
     ${PFH_RSI_CONSUMER_ARGUMENTS})
+
+# Sobol sampler numeric identity (prefix portable-sobol-v1): its own component, distinct from the
+# TPE checkpoint identity and from the return-statistics identity above. The helper binds the
+# mapper, sampler and engine sources, the actual flags of those translation units (the mapper must
+# be compiled with -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto), the
+# portable-math sources and the compiler. Nothing is set here for those sources: the helper owns
+# their per-source properties, and docs/internal/methods-g1-wire.md records what the integration
+# test then requires of the recorded compile commands. The consumers include
+# pineforge/hpo/sobol_identity.hpp (the command line) or link the adapter that the command line
+# builds on; their dependency on the helper's generation target is unconditional, so every
+# supported build constructs its own generated header.
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SobolIdentity.cmake")
+    message(FATAL_ERROR "cmake/SobolIdentity.cmake (the Sobol numeric identity helper) and "
+        "include/pineforge/hpo/sobol_identity.hpp are required by the Sobol sampler wiring")
+endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/SobolIdentity.cmake")
+set(PFH_SOBOL_CONSUMER_ARGUMENTS "")
+if(PFH_RSI_CONSUMER_TARGETS)
+    list(APPEND PFH_SOBOL_CONSUMER_ARGUMENTS CONSUMERS ${PFH_RSI_CONSUMER_TARGETS})
+endif()
+pfh_sobol_identity(
+    TARGET pineforge_hpo_core
+    PORTABLE_MATH_TARGET pineforge_hpo_portable_math
+    ${PFH_SOBOL_CONSUMER_ARGUMENTS})
 
 if(PINEFORGE_HPO_ENABLE_SANITIZERS)
     foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native

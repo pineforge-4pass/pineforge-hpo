@@ -109,6 +109,7 @@ class SamplerSpec:
     candidate_policy: str = "sampler_default"
     config: TpeSamplerConfig | None = None
     candidates_file: Path | None = None
+    scramble: str | None = None
 
 
 @dataclass(frozen=True)
@@ -603,11 +604,18 @@ def _parse_sampler(
         raw, {"kind", "seed", "trials", "candidate_policy", "config"}, path, issues
     )
     kind = _nonempty_string(raw.get("kind"), f"{path}.kind", issues)
-    if kind and kind not in {"grid", "random", "dlib_global", "tpe", "candidates"}:
+    if kind and kind not in {
+        "grid",
+        "random",
+        "dlib_global",
+        "tpe",
+        "candidates",
+        "sobol",
+    }:
         issues.append(
             ValidationIssue(
                 f"{path}.kind",
-                "must be grid, random, dlib_global, tpe, or candidates",
+                "must be grid, random, dlib_global, tpe, candidates, or sobol",
             )
         )
     seed = raw.get("seed")
@@ -618,6 +626,10 @@ def _parse_sampler(
     elif kind == "dlib_global" and seed > 2_147_483_647:
         issues.append(
             ValidationIssue(f"{path}.seed", "must be <= 2147483647 for dlib_global")
+        )
+    elif kind == "sobol" and seed > _UINT64_MAX:
+        issues.append(
+            ValidationIssue(f"{path}.seed", "must be <= 18446744073709551615 for sobol")
         )
     if not _is_int(trials) or trials <= 0:
         issues.append(ValidationIssue(f"{path}.trials", "must be a positive integer"))
@@ -638,7 +650,21 @@ def _parse_sampler(
     raw_config = _object(raw.get("config", {}), f"{path}.config", issues)
     config: TpeSamplerConfig | None = None
     candidates_file: Path | None = None
-    if kind == "candidates":
+    scramble: str | None = None
+    if kind == "sobol":
+        # The scramble is the only option; the sampler itself lives in the native runner. The
+        # seed above keys the digital shift (ignored by "none") and a 64-bit seed stays exact.
+        config_path = f"{path}.config"
+        _check_unknown(raw_config, {"scramble"}, config_path, issues)
+        scramble = raw_config.get("scramble", "digital_shift")
+        if not isinstance(scramble, str) or scramble not in {"digital_shift", "none"}:
+            issues.append(
+                ValidationIssue(
+                    f"{config_path}.scramble", "must be digital_shift or none"
+                )
+            )
+            scramble = "digital_shift"
+    elif kind == "candidates":
         # The list is read only by the native runner. A relative path resolves
         # against the study file's directory, like every other path in the study.
         config_path = f"{path}.config"
@@ -767,6 +793,7 @@ def _parse_sampler(
         candidate_policy=str(candidate_policy),
         config=config,
         candidates_file=candidates_file,
+        scramble=scramble,
     )
 
 
@@ -889,7 +916,7 @@ def _validate_candidate_policy(
         return
 
     if sampler.kind not in {"grid", "tpe"}:
-        if sampler.kind in {"random", "dlib_global", "candidates"}:
+        if sampler.kind in {"random", "dlib_global", "candidates", "sobol"}:
             issues.append(
                 ValidationIssue(
                     "$.sampler.candidate_policy",

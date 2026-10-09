@@ -650,12 +650,19 @@ def _native_command(
             "the executable MVP supports objective.kind=expression; custom C++ "
             "objectives use the ObjectiveFn API",
         )
-    if study.sampler.kind not in {"grid", "random", "dlib_global", "tpe", "candidates"}:
+    if study.sampler.kind not in {
+        "grid",
+        "random",
+        "dlib_global",
+        "tpe",
+        "candidates",
+        "sobol",
+    }:
         raise _cli_error(
             "hpo_study_spec_invalid",
             {"reason": "sampler"},
             "the executable supports sampler.kind=grid, random, dlib_global, tpe, "
-            "or candidates",
+            "candidates, or sobol",
         )
     if study.sampler.kind == "dlib_global" and study.sampler.seed > 2_147_483_647:
         raise _cli_error(
@@ -760,6 +767,9 @@ def _native_command(
         # --max-trials was passed above from the required positive sampler.trials;
         # native admission refuses a value that is not the list length N.
         command.extend(("--candidates", str(study.sampler.candidates_file)))
+    elif study.sampler.kind == "sobol":
+        # --seed (above) keys the digital shift; native admission owns every other check.
+        command.extend(("--sobol-scramble", study.sampler.scramble or "digital_shift"))
     elif study.sampler.kind == "tpe":
         if not isinstance(study.sampler.config, TpeSamplerConfig):
             raise _cli_error(
@@ -891,33 +901,38 @@ def prepare_run(
             raise WarmStartError(
                 "warm-start incompatible: candidates continuation is not supported"
             )
-        history = warm_start_metadata(
-            preflight, warm_start, native=native, defer_symbol_feeds=True
-        )
-        if preflight.execution.pruner != "none" and is_binary_warm(warm_start):
-            raise WarmStartError(
-                "warm-start incompatible: binary history has no pruning rungs"
+        if preflight.sampler.kind != "sobol":
+            history = warm_start_metadata(
+                preflight, warm_start, native=native, defer_symbol_feeds=True
             )
-        count = cardinality(preflight)
-        remaining = None if count is None else count - history["tried"]
-        if remaining == 0:
-            raise SpaceExhaustedError(
-                "space exhausted: every parameter vector was tried"
-            )
-        if preflight.sampler.candidate_policy != "sampler_default" and (
-            preflight.sampler.trials > remaining
-            or (
-                preflight.sampler.candidate_policy == "exhaustive"
-                and preflight.sampler.trials != remaining
-            )
-        ):
-            raise WarmStartError(
-                "warm-start incompatible: finite budget does not fit remaining space"
-            )
-        if preflight.sampler.trials > (1 << 64) - 1 - history["next_id"]:
-            raise WarmStartError(
-                "warm-start incompatible: new trial budget would overflow trial IDs"
-            )
+            if preflight.execution.pruner != "none" and is_binary_warm(warm_start):
+                raise WarmStartError(
+                    "warm-start incompatible: binary history has no pruning rungs"
+                )
+            count = cardinality(preflight)
+            remaining = None if count is None else count - history["tried"]
+            if remaining == 0:
+                raise SpaceExhaustedError(
+                    "space exhausted: every parameter vector was tried"
+                )
+            if preflight.sampler.candidate_policy != "sampler_default" and (
+                preflight.sampler.trials > remaining
+                or (
+                    preflight.sampler.candidate_policy == "exhaustive"
+                    and preflight.sampler.trials != remaining
+                )
+            ):
+                raise WarmStartError(
+                    "warm-start incompatible: finite budget does not fit remaining space"
+                )
+            if preflight.sampler.trials > (1 << 64) - 1 - history["next_id"]:
+                raise WarmStartError(
+                    "warm-start incompatible: new trial budget would overflow trial IDs"
+                )
+        # A Sobol study samples with replacement, so no history preflight applies: neither the
+        # finite-space exhaustion test nor Python-side parsing of the parent. The native runner
+        # admits only a complete Sobol result with a matching descriptor, validates its rows and
+        # trial IDs, and refuses anything else with exit 4 before any trial.
     study = load_study_spec(
         study_path, require_files=True, continuation=warm_start is not None
     )

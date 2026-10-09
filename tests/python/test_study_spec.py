@@ -168,7 +168,7 @@ class StudySpecTest(unittest.TestCase):
             for sampler, expected in (
                 (
                     {"kind": "typo", "seed": 1, "trials": 2},
-                    "must be grid, random, dlib_global, tpe, or candidates",
+                    "must be grid, random, dlib_global, tpe, candidates, or sobol",
                 ),
                 (
                     {
