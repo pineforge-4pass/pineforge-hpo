@@ -6,6 +6,10 @@ computed the statistics. This note describes how the identifier is produced, wha
 normalization rule that makes it location independent, when it is deliberately unavailable, and
 how to wire it into the root build. Contract string: `pineforge-hpo-return-stats/v1`.
 
+Status: the helper, the generator and their tests have not been configured, built or run yet.
+Every statement below describes intended behaviour; it is confirmed only by the build-and-test
+proof listed at the end of this note.
+
 The identity is independent of every sampler. Grid, random, TPE and candidate-list runs all
 report the same value for the same build. It is never derived from, combined with, or compared
 to a TPE checkpoint identity (`numeric_build_identity()` in the sampler core), and it shares no
@@ -270,3 +274,10 @@ requirements and are not replaced by it:
   differently makes the lookup fail, which leaves the identity unbound.
 - Flags that embed an absolute directory outside both trees (for example
   `-ffile-prefix-map=` with such a path) make the identity depend on that location.
+- Options that only change diagnostics, such as colored output, are kept in the command and
+  therefore bound: two builds that differ only in them have different identities.
+- The build-time script parses the whole compilation database once per source and per build, so
+  its cost grows with the database; it has not been measured.
+- CMake older than 3.19 leaves the identity unbound. This and the forced
+  `CMAKE_EXPORT_COMPILE_COMMANDS` default are the two restrictions beyond the situations listed
+  above, and both are open for review.
