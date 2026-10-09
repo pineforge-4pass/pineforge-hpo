@@ -1,0 +1,900 @@
+"""Sobol numeric build identity: bound to the generated compile commands, fail-closed otherwise.
+
+Usage: test_sobol_identity.py REPOSITORY_ROOT DLIB_SOURCE_DIR
+
+The identity is derived from the compile command that the build system generated for each Sobol
+C++ translation unit and each C translation unit of the portable-math target. This test keeps an
+independent implementation of the declared normalization rule (imported from the return-statistics
+identity test, which owns the rule's test copy) and compares it with the generator's output, on
+synthetic compilation databases (the generator is a pure function of its inputs), on configured
+fixture projects, and on copies of the real project. It checks the build binding only. It does not
+prove arithmetic, repeat or worker-count invariance, and it does not replace the reference-value
+proofs or the measured-pair qualification.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+_spec = importlib.util.spec_from_file_location(
+    "pfh_x_identity_test", HERE / "test_return_stats_identity.py")
+X = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(X)
+
+require, run = X.require, X.run
+sha256_file, sha256_text = X.sha256_file, X.sha256_text
+rewrite_path, normalize = X.rewrite_path, X.normalize
+
+CONTRACT = "portable-sobol-v1"
+FORMAT = "pineforge-hpo-sobol-identity/v1"
+CONFIGURATION = "Release"
+GENERATED = Path("generated/sobol_identity")
+GENERATION_TARGET = "x_core_sobol_identity"
+INGREDIENTS = "sobol_identity.ingredients.txt"
+MARK_BEGIN = "# PFH-SOBOL-IDENTITY-BEGIN"
+MARK_END = "# PFH-SOBOL-IDENTITY-END"
+STRICT = ("-fno-fast-math", "-ffp-contract=off")
+
+REPOSITORY = Path(".")
+
+
+def helper_inventory(repository):
+    """The helper's own inventory, so the test cannot drift from it."""
+    text = (repository / "cmake/SobolIdentity.cmake").read_text()
+    lists = {}
+    for name in ("CXX_SOURCES", "HEADERS"):
+        body = re.search(rf"set\(_PFH_SOBOL_{name}\s+(.*?)\)", text, re.S).group(1)
+        lists[name] = body.split()
+    return lists["CXX_SOURCES"], lists["HEADERS"]
+
+
+FIXTURE_CMAKE = """\
+cmake_minimum_required(VERSION 3.19)
+project(PfhSobolFixture C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+include("@REPOSITORY@/cmake/SobolIdentity.cmake")
+set(PFH_TEST_DEPENDENCY OFF CACHE BOOL "")
+set(PFH_TEST_LATE_SOURCE_OPTION "" CACHE STRING "")
+set(PFH_TEST_LATE_MATH_OPTION "" CACHE STRING "")
+set(PFH_TEST_LATE_CXX_FLAGS "" CACHE STRING "")
+set(PFH_TEST_LATE_C_FLAGS "" CACHE STRING "")
+add_library(x_math STATIC math/m1.c math/m2.c)
+target_compile_options(x_math PRIVATE -fno-fast-math -ffp-contract=off -frounding-math)
+set_target_properties(x_math PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+add_library(x_core STATIC src/core/sobol_engine.cpp src/core/sobol_identity.cpp
+    src/core/sobol_mapper.cpp src/core/sobol_sampler.cpp)
+add_executable(x_probe probe.cpp)
+target_link_libraries(x_probe PRIVATE x_core x_math)
+pfh_sobol_identity(TARGET x_core PORTABLE_MATH_TARGET x_math CONSUMERS x_probe)
+# Everything below changes the generated commands after the helper was called.
+if(PFH_TEST_DEPENDENCY)
+    add_library(x_dependency INTERFACE)
+    target_compile_options(x_dependency INTERFACE -fno-strict-aliasing)
+    target_compile_definitions(x_dependency INTERFACE PFH_X_DEPENDENCY_PROVIDED=1)
+    target_link_libraries(x_core PRIVATE x_dependency)
+endif()
+if(PFH_TEST_LATE_SOURCE_OPTION)
+    set_property(SOURCE src/core/sobol_mapper.cpp APPEND PROPERTY COMPILE_OPTIONS
+        ${PFH_TEST_LATE_SOURCE_OPTION})
+endif()
+if(PFH_TEST_LATE_MATH_OPTION)
+    target_compile_options(x_math PRIVATE ${PFH_TEST_LATE_MATH_OPTION})
+endif()
+if(PFH_TEST_LATE_CXX_FLAGS)
+    string(APPEND CMAKE_CXX_FLAGS " ${PFH_TEST_LATE_CXX_FLAGS}")
+endif()
+if(PFH_TEST_LATE_C_FLAGS)
+    string(APPEND CMAKE_C_FLAGS " ${PFH_TEST_LATE_C_FLAGS}")
+endif()
+"""
+FIXTURE_IDENTITY_CPP = (
+    "#include <sobol_identity_generated.hpp>\n"
+    'extern "C" const char* pfh_fixture_digest() {\n'
+    "    return pineforge::hpo::detail::sobol_identity_generated::kBuildDigest;\n"
+    "}\n"
+)
+FIXTURE_PROBE_CPP = (
+    "#include <iostream>\n"
+    'extern "C" const char* pfh_fixture_digest();\n'
+    "int main() { std::cout << pfh_fixture_digest() << \"\\n\"; return 0; }\n"
+)
+FIXTURE_MATH_C = "double pfh_fixture_{n}(double value) { return value * 2.0 + 1.0; }\n"
+
+# Appended to a copy of the real root project that has no Sobol integration yet. The marker
+# lines let this test cut the block out again to build the baseline of the invariance check.
+SOBOL_INTEGRATION = f"""
+
+{MARK_BEGIN}
+include("${{CMAKE_CURRENT_SOURCE_DIR}}/cmake/SobolIdentity.cmake")
+target_sources(pineforge_hpo_core PRIVATE
+    src/core/sobol_engine.cpp
+    src/core/sobol_identity.cpp
+    src/core/sobol_mapper.cpp
+    src/core/sobol_sampler.cpp)
+pfh_sobol_identity(
+    TARGET pineforge_hpo_core
+    PORTABLE_MATH_TARGET pineforge_hpo_portable_math
+    SOURCE_OPTIONS -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto)
+{MARK_END}
+"""
+
+
+# ---------------------------------------------------------------------------------------------
+# Independent recomputation of the descriptor from the ingredients and the database.
+# ---------------------------------------------------------------------------------------------
+
+
+def parse_ingredients(path):
+    values, cxx, c, headers = {}, [], [], []
+    for line in Path(path).read_text().splitlines():
+        if not line:
+            continue
+        key, _, value = line.partition("=")
+        if key == "source.cxx":
+            cxx.append(value)
+        elif key == "source.c":
+            c.append(value)
+        elif key == "header":
+            headers.append(value)
+        else:
+            values[key] = value
+    return values, cxx, c, headers
+
+
+def independent_descriptor(emitted, ing, cxx, c, headers, database):
+    """Rebuild the descriptor of a bound build; only the compiler probe lines are borrowed."""
+    def borrowed(name):
+        return re.search(rf"^{re.escape(name)}=(.*)$", emitted, re.M).group(1)
+
+    source_root = os.path.normpath(ing["source.root"])
+    build_root = os.path.normpath(ing["build.root"])
+    real = {"cxx": os.path.realpath(ing["cxx.path"]), "c": os.path.realpath(ing["c.path"])}
+    blocks = []
+    for kind, sources, target in (("cxx", cxx, ing["core.target"]), ("c", c, ing["math.target"])):
+        for source in sources:
+            source = os.path.normpath(source)
+            matches = [e for e in database if os.path.normpath(e["file"]) == source
+                       and f"/{target}.dir/" in e["command"]]
+            require(len(matches) == 1, f"expected one compile command for {source}: {matches}")
+            compiler, lines, dropped = normalize(matches[0], source, source_root, build_root)
+            token_real = os.path.realpath(os.path.join(matches[0]["directory"], compiler))
+            require(token_real == real[kind], f"{source}: the command uses another compiler")
+            for token in dropped:
+                require(token in X.DROP_FLAGS | X.DROP_WITH_ARGUMENT or not token.startswith("-"),
+                        f"normalization dropped a flag-like token: {token}")
+            display = rewrite_path(source, build_root, source_root, build_root)
+            blocks.append(f"command {kind} {display}\n" + "".join(f"arg {l}\n" for l in lines))
+    file_text = ""
+    for label, paths in (("source", cxx + c), ("header", headers)):
+        entries = sorted(
+            f"{label} {rewrite_path(p, build_root, source_root, build_root)} "
+            f"sha256={sha256_file(p)}" for p in set(paths))
+        file_text += "".join(entry + "\n" for entry in entries)
+    return (
+        f"{FORMAT}\ncontract={ing['contract']}\nconfiguration={ing['configuration']}\n"
+        f"system.name={ing['system.name']}\nsystem.processor={ing['system.processor']}\n"
+        f"compiler.cxx.id={ing['cxx.id']}\ncompiler.cxx.version={ing['cxx.version']}\n"
+        f"compiler.cxx.banner={borrowed('compiler.cxx.banner')}\n"
+        f"compiler.cxx.target={borrowed('compiler.cxx.target')}\n"
+        f"compiler.cxx.sha256={sha256_file(real['cxx'])}\n"
+        f"compiler.c.id={ing['c.id']}\ncompiler.c.version={ing['c.version']}\n"
+        f"compiler.c.banner={borrowed('compiler.c.banner')}\n"
+        f"compiler.c.target={borrowed('compiler.c.target')}\n"
+        f"compiler.c.sha256={sha256_file(real['c'])}\n"
+        + "".join(sorted(blocks)) + file_text + f"source.digest={sha256_text(file_text)}\n")
+
+
+def check_outputs(directory, ingredients_path, database):
+    """The emitted descriptor and digest must equal the independent recomputation."""
+    emitted = (directory / "sobol_identity.descriptor.txt").read_text()
+    digest = (directory / "sobol_identity.txt").read_text().strip()
+    header = (directory / "sobol_identity_generated.hpp").read_text()
+    require("kBound = true;" in header, f"unexpectedly unbound:\n{emitted}")
+    ing, cxx, c, headers = parse_ingredients(ingredients_path)
+    rebuilt = independent_descriptor(emitted, ing, cxx, c, headers, database)
+    require(rebuilt == emitted, f"descriptor differs from the independent rule:\n{emitted}\n---\n{rebuilt}")
+    require(digest == sha256_text(emitted), "the digest is not the SHA-256 of the descriptor")
+    require(f'kBuildDigest[] = "{digest}";' in header, "the header lacks the digest")
+    return emitted, digest
+
+
+def blocks_of(descriptor):
+    parts = re.split(r"(?m)^(?=command )", descriptor.split("\nsource ", 1)[0])
+    return [p for p in parts if p.startswith("command ")]
+
+
+def require_strict(descriptor, minimum_c=1):
+    blocks = blocks_of(descriptor)
+    cxx = [b for b in blocks if b.startswith("command cxx ")]
+    c = [b for b in blocks if b.startswith("command c ")]
+    require(len(cxx) == 4, f"expected four bound C++ units, got {len(cxx)}")
+    require(len(c) >= minimum_c, f"too few bound C units: {len(c)}")
+    for block in blocks:
+        for flag in STRICT:
+            require(f"arg {flag}\n" in block, f"{flag} missing from {block.splitlines()[0]}")
+        require("arg -ffast-math\n" not in block, "fast-math in a bound command")
+
+
+# ---------------------------------------------------------------------------------------------
+# Synthetic worlds: the generator as a pure function of its inputs.
+# ---------------------------------------------------------------------------------------------
+
+
+class World:
+    C_SOURCES = ("src/core/portable_math_canary.c", "third_party/core_math/log/log.c",
+                 "third_party/core_math/exp/exp.c")
+
+    def __init__(self, base, name):
+        self.root = base / name
+        self.cxx_rel, self.headers_rel = helper_inventory(REPOSITORY)
+        for rel in self.cxx_rel + list(self.C_SOURCES) + self.headers_rel:
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"// {rel}\n")
+        (self.root / "build").mkdir()
+        (self.root / "tools").mkdir()
+        self.cxx = self.root / "tools/cxx"
+        self.cc = self.root / "tools/cc"
+        self.cxx.write_bytes(b"FAKE-CXX-1\n")
+        self.cc.write_bytes(b"FAKE-CC-1\n")
+        self.out = self.root / "build/out"
+
+    def args(self, kind, rel):
+        root = self.root.as_posix()
+        obj = f"CMakeFiles/{'x_core' if kind == 'cxx' else 'x_math'}.dir/{rel}.o"
+        common = ["-DPFH_A=1", f"-I{root}/include", "-isystem", f"{root}/build/_deps/dep/include",
+                  "-O2", "-DNDEBUG", "-fno-fast-math", "-ffp-contract=off", "-frounding-math",
+                  "-fno-builtin", "-fno-lto", "-MD", "-MT", obj, "-MF", obj + ".d", "-o", obj,
+                  "-c", f"{root}/{rel}"]
+        if kind == "cxx":
+            return [self.cxx.as_posix(), "-std=gnu++17"] + common
+        return [self.cc.as_posix(), "-std=gnu11", "-include",
+                f"{root}/third_party/core_math/portable.h"] + common
+
+    def ingredients(self, **overrides):
+        root = self.root.as_posix()
+        values = {
+            "contract": CONTRACT, "configuration": "Release", "core.target": "x_core",
+            "math.target": "x_math", "cxx.path": self.cxx.as_posix(), "cxx.arg1": "",
+            "cxx.id": "GNU", "cxx.version": "13.2.0", "c.path": self.cc.as_posix(), "c.arg1": "",
+            "c.id": "GNU", "c.version": "13.2.0", "system.name": "Linux",
+            "system.processor": "x86_64", "generator": "Ninja", "multi_config": "OFF",
+            "database": f"{root}/build/compile_commands.json", "database_enabled": "ON",
+            "source.root": root, "build.root": f"{root}/build", "launcher.core": "",
+            "launcher.math": "", "rule_launch.global": "", "rule_launch.directory": "",
+            "rule_launch.core": "", "rule_launch.math": "",
+        }
+        values.update(overrides)
+        return values
+
+    def generate(self, mutate=None, entries=None, drop=(), c_sources=None, headers=None,
+                 **overrides):
+        root = self.root.as_posix()
+        c_rel = list(self.C_SOURCES) if c_sources is None else c_sources
+        if entries is None:
+            entries = []
+            for kind, rels in (("cxx", self.cxx_rel), ("c", c_rel)):
+                for rel in rels:
+                    args = self.args(kind, rel)
+                    if mutate:
+                        args = mutate(kind, rel, args)
+                    entries.append({"directory": f"{root}/build", "command": shlex.join(args),
+                                    "file": f"{root}/{rel}"})
+        database = self.root / "build/compile_commands.json"
+        if entries == "none":
+            database.unlink(missing_ok=True)
+        else:
+            database.write_text(json.dumps(entries))
+        values = self.ingredients(**overrides)
+        for key in drop:
+            values.pop(key)
+        lines = [f"{k}={v}" for k, v in values.items()]
+        lines += [f"source.cxx={root}/{rel}" for rel in self.cxx_rel]
+        lines += [f"source.c={root}/{rel}" for rel in c_rel]
+        lines += [f"header={root}/{rel}" for rel in (headers or self.headers_rel)]
+        ingredients = self.root / "build/ingredients.txt"
+        ingredients.write_text("\n".join(lines) + "\n")
+        run(["cmake", f"-DPFH_SOBOL_INGREDIENTS={ingredients}", f"-DPFH_SOBOL_OUTPUT_DIR={self.out}",
+             f"-DPFH_SOBOL_CONTRACT={CONTRACT}", "-P", REPOSITORY / "cmake/GenerateSobolIdentity.cmake"],
+            timeout=120)
+        header = (self.out / "sobol_identity_generated.hpp").read_text()
+        return {
+            "bound": "kBound = true;" in header,
+            "reason": re.search(r'kUnboundReason\[\] = "(.*)";', header).group(1),
+            "digest": (self.out / "sobol_identity.txt").read_text().strip(),
+            "descriptor": (self.out / "sobol_identity.descriptor.txt").read_text(),
+            "header": header, "ingredients": ingredients, "database": entries,
+        }
+
+
+def only(rel_suffix, change):
+    """Mutation of the commands of the sources ending in rel_suffix."""
+    return lambda kind, rel, args: change(args) if rel.endswith(rel_suffix) else args
+
+
+def scenario_text_hygiene(repository):
+    def code(path, marker):
+        text = (repository / path).read_text()
+        return "\n".join(line.split(marker, 1)[0] for line in text.splitlines())
+
+    helper = code("cmake/SobolIdentity.cmake", "#") + code("cmake/GenerateSobolIdentity.cmake", "#")
+    helper += code("cmake/CompileCommandBinding.cmake", "#")
+    for forbidden in ("target_compile_options", "target_compile_definitions", "add_compile_options",
+                      "add_definitions", "set_target_properties", "target_link_options",
+                      "target_include_directories", "set(CMAKE_CXX_FLAGS", "set(CMAKE_C_FLAGS",
+                      "numeric_build_flags", "GenerateNumericBuildFlags", "PFH_NUMERIC_BUILD",
+                      "CMAKE_CXX_FLAGS_", "CMAKE_C_FLAGS_", "ReturnStats", "return_stats",
+                      "TARGET_PROPERTY:${SI_TARGET},COMPILE_OPTIONS"):
+        require(forbidden not in helper, f"the helpers must not use or model '{forbidden}'")
+    runtime = code("src/core/sobol_identity.cpp", "//")
+    for pattern in (r"(?<![A-Za-z_])numeric_build_identity\(", r"tpe_numeric_identity",
+                    r"PFH_NUMERIC_BUILD", r"flags_sha256", r"kTpeAlgorithmRevision",
+                    r"return_stats"):
+        require(not re.search(pattern, runtime), f"sobol_identity.cpp must not use '{pattern}'")
+    require(runtime.index("detail::require_portable_environment();")
+            < runtime.index("if (!generated::kBound)"),
+            "the portable environment must be checked before the unbound refusal")
+    header = code("include/pineforge/hpo/sobol_identity.hpp", "//")
+    for forbidden in ("generated", "numeric_build.hpp", "tpe_", "checkpoint", "dlib"):
+        require(forbidden not in header.lower(), f"the public header must not mention '{forbidden}'")
+    note = (repository / "docs/internal/sobol-identity.md").read_text()
+    require(not re.search(r"(^|[\s`\"'(=])/(Users|home|private|tmp|var|opt|mnt|root)/", note, re.M),
+            "the note must not contain an absolute private path")
+    require(repository.as_posix() not in note, "the note must not contain the repository path")
+    for word in ("spot", "EC2", "AWS", "supervisor", "executor", ".executors", "Claude"):
+        require(word not in note, f"the note must not mention '{word}'")
+    print("PASS: helpers model no flags and touch no target-wide property; runtime refuses in order")
+
+
+def scenario_synthetic(base):
+    world = World(base, "w-base")
+    first = world.generate()
+    require(first["bound"], f"baseline is unbound: {first['reason']}")
+    emitted, digest = check_outputs(world.out, first["ingredients"], first["database"])
+    require(emitted.splitlines()[0] == FORMAT, "unexpected descriptor header")
+    stamps = {p.name: p.stat().st_mtime_ns for p in world.out.iterdir()}
+    require(world.generate()["digest"] == digest, "an unchanged rerun changed the digest")
+    require(stamps == {p.name: p.stat().st_mtime_ns for p in world.out.iterdir()},
+            "an unchanged rerun rewrote its outputs")
+
+    # Sensitivity: every perturbation, in either language group, moves the digest.
+    perturbations = {
+        "cxx-fast-math": only("sobol_mapper.cpp", lambda a: a + ["-ffast-math"]),
+        "cxx-contract-removed": only("sobol_sampler.cpp",
+                                     lambda a: [t for t in a if t != "-ffp-contract=off"]),
+        "cxx-order": only("sobol_engine.cpp", lambda a: [
+            "-ffp-contract=off" if t == "-fno-fast-math" else
+            "-fno-fast-math" if t == "-ffp-contract=off" else t for t in a]),
+        "cxx-definition": only("sobol_identity.cpp", lambda a: a + ["-DPFH_B=1"]),
+        "cxx-optimization": only("sobol_mapper.cpp", lambda a: [
+            "-O3" if t == "-O2" else t for t in a]),
+        "cxx-fma-target": only("sobol_mapper.cpp", lambda a: a + ["-mfma"]),
+        "c-flag-added": only("/log.c", lambda a: a + ["-fno-trapping-math"]),
+        "c-contract-removed": only("exp.c", lambda a: [t for t in a if t != "-ffp-contract=off"]),
+        "c-canary-unit": only("portable_math_canary.c", lambda a: a + ["-mfma"]),
+        "c-standard": only("log.c", lambda a: ["-std=c11" if t == "-std=gnu11" else t for t in a]),
+    }
+    digests = {"baseline": digest}
+    for name, mutate in perturbations.items():
+        variant = World(base, f"w-{name}")
+        result = variant.generate(mutate=mutate)
+        require(result["bound"], f"{name}: unbound ({result['reason']})")
+        check_outputs(variant.out, result["ingredients"], result["database"])
+        digests[name] = result["digest"]
+    require(len(set(digests.values())) == len(digests), f"collision: {digests}")
+
+    # Content binding: sources, headers, the table, the forced include of the C commands, drivers.
+    edit = World(base, "w-edit")
+    original = edit.generate()["digest"]
+    require(original == digest, "an identical world in another place differs")
+    for rel in (edit.cxx_rel[0], edit.cxx_rel[2], World.C_SOURCES[1], World.C_SOURCES[2],
+                "src/core/sobol_mapper.hpp", "src/core/sobol_table_joe_kuo_d6_1024.inc",
+                "src/core/portable_grid.hpp", "src/core/numeric_build.hpp",
+                "third_party/core_math/log/dint.h", "third_party/core_math/portable.h"):
+        path = edit.root / rel
+        text = path.read_text()
+        path.write_text(text + "// edited\n")
+        require(edit.generate()["digest"] != original, f"editing {rel} kept the digest")
+        path.write_text(text)
+        require(edit.generate()["digest"] == original, f"restoring {rel} did not restore")
+    (edit.root / "include/unlisted.hpp").parent.mkdir(exist_ok=True)
+    (edit.root / "include/unlisted.hpp").write_text("// not bound\n")
+    require(edit.generate()["digest"] == original, "an unlisted file moved the digest")
+    edit.cxx.write_bytes(b"FAKE-CXX-2\n")
+    require(edit.generate()["digest"] != original, "changed C++ driver bytes kept the digest")
+    edit.cxx.write_bytes(b"FAKE-CXX-1\n")
+    edit.cc.write_bytes(b"FAKE-CC-2\n")
+    require(edit.generate()["digest"] != original, "changed C driver bytes kept the digest")
+    edit.cc.write_bytes(b"FAKE-CC-1\n")
+    require(edit.generate(**{"c.version": "13.2.1"})["digest"] != original, "C version ignored")
+    require(edit.generate(**{"cxx.version": "13.2.1"})["digest"] != original, "C++ version ignored")
+    require(edit.generate(configuration="Debug")["digest"] != original, "configuration ignored")
+    require(edit.generate(contract="portable-sobol-v2")["reason"] == "contract_mismatch",
+            "a contract mismatch was not refused")
+
+    # Declared normalization: moved trees, object and dependency names, compiler aliases.
+    require(World(base, "w-moved-with-a-longer-name").generate()["digest"] == digest,
+            "a moved tree changed the digest")
+
+    def rename(kind, rel, args):
+        args = list(args)
+        args[args.index("-MD")] = "-MMD"
+        args[args.index("-MT") + 1] = "other/object-name.o"
+        args[args.index("-MF") + 1] = "other/object-name.dep"
+        args[args.index("-o") + 1] = f"CMakeFiles/{'x_core' if kind == 'cxx' else 'x_math'}.dir/z.o"
+        return args
+
+    require(World(base, "w-noop").generate(mutate=rename)["digest"] == digest,
+            "object or dependency-file names changed the digest")
+    alias = World(base, "w-alias")
+    (alias.root / "tools/cxx-alias").write_bytes(alias.cxx.read_bytes())
+    (alias.root / "tools/cc-link").symlink_to(alias.cc)
+
+    def aliased(kind, rel, args):
+        args = list(args)
+        args[0] = (alias.root / ("tools/cxx-alias" if kind == "cxx" else "tools/cc-link")).as_posix()
+        return args
+
+    result = alias.generate(mutate=aliased, **{
+        "cxx.path": (alias.root / "tools/cxx-alias").as_posix(),
+        "c.path": (alias.root / "tools/cc-link").as_posix()})
+    require(result["digest"] == digest, "compiler copies and symlinks with equal bytes differ")
+    print(f"PASS: {len(digests)} flag/definition/order variants, content edits and driver bytes "
+          f"move the digest; moves, renames and aliases do not")
+
+
+def scenario_fail_closed(base):
+    def tokens(*extra, kind="cxx"):
+        def build(world):
+            root = world.root.as_posix()
+            entries = []
+            for k, rels in (("cxx", world.cxx_rel), ("c", world.C_SOURCES)):
+                for rel in rels:
+                    args = world.args(k, rel)
+                    if k == kind and rel == rels[0]:
+                        args[-1:-1] = list(extra)
+                    entries.append({"directory": f"{root}/build", "command": shlex.join(args),
+                                    "file": f"{root}/{rel}"})
+            return entries
+        return build
+
+    def missing_c(world):
+        return [e for e in tokens()(world) if not e["file"].endswith("exp.c")]
+
+    def duplicate(world):
+        entries = tokens()(world)
+        return entries + [dict(entries[0])]
+
+    def wrong_compiler(world):
+        entries = tokens()(world)
+        for entry in entries:
+            if entry["file"].endswith("log.c"):
+                entry["command"] = entry["command"].replace(
+                    world.cc.as_posix(), world.cxx.as_posix(), 1)
+        return entries
+
+    cases = [
+        ("multi_config_generator", {"multi_config": "ON"}),
+        ("generator_without_compile_database", {"generator": "Xcode"}),
+        ("generator_without_compile_database", {"generator": "Ninja Multi-Config"}),
+        ("compile_database_disabled", {"database_enabled": "OFF"}),
+        ("compiler_launcher", {"launcher.core": "ccache"}),
+        ("compiler_launcher", {"launcher.math": "ccache"}),
+        ("compiler_launcher", {"rule_launch.global": "ccache"}),
+        ("compiler_launcher", {"rule_launch.directory": "ccache"}),
+        ("compiler_launcher", {"rule_launch.core": "ccache"}),
+        ("compiler_launcher", {"rule_launch.math": "ccache"}),
+        ("compiler_arguments", {"cxx.arg1": "--driver-mode=g++"}),
+        ("compiler_arguments", {"c.arg1": "--driver-mode=gcc"}),
+        ("compiler_unreadable", {"cxx.path": "/nonexistent/cxx"}),
+        ("compiler_unreadable", {"c.path": "/nonexistent/cc"}),
+        ("compile_database_missing", {"entries": "none"}),
+        ("compile_database_unreadable", {"entries": []}),
+        ("compile_command_missing", {"entries": missing_c}),
+        ("compile_command_ambiguous", {"entries": duplicate}),
+        ("compiler_mismatch", {"entries": wrong_compiler}),
+        ("response_file", {"entries": tokens("@flags.rsp")}),
+        ("response_file", {"entries": tokens("@flags.rsp", kind="c")}),
+        ("unsupported_character", {"entries": tokens("-DPFH_X=a;b")}),
+        ("unsupported_character", {"entries": tokens("-DPFH_X=[1]", kind="c")}),
+        ("forced_include_unresolved", {"entries": tokens("-include", "missing-forced.h",
+                                                         kind="c")}),
+        ("ingredients_incomplete", {"drop": ("core.target",)}),
+        ("ingredients_incomplete", {"drop": ("c.path",)}),
+        ("contract_mismatch", {"contract": "portable-sobol-v9"}),
+        ("compiler_is_script", {"script": "cxx"}),
+        ("compiler_is_script", {"script": "cc"}),
+        ("reducer_file_missing", {"missing_header": True}),
+    ]
+    for number, (reason, spec) in enumerate(cases):
+        world = World(base, f"w-closed-{number}")
+        entries, drop, headers, overrides = None, (), None, {}
+        for key, value in spec.items():
+            if key == "entries":
+                entries = value(world) if callable(value) else value
+            elif key == "drop":
+                drop = value
+            elif key == "script":
+                (world.cxx if value == "cxx" else world.cc).write_bytes(b"#!/bin/sh\nexec c++ \"$@\"\n")
+            elif key == "missing_header":
+                headers = [*world.headers_rel, "include/missing.hpp"]
+            else:
+                overrides[key] = value
+        result = world.generate(entries=entries, drop=drop, headers=headers, **overrides)
+        require(not result["bound"], f"{reason} #{number}: the build was bound")
+        require(result["reason"] == reason, f"#{number}: reason {result['reason']}, wanted {reason}")
+        require(result["digest"] == "", f"{reason}: digest not empty")
+        require(f"reason={reason}" in result["descriptor"], f"{reason}: descriptor lacks it")
+        require('kBuildDigest[] = "";' in result["header"], f"{reason}: header carries a digest")
+    print(f"PASS: {len(cases)} unbindable situations fail closed with an exact reason")
+
+
+def scenario_same_rule_as_x(base):
+    """The shared rule must equal the return-statistics generator's on one database entry."""
+    X.REPOSITORY = REPOSITORY
+    x_world = X.World(base, "x-equivalence")
+    x_result = x_world.generate()
+    require(x_result["bound"], "the return-statistics baseline is unbound")
+    x_lines = [l for l in x_result["descriptor"].splitlines() if l.startswith("arg ")]
+    sobol = World(base, "w-equivalence")
+
+    def x_shaped(kind, rel, args):
+        """The return-statistics fixture's exact command, moved onto one Sobol source."""
+        if kind != "cxx" or not rel.endswith("sobol_engine.cpp"):
+            return args
+        moved = [t.replace(x_world.root.as_posix(), sobol.root.as_posix())
+                  .replace("x_core.dir/src/reducer.cpp", f"x_core.dir/{rel}")
+                  .replace("src/reducer.cpp", rel) for t in x_world.arguments()]
+        moved[0] = sobol.cxx.as_posix()
+        return moved
+
+    result = sobol.generate(mutate=x_shaped)
+    require(result["bound"], f"the equivalence world is unbound: {result['reason']}")
+    block = [b for b in blocks_of(result["descriptor"])
+             if b.splitlines()[0].endswith("sobol_engine.cpp")][0]
+    s_lines = [l for l in block.splitlines() if l.startswith("arg ")]
+    # Only the last line (the source file) differs by name; everything else must be identical.
+    require(x_lines[:-1] == s_lines[:-1],
+            f"the two generators normalize one command differently:\n{x_lines}\n{s_lines}")
+    require("arg -isystem" in s_lines and any(l.startswith("arg -I<src>/") for l in s_lines),
+            "path-valued options were not rewritten")
+    print("PASS: the shared normalization equals the return-statistics generator's on one command")
+
+
+# ---------------------------------------------------------------------------------------------
+# Configured projects: the real compilation database of a real build system.
+# ---------------------------------------------------------------------------------------------
+
+
+def configure(source, build, *definitions, generator=None, build_type=CONFIGURATION):
+    command = ["cmake"] + (["-G", generator] if generator else [])
+    command += ["-S", source, "-B", build, f"-DCMAKE_BUILD_TYPE={build_type}", *definitions]
+    return run(command)
+
+
+def build_target(build, target, *tool_arguments):
+    command = ["cmake", "--build", build, "--target", target]
+    if tool_arguments:
+        command += ["--", *tool_arguments]
+    return run(command)
+
+
+def outputs(build, build_type=CONFIGURATION):
+    return build / GENERATED / build_type
+
+
+def read_database(build):
+    return json.loads((build / "compile_commands.json").read_text())
+
+
+def identity_of(build, target, *definitions, generator=None, build_type=CONFIGURATION, source=None):
+    configure(source, build, *definitions, generator=generator, build_type=build_type)
+    build_target(build, f"{target}_sobol_identity")
+    directory = outputs(build, build_type)
+    return check_outputs(directory, directory / INGREDIENTS, read_database(build))
+
+
+def write_fixture(directory):
+    (directory / "src/core").mkdir(parents=True)
+    (directory / "math").mkdir()
+    (directory / "CMakeLists.txt").write_text(FIXTURE_CMAKE.replace("@REPOSITORY@", REPOSITORY.as_posix()))
+    cxx_rel, headers_rel = helper_inventory(REPOSITORY)
+    for rel in cxx_rel:
+        body = FIXTURE_IDENTITY_CPP if rel.endswith("sobol_identity.cpp") else \
+            f'extern "C" int pfh_fixture_{Path(rel).stem}() {{ return 1; }}\n'
+        (directory / rel).write_text(body)
+    for rel in headers_rel:
+        path = directory / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"// {rel}\n")
+    for number in (1, 2):
+        (directory / f"math/m{number}.c").write_text(FIXTURE_MATH_C.format(n=number))
+    (directory / "probe.cpp").write_text(FIXTURE_PROBE_CPP)
+
+
+def scenario_fixture(base, generator):
+    tag = generator.replace(" ", "-")
+    source = base / f"fixture-{tag}"
+    write_fixture(source)
+    descriptor, digest = identity_of(base / f"fx-{tag}-a", "x_core", generator=generator, source=source)
+    require_strict(descriptor, minimum_c=2)
+    for flag in ("-DNDEBUG", "-std=gnu11", "-frounding-math"):
+        require(f"arg {flag}\n" in descriptor, f"{flag} missing from the bound commands")
+    # Ordering and the per-source include directory: the consumer built and reports the digest.
+    probe_build = base / f"fx-{tag}-a"
+    build_target(probe_build, "x_probe")
+    reported = run([probe_build / "x_probe"]).stdout.strip()
+    require(reported == digest, "the compiled digest differs from the retained file")
+    require("arg -I<build>/generated/sobol_identity/Release\n" in descriptor,
+            "the per-source include directory is not in the identity unit's command")
+    require(descriptor.count("generated/sobol_identity") == 1,
+            "the generated directory leaked into more than the identity unit's command")
+    _, again = identity_of(base / f"fx-{tag}-b", "x_core", generator=generator, source=source)
+    require(again == digest, "the digest depends on the build directory")
+    moved = base / f"fixture-{tag}-moved"
+    shutil.copytree(source, moved)
+    _, moved_digest = identity_of(base / f"fx-{tag}-moved", "x_core", generator=generator,
+                                  source=moved)
+    require(moved_digest == digest, "the digest depends on where the source tree lives")
+
+    variants = {
+        "dependency-usage-requirement": ["-DPFH_TEST_DEPENDENCY=ON"],
+        "late-source-property": ["-DPFH_TEST_LATE_SOURCE_OPTION=-fno-trapping-math"],
+        "late-math-target-option": ["-DPFH_TEST_LATE_MATH_OPTION=-fno-signed-zeros"],
+        "late-cxx-flags": ["-DPFH_TEST_LATE_CXX_FLAGS=-fno-associative-math"],
+        "late-c-flags": ["-DPFH_TEST_LATE_C_FLAGS=-fno-associative-math"],
+    }
+    expected = {
+        "dependency-usage-requirement": ["-fno-strict-aliasing", "-DPFH_X_DEPENDENCY_PROVIDED=1"],
+        "late-source-property": ["-fno-trapping-math"],
+        "late-math-target-option": ["-fno-signed-zeros"],
+        "late-cxx-flags": ["-fno-associative-math"],
+        "late-c-flags": ["-fno-associative-math"],
+    }
+    digests = {"baseline": digest}
+    for name, definitions in variants.items():
+        variant_descriptor, result = identity_of(
+            base / f"fx-{tag}-{name}", "x_core", *definitions, generator=generator, source=source)
+        for token in expected[name]:
+            require(f"arg {token}\n" in variant_descriptor, f"{name}: {token} is not bound")
+        digests[name] = result
+    for build_type, flags in (("Debug", []),
+                              ("FeedAudit", ["-DCMAKE_C_FLAGS_FEEDAUDIT=-O1"]),
+                              ("FeedAudit2", ["-DCMAKE_C_FLAGS_FEEDAUDIT2=-O2"])):
+        _, result = identity_of(base / f"fx-{tag}-{build_type}", "x_core", *flags,
+                                generator=generator, build_type=build_type, source=source)
+        digests[f"configuration-{build_type}"] = result
+    require(len(set(digests.values())) == len(digests), f"collision: {digests}")
+    print(f"PASS [{generator}]: dependency, late-property, late-flag (C++ and C), math-target and "
+          f"configuration changes move the digest ({len(digests)} distinct); the consumer reports it")
+
+
+def executed_command(build, target, source_path, generator):
+    """The compile command a verbose rebuild executes for one source, as printed by the tool."""
+    obj_hint = Path(source_path).name + ".o"
+    for path in build.rglob(obj_hint):
+        path.unlink()
+    process = build_target(build, target, "-v" if generator == "Ninja" else "VERBOSE=1")
+    log = process.stdout + process.stderr
+    found = sorted({
+        re.sub(r"^\[\d+/\d+\]\s+", "", part.strip())
+        for line in log.splitlines() if " -c " in line and source_path in line
+        for part in line.split("&&") if " -c " in part and source_path in part})
+    require(len(found) == 1, f"expected one executed command for {source_path}: {found}")
+    return found[0]
+
+
+def scenario_executed(base, generator):
+    tag = generator.replace(" ", "-")
+    source = base / f"executed-{tag}"
+    write_fixture(source)
+    build = base / f"ex-{tag}"
+    configure(source, build, "-DPFH_TEST_DEPENDENCY=ON", generator=generator)
+    database = read_database(build)
+    roots = (os.path.normpath(source), os.path.normpath(build))
+    for target, rel in (("x_core", "src/core/sobol_mapper.cpp"), ("x_math", "math/m1.c")):
+        path = os.path.normpath(source / rel)
+        entry = [e for e in database if os.path.normpath(e["file"]) == path
+                 and f"/{target}.dir/" in e["command"]][0]
+        executed = dict(entry, command=executed_command(build, target, path, generator))
+        require(normalize(executed, path, *roots)[1] == normalize(entry, path, *roots)[1],
+                f"the executed command of {rel} differs from the compilation database entry")
+    print(f"PASS [{generator}]: executed C++ and C commands equal the database entries")
+
+
+def scenario_not_circular():
+    cxx_rel, headers_rel = helper_inventory(REPOSITORY)
+    for rel in cxx_rel + headers_rel:
+        require("sobol_identity_generated" not in rel, f"{rel}: the generated header is an input")
+        require(not rel.startswith("build"), f"{rel}: a build-tree file is an input")
+    helper = (REPOSITORY / "cmake/SobolIdentity.cmake").read_text()
+    require("sobol_identity_generated" in helper and "circular" in helper,
+            "the helper lacks its circularity guard")
+    print("PASS: the generated header is not in the inventory and the helper guards it")
+
+
+# ---------------------------------------------------------------------------------------------
+# Copies of the real project.
+# ---------------------------------------------------------------------------------------------
+
+
+def copy_tree(repository, destination, text_edit=None):
+    destination.mkdir(parents=True)
+    for name in ("CMakeLists.txt", "VERSION", "cmake", "include", "src", "third_party"):
+        origin = repository / name
+        if origin.is_dir():
+            shutil.copytree(origin, destination / name)
+        else:
+            shutil.copy2(origin, destination / name)
+    if text_edit:
+        text_edit(destination)
+
+
+def strip_block(destination):
+    path = destination / "CMakeLists.txt"
+    text = path.read_text()
+    begin, end = text.find(MARK_BEGIN), text.find(MARK_END)
+    require(begin != -1 and end > begin, "the Sobol integration block is not delimited")
+    path.write_text(text[:begin] + text[end + len(MARK_END):])
+
+
+def include_closure(entry, repository_root):
+    """Project files that the compiler reports for one bound command (preprocess only)."""
+    tokens, skip, kept = shlex.split(entry["command"]), False, []
+    for token in tokens[1:]:
+        if skip:
+            skip = False
+        elif token in X.DROP_WITH_ARGUMENT:
+            skip = True
+        elif token not in X.DROP_FLAGS and token != "-c":
+            kept.append(token)
+    process = subprocess.run([tokens[0], *kept, "-MM", "-MG", entry["file"]],
+                             cwd=entry["directory"], capture_output=True, text=True, timeout=300)
+    require(process.returncode == 0, f"dependency scan failed:\n{process.stderr}")
+    text = process.stdout.replace("\\\n", " ")
+    names = re.sub(r"\\ ", "\0", text.split(":", 1)[1]).split()
+    paths = {os.path.normpath(os.path.join(entry["directory"], n.replace("\0", " "))) for n in names}
+    return {p for p in paths if p.startswith(os.path.normpath(repository_root) + "/")}
+
+
+def scenario_real_core(repository, dlib, base, generator):
+    root_text = (repository / "CMakeLists.txt").read_text()
+    integrated = "pfh_sobol_identity(" in root_text
+    definitions = ("-DPINEFORGE_HPO_BUILD_TESTS=OFF", "-DPINEFORGE_HPO_BUILD_NATIVE_CLI=OFF",
+                   "-DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=OFF",
+                   f"-DFETCHCONTENT_SOURCE_DIR_DLIB={dlib}")
+    has_x = "pfh_return_stats_identity(" in root_text
+
+    def with_sobol(destination):
+        if not integrated:
+            with open(destination / "CMakeLists.txt", "a") as handle:
+                handle.write(SOBOL_INTEGRATION)
+
+    def without_sobol(destination):
+        if integrated:
+            strip_block(destination)
+
+    trees = {"baseline": without_sobol, "sobol": with_sobol}
+    builds = {}
+    for label, edit in trees.items():
+        source = base / f"core-{label}"
+        copy_tree(repository, source, edit)
+        build = base / f"core-build-{label}"
+        configure(source, build, *definitions, generator=generator)
+        build_target(build, "pineforge_hpo_numeric_flags")
+        if has_x:
+            build_target(build, "pineforge_hpo_core_return_stats_identity")
+        builds[label] = (source, build)
+
+    def foreign_bytes(label):
+        build = builds[label][1]
+        files = [build / "generated" / CONFIGURATION / "CXX" / n
+                 for n in ("numeric_build_flags.txt", "numeric_build_flags.hpp")]
+        if has_x:
+            files += [outputs(build).parent.parent / "return_stats_identity" / CONFIGURATION / n
+                      for n in ("return_stats_identity.descriptor.txt", "return_stats_identity.txt")]
+        for path in files:
+            require(path.is_file(), f"{path.name} was not generated in the {label} tree")
+        return tuple(path.read_bytes() for path in files)
+
+    require(foreign_bytes("sobol") == foreign_bytes("baseline"),
+            "adding Sobol changed the TPE flag bytes or the return-statistics descriptor/identity")
+    require(not (builds["baseline"][1] / GENERATED).exists(), "the baseline carries Sobol outputs")
+
+    source, build = builds["sobol"]
+    target = "pineforge_hpo_core"
+    descriptor, digest = identity_of(build, target, *definitions, generator=generator, source=source)
+    require_strict(descriptor, minimum_c=7)
+    database = read_database(build)
+    for entry in database:
+        sobol_unit = (f"/{target}.dir/" in entry["command"]
+                      and Path(entry["file"]).name.startswith("sobol_"))
+        math_unit = "/pineforge_hpo_portable_math.dir/" in entry["command"]
+        if sobol_unit or math_unit:
+            closure = include_closure(entry, source)
+            bound = {os.path.normpath(source / m.group(1)) for m in re.finditer(
+                r"(?m)^(?:source|header) <src>/(\S+) sha256=", descriptor)}
+            missing = sorted(p for p in closure if p not in bound)
+            require(not missing, f"headers included but not bound for {entry['file']}: {missing}")
+    build_target(build, target)
+    roots = (os.path.normpath(source), os.path.normpath(build))
+    for tgt, rel in ((target, "src/core/sobol_mapper.cpp"),
+                     ("pineforge_hpo_portable_math", "third_party/core_math/log/log.c")):
+        path = os.path.normpath(source / rel)
+        entry = [e for e in database if os.path.normpath(e["file"]) == path
+                 and f"/{tgt}.dir/" in e["command"]][0]
+        executed = dict(entry, command=executed_command(build, tgt, path, generator))
+        require(normalize(executed, path, *roots)[1] == normalize(entry, path, *roots)[1],
+                f"the executed command of {rel} differs from the database entry")
+
+    # Perturbations of the real combined target: each must move the Sobol digest.
+    moved = {}
+    for name, extra in (("c-flags-only", ["-DCMAKE_C_FLAGS=-fno-strict-aliasing"]),
+                        ("cxx-flags", ["-DCMAKE_CXX_FLAGS=-fno-strict-aliasing"]),
+                        ("sanitizer", ["-DPINEFORGE_HPO_ENABLE_SANITIZERS=ON"])):
+        tree = base / f"core-{name}"
+        copy_tree(repository, tree, with_sobol)
+        _, moved[name] = identity_of(base / f"core-build-{name}", target, *definitions, *extra,
+                                     generator=generator, source=tree)
+    for name, rel, text in (("math-source", "third_party/core_math/log/log.c", "// edited\n"),
+                            ("mapper-header", "src/core/sobol_mapper.hpp", "// edited\n"),
+                            ("table", "src/core/sobol_table_joe_kuo_d6_1024.inc", "// edited\n"),
+                            ("canary-source", "src/core/portable_math_canary.c", "// edited\n")):
+        tree = base / f"core-{name}"
+        copy_tree(repository, tree, with_sobol)
+        (tree / rel).write_text((tree / rel).read_text() + text)
+        _, moved[name] = identity_of(base / f"core-build-{name}", target, *definitions,
+                                     generator=generator, source=tree)
+    require(len({digest, *moved.values()}) == len(moved) + 1, f"collision: {moved}")
+    print(f"PASS [{generator}]: real combined target: actual C++ and C commands, header closure, "
+          f"executed commands, {len(moved)} perturbations, TPE/X bytes unchanged "
+          f"({'integrated' if integrated else 'snippet appended'} tree)")
+
+
+def available_generators():
+    found = []
+    if shutil.which("make"):
+        found.append("Unix Makefiles")
+    if shutil.which("ninja"):
+        found.append("Ninja")
+    require(found, "neither make nor ninja is available")
+    return found
+
+
+def main():
+    global REPOSITORY
+    if len(sys.argv) != 3:
+        print(__doc__)
+        return 2
+    REPOSITORY, dlib = (Path(argument).resolve() for argument in sys.argv[1:3])
+    scenario_text_hygiene(REPOSITORY)
+    with tempfile.TemporaryDirectory(prefix="pfh-sobol-") as temporary:
+        base = Path(temporary)
+        scenario_synthetic(base)
+        scenario_fail_closed(base)
+        scenario_same_rule_as_x(base)
+        generators = available_generators()
+        for generator in generators:
+            scenario_fixture(base, generator)
+            scenario_executed(base, generator)
+        scenario_not_circular()
+        for generator in generators:
+            scenario_real_core(REPOSITORY, dlib, base / generator.replace(" ", "-"), generator)
+    print("PASS: sobol numeric build identity")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
