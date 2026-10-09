@@ -92,8 +92,12 @@ void require_candidate_list_budget(std::uint64_t explicit_budget /* 0 = not give
   match integer `1`); `SearchSpace::is_valid`; then, if `finite_cardinality()` is known,
   `candidate_at(candidate_ordinal(v))` (so a stepped real must be the exact decoded lattice value,
   exactly as the importer demands); if the cardinality overflows or is unbounded, no
-  canonicalization, as in the importer. In that unbounded case `-0.0` on a real dimension becomes
-  `+0.0`, so the text handed to the strategy matches the digest (which treats the two as equal).
+  canonicalization, as in the importer. In that case every accepted scalar is kept as decoded,
+  the sign bit of a zero included, exactly as the importer keeps it (corrected in the wire lane:
+  an earlier revision normalized `-0.0` to `+0.0` to match the digest; it no longer does).
+  `list_sha256` ignores the sign of a zero because `candidate_key` does; `source_sha256`
+  distinguishes the original bytes, so two files differing only in `-0.0` versus `0.0` have equal
+  list digests, different source digests, and `-0` versus `0` strategy-ABI text.
   Every list C admits is therefore importable, and `importer_parity()` checks that equivalence
   against the real importer on a table of spellings.
 * Duplicates are **kept**: occurrence `i` has trial id `i` whatever its neighbours are. Nothing is
@@ -230,7 +234,7 @@ Suggested spot command after the integration lane registers the target:
    `0.30000000000000004`) is refused in a finite space, exactly as the importer refuses it, while
    an unbounded space accepts it within the `RealDimension::contains` tolerance. Snapping to the
    lattice would be friendlier but goes beyond the importer's rule.
-3. `-0.0` is normalized to `+0.0` only for reals the importer would not canonicalize.
+3. Resolved in the wire lane: no signed-zero normalization; accepted values equal the importer's bit for bit.
 4. Symlinks are followed and CRLF is accepted; a BOM is refused.
 5. `stop_reason` precedence for a list that covers a whole finite space (hook 5).
 6. The settings helper throws `hpo_cli_usage` itself; main.cpp may prefer its own `usage_error`.

@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -49,6 +50,34 @@ std::vector<std::string> forbidden;
 void require(bool condition, const std::string& message) {
     if (!condition)
         fail(message);
+}
+
+// Bit-exact scalar identity: a double is compared by its binary64 bits, so +0.0 and -0.0 differ
+// and a value cannot pass as equal merely because `==` says so.
+bool same_bits(const pfh::ParameterValue& left, const pfh::ParameterValue& right) {
+    if (left.index() != right.index())
+        return false;
+    if (const auto* real = std::get_if<double>(&left)) {
+        const double other = std::get<double>(right);
+        std::uint64_t first = 0;
+        std::uint64_t second = 0;
+        static_assert(sizeof(first) == sizeof(*real));
+        std::memcpy(&first, real, sizeof(first));
+        std::memcpy(&second, &other, sizeof(second));
+        return first == second;
+    }
+    return left == right;
+}
+
+bool same_candidate_bits(const pfh::Candidate& left, const pfh::Candidate& right) {
+    if (left.values.size() != right.values.size())
+        return false;
+    auto first = left.values.begin();
+    auto second = right.values.begin();
+    for (; first != left.values.end(); ++first, ++second)
+        if (first->first != second->first || !same_bits(first->second, second->second))
+            return false;
+    return true;
 }
 
 struct Refusal {
@@ -137,6 +166,22 @@ pfh::SearchSpace huge_space() {
     std::vector<pfh::Dimension> dimensions;
     for (const char* name : {"A", "B", "C", "D", "E"})
         dimensions.emplace_back(pfh::IntegerDimension(name, 1, 100000, 1));
+    return pfh::SearchSpace(std::move(dimensions));
+}
+
+// A continuous real and a real categorical that contains zero: a spelled -0.0 is kept as is.
+pfh::SearchSpace zero_space() {
+    std::vector<pfh::Dimension> dimensions;
+    dimensions.emplace_back(pfh::RealDimension("X", -1.0, 1.0));
+    dimensions.emplace_back(pfh::CategoricalDimension("Z", {0.0, 1.5}));
+    return pfh::SearchSpace(std::move(dimensions));
+}
+
+// The finite twin: the importer's lattice canonicalization decides the stored zero.
+pfh::SearchSpace zero_lattice_space() {
+    std::vector<pfh::Dimension> dimensions;
+    dimensions.emplace_back(pfh::RealDimension("X", -1.0, 1.0, 0.5));
+    dimensions.emplace_back(pfh::CategoricalDimension("Z", {0.0, 1.5}));
     return pfh::SearchSpace(std::move(dimensions));
 }
 
@@ -338,16 +383,24 @@ void canonical_spellings() {
         require(list.list_sha256() == *reference,
                 std::string("Level spelling ") + token + " changed the list digest");
     }
+    // A continuous real keeps exactly what the importer decodes, the sign bit of a zero
+    // included. The list digest ignores that sign (candidate_key), the source digest does not.
     std::optional<std::string> zero;
-    for (const char* token : {"0", "0.0", "-0", "-0.0", "0e5", "-0e0"}) {
+    std::optional<std::string> positive_source;
+    for (const char* token : {"0", "0.0", "-0", "-0.0", "0e5", "-0e0", "-0.0e-3"}) {
         const auto list = det::parse_candidate_list(golden_line("Level", token), space);
         const double level = std::get<double>(list.at(0).values.at("Level"));
-        require(level == 0.0 && !std::signbit(level),
-                std::string("zero spelling ") + token + " was not normalized to +0.0");
+        require(level == 0.0 && std::signbit(level) == (token[0] == '-'),
+                std::string("zero spelling ") + token + " lost or invented a sign bit");
         if (!zero)
             zero = list.list_sha256();
         require(list.list_sha256() == *zero,
                 std::string("zero spelling ") + token + " changed the list digest");
+        if (token[0] != '-' && !positive_source)
+            positive_source = list.source_sha256();
+        if (token[0] == '-')
+            require(list.source_sha256() != *positive_source,
+                    std::string("zero spelling ") + token + " did not change the source digest");
     }
 
     // A real categorical choice accepts an integer spelling (importer fallback) and is stored
@@ -644,7 +697,10 @@ void fixed_inputs() {
 
 // ---- parity with the warm-start importer --------------------------------------------
 
-bool importer_accepts(const pfh::SearchSpace& space, const std::string& line) {
+// The candidate the real warm-start importer builds from a one-row ok JSONL parent, or
+// nullopt when the importer refuses the row.
+std::optional<pfh::Candidate> importer_candidate(const pfh::SearchSpace& space,
+                                                 const std::string& line) {
     const auto recorded = det::recorded_space(space, "net_profit", "maximize", {});
     auto record = det::object_json();
     record.members["trial_id"] = det::Json::number("0");
@@ -656,22 +712,24 @@ bool importer_accepts(const pfh::SearchSpace& space, const std::string& line) {
     const auto path = scratch / "parity.jsonl";
     write_file(path, det::dump_json(record) + "\n");
     try {
-        (void)det::load_json_warm_history(path, space, recorded);
-        return true;
+        const auto history = det::load_json_warm_history(path, space, recorded);
+        require(history.observations.size() == 1, "the importer must read exactly one row");
+        return history.observations.front().candidate;
     } catch (const det::WarmStartError&) {
-        return false;
+        return std::nullopt;
     }
 }
 
-bool list_accepts(const pfh::SearchSpace& space, const std::string& line) {
+// The occurrence the candidate list admits for the same line, or nullopt when it refuses.
+std::optional<pfh::Candidate> list_candidate(const pfh::SearchSpace& space,
+                                             const std::string& line) {
     try {
-        (void)det::parse_candidate_list(line + "\n", space);
-        return true;
+        return det::parse_candidate_list(line + "\n", space).at(0);
     } catch (const pfh::HpoError& error) {
         require(error.code() == "hpo_study_spec_invalid" &&
                     std::get<std::string>(error.args().at("reason").value()) == "search_space",
                 "a valid-JSON vector must only be refused as a search_space problem");
-        return false;
+        return std::nullopt;
     }
 }
 
@@ -686,11 +744,17 @@ struct ParityCase {
 void check_parity(const std::string& label, const pfh::SearchSpace& space, const Tokens& base,
                   const std::vector<ParityCase>& cases) {
     const auto check = [&](const std::string& name, const std::string& line, int expected) {
-        const bool imported = importer_accepts(space, line);
-        const bool listed = list_accepts(space, line);
-        require(imported == listed, label + " / " + name + ": admission and importer disagree");
+        const auto imported = importer_candidate(space, line);
+        const auto listed = list_candidate(space, line);
+        require(imported.has_value() == listed.has_value(),
+                label + " / " + name + ": admission and importer disagree");
+        if (imported)
+            require(same_candidate_bits(*imported, *listed),
+                    label + " / " + name +
+                        ": accepted values differ from the importer's, sign bits included");
         if (expected >= 0)
-            require(listed == (expected == 1), label + " / " + name + ": unexpected verdict");
+            require(listed.has_value() == (expected == 1),
+                    label + " / " + name + ": unexpected verdict");
     };
     check("baseline", render(base), 1);
     for (const auto& item : cases)
@@ -705,7 +769,8 @@ void importer_parity() {
         {"Length", "\"4\"", 0}, {"Length", "true", 0}, {"Length", "null", 0},
         {"Length", "[4]", 0}, {"Length", "9223372036854775808", 0}, {"Length", "-4", 0},
         {"Level", "1.5", 1}, {"Level", "5", 1}, {"Level", "-10", 1}, {"Level", "10.0", 1},
-        {"Level", "1e1", 1}, {"Level", "-0.0", 1}, {"Level", "0", 1},
+        {"Level", "1e1", 1}, {"Level", "-0.0", 1}, {"Level", "0", 1}, {"Level", "-0", 1},
+        {"Level", "-0e0", 1}, {"Level", "-0.0e-5", 1}, {"Level", "0.0", 1},
         {"Level", "10.000000000000002", -1}, {"Level", "10.5", 0}, {"Level", "-10.5", 0},
         {"Level", "\"1.5\"", 0}, {"Level", "true", 0}, {"Level", "null", 0},
         {"Level", "1e999", 0}, {"Level", "-1e999", 0},
@@ -739,8 +804,7 @@ void importer_parity() {
     // Structural cases: both sides see a missing key and an extra key alike.
     const auto space = mixed_space();
     const auto structural = [&](const std::string& name, const std::string& line) {
-        require(importer_accepts(space, line) == list_accepts(space, line) &&
-                    !list_accepts(space, line),
+        require(!importer_candidate(space, line) && !list_candidate(space, line),
                 name + ": admission and importer disagree");
     };
     structural("missing key", render(without(mixed_tokens(), "Mult")));
@@ -754,6 +818,75 @@ void importer_parity() {
         finite.candidate_at(finite.candidate_ordinal(list.at(0)), 0);
     require(list.at(0).values == lattice_value.values,
             "a finite-space vector is not its own lattice value");
+}
+
+// Signed zeros: accepted values must be the importer's, bit for bit, and must reach every
+// consumer unchanged (cursor, strategy-ABI text). Nothing is normalized to match the digest.
+void signed_zero_parity_and_propagation() {
+    const Tokens zero_base{{"X", "0.0"}, {"Z", "0.0"}};
+    const std::vector<ParityCase> zero_cases{
+        {"X", "-0.0", 1}, {"X", "-0", 1}, {"X", "0", 1}, {"X", "-0e0", 1}, {"X", "1.0", 1},
+        {"Z", "-0.0", 1}, {"Z", "-0", 1}, {"Z", "0", 1}, {"Z", "1.5", 1}, {"Z", "1", 0},
+        {"Z", "0.5", 0}};
+    check_parity("zero continuous", zero_space(), zero_base, zero_cases);
+    check_parity("zero lattice", zero_lattice_space(), zero_base, zero_cases);
+
+    const auto space = zero_space();
+    const auto line = [](const char* x, const char* z) {
+        return "{\"X\":" + std::string(x) + ",\"Z\":" + z + "}\n";
+    };
+    const auto positive = det::parse_candidate_list(line("0.0", "0.0"), space);
+    const auto negative = det::parse_candidate_list(line("-0.0", "-0.0"), space);
+    const auto mixed_sign = det::parse_candidate_list(line("-0.0", "0.0"), space);
+    const auto real_of = [](const det::CandidateList& list, const char* name) {
+        return std::get<double>(list.at(0).values.at(name));
+    };
+    require(!std::signbit(real_of(positive, "X")) && !std::signbit(real_of(positive, "Z")),
+            "a positive zero gained a sign bit");
+    require(std::signbit(real_of(negative, "X")) && std::signbit(real_of(negative, "Z")),
+            "a spelled negative zero lost its sign bit on a continuous real or a real choice");
+    require(std::signbit(real_of(mixed_sign, "X")) && !std::signbit(real_of(mixed_sign, "Z")),
+            "signed zeros were not kept per dimension");
+
+    // The importer's decoding is the oracle, bit for bit.
+    const auto imported = importer_candidate(space, "{\"X\":-0.0,\"Z\":-0.0}");
+    require(imported.has_value() && same_candidate_bits(*imported, negative.at(0)),
+            "the list and the importer disagree on the bits of a spelled -0.0");
+    require(!same_candidate_bits(negative.at(0), positive.at(0)),
+            "the bit-exact comparison cannot tell -0.0 from +0.0");
+
+    // One canonical identity (candidate_key ignores the sign of a zero), two source files.
+    require(positive.list_sha256() == negative.list_sha256() &&
+                negative.list_sha256() == mixed_sign.list_sha256(),
+            "the list digest must not depend on the sign of a zero");
+    require(positive.source_sha256() != negative.source_sha256() &&
+                negative.source_sha256() != mixed_sign.source_sha256(),
+            "the source digest must distinguish the original bytes");
+
+    // Propagation: cursor occurrences and the strategy-ABI text carry the sign.
+    det::CandidateListCursor cursor(negative);
+    const auto next = cursor.next();
+    require(next.has_value() && same_candidate_bits(*next, negative.at(0)),
+            "the cursor changed the bits of an occurrence");
+    const auto abi_negative = space.serialize_candidate(negative.at(0));
+    const auto abi_positive = space.serialize_candidate(positive.at(0));
+    require(abi_negative.at("X") == "-0" && abi_negative.at("Z") == "-0",
+            "a negative zero did not reach the strategy-ABI text");
+    require(abi_positive.at("X") == "0" && abi_positive.at("Z") == "0",
+            "a positive zero reached the strategy-ABI text with a sign");
+    const auto abi_imported = space.serialize_candidate(*imported);
+    require(abi_imported == abi_negative,
+            "the importer and the list hand the strategy different text for -0.0");
+
+    // A finite space is canonicalized through the lattice exactly as the importer does.
+    const auto lattice = zero_lattice_space();
+    const auto snapped = det::parse_candidate_list(line("-0.0", "-0.0"), lattice);
+    const auto lattice_imported = importer_candidate(lattice, "{\"X\":-0.0,\"Z\":-0.0}");
+    require(lattice_imported.has_value() &&
+                same_candidate_bits(*lattice_imported, snapped.at(0)),
+            "lattice canonicalization of -0.0 differs from the importer");
+    require(!std::signbit(real_of(snapped, "X")) && !std::signbit(real_of(snapped, "Z")),
+            "the lattice value of zero is +0.0 for the stepped real and the declared choice");
 }
 
 void settings_and_budget() {
@@ -887,6 +1020,7 @@ int main() {
         paths_and_file_types();
         fixed_inputs();
         importer_parity();
+        signed_zero_parity_and_propagation();
         settings_and_budget();
         coverage();
         std::cout << "candidate list admission, digests, limits, file types, importer parity and "

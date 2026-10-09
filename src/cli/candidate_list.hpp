@@ -360,6 +360,10 @@ inline std::vector<ParameterValue> decode_candidate_list_line(
             "search_space", where + " has a parameter that is not a search dimension");
     if (!context.space.is_valid(candidate))
         candidate_list_study_error("search_space", where + " is not a valid search-space point");
+    // A finite space is canonicalized through the lattice exactly as the importer does. A space
+    // that is continuous (or too large to index) keeps every accepted scalar as decoded, sign
+    // bit of a zero included: the digest of candidate_key treats -0.0 and +0.0 alike, and
+    // source_sha256 is what distinguishes the original bytes.
     if (context.lattice) {
         try {
             candidate = context.space.candidate_at(context.space.candidate_ordinal(candidate), 0);
@@ -368,17 +372,6 @@ inline std::vector<ParameterValue> decode_candidate_list_line(
         } catch (const std::exception&) {
             candidate_list_study_error(
                 "search_space", where + " is not a canonical point of the finite search space");
-        }
-    } else {
-        // Continuous reals are taken as given, except that -0.0 becomes +0.0 so that the
-        // text handed to the strategy matches the digest, which treats the two as equal.
-        for (const auto& dimension : dimensions) {
-            if (dimension_kind(dimension) != DimensionKind::Real)
-                continue;
-            auto* real = std::get_if<double>(&candidate.values.at(
-                std::string(dimension_name(dimension))));
-            if (real != nullptr && *real == 0.0)
-                *real = 0.0;
         }
     }
     std::vector<ParameterValue> row;
