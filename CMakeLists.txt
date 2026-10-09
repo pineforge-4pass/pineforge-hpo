@@ -133,6 +133,7 @@ add_library(pineforge_hpo_core STATIC
     src/core/sampler.cpp
     src/core/search_space.cpp
     src/core/sobol_engine.cpp
+    src/core/sobol_identity.cpp
     src/core/sobol_mapper.cpp
     src/core/sobol_sampler.cpp
     src/core/tpe_sampler.cpp
@@ -208,6 +209,9 @@ if(PINEFORGE_HPO_BUILD_NATIVE_CLI)
         -Wall -Wextra -Wpedantic)
 endif()
 
+# The marker lines around this block let tests/test_return_stats_identity.py cut it out for its
+# X-free baseline; they carry no other meaning.
+# PFH-RETURN-STATS-IDENTITY-BEGIN
 # Return-statistics reducer: its own build identity (independent of the TPE checkpoint identity
 # above), and the per-source flags that keep its arithmetic uncontracted. Only per-source
 # properties of the reducer are written, so numeric_build_flags.txt above is unaffected. Keep this
@@ -244,30 +248,42 @@ pfh_return_stats_identity(
     CONTRACT "pineforge-hpo-return-stats/v1"
     SOURCE_OPTIONS -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
     ${PFH_RSI_CONSUMER_ARGUMENTS})
+# PFH-RETURN-STATS-IDENTITY-END
 
 # Sobol sampler numeric identity (prefix portable-sobol-v1): its own component, distinct from the
-# TPE checkpoint identity and from the return-statistics identity above. The helper binds the
-# mapper, sampler and engine sources, the actual flags of those translation units (the mapper must
-# be compiled with -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto), the
-# portable-math sources and the compiler. Nothing is set here for those sources: the helper owns
-# their per-source properties, and docs/internal/methods-g1-wire.md records what the integration
-# test then requires of the recorded compile commands. The consumers include
-# pineforge/hpo/sobol_identity.hpp (the command line) or link the adapter that the command line
-# builds on; their dependency on the helper's generation target is unconditional, so every
-# supported build constructs its own generated header.
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SobolIdentity.cmake")
-    message(FATAL_ERROR "cmake/SobolIdentity.cmake (the Sobol numeric identity helper) and "
-        "include/pineforge/hpo/sobol_identity.hpp are required by the Sobol sampler wiring")
-endif()
+# TPE checkpoint identity and from the return-statistics identity above, and it changes neither.
+# The four Sobol sources are core sources (listed above); the helper writes their per-source
+# strict arithmetic recipe and binds, from the compilation database, their generated commands,
+# the commands of every portable-math C source, the commands and source digests of the shipped
+# core units that can supply the linker's copy of a shared inline helper (tpe_sampler.cpp and
+# search_space.cpp: a deliberate, conservative coupling to those two units, whose own options and
+# the TPE checkpoint identity stay as they are), the bytes of both compiler drivers and the
+# project headers. See docs/internal/sobol-identity.md and docs/internal/methods-g1-wire.md.
+# Keep this block after every change to the compiler flags and after the targets it names exist;
+# the marker lines let tests/test_sobol_identity.py cut it out for a Sobol-free baseline.
+#
+# The generation target is an unconditional build dependency of the core library (which compiles
+# sobol_identity.cpp, the only includer of the generated header) and of the engine adapter and the
+# command line, so every supported build constructs its own header. An unbound capability (see the
+# note) never stops a build or an ordinary run; it refuses only a floating-point Sobol request.
+# PFH-SOBOL-IDENTITY-BEGIN
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/SobolIdentity.cmake")
 set(PFH_SOBOL_CONSUMER_ARGUMENTS "")
-if(PFH_RSI_CONSUMER_TARGETS)
-    list(APPEND PFH_SOBOL_CONSUMER_ARGUMENTS CONSUMERS ${PFH_RSI_CONSUMER_TARGETS})
+set(PFH_SOBOL_CONSUMER_TARGETS "")
+foreach(PFH_SOBOL_CONSUMER IN ITEMS pineforge_hpo_engine_adapter pineforge-hpo-native)
+    if(TARGET ${PFH_SOBOL_CONSUMER})
+        list(APPEND PFH_SOBOL_CONSUMER_TARGETS ${PFH_SOBOL_CONSUMER})
+    endif()
+endforeach()
+if(PFH_SOBOL_CONSUMER_TARGETS)
+    list(APPEND PFH_SOBOL_CONSUMER_ARGUMENTS CONSUMERS ${PFH_SOBOL_CONSUMER_TARGETS})
 endif()
 pfh_sobol_identity(
     TARGET pineforge_hpo_core
     PORTABLE_MATH_TARGET pineforge_hpo_portable_math
+    SOURCE_OPTIONS -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
     ${PFH_SOBOL_CONSUMER_ARGUMENTS})
+# PFH-SOBOL-IDENTITY-END
 
 if(PINEFORGE_HPO_ENABLE_SANITIZERS)
     foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native

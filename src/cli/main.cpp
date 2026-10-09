@@ -1962,24 +1962,17 @@ void validate_search_input_kinds(const Options& options) {
 }
 
 // The Sobol numeric build identity of a floating-point space (contract N11, prefix
-// portable-sobol-v1). The bound identity is required before any plugin, dataset or trial work: an
-// unbound build is refused with the registered toolchain diagnostic and the exact reason, while
-// discrete-only Sobol spaces and every other sampler never reach this function. The identity
-// function itself performs the portable-environment requirement first
-// (hpo_portable_math_unavailable); see docs/internal/methods-g1-wire.md.
+// portable-sobol-v1), required before any plugin, dataset or trial work. The order of the
+// refusals is the identity function's own and is deliberately not repeated here: it checks the
+// portable environment first (hpo_portable_math_unavailable), then refuses an unbound build with
+// hpo_toolchain_unavailable (reason native_runner) naming the exact unbound reason, and only then
+// returns the string. Discrete-only Sobol spaces and every other sampler never reach this
+// function. An empty string can never be published as a numeric identity.
 std::string require_sobol_numeric_identity() {
-    if (!pfh::sobol_numeric_identity_bound()) {
-        const std::string_view reason = pfh::sobol_numeric_identity_unbound_reason();
-        throw pfh::TypedHpoError<std::runtime_error>(
-            "hpo_toolchain_unavailable", {{"reason", "native_runner"}},
-            "the Sobol sampler is unavailable for this search space in this build: its numeric "
-            "identity is unbound (" +
-                std::string(reason.empty() ? std::string_view("identity_missing") : reason) + ")");
-    }
     std::string identity = pfh::sobol_numeric_build_identity();
-    if (identity.empty())
+    if (identity.empty() || identity.rfind("portable-sobol-v1;", 0) != 0)
         throw pfh::TypedHpoError<std::logic_error>(
-            "hpo_invariant", {}, "the Sobol numeric build identity is empty");
+            "hpo_invariant", {}, "the Sobol numeric build identity is malformed");
     return identity;
 }
 

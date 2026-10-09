@@ -35,3 +35,20 @@ The TPE sampler includes the MIT-licensed CORE-MATH binary64 kernels for `log`,
 author notices and full license are retained in `third_party/core_math/`; see
 `NOTICE` and [the integration record](docs/portable-math.md). MPFR is an
 optional accuracy-test dependency only and is not linked into the runtime library.
+
+The Sobol sampler uses the direction numbers of Stephen Joe and Frances Kuo
+(file `new-joe-kuo-6.21201`, search criterion D(6)). Its first 1024 lines
+(dimensions 2 to 1024) are vendored unchanged in `third_party/sobol_joe_kuo/`
+and compiled into a generated table; the upstream source is
+<https://web.maths.unsw.edu.au/~fkuo/sobol/>. The authors publish the table
+under their BSD-style licence, Copyright (c) 2008, Frances Y. Kuo and Stephen
+Joe. That licence text is retained verbatim in
+`third_party/sobol_joe_kuo/LICENSE`, and
+[THIRD_PARTY_LICENSES/sobol_joe_kuo.txt](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/THIRD_PARTY_LICENSES/sobol_joe_kuo.txt)
+is an unchanged copy of it that accompanies source and binary distributions
+(`NOTICE` carries the attribution; the wheel metadata carries the licence file).
+The names of the copyright holders and of the University of New South Wales and
+the University of Waikato are not used to endorse or promote this product. The
+authors' example program `sobol.cc` is not used. The licence of the table does
+not change the PineForge Source License 1.2 that governs the original source
+code of this repository.

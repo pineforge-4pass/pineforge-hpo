@@ -692,7 +692,7 @@ dimensions 2 to 1024, dimension 1 implicit; see `NOTICE`). It is native `--sampl
   is 2^64 - 2.
 - **Numeric identity.** A space with a stepped-real, linear-real, log-real or log-integer column
   computes through binary64 math and needs a build whose Sobol numeric identity (prefix
-  `portable-sobol-v1`, its own component, unrelated to the TPE checkpoint and the return-statistics
+  `portable-sobol-v1`, its own component, distinct from the TPE checkpoint and the return-statistics
   identities) is bound, in a portable floating-point environment. Otherwise the run is refused
   before any plugin, dataset or trial work with `hpo_toolchain_unavailable` (reason
   `native_runner`, the exact unbound reason in the text) or `hpo_portable_math_unavailable`. A

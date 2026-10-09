@@ -154,6 +154,20 @@ target_compile_definitions(pineforge_hpo_test_sobol_continuation PRIVATE
 add_test(NAME pineforge_hpo_sobol_continuation COMMAND pineforge_hpo_test_sobol_continuation)
 set_tests_properties(pineforge_hpo_sobol_continuation PROPERTIES TIMEOUT 900)
 
+# The runtime half of the Sobol numeric identity, read back from the build it is linked into. The
+# generated header reaches only sobol_identity.cpp inside the core library; the core library
+# depends on the generation target, so linking this test builds the header first. With
+# PINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY an unbound build is a failure, not a pass.
+add_executable(pineforge_hpo_test_sobol_identity test_sobol_identity.cpp)
+target_link_libraries(pineforge_hpo_test_sobol_identity PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_sobol_identity PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_sobol_identity COMMAND pineforge_hpo_test_sobol_identity)
+set_tests_properties(pineforge_hpo_sobol_identity PROPERTIES TIMEOUT 600)
+if(PINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY)
+    set_property(TEST pineforge_hpo_sobol_identity APPEND PROPERTY
+        ENVIRONMENT "PFH_REQUIRE_SOBOL_IDENTITY=1")
+endif()
+
 if(Python3_Interpreter_FOUND AND UNIX)
     # Independent 64-bit oracle (big integers, imports nothing from src/), then the engine test.
     add_test(NAME pineforge_hpo_sobol_oracle64_generate
@@ -406,6 +420,14 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                     "${CMAKE_CURRENT_SOURCE_DIR}/test_return_stats_identity.py"
                     "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
             set_tests_properties(pineforge_hpo_return_stats_identity PROPERTIES TIMEOUT 1800)
+            # The Sobol identity's build binding on synthetic databases, fixture projects and
+            # copies of the real project (both generators): serial, long, many configures.
+            add_test(NAME pineforge_hpo_sobol_identity_build
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/test_sobol_identity.py"
+                    "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
+            set_tests_properties(pineforge_hpo_sobol_identity_build PROPERTIES
+                TIMEOUT 3600 RUN_SERIAL TRUE)
             # Fresh configurations of the whole project (explicit-OFF and multi-configuration
             # trees) plus a verbose rebuild of the real reducer object: serial, long.
             add_test(NAME pineforge_hpo_return_stats_integration

@@ -29,6 +29,10 @@ FORMAT = "pineforge-hpo-return-stats-identity/v2"
 IDENTITY_PREFIX = "pineforge-hpo-return-stats-build/v2:sha256:"
 CONFIGURATION = "Release"
 GENERATED = Path("generated/return_stats_identity")
+# The root build file delimits its return-statistics block with these comment lines, so that the
+# real-core scenario can cut it out to build its X-free baseline.
+MARK_BEGIN = "# PFH-RETURN-STATS-IDENTITY-BEGIN"
+MARK_END = "# PFH-RETURN-STATS-IDENTITY-END"
 GENERATION_TARGET = "x_reducer_return_stats_identity"
 INGREDIENTS = "return_stats_identity.ingredients.txt"
 
@@ -788,6 +792,12 @@ def scenario_real_core(repository, dlib, base, generator):
         f"-DFETCHCONTENT_SOURCE_DIR_DLIB={dlib}",
     )
 
+    # The integrated root already calls the helper once (between the marker lines), so appending
+    # REAL_CORE_INTEGRATION to a copy of it would create the generation target twice and fail the
+    # configure. Against such a root the baseline cuts the marked block out, "x-only" uses the root
+    # as it is, and only the late changes of "x-late" are appended after the root's own call.
+    already_integrated = "pfh_return_stats_identity(" in (repository / "CMakeLists.txt").read_text()
+
     def copy_tree(destination, integration):
         destination.mkdir(parents=True)
         for name in ("CMakeLists.txt", "VERSION", "cmake", "include", "src", "third_party"):
@@ -796,14 +806,24 @@ def scenario_real_core(repository, dlib, base, generator):
                 shutil.copytree(origin, destination / name)
             else:
                 shutil.copy2(origin, destination / name)
+        path = destination / "CMakeLists.txt"
+        if integration is None and already_integrated:
+            text = path.read_text()
+            begin, end = text.find(MARK_BEGIN), text.find(MARK_END)
+            require(begin != -1 and end > begin,
+                    "the return-statistics block of the root is not delimited by its marker lines")
+            path.write_text(text[:begin] + text[end + len(MARK_END):])
         if integration is not None:
             # The reducer files of the repository are used when present, else stand-ins.
             if not (destination / "src/core/return_stats.cpp").exists():
                 (destination / "src/core/return_stats.cpp").write_text(STAND_IN_CPP)
             if not (destination / "include/pineforge/hpo/return_stats.hpp").exists():
                 (destination / "include/pineforge/hpo/return_stats.hpp").write_text(STAND_IN_HPP)
-            with open(destination / "CMakeLists.txt", "a") as handle:
-                handle.write(integration)
+            appended = integration[len(REAL_CORE_INTEGRATION):] if already_integrated \
+                else integration
+            if appended:
+                with open(path, "a") as handle:
+                    handle.write(appended)
 
     trees = {
         "baseline": (None, CONFIGURATION),
