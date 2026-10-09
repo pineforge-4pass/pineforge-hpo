@@ -88,7 +88,7 @@ class ReturnStatsRouteTests(unittest.TestCase):
         builder.return_value.build.return_value = self.artifact()
         stats = {"contract": "pineforge-hpo-return-stats/v1", "series": ["bar", "monthly"],
                  "chart_timezone": "UTC", "risk_free_annual": 0.02,
-                 "numeric_build_identity": "pineforge-hpo-return-stats-build/v1:sha256:" + "0" * 64}
+                 "numeric_build_identity": "pineforge-hpo-return-stats-build/v2:sha256:" + "0" * 64}
         native_result = {"ok": True, "trials": [], "best_trial_id": 0, "best_value": 1.5,
                          "return_stats": stats}
         run.return_value = subprocess.CompletedProcess(
@@ -99,6 +99,30 @@ class ReturnStatsRouteTests(unittest.TestCase):
                          "--native", str(self.native)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["return_stats"], stats)
+
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_an_unbound_native_build_refusal_is_relayed_with_its_registered_code(
+            self, builder: mock.Mock, run: mock.Mock) -> None:
+        builder.return_value.build.return_value = self.artifact()
+        failure = {"schema_version": 1, "ok": False, "failure": {
+            "origin": "hpo", "code": "hpo_toolchain_unavailable",
+            "args": {"reason": "native_runner"}, "exit_code": 1}}
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout=json.dumps(failure),
+            stderr="return statistics are unavailable in this build: its identity is unbound "
+                   "(compile_database_disabled)")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(["run", str(self.study_path), "--engine-root", str(self.root),
+                         "--native", str(self.native)])
+        self.assertEqual(code, 1)
+        relayed = json.loads(stdout.getvalue())["failure"]
+        self.assertEqual(relayed["code"], "hpo_toolchain_unavailable")
+        self.assertEqual(relayed["args"], {"reason": "native_runner"})
+        self.assertIn("compile_database_disabled", stderr.getvalue())
+        # Python never retries, reinterprets or downgrades the refusal.
+        self.assertEqual(run.call_count, 1)
 
 
 if __name__ == "__main__":

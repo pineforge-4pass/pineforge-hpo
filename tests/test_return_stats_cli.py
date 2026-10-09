@@ -39,7 +39,7 @@ FIELDS = ("count", "skipped", "periods_per_year", "mean", "std", "sharpe_per_per
 SERIES = ("bar", "monthly")
 NAMES = tuple(f"returns.{series}.{field}" for series in SERIES for field in FIELDS)
 CONTRACT = "pineforge-hpo-return-stats/v1"
-IDENTITY_PREFIX = "pineforge-hpo-return-stats-build/v1:sha256:"
+IDENTITY_PREFIX = "pineforge-hpo-return-stats-build/v2:sha256:"
 SPACE = ("--int-dim", "Length", "10", "13", "1")
 # A parent that covers a whole finite space leaves a warm child nothing to try (exit 5), so the
 # continuation case uses a space the parent list does not exhaust.
@@ -79,6 +79,41 @@ def supplied_reference(required: bool):
     if actual != expected.lower():
         raise AssertionError(f"reference binary digest {actual} is not the supplied {expected}")
     return reference
+
+
+def setUpModule() -> None:
+    """These contracts need a build whose statistics identity is bound.
+
+    An unbound build (explicit compile-database OFF, a multi-configuration generator, a compiler
+    launcher, ...) is a supported configuration that refuses requested statistics and runs
+    everything else; that behaviour is proven by test_return_stats_integration.py. In a proof run
+    (PFH_RETURN_STATS_PROOF=1 or PFH_REQUIRE_RETURN_STATS_IDENTITY=1) an unbound binary is a
+    failure here, never a silent skip.
+    """
+    with tempfile.TemporaryDirectory(prefix="pf_rs_probe_") as directory:
+        csv = Path(directory) / "bars.csv"
+        csv.write_text("timestamp,open,high,low,close,volume\n"
+                       + "".join(f"{1700000000000 + index * 60000},100,102,99,101,10\n"
+                                 for index in range(4)), encoding="utf-8")
+        probe = subprocess.run(
+            [str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(csv), "--objective",
+             "metrics.all.net_profit", "--input-tf", "1", "--script-tf", "5", "--chart-timezone",
+             "UTC", "--fixed-input", "BatchPrefixTest", "1", *SPACE, "--sampler", "grid",
+             "--max-trials", "1", "--record-metric", "returns.bar.count"],
+            text=True, capture_output=True, check=False, timeout=120)
+    try:
+        failure = json.loads(probe.stdout).get("failure")
+    except ValueError:
+        failure = None
+    if failure and failure.get("code") == "hpo_toolchain_unavailable":
+        proof = (os.environ.get("PFH_RETURN_STATS_PROOF") == "1"
+                 or os.environ.get("PFH_REQUIRE_RETURN_STATS_IDENTITY") == "1")
+        message = ("the native binary's statistics identity is unbound: " + probe.stderr.strip())
+        if proof:
+            raise AssertionError(message)
+        raise unittest.SkipTest(message + " (unbound behaviour: test_return_stats_integration.py)")
+    if probe.returncode != 0:
+        raise AssertionError(f"the bound-build probe failed: {probe.stderr}")
 
 
 class ReturnStatsCliTests(unittest.TestCase):
