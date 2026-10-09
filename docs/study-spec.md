@@ -615,7 +615,7 @@ deduplicated, cached or fanned out.
 - **Admission** happens once, before any plugin, dataset or trial work: the whole file is
   validated, or nothing runs. Initial caps are 50,000 occurrences, 32 MiB per file and 64 KiB
   per line, and at least one occurrence. They bound **input only**; they do not bound output
-  size, resident memory, billing, or whether a wide result can be re-imported (the importer
+  size, resident memory, cost, or whether a wide result can be re-imported (the importer
   refuses documents above 256 MiB, and warm loading keeps its own limits and refusals).
   Failures use existing codes: `hpo_input_file_invalid` (path, file type, size, line length,
   UTF-8, JSON), `hpo_study_spec_invalid` with reason `sampler` (empty list, count, budget),

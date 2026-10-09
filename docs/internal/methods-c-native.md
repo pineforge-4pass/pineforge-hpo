@@ -3,9 +3,9 @@
 Status: leaf code and native tests only, written 2026-10-09 against base `d2f83326`. Nothing is
 wired into the CLI. The header was checked with `clang++ -std=c++17 -fsyntax-only -Wall -Wextra
 -Wpedantic` (no object produced, nothing run). The tests in `tests/test_candidate_list.cpp` have
-**not been executed**; the first build and run is the spot phase. Binding semantics are the AR
+**not been executed**; the first build and run is the proof phase. Binding semantics are the AR
 pin `methods-c-contract.pin.md`; the proposal is support only. This note is internal: it is not
-product documentation and promises nothing about billing, whole-process memory or warm import.
+product documentation and promises nothing about cost, whole-process memory or warm import.
 
 ## What the leaf owns
 
@@ -204,7 +204,7 @@ with the native golden.
 
 ## Not guaranteed
 
-No billing statement (an invalid list is refused before any trial, but cost is the app's concern).
+No cost statement (an invalid list is refused before any trial, but cost is the app's concern).
 No whole-process memory bound: the file (up to 32 MiB) is held while it is parsed, the canonical
 vectors are held flat (about 40 bytes per scalar) and the list digest is built from a transient
 buffer that is a small multiple of the file size, because the in-tree SHA-256 is one-shot. No claim
@@ -213,7 +213,7 @@ locale-sensitive in the importer and here alike.
 
 ## Tests pending (all unexecuted)
 
-`tests/test_candidate_list.cpp`, run on spot: golden digests (order, duplicates, spelling, CRLF,
+`tests/test_candidate_list.cpp`, run in the proof phase: golden digests (order, duplicates, spelling, CRLF,
 no final LF); positional ids and cursor; canonical spellings (`5`/`5.0`/`5e0`, zero spellings,
 int-to-real choice fallback, UTF-8 versus `\u` escapes); an invalid-vector table (about 30 cases);
 JSON, UTF-8, BOM, NUL, surrogate, duplicate-key and depth refusals; exact and over limits at the
@@ -223,7 +223,7 @@ symlink, dangling symlink, NUL path, unreadable); fixed-input conflict ordering;
 mixed, finite and overflowing spaces (about 100 cases); settings and budget refusals; coverage
 bitmap (word boundaries, gaps, complete with zero scored, misuse) and the metadata block. Every
 refusal also asserts the typed code, the reason and the absence of path, key and value text.
-Suggested spot command after the integration lane registers the target:
+Suggested command after the integration lane registers the target:
 `ctest --test-dir build -R pineforge_hpo_candidate_list --output-on-failure`.
 
 ## Unresolved questions for AR/TOP

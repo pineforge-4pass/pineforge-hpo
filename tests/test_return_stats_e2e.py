@@ -3,6 +3,10 @@
 
     python3 tests/test_return_stats_e2e.py --native build/bin/pineforge-hpo-native \\
         --output <dir> [--pinned-reference BINARY --pinned-sha256 HEX] [--skip-timing]
+        [--timing-case 8760|2000000] [--only-timing] [--repeats N]
+
+The 2,000,000-bar case is the long one: run it as its own invocation (--timing-case 2000000
+--only-timing) so a heavy proof can be sharded and harvested separately.
 
 UNEXECUTED until the spot phase. What it proves, and what it does not:
 
@@ -382,6 +386,10 @@ def main():
     parser.add_argument("--pinned-reference", type=Path)
     parser.add_argument("--pinned-sha256")
     parser.add_argument("--skip-timing", action="store_true")
+    parser.add_argument("--timing-case", choices=("both", "8760", "2000000"), default="both",
+                        help="run one added-time case per invocation to shard a long proof")
+    parser.add_argument("--only-timing", action="store_true",
+                        help="skip reconciliation, workers, route and pinned comparisons")
     parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
     args.native = args.native.resolve()
@@ -407,10 +415,11 @@ def main():
                               eigen_include="/usr/include/eigen3")
     plugin = artifact["plugin"]
 
-    reconcile(args, directory, plugin, hourly)
-    workers_and_route(args, directory, plugin, hourly)
+    if not args.only_timing:
+        reconcile(args, directory, plugin, hourly)
+        workers_and_route(args, directory, plugin, hourly)
 
-    if args.pinned_reference is not None:
+    if args.pinned_reference is not None and not args.only_timing:
         require(args.pinned_sha256, "--pinned-sha256 is mandatory with --pinned-reference")
         digest = hashlib.sha256(args.pinned_reference.read_bytes()).hexdigest()
         require(digest == args.pinned_sha256.lower(), f"pinned binary digest {digest} differs")
@@ -426,11 +435,14 @@ def main():
               flush=True)
 
     if not args.skip_timing:
-        added_time(args, directory, plugin, "about-8760-script-bars", hourly, "60", 30,
-                   args.repeats)
-        minute = directory / "minute.csv"
-        write_bars(minute, MINUTE_BARS, 60 * 1000)
-        added_time(args, directory, plugin, "2000000-script-bars", minute, "1", 3, args.repeats)
+        if args.timing_case in ("both", "8760"):
+            added_time(args, directory, plugin, "about-8760-script-bars", hourly, "60", 30,
+                       args.repeats)
+        if args.timing_case in ("both", "2000000"):
+            minute = directory / "minute.csv"
+            write_bars(minute, MINUTE_BARS, 60 * 1000)
+            added_time(args, directory, plugin, "2000000-script-bars", minute, "1", 3,
+                       args.repeats)
 
 
 if __name__ == "__main__":

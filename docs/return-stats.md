@@ -2,7 +2,7 @@
 
 **Status: the reducer, its wiring into the executor, the command line and the build, and all
 tests are committed but have never been compiled or executed.** Every execution claim in this
-page is deferred to the spot proof listed at the end. This page implements the pinned contract
+page is deferred to the proof listed at the end. This page implements the pinned contract
 `pineforge-hpo-return-stats/v1`, revision 1 (authority: TOP's methods-x dispositions of
 2026-10-09, pin file SHA-256
 `e0c6f0f4c4855f6c27886fd86f976c68aba8ee395b7803a4bd1d6208ebd34753`). Selected-window mode
@@ -38,6 +38,8 @@ once and does not read the view.
 * A chart timezone other than empty, `UTC` or `Etc/UTC` makes the monthly series undefined
   (status 7, every field null). The bar series is unaffected. The reducer never changes
   process timezone state.
+* The reducer reads the engine's canonical, time-ordered curve. Its behaviour on a curve in any
+  other order is not specified and is not a product guarantee.
 * For finite endpoints and a positive prior equity, `r = current / prior - 1` in binary64.
   A prior equity at or below zero skips the interval and increments `skipped`. A current
   equity at or below zero is allowed. Nothing is imputed or repaired.
@@ -125,7 +127,7 @@ including status, is null for it.
   conforming compiler has no expression to fuse.
 * `return_stats_contraction_free()` is a sanity probe of the translation unit, not an
   attestation of it and not a proof of cross-architecture equality. Equality is claimed only
-  for build pairs that the spot evidence lists.
+  for build pairs that the proof evidence lists.
 * The statistics identity (reducer source digest, compiler identity and version, actual
   translation-unit compile flags, contract string) belongs to a separate lane and is
   independent of the TPE checkpoint identity. This reducer neither reads nor changes
@@ -154,12 +156,12 @@ including status, is null for it.
   `kReturnStatsContract`, so no translation unit may include both; the executor includes the
   reducer header, the command line the identity header.
 
-## Proof still to be produced (spot only, nothing run yet)
+## Proof still to be produced (nothing run yet)
 
 The tests in `tests/test_return_stats.cpp` combine hand-derived analytic cases, the frozen
 bit patterns of the author lane's stand-alone reference transcription (`fixtures_x3.py`, not
 product measurements), and a differential sweep against an independent in-file oracle with its
-own table-driven UTC calendar. They must be built and run on a spot machine, on x86-64 and on
+own table-driven UTC calendar. They must be built and run in the proof phase, on x86-64 and on
 aarch64 separately, before any claim is made. Still required beyond them: independent
 high-precision (arbitrary-precision) comparison for magnitudes the unit tests cannot hold,
 the full command-line off-byte comparison, reconciliation with the engine's canonical curve and

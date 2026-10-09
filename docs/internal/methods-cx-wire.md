@@ -66,10 +66,14 @@ and the native result is relayed whole; `tests/python/test_return_stats_route.py
    (`-fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto`) is the reducer
    author's recommended consistent set and is the value AR must confirm with the repaired helper;
    the identity test is registered under its existing name and may need the repaired expectations.
-3. **Per-source properties.** The helper refuses a reducer source that already carries compile
+3. **Empty consumer list.** The helper rejects `CONSUMERS` without a value (its argument
+   parser reports a valueless keyword), and its note's snippet passes `CONSUMERS` followed by a
+   possibly empty list. The root build here appends `CONSUMERS pineforge-hpo-native` only when
+   that target exists, so a core-only configuration still configures.
+4. **Per-source properties.** The helper refuses a reducer source that already carries compile
    options, and writes them itself. Nobody may add per-source options to `return_stats.cpp`
    elsewhere in the build.
-4. **Doxygen.** `docs/internal` and the new headers are swept by the zero-warning API build. The
+5. **Doxygen.** `docs/internal` and the new headers are swept by the zero-warning API build. The
    notes avoid angle brackets and commands outside code, but that build has not run.
 
 ## For the future Sobol sampler

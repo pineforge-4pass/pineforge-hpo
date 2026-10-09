@@ -2,9 +2,9 @@
 
 Status: source only, written 2026-10-09 on `ar/methods-c-wire` (base `e9639a51`, which is the
 native leaf `ar/methods-c-native`). Nothing was compiled, configured, run or imported: every C++
-and Python change below, and every test, is **unexecuted** until the spot phase. Binding
+and Python change below, and every test, is **unexecuted** until the proof phase. Binding
 semantics are the AR pin `methods-c-contract.pin.md`. This note is internal. It promises no
-billing outcome, no whole-process memory bound and no universal warm-import behavior.
+cost outcome, no whole-process memory bound and no universal warm-import behavior.
 
 ## What changed
 
