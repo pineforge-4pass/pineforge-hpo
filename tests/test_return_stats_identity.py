@@ -1,17 +1,21 @@
-"""Return-statistics build identity: stability, sensitivity, descriptor fidelity, TPE isolation.
+"""Return-statistics build identity: bound to the generated compile commands, fail-closed otherwise.
 
 Usage: test_return_stats_identity.py REPOSITORY_ROOT DLIB_SOURCE_DIR
 
-Every scenario configures its own temporary projects; the repository itself is never written to.
-The identity is a build binding. This test does not prove arithmetic, repeat or worker-count
-invariance, and it does not replace the reference-value and reconciliation proofs.
+The identity is derived from the compile command that the build system generated for each reducer
+translation unit. This test keeps its own implementation of the declared normalization rule and
+compares it with the generator's output, both on synthetic compilation databases (the generator
+is a pure function of its inputs) and on the databases of configured projects, among them a copy
+of the real core target. It checks the build binding only. It does not prove arithmetic, repeat
+or worker-count invariance, and it does not replace the reference-value and reconciliation
+proofs.
 """
 
 from __future__ import annotations
 
-import collections
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -21,11 +25,68 @@ import tempfile
 from pathlib import Path
 
 CONTRACT = "pineforge-hpo-return-stats/v1"
-IDENTITY_PREFIX = "pineforge-hpo-return-stats-build/v1:sha256:"
+FORMAT = "pineforge-hpo-return-stats-identity/v2"
+IDENTITY_PREFIX = "pineforge-hpo-return-stats-build/v2:sha256:"
 CONFIGURATION = "Release"
-GENERATED = Path("generated/return_stats_identity") / CONFIGURATION
+GENERATED = Path("generated/return_stats_identity")
 GENERATION_TARGET = "x_reducer_return_stats_identity"
+INGREDIENTS = "return_stats_identity.ingredients.txt"
 
+# The declared normalization rule. Dropped: these switches, and the argument of the options
+# that take one (dependency-file and object paths). Rewritten: the source file and the path of
+# path-valued options (location only). Everything else is bound verbatim, in order.
+DROP_FLAGS = {"-c", "-MD", "-MMD", "-MP", "-MG"}
+DROP_WITH_ARGUMENT = {"-o", "-MF", "-MT", "-MQ"}
+PATH_OPTIONS = {"-I", "-isystem", "-iquote", "-idirafter", "-iframework", "-F", "-isysroot", "-B"}
+INCLUDE_OPTIONS = {"-include", "-imacros"}
+JOINED_PATH = re.compile(r"^(-I|-F|-B|--sysroot=)(.+)$")
+
+FIXTURE_CMAKE = """\
+cmake_minimum_required(VERSION 3.19)
+project(PfhReturnStatsFixture C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+include("@REPOSITORY@/cmake/ReturnStatsIdentity.cmake")
+set(PFH_TEST_SOURCE_OPTIONS "-ffp-contract=off;-fno-fast-math" CACHE STRING "")
+set(PFH_TEST_CONTRACT "pineforge-hpo-return-stats/v1" CACHE STRING "")
+set(PFH_TEST_LIST_GENERATED OFF CACHE BOOL "")
+set(PFH_TEST_DEPENDENCY OFF CACHE BOOL "")
+set(PFH_TEST_LATE_SOURCE_OPTION "" CACHE STRING "")
+set(PFH_TEST_LATE_TARGET_OPTION "" CACHE STRING "")
+set(PFH_TEST_LATE_FLAGS "" CACHE STRING "")
+add_library(x_reducer STATIC reducer.cpp)
+add_executable(x_probe probe.cpp)
+target_include_directories(x_probe PRIVATE "@REPOSITORY@/include")
+set(extra_headers "")
+if(PFH_TEST_LIST_GENERATED)
+    set(extra_headers
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/return_stats_identity/Release/return_stats_identity_generated.hpp")
+endif()
+pfh_return_stats_identity(
+    TARGET x_reducer
+    SOURCES reducer.cpp
+    HEADERS reducer.hpp ${extra_headers}
+    CONTRACT "${PFH_TEST_CONTRACT}"
+    SOURCE_OPTIONS ${PFH_TEST_SOURCE_OPTIONS}
+    CONSUMERS x_probe)
+# Everything below changes the compile command after the helper was called.
+if(PFH_TEST_DEPENDENCY)
+    add_library(x_dependency INTERFACE)
+    target_compile_options(x_dependency INTERFACE -fno-strict-aliasing)
+    target_compile_definitions(x_dependency INTERFACE PFH_X_DEPENDENCY_PROVIDED=1)
+    target_link_libraries(x_reducer PRIVATE x_dependency)
+endif()
+if(PFH_TEST_LATE_SOURCE_OPTION)
+    set_property(SOURCE reducer.cpp APPEND PROPERTY COMPILE_OPTIONS ${PFH_TEST_LATE_SOURCE_OPTION})
+endif()
+if(PFH_TEST_LATE_TARGET_OPTION)
+    target_compile_options(x_reducer PRIVATE ${PFH_TEST_LATE_TARGET_OPTION})
+endif()
+if(PFH_TEST_LATE_FLAGS)
+    string(APPEND CMAKE_CXX_FLAGS " ${PFH_TEST_LATE_FLAGS}")
+endif()
+"""
 REDUCER_HPP = (
     "#pragma once\n"
     "namespace fixture { double sum_squares(const double* values, int count); }\n"
@@ -45,7 +106,9 @@ PROBE_CPP = (
     "#include <iostream>\n"
     "int main() {\n"
     "    using namespace pineforge::hpo;\n"
-    '    std::cout << "identity=" << return_stats_numeric_build_identity() << "\\n"\n'
+    '    std::cout << "bound=" << (return_stats_identity_bound() ? "true" : "false") << "\\n"\n'
+    '              << "reason=" << return_stats_identity_unbound_reason() << "\\n"\n'
+    '              << "identity=" << return_stats_numeric_build_identity() << "\\n"\n'
     '              << "source_digest=" << return_stats_source_digest() << "\\n"\n'
     '              << "contract=" << return_stats_contract() << "\\n"\n'
     '              << "descriptor_begin\\n" << return_stats_identity_descriptor()\n'
@@ -53,77 +116,37 @@ PROBE_CPP = (
     "    return 0;\n"
     "}\n"
 )
-FIXTURE_CMAKE = """\
-cmake_minimum_required(VERSION 3.17)
-project(PfhReturnStatsFixture C CXX)
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-include("@REPOSITORY@/cmake/ReturnStatsIdentity.cmake")
-set(PFH_TEST_SOURCE_OPTIONS "-ffp-contract=off;-fno-fast-math" CACHE STRING "")
-set(PFH_TEST_COMPILER_VERSION "" CACHE STRING "")
-set(PFH_TEST_CONTRACT "pineforge-hpo-return-stats/v1" CACHE STRING "")
-set(PFH_TEST_LIST_GENERATED OFF CACHE BOOL "")
-add_library(x_reducer STATIC reducer.cpp)
-add_executable(x_probe probe.cpp)
-target_include_directories(x_probe PRIVATE "@REPOSITORY@/include")
-set(extra_headers "")
-if(PFH_TEST_LIST_GENERATED)
-    set(extra_headers
-        "${CMAKE_CURRENT_BINARY_DIR}/generated/return_stats_identity/Release/return_stats_identity_generated.hpp")
-endif()
-set(version_argument "")
-if(PFH_TEST_COMPILER_VERSION)
-    set(version_argument COMPILER_VERSION "${PFH_TEST_COMPILER_VERSION}")
-endif()
-pfh_return_stats_identity(
-    TARGET x_reducer
-    SOURCES reducer.cpp
-    HEADERS reducer.hpp ${extra_headers}
-    CONTRACT "${PFH_TEST_CONTRACT}"
-    SOURCE_OPTIONS ${PFH_TEST_SOURCE_OPTIONS}
-    CONSUMERS x_probe
-    ${version_argument})
-"""
-# Appended to a copy of the repository's root CMakeLists.txt: X is added to the real core target.
-TPE_INTEGRATION = """
+STAND_IN_HPP = (
+    "#pragma once\n"
+    "#include <string_view>\n"
+    "namespace pineforge::hpo {\n"
+    'inline constexpr std::string_view kReturnStatsContract = "pineforge-hpo-return-stats/v1";\n'
+    "double return_stats_stand_in(double value);\n"
+    "}\n"
+)
+STAND_IN_CPP = (
+    "#include <pineforge/hpo/return_stats.hpp>\n"
+    "namespace pineforge::hpo { double return_stats_stand_in(double value) { return value; } }\n"
+)
+REAL_CORE_INTEGRATION = """
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReturnStatsIdentity.cmake")
-target_sources(pineforge_hpo_core PRIVATE x_fixture/reducer.cpp)
+target_sources(pineforge_hpo_core PRIVATE src/core/return_stats.cpp)
 pfh_return_stats_identity(
     TARGET pineforge_hpo_core
-    SOURCES x_fixture/reducer.cpp
-    HEADERS x_fixture/reducer.hpp
+    SOURCES src/core/return_stats.cpp
+    HEADERS include/pineforge/hpo/return_stats.hpp
     CONTRACT "pineforge-hpo-return-stats/v1"
-    SOURCE_OPTIONS -ffp-contract=off -fno-fast-math
+    SOURCE_OPTIONS -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
     CONSUMERS pineforge_hpo_core)
 """
-
-SEPARATE_PATH_OPTIONS = {
-    "-I", "-isystem", "-iquote", "-idirafter", "-iframework", "-F", "-include", "-imacros",
-    "-isysroot", "--sysroot", "-MF", "-MT", "-MQ", "-o",
-}
-JOINED_PATH_PREFIXES = ("-I", "-F", "-MF", "-MT", "-MQ", "-o", "--sysroot=")
-DROPPED_OPTIONS = {"-c", "-MD", "-MMD", "-MP", "-MG"}
-INJECTED_PATTERNS = [
-    re.compile(pattern)
-    for pattern in (
-        r"-std=(c|gnu)\+\+\w+",
-        r"-fPIC",
-        r"-fPIE",
-        r"-fpic",
-        r"-fpie",
-        r"-pthread",
-        r"-mmacosx-version-min=.+",
-        r"--target=.+",
-        r"-m32",
-        r"-m64",
-        r"-flto(=.*)?",
-        r"-fvisibility=.+",
-        r"-fvisibility-inlines-hidden",
-    )
-]
-ARCHITECTURES = {"arm64", "arm64e", "x86_64", "i386"}
+REAL_CORE_LATE_CHANGES = """
+add_library(pfh_x_dependency INTERFACE)
+target_compile_options(pfh_x_dependency INTERFACE -fno-strict-aliasing)
+target_compile_definitions(pfh_x_dependency INTERFACE PFH_X_DEPENDENCY_PROVIDED=1)
+target_link_libraries(pineforge_hpo_core PRIVATE pfh_x_dependency)
+set_property(SOURCE src/core/return_stats.cpp APPEND PROPERTY COMPILE_OPTIONS -fno-trapping-math)
+"""
 
 
 def require(condition, message):
@@ -131,11 +154,9 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def run(command, *, cwd=None, timeout=300, check=True):
+def run(command, *, timeout=600, check=True):
     words = [str(part) for part in command]
-    process = subprocess.run(
-        words, cwd=cwd, capture_output=True, text=True, timeout=timeout
-    )
+    process = subprocess.run(words, capture_output=True, text=True, timeout=timeout)
     if check and process.returncode != 0:
         raise AssertionError(
             f"{' '.join(words)} exited with {process.returncode}\n"
@@ -144,382 +165,630 @@ def run(command, *, cwd=None, timeout=300, check=True):
     return process
 
 
+def sha256_file(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def sha256_text(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------------------------
+# The declared normalization rule, implemented independently of the CMake generator.
+# ---------------------------------------------------------------------------------------------
+
+
+def rewrite_path(value, base, source_root, build_root):
+    path = value if os.path.isabs(value) else os.path.join(base, value)
+    path = os.path.normpath(path)
+    for label, root in (("build", build_root), ("src", source_root)):
+        if path == root:
+            return f"<{label}>"
+        if path.startswith(root + "/"):
+            return f"<{label}>/" + path[len(root) + 1:]
+    return path
+
+
+def normalize(entry, source_path, source_root, build_root):
+    """Return (compiler token, kept lines, dropped tokens) of a compilation database entry."""
+    directory = entry["directory"]
+    tokens = shlex.split(entry["command"])
+    compiler, tokens = tokens[0], tokens[1:]
+    lines, dropped, pending = [], [], ""
+    for token in tokens:
+        if pending == "drop":
+            dropped.append(token)
+            pending = ""
+        elif pending == "path":
+            lines.append(rewrite_path(token, directory, source_root, build_root))
+            pending = ""
+        elif pending == "include":
+            resolved = token if os.path.isabs(token) else os.path.join(directory, token)
+            digest = sha256_file(resolved)
+            lines.append(rewrite_path(token, directory, source_root, build_root) + "#sha256=" + digest)
+            pending = ""
+        elif token.startswith("@"):
+            raise AssertionError("response file in a bound command")
+        elif token in DROP_FLAGS:
+            dropped.append(token)
+        elif token in DROP_WITH_ARGUMENT:
+            dropped.append(token)
+            pending = "drop"
+        elif token in INCLUDE_OPTIONS:
+            lines.append(token)
+            pending = "include"
+        elif token in PATH_OPTIONS:
+            lines.append(token)
+            pending = "path"
+        elif JOINED_PATH.match(token):
+            option, value = JOINED_PATH.match(token).groups()
+            lines.append(option + rewrite_path(value, directory, source_root, build_root))
+        elif token == source_path:
+            lines.append(rewrite_path(token, directory, source_root, build_root))
+        else:
+            lines.append(token)
+    require(pending == "", "a command ended inside an option argument")
+    return compiler, lines, dropped
+
+
+def parse_ingredients(path):
+    values, sources, headers = {}, [], []
+    for line in Path(path).read_text().splitlines():
+        if not line:
+            continue
+        key, _, value = line.partition("=")
+        if key == "source":
+            sources.append(value)
+        elif key == "header":
+            headers.append(value)
+        else:
+            values[key] = value
+    return values, sources, headers
+
+
+def independent_descriptor(emitted, ingredients, sources, headers, database):
+    """Rebuild the descriptor of a bound build; only the compiler probe lines are borrowed."""
+    banner = re.search(r"^compiler\.banner=(.*)$", emitted, re.M).group(1)
+    target = re.search(r"^compiler\.target=(.*)$", emitted, re.M).group(1)
+    source_root = os.path.normpath(ingredients["source.root"])
+    build_root = os.path.normpath(ingredients["build.root"])
+    compiler_real = os.path.realpath(ingredients["compiler.path"])
+    blocks = []
+    for source in sources:
+        source = os.path.normpath(source)
+        matches = [
+            entry
+            for entry in database
+            if os.path.normpath(entry["file"]) == source
+            and f"/{ingredients['target']}.dir/" in entry["command"]
+        ]
+        require(len(matches) == 1, f"expected one compile command for {source}: {matches}")
+        compiler, lines, dropped = normalize(matches[0], source, source_root, build_root)
+        token_real = os.path.realpath(os.path.join(matches[0]["directory"], compiler))
+        require(token_real == compiler_real, "the command does not use the bound compiler")
+        for token in dropped:
+            require(
+                token in DROP_FLAGS | DROP_WITH_ARGUMENT or not token.startswith("-"),
+                f"normalization dropped a flag-like token: {token}",
+            )
+        display = rewrite_path(source, build_root, source_root, build_root)
+        blocks.append("command " + display + "\n" + "".join(f"arg {line}\n" for line in lines))
+    file_text = ""
+    for kind, paths in (("source", sources), ("header", headers)):
+        entries = sorted(
+            f"{kind} {rewrite_path(path, build_root, source_root, build_root)} "
+            f"sha256={sha256_file(path)}"
+            for path in paths
+        )
+        file_text += "".join(entry + "\n" for entry in entries)
+    return (
+        f"{FORMAT}\n"
+        f"contract={ingredients['contract']}\n"
+        f"configuration={ingredients['configuration']}\n"
+        f"compiler.id={ingredients['compiler.id']}\n"
+        f"compiler.version={ingredients['compiler.version']}\n"
+        f"compiler.banner={banner}\n"
+        f"compiler.target={target}\n"
+        f"compiler.sha256={sha256_file(compiler_real)}\n"
+        f"system.name={ingredients['system.name']}\n"
+        f"system.processor={ingredients['system.processor']}\n"
+        + "".join(sorted(blocks))
+        + file_text
+        + f"source.digest={sha256_text(file_text)}\n"
+    )
+
+
+def check_outputs(directory, ingredients_path, database):
+    """The emitted descriptor and identity must equal the independent recomputation."""
+    emitted = (directory / "return_stats_identity.descriptor.txt").read_text()
+    identity = (directory / "return_stats_identity.txt").read_text().strip()
+    header = (directory / "return_stats_identity_generated.hpp").read_text()
+    require("kBound = true;" in header, f"unexpectedly unbound:\n{emitted}")
+    ingredients, sources, headers = parse_ingredients(ingredients_path)
+    rebuilt = independent_descriptor(emitted, ingredients, sources, headers, database)
+    require(rebuilt == emitted, f"descriptor differs from the independent rule:\n{emitted}\n---\n{rebuilt}")
+    require(identity == IDENTITY_PREFIX + sha256_text(emitted), "identity is not the digest")
+    return emitted, identity
+
+
+# ---------------------------------------------------------------------------------------------
+# Synthetic worlds: the generator as a pure function of its inputs.
+# ---------------------------------------------------------------------------------------------
+
+
+class World:
+    def __init__(self, base, name, compiler_bytes=b"FAKE-CXX-1\n"):
+        self.root = base / name
+        for sub in ("src", "include", "tools", "build/out"):
+            (self.root / sub).mkdir(parents=True)
+        (self.root / "src/reducer.cpp").write_text(REDUCER_CPP)
+        (self.root / "include/reducer.hpp").write_text(REDUCER_HPP)
+        (self.root / "include/force.h").write_text("#define PFH_FORCED 1\n")
+        self.compiler = self.root / "tools/cxx"
+        self.compiler.write_bytes(compiler_bytes)
+        self.out = self.root / "build/out"
+
+    def arguments(self):
+        root = self.root.as_posix()
+        obj = "CMakeFiles/x_core.dir/src/reducer.cpp.o"
+        return [
+            self.compiler.as_posix(), "-DPFH_A=1", f"-I{root}/include", "-isystem",
+            f"{root}/build/_deps/dep/include", "-O2", "-DNDEBUG", "-std=gnu++17",
+            "-fno-fast-math", "-ffp-contract=off", "-MD", "-MT", obj, "-MF", obj + ".d",
+            "-o", obj, "-c", f"{root}/src/reducer.cpp",
+        ]
+
+    def ingredients(self, **overrides):
+        root = self.root.as_posix()
+        values = {
+            "contract": CONTRACT, "configuration": "Release", "target": "x_core",
+            "compiler.path": self.compiler.as_posix(), "compiler.arg1": "",
+            "compiler.id": "GNU", "compiler.version": "13.2.0", "system.name": "Linux",
+            "system.processor": "x86_64", "generator": "Ninja", "multi_config": "OFF",
+            "database": f"{root}/build/compile_commands.json", "database_enabled": "ON",
+            "source.root": root, "build.root": f"{root}/build", "launcher.target": "",
+            "rule_launch.target": "", "rule_launch.global": "", "rule_launch.directory": "",
+        }
+        values.update(overrides)
+        return values
+
+    def generate(self, arguments=None, entries=None, drop=(), sources=None, headers=None,
+                 **overrides):
+        root = self.root.as_posix()
+        arguments = self.arguments() if arguments is None else arguments
+        if entries is None:
+            entries = [{
+                "directory": f"{root}/build", "command": shlex.join(arguments),
+                "file": f"{root}/src/reducer.cpp",
+            }]
+        database = self.root / "build/compile_commands.json"
+        if entries == "none":
+            database.unlink(missing_ok=True)
+        else:
+            database.write_text(json.dumps(entries))
+        values = self.ingredients(**overrides)
+        for key in drop:
+            values.pop(key)
+        lines = [f"{key}={value}" for key, value in values.items()]
+        lines += [f"source={path}" for path in (sources or [f"{root}/src/reducer.cpp"])]
+        lines += [f"header={path}" for path in (headers or [f"{root}/include/reducer.hpp"])]
+        ingredients = self.root / "build/ingredients.txt"
+        ingredients.write_text("\n".join(lines) + "\n")
+        script = REPOSITORY / "cmake/GenerateReturnStatsIdentity.cmake"
+        run([
+            "cmake", f"-DPFH_RSI_INGREDIENTS={ingredients}", f"-DPFH_RSI_OUTPUT_DIR={self.out}",
+            f"-DPFH_RSI_CONTRACT={CONTRACT}", "-P", script,
+        ], timeout=120)
+        header = (self.out / "return_stats_identity_generated.hpp").read_text()
+        return {
+            "bound": "kBound = true;" in header,
+            "reason": re.search(r'kUnboundReason\[\] = "(.*)";', header).group(1),
+            "identity": (self.out / "return_stats_identity.txt").read_text().strip(),
+            "descriptor": (self.out / "return_stats_identity.descriptor.txt").read_text(),
+            "header": header,
+            "ingredients": ingredients,
+            "database": entries,
+        }
+
+
+def scenario_text_hygiene(repository):
+    header = (repository / "include/pineforge/hpo/return_stats_identity.hpp").read_text()
+    code = re.sub(r"/\*.*?\*/", "", "\n".join(l.split("//", 1)[0] for l in header.splitlines()),
+                  flags=re.S).lower()
+    for forbidden in ("numeric_build_flags", "numeric_build.hpp", "tpe_", "sampler", "checkpoint",
+                      "dlib", "kreturnstatscontract"):
+        require(forbidden not in code, f"the public header must not reference '{forbidden}'")
+    helper = "\n".join(
+        "\n".join(l.split("#", 1)[0] for l in (repository / "cmake" / name).read_text().splitlines())
+        for name in ("ReturnStatsIdentity.cmake", "GenerateReturnStatsIdentity.cmake")
+    )
+    for forbidden in (
+        "target_compile_options", "target_compile_definitions", "add_compile_options",
+        "add_definitions", "set_target_properties", "target_link_options",
+        "set(CMAKE_CXX_FLAGS", "numeric_build_flags", "GenerateNumericBuildFlags",
+        "CMAKE_CXX_FLAGS_", "TARGET_PROPERTY:${RSI_TARGET},COMPILE_OPTIONS",
+    ):
+        require(forbidden not in helper, f"the helper must not use or model '{forbidden}'")
+    note = (repository / "docs/internal/return-stats-identity.md").read_text()
+    private = re.search(r"(^|[\s`\"'(=])/(Users|home|private|tmp|var|opt|mnt|root)/", note, re.M)
+    require(not private, "the note must not contain an absolute private path")
+    require(repository.as_posix() not in note, "the note must not contain the repository path")
+    for word in ("spot", "EC2", "AWS", "supervisor", "executor", ".executors", "Claude"):
+        require(word not in note, f"the note must not mention '{word}'")
+    print("PASS: header and helper stay out of the TPE identity and model no flags; note is clean")
+
+
+def scenario_synthetic_bound(base):
+    world = World(base, "w-base")
+    first = world.generate()
+    require(first["bound"], f"baseline is unbound: {first['reason']}")
+    emitted, identity = check_outputs(world.out, first["ingredients"], first["database"])
+    require(emitted.splitlines()[0] == FORMAT, "unexpected descriptor header")
+    require("kIdentity[] = \"" + identity + "\";" in first["header"], "header lacks the identity")
+    stamps = {p.name: p.stat().st_mtime_ns for p in world.out.iterdir()}
+    second = world.generate()
+    require(second["identity"] == first["identity"], "an unchanged rerun changed the identity")
+    require(
+        stamps == {p.name: p.stat().st_mtime_ns for p in world.out.iterdir()},
+        "an unchanged rerun rewrote its outputs",
+    )
+    print("PASS: synthetic baseline binds, equals the independent rule and is stable")
+    return first
+
+
+def scenario_synthetic_sensitivity(base, baseline):
+    def variant(name, mutate):
+        world = World(base, f"w-{name}")
+        arguments = mutate(world.arguments())
+        result = world.generate(arguments=arguments)
+        require(result["bound"], f"{name}: unbound ({result['reason']})")
+        check_outputs(world.out, result["ingredients"], result["database"])
+        return result["identity"]
+
+    def replace(old, new):
+        return lambda args: [new if token == old else token for token in args]
+
+    def without(old):
+        return lambda args: [token for token in args if token != old]
+
+    def swap(first, second):
+        def mutate(args):
+            a, b = args.index(first), args.index(second)
+            args = list(args)
+            args[a], args[b] = args[b], args[a]
+            return args
+        return mutate
+
+    def add(*extra):
+        return lambda args: args[:-1] + list(extra) + args[-1:]
+
+    perturbations = {
+        "fast-math": add("-ffast-math"),
+        "optimization": replace("-O2", "-O3"),
+        "contract-flag-removed": without("-ffp-contract=off"),
+        "numerical-flags-reordered": swap("-fno-fast-math", "-ffp-contract=off"),
+        "definition-added": add("-DPFH_B=1"),
+        "standard": replace("-std=gnu++17", "-std=c++17"),
+        "architecture": add("-march=native"),
+        "fma": add("-mfma"),
+        "optimization-and-definition-order": swap("-O2", "-DNDEBUG"),
+    }
+    identities = {"baseline": baseline["identity"]}
+    for name, mutate in perturbations.items():
+        identities[name] = variant(name, mutate)
+    require(len(set(identities.values())) == len(identities), f"collision: {identities}")
+
+    # Source and header edits, an unlisted file, the contract, a forced include, the compiler.
+    world = World(base, "w-edit")
+    original = world.generate()["identity"]
+    require(original == baseline["identity"], "an identical world in another place differs")
+    for name in ("src/reducer.cpp", "include/reducer.hpp"):
+        path = world.root / name
+        text = path.read_text()
+        path.write_text(text + "// edited\n")
+        require(world.generate()["identity"] != original, f"editing {name} kept the identity")
+        path.write_text(text)
+        require(world.generate()["identity"] == original, f"restoring {name} did not restore")
+    (world.root / "include/force.h").write_text("// not a reducer file\n")
+    require(world.generate()["identity"] == original, "an unlisted file moved the identity")
+    forced = world.arguments()
+    forced[-1:-1] = ["-include", (world.root / "include/force.h").as_posix()]
+    first_forced = world.generate(arguments=forced)["identity"]
+    (world.root / "include/force.h").write_text("#define PFH_FORCED 2\n")
+    require(
+        world.generate(arguments=forced)["identity"] != first_forced,
+        "a forced-include content change kept the identity",
+    )
+    world.compiler.write_bytes(b"FAKE-CXX-2\n")
+    require(world.generate()["identity"] != original, "changed compiler bytes kept the identity")
+    other = World(base, "w-contract").generate(contract="pineforge-hpo-return-stats/v2")
+    require(other["reason"] == "contract_mismatch", "a contract mismatch was not refused")
+    print(f"PASS: {len(identities)} flag/definition/order variants, edits and compiler bytes "
+          f"move the identity")
+
+
+def scenario_synthetic_normalization(base, baseline):
+    # Moved trees, other object and dependency-file names, -MMD and a compiler alias are no-ops.
+    moved = World(base, "w-moved-with-a-longer-name").generate()
+    require(moved["identity"] == baseline["identity"], "a moved tree changed the identity")
+    noop = World(base, "w-noop")
+    obj = "CMakeFiles/x_core.dir/src/other-object-name.o"
+    arguments = noop.arguments()
+    arguments[arguments.index("-MD")] = "-MMD"
+    arguments[arguments.index("-MT") + 1] = obj
+    arguments[arguments.index("-MF") + 1] = obj + ".dep"
+    arguments[arguments.index("-o") + 1] = obj
+    require(noop.generate(arguments=arguments)["identity"] == baseline["identity"],
+            "object or dependency-file names changed the identity")
+    alias = World(base, "w-alias")
+    alias_path = alias.root / "tools/cxx-alias"
+    alias_path.write_bytes(alias.compiler.read_bytes())
+    arguments = alias.arguments()
+    arguments[0] = alias_path.as_posix()
+    result = alias.generate(arguments=arguments, **{"compiler.path": alias_path.as_posix()})
+    require(result["identity"] == baseline["identity"], "a compiler alias with equal bytes differs")
+    link = World(base, "w-link")
+    (link.root / "tools/cxx-link").symlink_to(link.compiler)
+    arguments = link.arguments()
+    arguments[0] = (link.root / "tools/cxx-link").as_posix()
+    result = link.generate(arguments=arguments,
+                           **{"compiler.path": (link.root / "tools/cxx-link").as_posix()})
+    require(result["identity"] == baseline["identity"], "a compiler symlink differs")
+    print("PASS: moved trees, object/dependency names, -MMD and compiler aliases keep the identity")
+
+
+def scenario_synthetic_fail_closed(base):
+    def duplicate(world):
+        root = world.root.as_posix()
+        entry = {"directory": f"{root}/build", "command": shlex.join(world.arguments()),
+                 "file": f"{root}/src/reducer.cpp"}
+        return [entry, dict(entry)]
+
+    def other_file(world):
+        root = world.root.as_posix()
+        return [{"directory": f"{root}/build", "command": shlex.join(world.arguments()),
+                 "file": f"{root}/src/other.cpp"}]
+
+    def with_token(*tokens, at=-1):
+        def build(world):
+            arguments = world.arguments()
+            arguments[at:at] = list(tokens)
+            return {"arguments": arguments}
+        return build
+
+    cases = [
+        ("multi_config_generator", {"multi_config": "ON"}),
+        ("generator_without_compile_database", {"generator": "Xcode"}),
+        ("generator_without_compile_database", {"generator": "Ninja Multi-Config"}),
+        ("compile_database_disabled", {"database_enabled": "OFF"}),
+        ("compiler_launcher", {"launcher.target": "ccache"}),
+        ("compiler_launcher", {"rule_launch.target": "ccache"}),
+        ("compiler_launcher", {"rule_launch.global": "ccache"}),
+        ("compiler_launcher", {"rule_launch.directory": "ccache"}),
+        ("compiler_arguments", {"compiler.arg1": "--driver-mode=g++"}),
+        ("compiler_unreadable", {"compiler.path": "/nonexistent/cxx"}),
+        ("compile_database_missing", {"entries": "none"}),
+        ("compile_database_unreadable", {"entries": []}),
+        ("compile_command_missing", {"entries": other_file}),
+        ("compile_command_ambiguous", {"entries": duplicate}),
+        ("compiler_mismatch", {"compiler_token": "ccache-like-wrapper"}),
+        ("response_file", with_token("@flags.rsp")),
+        ("unsupported_character", with_token("-DPFH_X=a;b")),
+        ("unsupported_character", with_token("-DPFH_X=[1]")),
+        ("forced_include_unresolved", with_token("-include", "missing-forced.h")),
+        ("ingredients_incomplete", {"drop": ("target",)}),
+        ("contract_mismatch", {"contract": "pineforge-hpo-return-stats/v9"}),
+        ("compiler_is_script", {"script": True}),
+        ("reducer_file_missing", {"missing_header": True}),
+    ]
+    for number, (reason, spec) in enumerate(cases):
+        world = World(base, f"w-closed-{number}")
+        arguments, entries, headers, drop, overrides = None, None, None, (), {}
+        if callable(spec):
+            arguments = spec(world)["arguments"]
+        else:
+            for key, value in spec.items():
+                if key == "entries":
+                    entries = value(world) if callable(value) else value
+                elif key == "compiler_token":
+                    arguments = world.arguments()
+                    arguments[0] = (world.root / "tools" / value).as_posix()
+                elif key == "script":
+                    world.compiler.write_bytes(b"#!/bin/sh\nexec c++ \"$@\"\n")
+                elif key == "missing_header":
+                    headers = [(world.root / "include/missing.hpp").as_posix()]
+                elif key == "drop":
+                    drop = value
+                else:
+                    overrides[key] = value
+        result = world.generate(arguments=arguments, entries=entries, headers=headers,
+                                drop=drop, **overrides)
+        require(not result["bound"], f"{reason}: build was bound")
+        require(result["reason"] == reason, f"{reason}: got reason {result['reason']}")
+        require(result["identity"] == "", f"{reason}: identity not empty")
+        require(f"reason={reason}" in result["descriptor"], f"{reason}: descriptor lacks it")
+        require('kIdentity[] = "";' in result["header"], f"{reason}: header carries an identity")
+    print(f"PASS: {len(cases)} unbindable situations fail closed with an exact reason")
+
+
+# ---------------------------------------------------------------------------------------------
+# Configured projects: the real compilation database of a real build system.
+# ---------------------------------------------------------------------------------------------
+
+
+def available_generators():
+    found = []
+    if shutil.which("make"):
+        found.append("Unix Makefiles")
+    if shutil.which("ninja"):
+        found.append("Ninja")
+    require(found, "neither make nor ninja is available")
+    return found
+
+
 def write_fixture(directory, repository):
     directory.mkdir(parents=True)
-    cmake = FIXTURE_CMAKE.replace("@REPOSITORY@", repository.as_posix())
-    (directory / "CMakeLists.txt").write_text(cmake)
+    (directory / "CMakeLists.txt").write_text(
+        FIXTURE_CMAKE.replace("@REPOSITORY@", repository.as_posix()))
     (directory / "reducer.hpp").write_text(REDUCER_HPP)
     (directory / "reducer.cpp").write_text(REDUCER_CPP)
     (directory / "probe.cpp").write_text(PROBE_CPP)
 
 
-def configure(source, build, *definitions, check=True):
-    return run(
-        [
-            "cmake",
-            "-S",
-            source,
-            "-B",
-            build,
-            f"-DCMAKE_BUILD_TYPE={CONFIGURATION}",
-            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-            *definitions,
-        ],
-        check=check,
-    )
+def configure(source, build, *definitions, generator=None, build_type=CONFIGURATION, check=True):
+    command = ["cmake"]
+    if generator:
+        command += ["-G", generator]
+    command += ["-S", source, "-B", build, f"-DCMAKE_BUILD_TYPE={build_type}", *definitions]
+    return run(command, check=check)
 
 
-def build_target(build, target):
-    run(["cmake", "--build", build, "--target", target], timeout=600)
+def build_target(build, target, *tool_arguments):
+    command = ["cmake", "--build", build, "--target", target]
+    if tool_arguments:
+        command += ["--", *tool_arguments]
+    return run(command)
 
 
-def identity_of(build):
-    return (build / GENERATED / "return_stats_identity.txt").read_text().strip()
+def outputs(build, build_type=CONFIGURATION):
+    return build / GENERATED / build_type
 
 
-def descriptor_of(build):
-    return (build / GENERATED / "return_stats_identity.descriptor.txt").read_bytes().decode(
-        "utf-8"
-    )
-
-
-def generate_identity(source, build, *definitions):
-    configure(source, build, *definitions)
-    build_target(build, GENERATION_TARGET)
-    return identity_of(build)
-
-
-def changed_lines(first, second):
-    return set(first.splitlines()) ^ set(second.splitlines())
-
-
-def parse_descriptor(text):
-    lines = text.split("\n")
-    require(lines[-1] == "", "the descriptor must end with a newline")
-    lines = lines[:-1]
-    require(
-        lines[0] == "pineforge-hpo-return-stats-identity/v1", "unexpected descriptor header"
-    )
-    parsed = {"scalars": {}, "flags": [], "defines": [], "sources": [], "headers": []}
-    for line in lines[1:]:
-        if line.startswith("flag "):
-            _, origin, token = line.split(" ", 2)
-            parsed["flags"].append((origin, token))
-        elif line.startswith("define "):
-            _, origin, token = line.split(" ", 2)
-            parsed["defines"].append((origin, token))
-        elif line.startswith("source "):
-            name, digest = line[len("source "):].rsplit(" sha256=", 1)
-            parsed["sources"].append((name, digest))
-        elif line.startswith("header "):
-            name, digest = line[len("header "):].rsplit(" sha256=", 1)
-            parsed["headers"].append((name, digest))
-        else:
-            key, value = line.split("=", 1)
-            parsed["scalars"][key] = value
-    return parsed
-
-
-def normalize_command(entry):
-    """Drop everything that is not a numerically relevant flag of the translation unit."""
-    arguments = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
-    directory = Path(entry["directory"])
-    source = Path(entry["file"])
-    if not source.is_absolute():
-        source = directory / source
-    kept = []
-    skip_next = False
-    for token in arguments[1:]:
-        if skip_next:
-            skip_next = False
-            continue
-        if token in SEPARATE_PATH_OPTIONS:
-            skip_next = True
-            continue
-        if token in DROPPED_OPTIONS or token.startswith(JOINED_PATH_PREFIXES):
-            continue
-        if not token.startswith("-"):
-            candidate = Path(token)
-            if not candidate.is_absolute():
-                candidate = directory / candidate
-            if candidate.resolve() == source.resolve():
-                continue
-        kept.append(token)
-    return kept
-
-
-def is_injected(token, previous):
-    if token == "-arch" or (previous == "-arch" and token in ARCHITECTURES):
-        return True
-    return any(pattern.fullmatch(token) for pattern in INJECTED_PATTERNS)
-
-
-def match_flags(actual, expected):
-    """The expected flags must be an ordered subsequence; extra tokens must be injected ones."""
-    position = 0
-    residual = []
-    previous = ""
-    for token in actual:
-        if position < len(expected) and token == expected[position]:
-            position += 1
-        elif not is_injected(token, previous):
-            residual.append(token)
-        previous = token
-    return position == len(expected), residual
-
-
-def check_against_entry(parsed, entry):
-    actual = normalize_command(entry)
-    flags = [token for _, token in parsed["flags"]]
-    actual_defines = collections.Counter(token for token in actual if token.startswith("-D"))
-    expected_defines = collections.Counter(
-        [token for token in flags if token.startswith("-D")]
-        + [f"-D{token}" for _, token in parsed["defines"]]
-    )
-    require(
-        actual_defines == expected_defines,
-        f"definitions differ: command {dict(actual_defines)} descriptor {dict(expected_defines)}",
-    )
-    matched, residual = match_flags(
-        [token for token in actual if not token.startswith("-D")],
-        [token for token in flags if not token.startswith("-D")],
-    )
-    require(matched, f"descriptor flags are not an ordered part of the command: {actual}")
-    require(not residual, f"command carries flags the descriptor does not bind: {residual}")
-
-
-def compile_entry(build, source_name):
+def generate_and_check(source, build, *definitions, generator=None, build_type=CONFIGURATION,
+                       target_name="x_reducer"):
+    configure(source, build, *definitions, generator=generator, build_type=build_type)
+    build_target(build, f"{target_name}_return_stats_identity")
+    directory = outputs(build, build_type)
     database = json.loads((build / "compile_commands.json").read_text())
-    entries = [entry for entry in database if Path(entry["file"]).name == source_name]
-    require(len(entries) == 1, f"expected one compile command for {source_name}: {entries}")
-    return entries[0]
+    descriptor, identity = check_outputs(directory, directory / INGREDIENTS, database)
+    return descriptor, identity
 
 
-def detected_compiler(build):
-    files = sorted(build.glob("CMakeFiles/*/CMakeCXXCompiler.cmake"))
-    require(files, "CMake's compiler detection file was not found")
-    text = files[-1].read_text()
-    identity = re.search(r'set\(CMAKE_CXX_COMPILER_ID "([^"]*)"\)', text)
-    version = re.search(r'set\(CMAKE_CXX_COMPILER_VERSION "([^"]*)"\)', text)
-    require(identity and version, "compiler detection file lacks identity or version")
-    return identity.group(1), version.group(1)
+def arg_lines(descriptor):
+    return [line[4:] for line in descriptor.splitlines() if line.startswith("arg ")]
 
 
-def strip_comments(text, marker):
-    return "\n".join(line.split(marker, 1)[0] for line in text.splitlines())
-
-
-def scenario_text_hygiene(repository):
-    header = (repository / "include/pineforge/hpo/return_stats_identity.hpp").read_text()
-    code = re.sub(r"/\*.*?\*/", "", strip_comments(header, "//"), flags=re.S).lower()
-    for forbidden in ("numeric_build", "tpe", "sampler", "checkpoint", "dlib"):
-        require(forbidden not in code, f"the public header must not reference '{forbidden}'")
-    helper = "\n".join(
-        strip_comments((repository / "cmake" / name).read_text(), "#")
-        for name in ("ReturnStatsIdentity.cmake", "GenerateReturnStatsIdentity.cmake")
-    )
-    for forbidden in (
-        "target_compile_options",
-        "target_compile_definitions",
-        "add_compile_options",
-        "add_definitions",
-        "set_target_properties",
-        "target_link_options",
-        "set(CMAKE_CXX_FLAGS",
-        "numeric_build_flags",
-        "GenerateNumericBuildFlags",
-    ):
-        require(forbidden not in helper, f"the helper must not use '{forbidden}'")
-    note = (repository / "docs/internal/return-stats-identity.md").read_text()
-    private = re.search(
-        r"(^|[\s`\"'(=])/(Users|home|private|tmp|var|opt|mnt|root)/", note, re.M
-    )
-    require(not private, "the note must not contain an absolute private path")
-    require(repository.as_posix() not in note, "the note must not contain the repository path")
-    print("PASS: public header and helper stay out of the TPE identity; note has no private path")
-
-
-def scenario_stable(source, base):
-    first_build = base / "stable-a"
-    first = generate_identity(source, first_build)
-    second = generate_identity(source, base / "stable-b")
-    require(first.startswith(IDENTITY_PREFIX), f"unexpected identity format: {first}")
-    require(first == second, "the identity depends on the build directory")
-    require(
-        descriptor_of(first_build) == descriptor_of(base / "stable-b"),
-        "the descriptor depends on the build directory",
-    )
-    header = first_build / GENERATED / "return_stats_identity_generated.hpp"
-    stamp = header.stat().st_mtime_ns
-    build_target(first_build, GENERATION_TARGET)
-    require(identity_of(first_build) == first, "an unchanged rebuild changed the identity")
-    require(header.stat().st_mtime_ns == stamp, "an unchanged rebuild rewrote the header")
-    moved = base / "moved-source"
+def scenario_fixture(repository, base, generator):
+    tag = generator.replace(" ", "-")
+    source = base / f"fixture-{tag}"
+    write_fixture(source, repository)
+    descriptor, identity = generate_and_check(source, base / f"fx-{tag}-a", generator=generator)
+    lines = arg_lines(descriptor)
+    for flag in ("-ffp-contract=off", "-fno-fast-math", "-DNDEBUG"):
+        require(flag in lines, f"{flag} missing from the bound command: {lines}")
+    require(not any(token.startswith(("-MD", "-MF", "-o")) for token in lines), "dropped token kept")
+    _, again = generate_and_check(source, base / f"fx-{tag}-b", generator=generator)
+    require(again == identity, "the identity depends on the build directory")
+    moved = base / f"fixture-{tag}-moved"
     shutil.copytree(source, moved)
-    require(
-        generate_identity(moved, base / "stable-c") == first,
-        "the identity depends on where the source tree lives",
-    )
-    for build in (first_build, base / "stable-b", base / "stable-c"):
-        generated_header = build / GENERATED / "return_stats_identity_generated.hpp"
-        text = descriptor_of(build) + generated_header.read_text()
-        for location in (source, moved, build, base):
-            require(location.as_posix() not in text, f"private path {location} leaked")
-    print("PASS: unchanged builds, other build directories and moved trees keep the identity")
+    _, moved_identity = generate_and_check(moved, base / f"fx-{tag}-moved", generator=generator)
+    require(moved_identity == identity, "the identity depends on where the source tree lives")
 
-
-def scenario_sensitive(source, base):
-    build = base / "sensitive"
-    baseline = generate_identity(source, build)
-    baseline_text = descriptor_of(build)
-
-    for name, prefixes in (
-        ("reducer.cpp", ("source ", "source.digest=")),
-        ("reducer.hpp", ("header ", "source.digest=")),
-    ):
-        path = source / name
-        original = path.read_text()
-        path.write_text(original + "// edited\n")
-        try:
-            build_target(build, GENERATION_TARGET)
-            edited = identity_of(build)
-            edited_text = descriptor_of(build)
-        finally:
-            path.write_text(original)
-        require(edited != baseline, f"editing {name} did not change the identity")
-        require(
-            all(line.startswith(prefixes) for line in changed_lines(baseline_text, edited_text)),
-            f"editing {name} changed more than its own digest lines",
-        )
-        build_target(build, GENERATION_TARGET)
-        require(identity_of(build) == baseline, f"restoring {name} did not restore the identity")
-
-    probe = source / "probe.cpp"
-    original = probe.read_text()
-    probe.write_text(original + "// not a reducer file\n")
-    try:
-        build_target(build, GENERATION_TARGET)
-        require(identity_of(build) == baseline, "an unlisted file changed the identity")
-    finally:
-        probe.write_text(original)
-
+    options = "-DPFH_TEST_SOURCE_OPTIONS="
     variants = {
-        "baseline": baseline,
-        "extra-source-option": generate_identity(
-            source,
-            base / "variant-option",
-            "-DPFH_TEST_SOURCE_OPTIONS=-ffp-contract=off;-fno-fast-math;-fno-builtin",
-        ),
-        "reordered-source-options": generate_identity(
-            source,
-            base / "variant-order",
-            "-DPFH_TEST_SOURCE_OPTIONS=-fno-fast-math;-ffp-contract=off",
-        ),
-        "configuration-flags-O1": generate_identity(
-            source, base / "variant-o1", "-DCMAKE_CXX_FLAGS_RELEASE=-O1"
-        ),
-        "configuration-flags-O2": generate_identity(
-            source, base / "variant-o2", "-DCMAKE_CXX_FLAGS_RELEASE=-O2"
-        ),
-        "global-flags": generate_identity(
-            source, base / "variant-global", "-DCMAKE_CXX_FLAGS=-fno-strict-aliasing"
-        ),
-        "compiler-version": generate_identity(
-            source, base / "variant-version", "-DPFH_TEST_COMPILER_VERSION=0.0.0-test"
-        ),
-        "contract": generate_identity(
-            source,
-            base / "variant-contract",
-            "-DPFH_TEST_CONTRACT=pineforge-hpo-return-stats/v2",
-        ),
+        "baseline": [],
+        "extra-source-option": [options + "-ffp-contract=off;-fno-fast-math;-fno-builtin"],
+        "reordered-source-options": [options + "-fno-fast-math;-ffp-contract=off"],
+        "dependency-usage-requirement": ["-DPFH_TEST_DEPENDENCY=ON"],
+        "late-source-property": ["-DPFH_TEST_LATE_SOURCE_OPTION=-fno-trapping-math"],
+        "late-target-option": ["-DPFH_TEST_LATE_TARGET_OPTION=-fno-signed-zeros"],
+        "late-cxx-flags": ["-DPFH_TEST_LATE_FLAGS=-fno-associative-math"],
+        "contract": ["-DPFH_TEST_CONTRACT=pineforge-hpo-return-stats/v2"],
     }
+    expected_tokens = {
+        "dependency-usage-requirement": ["-fno-strict-aliasing", "-DPFH_X_DEPENDENCY_PROVIDED=1"],
+        "late-source-property": ["-fno-trapping-math"],
+        "late-target-option": ["-fno-signed-zeros"],
+        "late-cxx-flags": ["-fno-associative-math"],
+    }
+    identities = {"baseline": identity}
+    for name, definitions in variants.items():
+        if name == "baseline":
+            continue
+        descriptor, result = generate_and_check(
+            source, base / f"fx-{tag}-{name}", *definitions, generator=generator)
+        for token in expected_tokens.get(name, []):
+            require(token in arg_lines(descriptor), f"{name}: {token} is not bound")
+        identities[name] = result
+    for build_type, flags in (("Debug", []), ("FeedAudit", ["-DCMAKE_CXX_FLAGS_FEEDAUDIT=-O1"]),
+                              ("FeedAudit2", ["-DCMAKE_CXX_FLAGS_FEEDAUDIT2=-O2"])):
+        _, result = generate_and_check(
+            source, base / f"fx-{tag}-{build_type}", *flags, generator=generator,
+            build_type=build_type)
+        identities[f"configuration-{build_type}"] = result
+    require(len(set(identities.values())) == len(identities), f"collision: {identities}")
+    print(f"PASS [{generator}]: dependency, late-property, late-flag, configuration and contract "
+          f"changes all move the identity ({len(identities)} distinct)")
+
+
+def scenario_executed_command(repository, base, generator):
+    tag = generator.replace(" ", "-")
+    source = base / f"executed-{tag}"
+    write_fixture(source, repository)
+    build = base / f"ex-{tag}"
+    configure(source, build, "-DPFH_TEST_DEPENDENCY=ON", generator=generator)
+    process = build_target(build, "x_reducer", "-v" if generator == "Ninja" else "VERBOSE=1")
+    log = process.stdout + process.stderr
+    source_path = (source / "reducer.cpp").as_posix()
+    commands = sorted({
+        re.sub(r"^\[\d+/\d+\]\s+", "", part.strip())
+        for line in log.splitlines()
+        if " -c " in line and source_path in line
+        for part in line.split("&&")
+        if " -c " in part
+    })
+    require(len(commands) == 1, f"expected one executed reducer compile command: {commands}")
+    database = json.loads((build / "compile_commands.json").read_text())
+    entry = [e for e in database if os.path.normpath(e["file"]) == os.path.normpath(source_path)][0]
+    executed = dict(entry, command=commands[0])
+    roots = (os.path.normpath(source), os.path.normpath(build))
     require(
-        len(set(variants.values())) == len(variants),
-        f"two differently bound builds share an identity: {variants}",
+        normalize(executed, os.path.normpath(source_path), *roots)[1]
+        == normalize(entry, os.path.normpath(source_path), *roots)[1],
+        "the executed command differs from the compilation database entry",
     )
-    print(f"PASS: source, header, flag, order, compiler and contract changes move the identity "
-          f"({len(variants)} distinct identities)")
+    print(f"PASS [{generator}]: the executed compile command equals the database entry")
 
 
-def scenario_not_circular(source, base):
-    process = configure(
-        source, base / "circular", "-DPFH_TEST_LIST_GENERATED=ON", check=False
-    )
+def scenario_not_circular(repository, base, generator):
+    source = base / "circular"
+    write_fixture(source, repository)
+    process = configure(source, base / "circular-build", "-DPFH_TEST_LIST_GENERATED=ON",
+                        generator=generator, check=False)
     require(process.returncode != 0, "listing the generated header must fail the configure")
     require("circular" in process.stderr, f"unexpected refusal text: {process.stderr}")
     print("PASS: the generated header cannot be an input of its own identity")
 
 
-def scenario_api(source, base):
-    build = base / "api"
-    configure(source, build)
+def scenario_api(repository, base, generator):
+    source = base / "api"
+    write_fixture(source, repository)
+    build = base / "api-build"
+    configure(source, build, generator=generator)
     build_target(build, "x_probe")
     output = run([build / "x_probe"]).stdout
-    identity = re.search(r"^identity=(.*)$", output, re.M).group(1)
-    digest = re.search(r"^source_digest=(.*)$", output, re.M).group(1)
-    contract = re.search(r"^contract=(.*)$", output, re.M).group(1)
+    field = lambda name: re.search(rf"^{name}=(.*)$", output, re.M).group(1)
     descriptor = output.split("descriptor_begin\n", 1)[1].rsplit("descriptor_end\n", 1)[0]
-    require(contract == CONTRACT, f"unexpected contract {contract}")
-    require(descriptor == descriptor_of(build), "the compiled descriptor differs from the file")
-    require(identity == identity_of(build), "the compiled identity differs from the file")
-    digest_of_descriptor = hashlib.sha256(descriptor.encode("utf-8")).hexdigest()
-    require(identity == IDENTITY_PREFIX + digest_of_descriptor, "identity is not the digest")
-    require(
-        parse_descriptor(descriptor)["scalars"]["source.digest"] == digest,
-        "the source digest differs from the descriptor",
-    )
-    print("PASS: the compiled interface returns the retained descriptor and its digest")
+    require(field("bound") == "true" and field("reason") == "", "the probe reports unbound")
+    require(field("contract") == CONTRACT, "unexpected contract")
+    directory = outputs(build)
+    require(descriptor == (directory / "return_stats_identity.descriptor.txt").read_text(),
+            "the compiled descriptor differs from the retained file")
+    require(field("identity") == (directory / "return_stats_identity.txt").read_text().strip(),
+            "the compiled identity differs from the file")
+    require(field("identity") == IDENTITY_PREFIX + sha256_text(descriptor), "identity is not the digest")
+    print("PASS: the compiled accessors return the retained descriptor and its digest")
 
 
-def scenario_descriptor_matches_commands(source, base):
-    build = base / "commands"
-    generate_identity(source, build)
-    parsed = parse_descriptor(descriptor_of(build))
-    entry = compile_entry(build, "reducer.cpp")
-    check_against_entry(parsed, entry)
-    actual = normalize_command(entry)
-    for flag in ("-ffp-contract=off", "-fno-fast-math"):
-        require(flag in actual, f"{flag} is missing from the real command: {actual}")
-
-    compiler_id, compiler_version = detected_compiler(build)
-    require(parsed["scalars"]["compiler.id"] == compiler_id, "compiler id differs from CMake")
-    require(
-        parsed["scalars"]["compiler.version"] == compiler_version,
-        "compiler version differs from CMake",
-    )
-    banner = parsed["scalars"]["compiler.banner"]
-    if banner != "unavailable":
-        words = entry["arguments"] if "arguments" in entry else shlex.split(entry["command"])
-        compiler = words[0]
-        first_line = run([compiler, "--version"]).stdout.splitlines()[0].replace(";", ",")
-        require(banner == first_line, f"banner '{banner}' differs from '{first_line}'")
-    require(parsed["scalars"]["configuration"] == CONFIGURATION, "wrong configuration bound")
-
-    # Negative controls: the same check must refuse a descriptor that does not match.
-    without_contraction = [item for item in parsed["flags"] if item[1] != "-ffp-contract=off"]
-    for label, tampered in (
-        ("extra flag", dict(parsed, flags=parsed["flags"] + [("source", "-fno-such-flag-pfh")])),
-        ("missing flag", dict(parsed, flags=without_contraction)),
-        ("extra definition", dict(parsed, defines=parsed["defines"] + [("source", "PFH_EXTRA")])),
-    ):
-        try:
-            check_against_entry(tampered, entry)
-        except AssertionError:
-            continue
-        raise AssertionError(f"the command check accepted a descriptor with an {label}")
-    print("PASS: the descriptor matches the real compile command and refuses tampered copies")
-
-
-def scenario_tpe_unchanged(repository, dlib, base):
+def scenario_real_core(repository, dlib, base, generator):
     definitions = (
-        f"-DCMAKE_BUILD_TYPE={CONFIGURATION}",
         "-DPINEFORGE_HPO_BUILD_TESTS=OFF",
         "-DPINEFORGE_HPO_BUILD_NATIVE_CLI=OFF",
         "-DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=OFF",
         f"-DFETCHCONTENT_SOURCE_DIR_DLIB={dlib}",
     )
 
-    def copy_tree(destination):
+    def copy_tree(destination, integration):
         destination.mkdir(parents=True)
         for name in ("CMakeLists.txt", "VERSION", "cmake", "include", "src", "third_party"):
             origin = repository / name
@@ -527,74 +796,95 @@ def scenario_tpe_unchanged(repository, dlib, base):
                 shutil.copytree(origin, destination / name)
             else:
                 shutil.copy2(origin, destination / name)
+        if integration is not None:
+            # The reducer files of the repository are used when present, else stand-ins.
+            if not (destination / "src/core/return_stats.cpp").exists():
+                (destination / "src/core/return_stats.cpp").write_text(STAND_IN_CPP)
+            if not (destination / "include/pineforge/hpo/return_stats.hpp").exists():
+                (destination / "include/pineforge/hpo/return_stats.hpp").write_text(STAND_IN_HPP)
+            with open(destination / "CMakeLists.txt", "a") as handle:
+                handle.write(integration)
 
-    baseline_source, extended_source = base / "tpe-baseline", base / "tpe-with-x"
-    copy_tree(baseline_source)
-    copy_tree(extended_source)
-    (extended_source / "x_fixture").mkdir()
-    (extended_source / "x_fixture/reducer.hpp").write_text(REDUCER_HPP)
-    (extended_source / "x_fixture/reducer.cpp").write_text(REDUCER_CPP)
-    with open(extended_source / "CMakeLists.txt", "a") as handle:
-        handle.write(TPE_INTEGRATION)
-
+    trees = {
+        "baseline": (None, CONFIGURATION),
+        "x-only": (REAL_CORE_INTEGRATION, CONFIGURATION),
+        "x-late": (REAL_CORE_INTEGRATION + REAL_CORE_LATE_CHANGES, "FeedAudit"),
+    }
     builds = {}
-    for label, source in (("baseline", baseline_source), ("with-x", extended_source)):
-        build = base / f"tpe-build-{label}"
-        run(["cmake", "-S", source, "-B", build, *definitions], timeout=600)
+    for label, (integration, build_type) in trees.items():
+        source = base / f"core-{label}"
+        copy_tree(source, integration)
+        build = base / f"core-build-{label}"
+        extra = ("-DCMAKE_CXX_FLAGS_FEEDAUDIT=-O1",) if build_type == "FeedAudit" else ()
+        configure(source, build, *definitions, *extra, generator=generator, build_type=build_type)
         build_target(build, "pineforge_hpo_numeric_flags")
-        builds[label] = build
-    build_target(builds["with-x"], "pineforge_hpo_core_return_stats_identity")
+        builds[label] = (build, build_type)
 
-    def tpe_files(build):
-        directory = build / "generated" / CONFIGURATION / "CXX"
-        return tuple(
-            (directory / name).read_bytes()
-            for name in ("numeric_build_flags.txt", "numeric_build_flags.hpp")
-        )
+    def tpe_files(label):
+        build, build_type = builds[label]
+        directory = build / "generated" / build_type / "CXX"
+        return tuple((directory / name).read_bytes()
+                     for name in ("numeric_build_flags.txt", "numeric_build_flags.hpp"))
 
-    reference = tpe_files(builds["baseline"])
-    require(tpe_files(builds["with-x"]) == reference, "adding X changed the TPE flag identity")
-    require(
-        not (builds["baseline"] / "generated/return_stats_identity").exists(),
-        "the baseline unexpectedly carries X outputs",
-    )
-    outputs = builds["with-x"] / GENERATED
-    for name in (
-        "return_stats_identity.descriptor.txt",
-        "return_stats_identity.txt",
-        "return_stats_identity_generated.hpp",
-    ):
-        require((outputs / name).is_file(), f"X output {name} was not generated")
-    before = identity_of(builds["with-x"])
+    require(tpe_files("x-only") == tpe_files("baseline"), "adding X changed the TPE flag identity")
+    require(not (builds["baseline"][0] / GENERATED).exists(), "the baseline carries X outputs")
 
-    reducer = extended_source / "x_fixture/reducer.cpp"
+    identities = {}
+    for label in ("x-only", "x-late"):
+        build, build_type = builds[label]
+        build_target(build, "pineforge_hpo_core_return_stats_identity")
+        directory = outputs(build, build_type)
+        database = json.loads((build / "compile_commands.json").read_text())
+        descriptor, identity = check_outputs(directory, directory / INGREDIENTS, database)
+        lines = arg_lines(descriptor)
+        for flag in ("-fno-fast-math", "-ffp-contract=off", "-frounding-math", "-fno-builtin"):
+            require(flag in lines, f"{label}: {flag} is not bound")
+        if label == "x-late":
+            for token in ("-fno-strict-aliasing", "-DPFH_X_DEPENDENCY_PROVIDED=1",
+                          "-fno-trapping-math", "-O1"):
+                require(token in lines, f"{label}: {token} is not bound")
+        identities[label] = identity
+    require(identities["x-only"] != identities["x-late"], "late changes did not move the identity")
+
+    # An X source edit moves X and leaves the TPE bytes alone.
+    reducer = base / "core-x-only/src/core/return_stats.cpp"
     reducer.write_text(reducer.read_text() + "// edited\n")
-    build_target(builds["with-x"], "pineforge_hpo_numeric_flags")
-    build_target(builds["with-x"], "pineforge_hpo_core_return_stats_identity")
-    require(identity_of(builds["with-x"]) != before, "editing the reducer did not move X")
-    require(tpe_files(builds["with-x"]) == reference, "an X source edit changed the TPE identity")
-    print("PASS: TPE flag identity is byte-identical with X added and after an X source edit")
+    build, build_type = builds["x-only"]
+    build_target(build, "pineforge_hpo_numeric_flags")
+    build_target(build, "pineforge_hpo_core_return_stats_identity")
+    require(outputs(build, build_type).joinpath("return_stats_identity.txt").read_text().strip()
+            != identities["x-only"], "editing the reducer did not move X")
+    require(tpe_files("x-only") == tpe_files("baseline"), "an X source edit changed the TPE identity")
+    print("PASS: real core target: actual commands carry dependency, late-source and final-"
+          "configuration flags; TPE flag identity is byte-identical with X added")
 
 
 def main():
+    global REPOSITORY
     if len(sys.argv) != 3:
         print(__doc__)
         return 2
-    repository, dlib = (Path(argument).resolve() for argument in sys.argv[1:3])
-    scenario_text_hygiene(repository)
+    REPOSITORY, dlib = (Path(argument).resolve() for argument in sys.argv[1:3])
+    scenario_text_hygiene(REPOSITORY)
     with tempfile.TemporaryDirectory(prefix="pfh-rsi-") as temporary:
         base = Path(temporary)
-        fixture = base / "fixture"
-        write_fixture(fixture, repository)
-        scenario_stable(fixture, base)
-        scenario_sensitive(fixture, base)
-        scenario_not_circular(fixture, base)
-        scenario_api(fixture, base)
-        scenario_descriptor_matches_commands(fixture, base)
-        scenario_tpe_unchanged(repository, dlib, base)
+        baseline = scenario_synthetic_bound(base)
+        scenario_synthetic_sensitivity(base, baseline)
+        scenario_synthetic_normalization(base, baseline)
+        scenario_synthetic_fail_closed(base)
+        generators = available_generators()
+        for generator in generators:
+            scenario_fixture(REPOSITORY, base, generator)
+            scenario_executed_command(REPOSITORY, base, generator)
+        scenario_not_circular(REPOSITORY, base, generators[0])
+        scenario_api(REPOSITORY, base, generators[0])
+        for generator in generators:
+            scenario_real_core(REPOSITORY, dlib, base / generator.replace(" ", "-"), generator)
     print("PASS: return-statistics build identity")
     return 0
 
+
+REPOSITORY = Path(".")
 
 if __name__ == "__main__":
     raise SystemExit(main())
