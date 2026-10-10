@@ -431,7 +431,7 @@ class SobolCliTests(unittest.TestCase):
 
     def _reversed_command(self, *extra):
         command = self.argv(DISCRETE, *extra)
-        flags_start = command.index("--int-dim")
+        flags_start = command.index(DISCRETE.dims[0].flags()[0])
         flags_end = command.index("--sampler")
         flags = [flag for dim in reversed(DISCRETE.dims) for flag in dim.flags()]
         return command[:flags_start] + flags + command[flags_end:]
