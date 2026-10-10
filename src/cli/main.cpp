@@ -2,18 +2,23 @@
 #include <pineforge/hpo/error.hpp>
 #include <pineforge/hpo/objective.hpp>
 #include <pineforge/hpo/pruner.hpp>
+#include <pineforge/hpo/return_stats.hpp>
+#include <pineforge/hpo/return_stats_identity.hpp>
 #include <pineforge/hpo/sampler.hpp>
 #include <pineforge/hpo/search_space.hpp>
+#include <pineforge/hpo/sobol_identity.hpp>
 #include <pineforge/hpo/strategy_plugin.hpp>
 #include <pineforge/hpo/trial_executor.hpp>
 #include <pineforge/hpo/types.hpp>
 
 #include "../core/ordinal_set.hpp"
 #include "batch_executor.hpp"
+#include "candidate_list.hpp"
 #include "continuation.hpp"
 #include "failure_json.hpp"
 #include "json.hpp"
 #include "no_improvement.hpp"
+#include "sobol_continuation.hpp"
 #include "symbol_feeds.hpp"
 
 #include <algorithm>
@@ -56,6 +61,11 @@
 
 namespace pfh = pineforge::hpo;
 
+// Both headers are included here on purpose: the contract bound into the identity at build time
+// and the reducer's own constant must agree, and neither header may define the other's names.
+static_assert(pfh::return_stats_contract() == pfh::kReturnStatsContract,
+              "the return-statistics identity is bound to a different contract than the reducer");
+
 #ifndef PINEFORGE_HPO_VERSION
 #define PINEFORGE_HPO_VERSION "unknown"
 #endif
@@ -71,6 +81,8 @@ struct Options {
     std::filesystem::path trials_file;
     std::filesystem::path warm_start;
     std::shared_ptr<const pfh::detail::WarmHistory> warm_history;
+    std::filesystem::path candidates;
+    std::shared_ptr<const pfh::detail::CandidateList> candidate_list;
     std::shared_ptr<const std::string> space_json;
     std::string space_hash;
     bool tpe_warm_restored = false;
@@ -100,6 +112,19 @@ struct Options {
     std::string chart_timezone;
     std::uint64_t seed = 0;
     std::uint64_t max_trials = 0;
+    // Presence of --max-trials, kept apart from the zero that means "not given" elsewhere.
+    bool max_trials_given = false;
+    // Sobol sampler: the scramble spelling, the run's descriptor (identity, columns, numeric
+    // identity), the part's first index (the parent's next ID, 0 when fresh) and whether the
+    // admitted parent holds exactly the IDs 0..first_index-1.
+    std::string sobol_scramble = "digital_shift";
+    bool sobol_scramble_given = false;
+    std::shared_ptr<const pfh::detail::SobolDescriptor> sobol_descriptor;
+    std::uint64_t sobol_first_index = 0;
+    bool sobol_parent_exact = true;
+    // Return-statistics series named by an objective, constraint or recorded metric.
+    bool return_stats_bar = false;
+    bool return_stats_monthly = false;
     std::uint64_t no_improvement_trials = 0;
     unsigned workers = 1;
     int progress_fd = -1;
@@ -274,7 +299,12 @@ void print_help() {
               << "  --symbol-feeds FILE        fixed other-symbol feed index (loaded once)\n"
               << "  --strategy-override NAME VALUE\n\n"
               << "Study options:\n"
-              << "  --sampler grid|random|tpe|dlib_global  default: grid\n"
+              << "  --sampler grid|random|tpe|dlib_global|candidates|sobol  default: grid\n"
+              << "  --sobol-scramble digital_shift|none  sobol: 64-bit digital shift keyed by\n"
+              << "                              --seed (default) or the unscrambled sequence\n"
+              << "  --candidates FILE           candidates: ordered JSONL of complete parameter\n"
+              << "                              vectors, validated whole before any trial;\n"
+              << "                              --max-trials absent or exactly the line count\n"
               << "  --candidate-policy sampler_default|without_replacement|exhaustive\n"
               << "  --max-trials N              0: grid exhaustive; adaptive deadline only\n"
               << "  --no-improvement-trials N   ordered patience; 0 disables (default)\n"
@@ -294,6 +324,10 @@ void print_help() {
               << "  --division-by-zero reject|ieee\n"
               << "  --non-finite reject|allow\n\n"
               << "  --record-metric PATH        additional report metric; repeatable\n"
+              << "                              returns.{bar,monthly}.{count,skipped,"
+                 "periods_per_year,\n"
+              << "                              mean,std,sharpe_per_period,skew,kurt_raw,status}\n"
+              << "                              are return statistics, computed only when named\n"
               << "  --max-wall-seconds S        positive study wall limit; cooperative stop\n"
               << "  --trial-timeout-seconds T   positive per-trial limit; exits 3 on timeout\n\n"
               << "TPE options:\n"
@@ -386,13 +420,21 @@ Options parse_options(int argc, char** argv) {
         } else if (option == "--sampler") {
             out.sampler = require_value(argc, argv, i, option);
             if (out.sampler != "grid" && out.sampler != "random" && out.sampler != "tpe" &&
-                out.sampler != "dlib_global") {
-                usage_error("--sampler must be grid, random, tpe, or dlib_global");
+                out.sampler != "dlib_global" && out.sampler != "candidates" &&
+                out.sampler != "sobol") {
+                usage_error(
+                    "--sampler must be grid, random, tpe, dlib_global, candidates, or sobol");
             }
+        } else if (option == "--sobol-scramble") {
+            out.sobol_scramble = require_value(argc, argv, i, option);
+            out.sobol_scramble_given = true;
+        } else if (option == "--candidates") {
+            out.candidates = require_value(argc, argv, i, option);
         } else if (option == "--candidate-policy") {
             out.candidate_policy = parse_candidate_policy(require_value(argc, argv, i, option));
         } else if (option == "--max-trials") {
             out.max_trials = parse_u64(require_value(argc, argv, i, option), option);
+            out.max_trials_given = true;
         } else if (option == "--no-improvement-trials") {
             const auto value = require_value(argc, argv, i, option);
             if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
@@ -592,7 +634,17 @@ Options parse_options(int argc, char** argv) {
         usage_error("--ohlcv is required");
     if (out.objective.empty())
         usage_error("--objective is required");
-    if ((out.sampler == "random" || out.sampler == "tpe" || out.sampler == "dlib_global") &&
+    pfh::detail::require_candidate_list_settings(
+        out.sampler == "candidates", !out.candidates.empty(), out.candidate_policy, out.pruner,
+        out.no_improvement_trials, !out.warm_start.empty());
+    if (out.sobol_scramble_given && out.sampler != "sobol")
+        usage_error("--sobol-scramble requires --sampler sobol");
+    if (out.sampler == "sobol" && !pfh::detail::sobol_scramble_from_name(out.sobol_scramble))
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "--sobol-scramble must be digital_shift or none");
+    if ((out.sampler == "random" || out.sampler == "tpe" || out.sampler == "dlib_global" ||
+         out.sampler == "sobol") &&
         out.max_trials == 0 && out.max_wall_seconds == 0.0) {
         usage_error(out.sampler + " sampling requires --max-trials or --max-wall-seconds");
     }
@@ -884,6 +936,10 @@ public:
     TrialArchive(const Options& options, const pfh::SearchSpace& space, bool finite)
         : options_(options), space_(space), finite_(finite),
           ordinals_(finite ? space.finite_cardinality().value_or(0) : 0) {
+        if (options.candidate_list)
+            coverage_.emplace(options.candidate_list->size());
+        if (options.sobol_descriptor)
+            sobol_part_.emplace();
         if (options.warm_history) {
             objective_coverage = options.warm_history->completed ==
                 options.warm_history->size();
@@ -894,7 +950,15 @@ public:
         }
     }
 
+    // Called only under RunState's mutex (finish() and the single timeout record), so the
+    // coverage and the Sobol part accounting need no lock of their own and a position is never
+    // recorded twice. Every terminal trial feeds them, whether or not its row is retained.
     void add(const TrialRecord& record) {
+        if (sobol_part_)
+            sobol_part_->observe(record.trial_id);
+        if (coverage_)
+            coverage_->record(record.trial_id, record.status == "ok" ||
+                                                   record.status == "constraint_violation");
         ++completed;
         ++counts[record.status];
         objective_coverage = objective_coverage &&
@@ -940,6 +1004,16 @@ public:
             ? completed : ordinals_.size();
     }
 
+    // Terminal-position coverage of the candidate list; nullptr for every other sampler.
+    const pfh::detail::CandidateCoverage* coverage() const {
+        return coverage_ ? &*coverage_ : nullptr;
+    }
+
+    // Terminal-ID accounting of this Sobol part; nullptr for every other sampler.
+    const pfh::detail::SobolPartAccumulator* sobol_part() const {
+        return sobol_part_ ? &*sobol_part_ : nullptr;
+    }
+
     std::uint64_t completed = 0;
     std::map<std::string, std::uint64_t> counts;
     bool objective_coverage = true;
@@ -951,6 +1025,8 @@ private:
     pfh::detail::OrdinalSet ordinals_;
     std::vector<TrialRecord> all_;
     std::vector<TrialRecord> best_;
+    std::optional<pfh::detail::CandidateCoverage> coverage_;
+    std::optional<pfh::detail::SobolPartAccumulator> sobol_part_;
 };
 
 class RunState final {
@@ -1401,6 +1477,10 @@ std::string render_results(const Options& options,
             }, dimension);
         });
     const auto sampler_implementation = [&]() -> const char* {
+        if (options.sampler == "candidates")
+            return pfh::detail::candidate_list_implementation.data();
+        if (options.sampler == "sobol")
+            return pfh::detail::kSobolImplementation.data();
         if (options.sampler == "tpe") {
             return options.candidate_policy == pfh::CandidatePolicy::SamplerDefault
                        ? "pineforge_product_tpe_v3_bounded"
@@ -1438,7 +1518,7 @@ std::string render_results(const Options& options,
     const bool exhaustive_equivalent = full_parameter_coverage && terminal_objective_coverage;
     const std::string stop_reason = !requested_stop_reason.empty()
         ? requested_stop_reason
-        : search_space_exhausted
+        : search_space_exhausted && options.sampler != "candidates" && options.sampler != "sobol"
             ? "search_space_exhausted"
             : (trials_requested && trials_completed >= trials_requested
                 ? "trial_budget_reached" : "sampler_stopped");
@@ -1631,6 +1711,36 @@ std::string render_results(const Options& options,
                     ? std::to_string(*early_stop.drained_through_trial_id) : "null")
             << ", \"reference_scope\": \"part\"}";
     }
+    if (options.return_stats_bar || options.return_stats_monthly) {
+        // An empty identity is never a valid return_stats result. Admission refuses an unbound
+        // build before any trial, so this guard is unreachable in a correct run; it keeps the
+        // invariant local to the place that writes the object.
+        if (!pfh::return_stats_identity_bound() ||
+            pfh::return_stats_numeric_build_identity().empty())
+            throw pfh::TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "return statistics need a bound build identity");
+        // One object per result, with the statistics' own build identity on every sampler path.
+        // It is not the TPE checkpoint identity above and never derived from it.
+        out << ",\n  \"return_stats\": {\"contract\": \""
+            << json_escape(std::string(pfh::kReturnStatsContract)) << "\", \"series\": [";
+        if (options.return_stats_bar)
+            out << "\"bar\"";
+        if (options.return_stats_monthly)
+            out << (options.return_stats_bar ? ", " : "") << "\"monthly\"";
+        out << "], \"chart_timezone\": \"" << json_escape(options.chart_timezone)
+            << "\", \"risk_free_annual\": " << json_number(pfh::kReturnStatsRiskFreeAnnual)
+            << ", \"numeric_build_identity\": \""
+            << json_escape(std::string(pfh::return_stats_numeric_build_identity())) << "\"}";
+    }
+    if (options.sobol_descriptor && archive && archive->sobol_part())
+        out << ",\n  \"sobol\": "
+            << pfh::detail::render_sobol_block(
+                   *options.sobol_descriptor,
+                   archive->sobol_part()->summary(options.sobol_first_index,
+                                                  options.sobol_parent_exact));
+    if (options.candidate_list && archive && archive->coverage())
+        out << ",\n  \"candidate_list\": "
+            << pfh::detail::candidate_list_json(*options.candidate_list, *archive->coverage());
     out << "\n}\n";
     return out.str();
 }
@@ -1851,6 +1961,21 @@ void validate_search_input_kinds(const Options& options) {
     }
 }
 
+// The Sobol numeric build identity of a floating-point space (contract N11, prefix
+// portable-sobol-v1), required before any plugin, dataset or trial work. The order of the
+// refusals is the identity function's own and is deliberately not repeated here: it checks the
+// portable environment first (hpo_portable_math_unavailable), then refuses an unbound build with
+// hpo_toolchain_unavailable (reason native_runner) naming the exact unbound reason, and only then
+// returns the string. Discrete-only Sobol spaces and every other sampler never reach this
+// function. An empty string can never be published as a numeric identity.
+std::string require_sobol_numeric_identity() {
+    std::string identity = pfh::sobol_numeric_build_identity();
+    if (identity.empty() || identity.rfind("portable-sobol-v1;", 0) != 0)
+        throw pfh::TypedHpoError<std::logic_error>(
+            "hpo_invariant", {}, "the Sobol numeric build identity is malformed");
+    return identity;
+}
+
 int run(Options options) {
     const auto started = RunState::Clock::now();
     validate_search_input_kinds(options);
@@ -1874,6 +1999,22 @@ int run(Options options) {
             "hpo_study_spec_invalid", {{"reason", "sampler"}},
             "grid sampling requires a step on every varying real dimension");
     }
+    if (options.sampler == "candidates") {
+        // Whole-file admission before any symbol feed, plugin, dataset or trial work.
+        auto list = pfh::detail::load_candidate_list(options.candidates, space,
+                                                     options.fixed_inputs);
+        // An explicit budget must be N and N is positive, so an explicit 0 is refused; zero
+        // keeps its "not given" meaning for every other sampler.
+        if (options.max_trials_given && options.max_trials == 0)
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "sampler"}},
+                "the trial budget (0) must be omitted or equal the candidate list length (" +
+                    std::to_string(list.size()) + ")");
+        pfh::detail::require_candidate_list_budget(options.max_trials, list.size());
+        options.max_trials = list.size();
+        options.candidate_list =
+            std::make_shared<const pfh::detail::CandidateList>(std::move(list));
+    }
     const unsigned symbol_sources = static_cast<unsigned>(!options.symbol_feeds_path.empty()) +
         static_cast<unsigned>(!options.symbol_feeds_spec.empty());
     if (symbol_sources > 1)
@@ -1894,18 +2035,46 @@ int run(Options options) {
         recorded.members["symbol_feeds"] = *options.symbol_feeds_record;
     options.space_json = std::make_shared<const std::string>(pfh::detail::dump_json(recorded));
     options.space_hash = pfh::detail::space_hash(recorded);
+    if (options.sampler == "sobol") {
+        // Everything that can be refused without a plugin, a dataset or a trial is refused here:
+        // the column ceiling, unrepresentable counts and log-integer limits (the sampler's
+        // constructor), then, for a floating-point space, the bound numeric identity, and last the
+        // descriptor whose identity hash covers the space, the columns and that numeric identity.
+        const auto scramble = *pfh::detail::sobol_scramble_from_name(options.sobol_scramble);
+        const pfh::SobolSampler probe(space, options.seed, scramble, 0, options.max_trials);
+        std::optional<std::string> numeric;
+        if (probe.uses_floating_point())
+            numeric = require_sobol_numeric_identity();
+        options.sobol_descriptor = std::make_shared<const pfh::detail::SobolDescriptor>(
+            pfh::detail::make_sobol_descriptor(probe, options.space_hash, std::move(numeric)));
+    }
     if (!options.warm_start.empty()) {
         if (options.sampler == "dlib_global")
             throw pfh::detail::WarmStartError("dlib_global continuation is not supported");
-        auto warm = std::make_shared<pfh::detail::WarmHistory>(
-            pfh::detail::load_warm_history(options.warm_start, space, recorded));
+        std::shared_ptr<pfh::detail::WarmHistory> warm;
+        if (options.sampler == "sobol") {
+            // A complete Sobol result is the only parent: native admission recomputes the
+            // descriptor, the indices and every row against the generator, and never falls back
+            // to another history shape. Sobol samples with replacement, so no finite-space
+            // exhaustion test applies, and admission already checked the trial-ID budget.
+            auto admission = pfh::detail::admit_sobol_parent(
+                options.warm_start, space, recorded, *options.sobol_descriptor, options.max_trials);
+            options.sobol_first_index = admission.next_id;
+            options.sobol_parent_exact = admission.parent_exact;
+            warm = std::make_shared<pfh::detail::WarmHistory>(std::move(admission.history));
+        } else {
+            warm = std::make_shared<pfh::detail::WarmHistory>(
+                pfh::detail::load_warm_history(options.warm_start, space, recorded));
+        }
         if (warm->binary && options.pruner != pfh::PrunerKind::None)
             throw pfh::detail::WarmStartError("binary history has no pruning rungs");
-        if (finite_cardinality && warm->tried_count() == *finite_cardinality)
-            throw pfh::detail::SpaceExhausted();
-        if (warm->next_id == std::numeric_limits<std::uint64_t>::max() ||
-            options.max_trials > std::numeric_limits<std::uint64_t>::max() - warm->next_id)
-            throw pfh::detail::WarmStartError("new trial budget would overflow trial IDs");
+        if (options.sampler != "sobol") {
+            if (finite_cardinality && warm->tried_count() == *finite_cardinality)
+                throw pfh::detail::SpaceExhausted();
+            if (warm->next_id == std::numeric_limits<std::uint64_t>::max() ||
+                options.max_trials > std::numeric_limits<std::uint64_t>::max() - warm->next_id)
+                throw pfh::detail::WarmStartError("new trial budget would overflow trial IDs");
+        }
         for (const auto& scores : warm->rung_scores)
             pruner.observe(scores);
         options.warm_history = std::move(warm);
@@ -1956,6 +2125,21 @@ int run(Options options) {
     for (auto& metric : recorded_metrics)
         expressions.push_back(&metric);
     validate_metric_identifiers(expressions);
+    // The return-statistics series follow from the identifiers alone: nothing requested means
+    // the executor does no reduction and the result carries no return_stats object.
+    for (const auto* expression : expressions) {
+        for (const auto& identifier : expression->identifiers()) {
+            if (identifier.rfind("returns.bar.", 0) == 0)
+                options.return_stats_bar = true;
+            else if (identifier.rfind("returns.monthly.", 0) == 0)
+                options.return_stats_monthly = true;
+        }
+    }
+    // Fail closed before the plugin, the dataset, the progress files or any trial: statistics
+    // from a build with an unbound identity would carry no claim-bearing identity. A run that
+    // requests none never reaches this line's body.
+    if (options.return_stats_bar || options.return_stats_monthly)
+        pfh::require_return_stats_identity();
 
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
     auto dataset = std::make_shared<pfh::Dataset>(pfh::Dataset::load_csv(options.ohlcv));
@@ -1967,6 +2151,8 @@ int run(Options options) {
     configuration.magnifier_samples = options.magnifier_samples;
     configuration.magnifier_distribution = options.magnifier_distribution;
     configuration.capture_equity_curve = false;
+    configuration.return_stats_bar = options.return_stats_bar;
+    configuration.return_stats_monthly = options.return_stats_monthly;
     configuration.symbol_feeds = options.symbol_feeds;
     if (!options.syminfo.empty())
         configuration.symbol_info = read_symbol_info(options.syminfo);
@@ -1997,7 +2183,8 @@ int run(Options options) {
         (options.warm_history ? options.warm_history->next_id : 0);
     const auto worker_count = static_cast<unsigned>(std::min<std::uint64_t>(
         options.workers, options.max_trials ? options.max_trials :
-            finite_cardinality.value_or(options.workers)));
+            (options.sampler == "sobol" ? options.workers :
+                finite_cardinality.value_or(options.workers))));
     pfh::BatchExecutor<TrialRecord> workers(worker_count);
     double proposal_seconds = 0.0;
     double barrier_seconds = 0.0;
@@ -2125,6 +2312,23 @@ int run(Options options) {
         if (sampler.outstanding() == 0)
             options.tpe_sampler_state = sampler.sampler_state();
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
+    } else if (options.sampler == "candidates") {
+        pfh::detail::CandidateListCursor cursor(*options.candidate_list);
+        evaluate_batches([&]() -> std::optional<pfh::Candidate> { return cursor.next(); },
+                         [](const TrialRecord&) {});
+    } else if (options.sampler == "sobol") {
+        // Dedicated with-replacement branch. The trial ID is the raw index, starting at the
+        // admitted parent's next ID. There is no reseeding with continuation_seed, no parent
+        // exclusion, no skipped index and no feedback; a finite space never stops it early, so the
+        // budget, the wall limit and the other stops end it as for every sampler.
+        pfh::SobolSampler sampler(space, options.seed,
+                                  *pfh::detail::sobol_scramble_from_name(options.sobol_scramble),
+                                  options.sobol_first_index, options.max_trials);
+        evaluate_batches([&]() -> std::optional<pfh::Candidate> { return sampler.next(); },
+                         [](const TrialRecord&) {});
+        // Observe external stops at evaluation completion, as the other patience-aware samplers do.
+        if (options.no_improvement_trials)
+            state.stopped();
     } else {
         std::unique_ptr<pfh::Sampler> sampler;
         if (options.sampler == "grid")

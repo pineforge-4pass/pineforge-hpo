@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+- Add the `sobol` sampler (native `--sampler sobol [--sobol-scramble digital_shift|none]`; StudySpec
+  `sampler.kind: "sobol"` with `sampler.config.scramble`). It issues the 64-bit Gray-code Sobol
+  sequence (Joe-Kuo criterion-6 direction numbers for dimensions 2 to 1024, vendored verbatim with
+  their BSD licence in `NOTICE` and `THIRD_PARTY_LICENSES/sobol_joe_kuo.txt`) over the name-sorted
+  varying dimensions, with an optional seeded 64-bit digital shift. The trial ID is the sequence
+  index; sampling is with replacement (duplicates are distinct occurrences, nothing is excluded,
+  reseeded or skipped, and a finite space never stops the run early). A top-level `sobol` object
+  carries the descriptor, its identity and the part's index range. `--warm-start` accepts only a
+  complete Sobol result with a matching identity and verifies every parent row against the
+  generator; other histories are refused with exit 4. Spaces with a floating-point column need a
+  build whose Sobol numeric identity is bound and are refused before any trial otherwise. Runs
+  without the new options keep their bytes. No quality advantage is claimed. Execution proof is
+  pending.
+
+- Add the `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,sharpe_per_period,
+  skew,kurt_raw,status}` metrics (contract `pineforge-hpo-return-stats/v1`, legacy mode). They are
+  computed from the engine's ordered equity curve while the report is alive, only for the series an
+  objective, constraint or `--record-metric` names; with none named there is no reduction, no new
+  object and the result bytes are unchanged. A requested run adds those names to each trial's
+  `metrics` and one result-level `return_stats` object with its own build identity on every
+  sampler path (independent of the TPE checkpoint identity). A trial without a report has every
+  requested metric null. A build whose statistics identity cannot be bound (multi-configuration
+  generator, compiler launcher, explicit compile-database OFF, CMake older than 3.19, ...) still
+  builds and runs every ordinary study unchanged, and refuses a request for these metrics before
+  any trial with `hpo_toolchain_unavailable` (reason `native_runner`) naming the exact unbound
+  reason. The default build now also writes `compile_commands.json` into the build directory (one
+  extra file). Execution proof is pending.
+- `--sampler candidates`: an explicitly given `--max-trials 0` is refused (N is at least 1); the
+  budget may still be omitted, and zero keeps its "no cap" meaning for every other sampler.
+
+- Add the `candidates` sampler (native `--sampler candidates --candidates FILE`; StudySpec
+  `sampler.kind: "candidates"` with `sampler.config.candidates_file`). It evaluates an ordered
+  JSONL list of complete parameter vectors, preserving duplicates with trial ID equal to the
+  zero-based position. The whole list is validated before any plugin, dataset or trial work
+  (initial input caps 50,000 occurrences, 32 MiB, 64 KiB per line; they bound input only). A
+  final `candidate_list` object reports source and list SHA-256, evaluated and scored counts,
+  `complete` (every position terminal, not every score valid) and missing ranges. A candidate
+  result can seed TPE as rebuilt history through the existing loader. Candidate policy other
+  than `sampler_default`, a pruner, positive patience and warm start are refused. Runs that do
+  not use the new flags keep their bytes. Execution proof is pending.
+
 ## 0.12.0 (2026-10-08)
 
 - Add opt-in `--no-improvement-trials N` to native and Python `run`. Count ordered

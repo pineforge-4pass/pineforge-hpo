@@ -130,6 +130,16 @@ signal, and watchdog truncation can execute different numbers of trials at
 different worker counts. Progress lines deliberately arrive on terminal
 completion, so their arrival order is not the fingerprinted trial ordering.
 
+## Sobol replay
+
+The `sobol` sampler has no feedback: candidate `n` is a pure function of the run identity and `n`,
+so worker count, batch size and lag change only scheduling, never a value. Repeated runs and any
+worker count give identical result bytes at a fixed batch size and lag with no external stop. With
+`--no-improvement-trials` the terminal frontier follows the ordered drain exactly as for the other
+samplers, so the point-by-ID claim (every retained row equals the generator at its ID) is
+unconditional while the number of rows depends on the fixed batch size and lag. Deadline, signal
+and watchdog stops truncate at schedule-dependent points. See [Sobol](study-spec.md).
+
 ## Pruning and metering
 
 `--pruner median|halving` evaluates quarter, half, then full input windows by

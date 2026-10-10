@@ -492,6 +492,8 @@ objects are shown in the [schema documentation](docs/study-spec.md).
 | `random` | Broad, inexpensive exploration | Seeded `std::mt19937_64`; supports continuous and log dimensions. |
 | `dlib_global` | Model-based search over mixed numeric spaces | Native batched ask/tell through dlib global function search. |
 | `tpe` | Adaptive refinement over mixed spaces | Native Parzen marginals, categorical probabilities, and constant-liar batches. |
+| `sobol` | Space-filling exploration with an indexed, reproducible stream | 64-bit Gray-code Sobol points (Joe-Kuo direction numbers), optional seeded digital shift; trial ID is the sequence index, sampling is with replacement, and a complete earlier result continues the shifted stream. No quality claim. See [Sobol](docs/study-spec.md). |
+| `candidates` | Re-scoring a known list of complete vectors | Evaluates each line of an ordered JSONL list once, duplicates included; the whole file is validated before any trial. See [Candidate list](docs/study-spec.md). |
 
 TPE and dlib are adaptive: proposal order depends on the seed, logical batch size, and
 fixed feedback lag, not worker timing. Set `execution.batch_size` explicitly to replay
@@ -533,6 +535,14 @@ Metric names follow the engine's report structs. Engine 1.0 renamed the monthly 
 and Sortino ratios, so they are `metrics.equity.sharpe_monthly` and
 `metrics.equity.sortino_monthly`; the pre-1.0 names `metrics.equity.sharpe_tv` and
 `metrics.equity.sortino_tv` remain accepted aliases, so existing StudySpecs keep working.
+
+Return statistics of the equity curve are available as eighteen metric names,
+`returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,sharpe_per_period,skew,kurt_raw,status}`,
+computed only for the series an expression or `--record-metric` names (nothing else changes when
+none is named; a build whose statistics identity cannot be bound refuses them and still runs
+everything else). The Sharpe value is per period and unannualized; see
+[Return statistics](docs/study-spec.md) and
+[docs/return-stats.md](docs/return-stats.md) for definitions, status codes and what is not claimed.
 
 Applications embedding the C++ library can instead implement
 `ObjectiveFn<Observation>`. The generic objective contract is independent of a PineForge

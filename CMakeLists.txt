@@ -45,6 +45,10 @@ option(PINEFORGE_HPO_ENABLE_SANITIZERS "Build with AddressSanitizer and UBSan" O
 option(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER "Build with ThreadSanitizer" OFF)
 option(PINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN "Fail instead of skipping unknown serial goldens" OFF)
 option(PINEFORGE_HPO_REQUIRE_MPFR "Require MPFR for exact portable-math tests" OFF)
+option(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY
+    "Fail the identity tests when the return-statistics build identity is unbound" OFF)
+option(PINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY
+    "Fail the Sobol tests when the Sobol numeric build identity is unbound" OFF)
 if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
 endif()
@@ -125,8 +129,13 @@ add_library(pineforge_hpo_core STATIC
     src/core/dlib_sampler.cpp
     src/core/objective.cpp
     src/core/pruner.cpp
+    src/core/return_stats.cpp
     src/core/sampler.cpp
     src/core/search_space.cpp
+    src/core/sobol_engine.cpp
+    src/core/sobol_identity.cpp
+    src/core/sobol_mapper.cpp
+    src/core/sobol_sampler.cpp
     src/core/tpe_sampler.cpp
     src/core/types.cpp
 )
@@ -199,6 +208,82 @@ if(PINEFORGE_HPO_BUILD_NATIVE_CLI)
     target_compile_options(pineforge-hpo-native PRIVATE
         -Wall -Wextra -Wpedantic)
 endif()
+
+# The marker lines around this block let tests/test_return_stats_identity.py cut it out for its
+# X-free baseline; they carry no other meaning.
+# PFH-RETURN-STATS-IDENTITY-BEGIN
+# Return-statistics reducer: its own build identity (independent of the TPE checkpoint identity
+# above), and the per-source flags that keep its arithmetic uncontracted. Only per-source
+# properties of the reducer are written, so numeric_build_flags.txt above is unaffected. Keep this
+# after the last CMAKE_CXX_FLAGS change and do not set properties of the reducer source later.
+#
+# The identity reads the compilation database, so the default build now writes
+# compile_commands.json into the build directory (one extra file, accepted; the helper switches it
+# on only when the project left CMAKE_EXPORT_COMPILE_COMMANDS undefined). An explicit OFF, a
+# multi-configuration generator, a compiler launcher and the other situations listed in
+# docs/internal/return-stats-identity.md leave the identity unbound: the build and every ordinary
+# run are unaffected, and only a run that requests return statistics is refused.
+#
+# The consumers are the targets that include return_stats_identity.hpp: the engine adapter (the
+# executor refuses statistics without a bound identity) and the command line (admission and the
+# emitted identity). Their dependency on the generation target is unconditional, so every
+# supported build constructs its own generated header before compiling them.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReturnStatsIdentity.cmake")
+# CONSUMERS is passed only with a value: the helper rejects a valueless keyword (a core-only
+# build has no consumer).
+set(PFH_RSI_CONSUMER_ARGUMENTS "")
+set(PFH_RSI_CONSUMER_TARGETS "")
+foreach(PFH_RSI_CONSUMER IN ITEMS pineforge_hpo_engine_adapter pineforge-hpo-native)
+    if(TARGET ${PFH_RSI_CONSUMER})
+        list(APPEND PFH_RSI_CONSUMER_TARGETS ${PFH_RSI_CONSUMER})
+    endif()
+endforeach()
+if(PFH_RSI_CONSUMER_TARGETS)
+    list(APPEND PFH_RSI_CONSUMER_ARGUMENTS CONSUMERS ${PFH_RSI_CONSUMER_TARGETS})
+endif()
+pfh_return_stats_identity(
+    TARGET pineforge_hpo_core
+    SOURCES src/core/return_stats.cpp
+    HEADERS include/pineforge/hpo/return_stats.hpp
+    CONTRACT "pineforge-hpo-return-stats/v1"
+    SOURCE_OPTIONS -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
+    ${PFH_RSI_CONSUMER_ARGUMENTS})
+# PFH-RETURN-STATS-IDENTITY-END
+
+# Sobol sampler numeric identity (prefix portable-sobol-v1): its own component, distinct from the
+# TPE checkpoint identity and from the return-statistics identity above, and it changes neither.
+# The four Sobol sources are core sources (listed above); the helper writes their per-source
+# strict arithmetic recipe and binds, from the compilation database, their generated commands,
+# the commands of every portable-math C source, the commands and source digests of the shipped
+# core units that can supply the linker's copy of a shared inline helper (tpe_sampler.cpp and
+# search_space.cpp: a deliberate, conservative coupling to those two units, whose own options and
+# the TPE checkpoint identity stay as they are), the bytes of both compiler drivers and the
+# project headers. See docs/internal/sobol-identity.md and docs/internal/methods-g1-wire.md.
+# Keep this block after every change to the compiler flags and after the targets it names exist;
+# the marker lines let tests/test_sobol_identity.py cut it out for a Sobol-free baseline.
+#
+# The generation target is an unconditional build dependency of the core library (which compiles
+# sobol_identity.cpp, the only includer of the generated header) and of the engine adapter and the
+# command line, so every supported build constructs its own header. An unbound capability (see the
+# note) never stops a build or an ordinary run; it refuses only a floating-point Sobol request.
+# PFH-SOBOL-IDENTITY-BEGIN
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/SobolIdentity.cmake")
+set(PFH_SOBOL_CONSUMER_ARGUMENTS "")
+set(PFH_SOBOL_CONSUMER_TARGETS "")
+foreach(PFH_SOBOL_CONSUMER IN ITEMS pineforge_hpo_engine_adapter pineforge-hpo-native)
+    if(TARGET ${PFH_SOBOL_CONSUMER})
+        list(APPEND PFH_SOBOL_CONSUMER_TARGETS ${PFH_SOBOL_CONSUMER})
+    endif()
+endforeach()
+if(PFH_SOBOL_CONSUMER_TARGETS)
+    list(APPEND PFH_SOBOL_CONSUMER_ARGUMENTS CONSUMERS ${PFH_SOBOL_CONSUMER_TARGETS})
+endif()
+pfh_sobol_identity(
+    TARGET pineforge_hpo_core
+    PORTABLE_MATH_TARGET pineforge_hpo_portable_math
+    SOURCE_OPTIONS -fno-fast-math -ffp-contract=off -frounding-math -fno-builtin -fno-lto
+    ${PFH_SOBOL_CONSUMER_ARGUMENTS})
+# PFH-SOBOL-IDENTITY-END
 
 if(PINEFORGE_HPO_ENABLE_SANITIZERS)
     foreach(target pineforge_hpo_core pineforge_hpo_engine_adapter pineforge-hpo-native

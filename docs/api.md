@@ -328,6 +328,22 @@ incomplete; only complete, successfully received progress lines are the billing 
 `schema_version` stays 1. Additive result fields are `trials_out`, `best_k`,
 `search_space_cardinality_overflow`, the conditional `summary` block, and
 `sampler_config.scale_ei_candidates` and `sampler_config.bad_reservoir_size`.
+The `candidates` sampler adds the sampler string `candidates`, the implementation identity
+`pineforge_candidate_list_v1` and a final top-level `candidate_list` object (format, source and
+list SHA-256, count, evaluated, scored, `complete`, `unevaluated_ranges`); no other run
+carries it and no trial row changes. A strict consumer must accept both additions as it accepts
+`early_stop`, and must read `candidate_list.complete` rather than infer coverage from
+`stop_reason` or `trials_completed`. See the [Candidate list](study-spec.md).
+The `sobol` sampler adds the sampler string `sobol`, the implementation identity
+`pineforge_sobol_gray64_joe_kuo_d6_v1` and a top-level `sobol` object (descriptor, identity and the
+part's `first_index`, `next_index` and `exact_stream`, 64-bit values as decimal strings); no other
+run carries it and no trial row changes. A strict consumer must accept both additions as it
+accepts `early_stop`. See [Sobol](study-spec.md).
+The return-statistics metrics (`returns.{bar,monthly}.*`, see
+[Return statistics](study-spec.md)) add keys to a trial's `metrics`
+object and one result-level `return_stats` object only when an expression or `--record-metric`
+names them; otherwise nothing changes. A strict consumer must accept the object as it accepts
+`early_stop`.
 All prior result fields retain their types.
 Top-level counts, best trial, and coverage describe the entire study. When the
 Cartesian product exceeds uint64, default adaptive sampling accepts it and

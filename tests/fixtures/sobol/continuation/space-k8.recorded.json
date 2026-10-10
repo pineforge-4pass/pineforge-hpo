@@ -1,0 +1,1 @@
+{"objective":{"constraints":[],"direction":"maximize","expression":"net_profit"},"parameters":{"k":{"high":7,"kind":"integer","log":false,"low":0,"step":1}}}

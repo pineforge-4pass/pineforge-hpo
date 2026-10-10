@@ -105,7 +105,7 @@ pineforge-hpo run path/to/study.json \
 | `strategies` | Must contain exactly one strategy object. |
 | `datasets` | The executable path requires exactly one referenced dataset. |
 | `objective` | Must use `kind="expression"`. |
-| `sampler` | `grid`, `random`, `dlib_global`, or `tpe`, plus its candidate policy. |
+| `sampler` | `grid`, `random`, `dlib_global`, `tpe`, `candidates`, or `sobol`, plus its candidate policy. |
 | `execution` | Sequential or threaded native execution. |
 | `symbol_feeds` | Optional index path or inline index; fixed other-symbol reads only. |
 
@@ -411,6 +411,7 @@ Metric lookup supports:
 - `metrics.longs.<trade-stat>`;
 - `metrics.shorts.<trade-stat>`;
 - `metrics.equity.<equity-stat>`;
+- the eighteen `returns.{bar,monthly}.*` names of [Return statistics](#return-statistics-legacy-mode);
 - `report.total_trades`, `report.net_profit`, `report.input_bars_processed`,
   `report.script_bars_processed`, `report.magnifier_sample_ticks_total`, and
   their short aliases (without the `report.` prefix).
@@ -445,12 +446,74 @@ The JSON loader recognizes a future `kind="registered"` shape, and the C++
 library exposes `ObjectiveFn<Observation>` for custom functions. The executable
 CLI does not resolve registered objective names yet.
 
+### Return statistics (legacy mode) {#return-statistics-legacy-mode}
+
+Eighteen metric names, `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,
+sharpe_per_period,skew,kurt_raw,status}`, can be used in an objective or constraint expression or
+with `--record-metric`. They are computed from the engine's own ordered `(time_ms, equity)` curve
+while the report is still alive, and **only for the series an expression names**: with no
+`returns.*` name nothing is reduced, no `return_stats` object is written and every byte of the
+result is what it was before. Contract: `pineforge-hpo-return-stats/v1`, legacy mode only (the
+curve is used as the engine produced it; no anchor is added).
+
+| Series | Returns | Period basis P |
+| --- | --- | --- |
+| `bar` | simple returns between adjacent curve points | `(n - 1) / span_years` for `n >= 3` and a positive span, `span_years = (last_time - first_time) / (365.25 * 86400 * 1000)` |
+| `monthly` | simple returns between the last points of consecutive UTC calendar-month buckets | `12` whenever the series can be formed |
+
+A return is `current / prior - 1` in binary64 when the prior equity is positive; a prior at or
+below zero increments `skipped`. `count` is the number of valid returns and does not depend on P.
+The risk-free rate is fixed at 0.02 per year (`0.02 / P` per period), `std` is the sample
+deviation, `skew` and `kurt_raw` are population-moment values (a normal distribution gives 3),
+`mean` is raw and `sharpe_per_period` is the excess ratio, **not annualized**. Multiply by
+`sqrt(periods_per_year)` to compare it with the engine's `sharpe_bar` or `sharpe_monthly`; the
+two agree on the common valid domain (finite equities, positive prior equity, `n >= 3` with a
+positive span for bars, at least two returns and a positive deviation), within floating-point
+summation order.
+
+An undefined field is JSON `null`. `status` is one number per series: `4` an input equity is not
+finite, `7` monthly for a chart timezone other than UTC (bar is unaffected; every monthly field is
+null), `8` a derived return, sum, moment or ratio is not finite, `6` the period or time basis is
+unavailable, `1` fewer than four valid returns, `2` zero variance, `0` otherwise. **`status` is 0
+if and only if every other field of the series is finite**, so a fully finite series with skipped
+returns or a tiny variance has status 0 and a consumer decides what to do with it. A trial
+without a report (an engine error) has every requested metric null, status included. The chart
+timezone is the request's own `--chart-timezone`; nothing changes process timezone state.
+
+When any series is requested the result carries one object:
+
+```json
+"return_stats": {"contract": "pineforge-hpo-return-stats/v1", "series": ["bar", "monthly"],
+                 "chart_timezone": "UTC", "risk_free_annual": 0.02,
+                 "numeric_build_identity": "pineforge-hpo-return-stats-build/v2:sha256:..."}
+```
+
+`series` lists the requested series. `numeric_build_identity` names the build that computed the
+statistics (reducer source digest, compiler identity and version, translation-unit compile flags
+and the contract string). It is the same value on the grid, random, TPE and candidates paths, is
+unrelated to the TPE checkpoint identity, and names a build rather than attesting its arithmetic:
+equal arithmetic across builds or architectures is claimed only for the pairs a proof tested. There
+is no new per-trial key; the values are entries of each trial's `metrics` object under the spelled
+names. A part reports only its own trials: warm-started ancestors keep their rows exactly as
+they were, and binary parents carry no statistics. This feature does not decide which trials a
+later selection or deflated-Sharpe step may count, how constraints or pruning treat these
+metrics, or how parts merge.
+
+A build whose statistics identity cannot be bound exactly, because it used a multi-configuration
+generator, a compiler launcher or wrapper, response files, a disabled compilation database, a
+CMake older than 3.19 or another listed situation, still builds and runs every ordinary study with
+unchanged results. A run that names a `returns.*` metric is refused before the plugin, the
+dataset, any output file or any trial, with the registered `hpo_toolchain_unavailable` failure
+(`args.reason` is `native_runner`); its diagnostic text names the exact unbound reason. An empty
+identity is never published. If a build fails the reducer's own contraction probe, the run stops
+at start with `hpo_invariant`.
+
 ## Sampler
 
 Every sampler requires an explicit non-negative `seed` and positive `trials`.
-The optional `candidate_policy` defaults to `sampler_default`. Only `tpe`
-accepts a non-empty `config`; other sampler kinds reject it instead of silently
-ignoring configuration.
+The optional `candidate_policy` defaults to `sampler_default`. Only `tpe` (typed model
+options), `candidates` (`candidates_file`) and `sobol` (`scramble`) accept a non-empty `config`; other sampler kinds
+reject it instead of silently ignoring configuration.
 
 ### Candidate policy
 
@@ -528,6 +591,143 @@ Failed and infeasible requests are abandoned because dlib has no native hard-
 constraint contract. Only genuine feasible objective values train the model or
 participate in reported best-trial selection. A future constraint-aware sampler
 may add explicit violation magnitudes instead of fabricated objective scores.
+
+### Candidate list {#candidate-list}
+
+```json
+{"kind": "candidates", "seed": 0, "trials": 3,
+ "config": {"candidates_file": "candidates.jsonl"}}
+```
+
+`candidates` evaluates every occurrence of an ordered list of **complete** parameter vectors,
+once each, through the ordinary trial path. It is the native `--sampler candidates
+--candidates FILE`. Trial ID `i` is the zero-based occurrence position `i`. Duplicates are
+kept: the same vector on two lines runs twice and yields two rows with two IDs; nothing is
+deduplicated, cached or fanned out.
+
+- **File** `pineforge_candidates_v1`: UTF-8 JSON Lines, one flat object per line whose keys are
+  exactly the search-dimension names and whose values are scalars. No header, comment or blank
+  line; one final LF is optional and CRLF is accepted. A number is read by the warm-start
+  importer's rules (an integer dimension needs an integer token, a real dimension accepts any
+  JSON number, a number may match a *real* categorical choice, a finite space requires the
+  exact lattice value). Duplicate JSON keys, `NaN`/`Infinity`, invalid UTF-8 and nesting over
+  32 are refused. A fixed input may not share a name with a search dimension.
+- **Config.** `sampler.config.candidates_file` is required and is the only config key. A
+  relative path resolves against the StudySpec file's directory, like every other study path.
+  Python only checks that the file exists; the native runner reads and validates it.
+- **Budget.** `sampler.trials` stays a required positive integer and must equal the number of
+  lines N the native runner admits; a different value is refused before any trial. The native
+  CLI accepts `--max-trials` absent (N is used) or exactly N; an explicit `--max-trials 0` is
+  refused like any other mismatch (N is at least 1), whereas zero keeps its "no cap" meaning for
+  the other samplers. `seed` is required and recorded; it never changes a value.
+- **Admission** happens once, before any plugin, dataset or trial work: the whole file is
+  validated, or nothing runs. Initial caps are 50,000 occurrences, 32 MiB per file and 64 KiB
+  per line, and at least one occurrence. They bound **input only**; they do not bound output
+  size, resident memory, cost, or whether a wide result can be re-imported (the importer
+  refuses documents above 256 MiB, and warm loading keeps its own limits and refusals).
+  Failures use existing codes: `hpo_input_file_invalid` (path, file type, size, line length,
+  UTF-8, JSON), `hpo_study_spec_invalid` with reason `sampler` (empty list, count, budget),
+  `search_space` (a vector against the space) or `input` (fixed-input overlap), and
+  `hpo_cli_usage`. A diagnostic names a 1-based line number and a declared dimension name at
+  most; it never contains the path or a list value.
+- **Refused combinations:** a candidate policy other than `sampler_default`, a pruner other than
+  `none`, a positive `--no-improvement-trials` (zero is accepted), and `--warm-start` (exit 4,
+  `hpo_warm_start_rejected`). There is no resume for a candidate list in this release and no
+  Python-side rewriting or merging of histories.
+- **Rows** are ordinary rows. Constraint violations and engine errors on admitted vectors are
+  terminal rows, not admission errors, and the run continues past them. Cancellation, deadline,
+  trial timeout and output errors behave as for every sampler. A list that ends normally reports
+  `stop_reason: "trial_budget_reached"` at N, even when it happens to cover a whole finite space.
+- **`candidate_list`** is a top-level object present only for this sampler:
+  `{"format","source_sha256","list_sha256","count","evaluated","scored","complete",
+  "unevaluated_ranges"}`. `source_sha256` hashes the exact file bytes; `list_sha256` hashes
+  `pineforge_candidates_v1\n` followed by the canonical key of each vector plus `\n` in order, so
+  whitespace, key order and number spelling do not change it (and a zero's sign does not either:
+  the original bytes are what `source_sha256` distinguishes) while duplicates and order do.
+  `evaluated` counts every position with a terminal row, `scored` only `ok` and
+  `constraint_violation`, and `unevaluated_ranges` lists the missing positions as ascending
+  inclusive `[first, last]` ranges. **`complete` means every position has a terminal row, not
+  that every score is valid.** Coverage is kept for `trials_out` `all`, `best-k` and `none` and
+  after a timeout, so consumers must test `candidate_list.complete`, never `stop_reason` alone.
+- **Use as TPE history.** A candidate result with `trials_out=all`, its `--trials-file`, or a
+  binary history made from them is an ordinary parent for the existing loader: the child reports
+  `warm_start_model: "rebuilt_history"`, never an uninterrupted checkpoint, and the usual
+  space-hash, status, capacity and size refusals apply. The space hash does not certify the
+  dataset, window or fixed inputs, so the caller must use the same scoring context; native
+  cannot refuse a wrong-window parent until the window is recorded in result provenance.
+
+### Sobol {#sobol}
+
+```json
+{"kind": "sobol", "seed": 20260718, "trials": 1024, "config": {"scramble": "digital_shift"}}
+```
+
+`sobol` evaluates a low-discrepancy sequence: the 64-bit Gray-code Sobol sequence over the
+varying dimensions, with direction numbers from the Joe and Kuo criterion-6 table (rows for
+dimensions 2 to 1024, dimension 1 implicit; see `NOTICE`). It is native `--sampler sobol
+[--sobol-scramble digital_shift|none]`, and `sampler.config.scramble` is the only config key
+(default `digital_shift`). No quality or speed advantage over another sampler is claimed.
+
+- **Columns.** The varying dimensions (an integer or real with `low < high`, every Boolean, a
+  categorical with two or more choices) sorted by byte-wise UTF-8 name are the Sobol columns; at
+  most 1024. A constant takes no column, and declaration order is irrelevant.
+- **Points.** Index `n` counts from 0 and includes index 0; nothing is skipped or thinned. With
+  `digital_shift` every column's 64-bit word is XOR-ed with a SplitMix64 word keyed by `seed`
+  (an unsigned 64-bit integer, kept exact as a decimal string in results); `none` ignores the
+  seed. A discrete dimension takes the high word of the exact 128-bit product of the word and its
+  count, on the same lattice as the finite-space candidate decoder; a continuous one takes the 53
+  high bits as a unit. Linear, log and stepped reals and log integers follow the documented
+  binary64 rules; a log integer needs `1 <= low <= 2^52` and `high - low + 1 <= 2^53`.
+- **IDs and replacement.** The trial ID is the raw index. Sampling is with replacement: a
+  duplicate parameter vector is a distinct occurrence, nothing is rejected, redrawn, reseeded,
+  excluded because a parent already tried it, or skipped, and objective feedback is ignored. A
+  finite space's coverage fields stay truthful facts but never stop the run: a list of 64 trials
+  over a four-point space is 64 rows with `stop_reason: "trial_budget_reached"`. Normal budget,
+  wall-limit, patience, pruner, cancel and timeout semantics apply.
+- **Refused before any trial** (`hpo_study_spec_invalid`, reason `sampler`, exit 1): more than
+  1024 varying dimensions, an integer range with 2^64 values, a log-integer range outside the
+  limits above, an invalid scramble. A candidate policy other than `sampler_default`, neither
+  `trials` nor a wall limit, and a scramble given with another sampler are usage errors. The
+  existing uint64 trial-ID rules stay explicit and no new ceiling is added: the largest ID issued
+  is 2^64 - 2.
+- **Numeric identity.** A space with a stepped-real, linear-real, log-real or log-integer column
+  computes through binary64 math and needs a build whose Sobol numeric identity (prefix
+  `portable-sobol-v1`, its own component, distinct from the TPE checkpoint and the return-statistics
+  identities) is bound, in a portable floating-point environment. Otherwise the run is refused
+  before any plugin, dataset or trial work with `hpo_toolchain_unavailable` (reason
+  `native_runner`, the exact unbound reason in the text) or `hpo_portable_math_unavailable`. A
+  space of integers, Booleans and categoricals has `numeric_build_identity: null` and is always
+  available.
+- **Result.** A top-level `sobol` object, present only for this sampler:
+  `{contract, table{name, subset_sha256, upstream_sha256}, word_bits, scramble, seed, columns,
+  numeric_build_identity, mapper{contract, revision}, identity, first_index, next_index,
+  exact_stream}`. `seed`, `first_index` and `next_index` are decimal strings (`seed` is null for
+  `none`). `identity` is the SHA-256 of the canonical JSON of the descriptor (including the space
+  hash, the numeric identity and the mapper revision); `next_index` is one more than this part's
+  largest terminal trial ID and counts every terminal trial whether or not its row is retained
+  (`trials_out` best-k and none included, and a timed-out or fatal result too).
+- **Continuation.** `--warm-start` accepts only a complete Sobol result (`trials_out` all, at most
+  256 MiB, earlier parts in `warm_start_trials`) whose identity equals the new run's. Rows-only
+  files, arrays, JSONL, binary history, results of other samplers, summaries and any identity
+  mismatch are refused with exit 4 (`hpo_warm_start_rejected`), with no fallback mode and no new
+  checkpoint format. Every parent row, ancestors included, must equal the generator at its trial
+  ID, and the claimed indices and `exact_stream` are recomputed from the rows: a claim that
+  contradicts them is refused in either direction. An unsorted row array is accepted (row order
+  has no meaning), a repeated ID is not, a parent with no row at all is refused, and a parent
+  whose largest ID is 2^64 - 2 or whose budget would pass 2^64 - 2 is refused. The child starts at
+  the parent's largest ID plus one and never refills a hole. The generic loader's own limits
+  (document size, subnormal parameters, capacity) still apply and are not relaxed; this is not a
+  claim that arbitrary history continues exactly.
+- **What the claims are.** (P) A row with trial ID `t` holds the point fixed by the run identity
+  and `t` alone, whatever the workers, batch size, lag, failures or other rows. (E) If the parent
+  rows are exactly IDs 0 to `m - 1` and the identities match, the continuation's rows equal rows
+  `m` onward of an uninterrupted run (parameters only; `exact_stream` is true). A gapped,
+  cancelled or timed-out parent keeps only point-by-ID meaning (`exact_stream` false). Whole
+  result objects, counters, the best trial, `stop_reason` and `early_stop` are not claimed to
+  concatenate. With a fixed batch size and lag and no external stop, repeated runs and any worker
+  count give identical result bytes; with patience enabled the terminal frontier follows the
+  configured drain, so the stream claims are qualified by those fixed replay inputs. Equality
+  across architectures is claimed only for host pairs a proof tested.
 
 ### TPE
 
@@ -790,6 +990,8 @@ key, and search-space definition:
 | `search_space_exhausted` | Whether no unattempted vector remains in a finite space. |
 | `stop_reason` | Machine-readable reason that candidate generation stopped. |
 | `early_stop` | Present only when `--no-improvement-trials` is enabled; see the [patience and drain fields](batching.md). |
+| `sobol` | Present only for `sampler: "sobol"`; descriptor, identity and this part's index range, see [Sobol](#sobol). |
+| `candidate_list` | Present only for `sampler: "candidates"`; list identity and terminal-position coverage, see [Candidate list](#candidate-list). |
 | `full_parameter_coverage` | Every vector in the declared finite domain has a terminal trial record. |
 | `exhaustive_equivalent` | Full parameter coverage and every trial status is `ok` or `constraint_violation`. |
 
@@ -1146,6 +1348,7 @@ binary plus independently encoded new-trial chunks for subsequent continuation.
 - account-equity aggregation and allocation optimization;
 - registered custom-objective lookup from JSON;
 - persistence, resume, and worker recovery;
+- continuation or resume of a `candidates` list (its results can seed TPE history only);
 - conditional/hierarchical spaces;
 - multi-objective directions and Pareto output;
 - walk-forward folds;

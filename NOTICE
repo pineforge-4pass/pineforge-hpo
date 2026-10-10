@@ -16,3 +16,14 @@ The TPE sampler uses CORE-MATH binary64 log, log1p, exp, expm1, cos and erfc,
 Copyright (c) 2022-2026 the CORE-MATH contributors, under the MIT license.
 Sources, individual author notices and the full license are retained under
 third_party/core_math; pinned upstream commit aa66f20b0118453890acb29b98b51c9c8dd92118.
+
+The Sobol sampler uses the direction numbers of Stephen Joe and Frances Kuo
+(file new-joe-kuo-6.21201, dimensions 2 to 1024, search criterion D(6)),
+Copyright (c) 2008, Frances Y. Kuo and Stephen Joe, under their BSD-style
+licence. The licence is reproduced in THIRD_PARTY_LICENSES/sobol_joe_kuo.txt
+(an unchanged copy of third_party/sobol_joe_kuo/LICENSE), which accompanies the
+table in source and in binary distributions of this product. The names of the
+copyright holders and of the University of New South Wales and the University
+of Waikato are not used to endorse or promote this product. Please cite S. Joe
+and F. Y. Kuo, ACM Trans. Math. Softw. 29 (2003), 49-57, and SIAM J. Sci.
+Comput. 30 (2008), 2635-2654, where the material is used.

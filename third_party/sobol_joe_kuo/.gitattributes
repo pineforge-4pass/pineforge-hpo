@@ -1,0 +1,4 @@
+# Upstream bytes are hashed (SHA256SUMS): never normalise line endings, and keep the
+# table's trailing space on every row.
+new-joe-kuo-6.21201.first1024 -text whitespace=-trailing-space
+LICENSE -text
