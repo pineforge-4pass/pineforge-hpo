@@ -942,11 +942,16 @@ class SobolCliTests(unittest.TestCase):
         status = 7
         saved_native, saved_state = NATIVE, dict(_IDENTITY_STATE)
 
-        def stand_in(code: str) -> Path:
-            path = self.directory / f"stand-in-{code}"
-            document = json.dumps({"ok": False, "failure": {"code": code}})
-            path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{document}'\n"
-                            f"echo stand-in-stderr >&2\nexit {status}\n", encoding="utf-8")
+        def stand_in(code) -> Path:
+            path = self.directory / f"stand-in-{code or 'silent'}"
+            if code is None:
+                # A probe that dies before printing anything: the document is empty.
+                script = f"#!/bin/sh\necho stand-in-stderr >&2\nexit {status}\n"
+            else:
+                document = json.dumps({"ok": False, "failure": {"code": code}})
+                script = (f"#!/bin/sh\nprintf '%s\\n' '{document}'\n"
+                          f"echo stand-in-stderr >&2\nexit {status}\n")
+            path.write_text(script, encoding="utf-8")
             path.chmod(0o755)
             return path
 
@@ -964,6 +969,16 @@ class SobolCliTests(unittest.TestCase):
             NATIVE = stand_in("hpo_toolchain_unavailable")
             _IDENTITY_STATE.clear()
             self.assertFalse(identity_bound())
+            # A probe that prints nothing at all and fails must raise the same way; reading it as
+            # an unbound build would let floating-space tests skip on a build that is simply broken.
+            NATIVE = stand_in(None)
+            _IDENTITY_STATE.clear()
+            with self.assertRaises(AssertionError) as raised:
+                identity_bound()
+            silent_message = str(raised.exception)
+            self.assertIn(f"exit code {status}", silent_message)
+            self.assertIn("stand-in-stderr", silent_message)
+            self.assertNotIn("bound", _IDENTITY_STATE)
         finally:
             NATIVE = saved_native
             _IDENTITY_STATE.clear()
