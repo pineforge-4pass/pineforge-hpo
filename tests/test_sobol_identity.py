@@ -139,7 +139,7 @@ FIXTURE_PROBE_CPP = (
     'extern "C" const char* pfh_fixture_digest();\n'
     "int main() { std::cout << pfh_fixture_digest() << \"\\n\"; return 0; }\n"
 )
-FIXTURE_MATH_C = "double pfh_fixture_{n}(double value) { return value * 2.0 + 1.0; }\n"
+FIXTURE_MATH_C = "double pfh_fixture_{n}(double value) {{ return value * 2.0 + 1.0; }}\n"
 
 # Appended to a copy of the real root project that has no Sobol integration yet. The marker
 # lines let this test cut the block out again to build the baseline of the invariance check.
