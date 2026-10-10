@@ -441,7 +441,7 @@ class SobolCliTests(unittest.TestCase):
         command = self.argv(DISCRETE, *extra)
         flags_start = command.index(DISCRETE.dims[0].flags()[0])
         flags_end = command.index("--sampler")
-        flags = [flag for dim in DISCRETE.dims for flag in dim.flags()]
+        flags = [flag for dim in reversed(DISCRETE.dims) for flag in dim.flags()]
         return command[:flags_start] + flags + command[flags_end:]
 
     def test_the_reversed_command_declares_the_dimensions_in_the_opposite_order(self) -> None:
