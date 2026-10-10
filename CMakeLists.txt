@@ -215,8 +215,11 @@ endif()
 # Return-statistics reducer: its own build identity (independent of the TPE checkpoint identity
 # above), and the per-source flags that keep its arithmetic uncontracted. Only per-source
 # properties of the reducer and the per-target EXPORT_COMPILE_COMMANDS property of the core are
-# written, so numeric_build_flags.txt above is unaffected. Keep this after the last CMAKE_CXX_FLAGS
-# change and do not set properties of the reducer source later.
+# written, and each consumer gets a dependency on the generation target and the per-configuration
+# output directory (PFH_RETURN_STATS_IDENTITY_DIRECTORY, not the generated/<CONFIG>/CXX directory
+# of numeric_build_flags.hpp) as a private include directory, so numeric_build_flags.txt above is
+# unaffected. Keep this after the last CMAKE_CXX_FLAGS change and do not set properties of the
+# reducer source later.
 #
 # The identity reads the compilation database, so the default build now writes
 # compile_commands.json into the build directory (one extra file, accepted; the helper switches it
