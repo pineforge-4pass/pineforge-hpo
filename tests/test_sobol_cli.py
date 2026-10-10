@@ -249,7 +249,7 @@ def identity_bound() -> bool:
         try:
             failure = json.loads(probe.stdout).get("failure") or {}
         except ValueError:
-            failure = {}
+            failure = {"code": "hpo_toolchain_unavailable"}
         if failure.get("code") == "hpo_toolchain_unavailable":
             _IDENTITY_STATE["bound"] = False
         elif probe.returncode != 0:
