@@ -48,7 +48,10 @@ BUILTIN_STL_SUPPORT    = YES
 CPP_CLI_SUPPORT        = NO
 PYTHON_DOCSTRING       = YES
 MARKDOWN_SUPPORT       = YES
-# Keep generated anchors equal to GitHub's: one link form serves both renderers.
+# Generated heading ids equal GitHub's slugs, so in-page #slug links work in both renderers.
+# Cross-file file.md#slug links do NOT: this generator leaves them verbatim, so keep those
+# page-level. The ids are one namespace for the whole site, so a slug repeated on another page
+# is suffixed and would move such a link to the wrong page.
 MARKDOWN_ID_STYLE      = GITHUB
 AUTOLINK_SUPPORT       = YES
 JAVADOC_AUTOBRIEF      = YES
