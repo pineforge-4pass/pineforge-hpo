@@ -156,8 +156,9 @@ The listed files are the only hashed inputs. The helper refuses any listed file 
 directory or named like the generated header, so the identity cannot hash itself.
 
 The helper writes only per-source properties of `SOURCES` (`COMPILE_OPTIONS`,
-`COMPILE_DEFINITIONS`, `SKIP_UNITY_BUILD_INCLUSION`, `SKIP_PRECOMPILE_HEADERS`), and the
-`CMAKE_EXPORT_COMPILE_COMMANDS` cache entry when it is undefined. It never calls
+`COMPILE_DEFINITIONS`, `SKIP_UNITY_BUILD_INCLUSION`, `SKIP_PRECOMPILE_HEADERS`), the
+`CMAKE_EXPORT_COMPILE_COMMANDS` cache entry when it is undefined and, when that switch is on, the
+per-target `EXPORT_COMPILE_COMMANDS` property of `TARGET`. It never calls
 `target_compile_options`, `target_compile_definitions` or `add_compile_options`, and it never
 assigns `CMAKE_CXX_FLAGS`, so the target-wide flags that the numeric flag recipe hashes for the
 TPE checkpoint identity stay byte-identical. With CMake 3.19 or newer the ingredients are written

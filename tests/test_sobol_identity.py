@@ -464,7 +464,7 @@ def scenario_text_hygiene(repository):
     require(repository.as_posix() not in note, "the note must not contain the repository path")
     for word in ("spot", "EC2", "AWS", "supervisor", "executor", ".executors", "Claude"):
         require(word not in note, f"the note must not mention '{word}'")
-    print("PASS: helpers model no flags and touch no target-wide property; runtime refuses in order")
+    print("PASS: helpers model no flags and touch no target-wide option, definition or flag; runtime refuses in order")
 
 
 INCLUDE_LINE = re.compile(r'(?m)^\s*#\s*include\s+[<"]([^>"]+)[>"]')

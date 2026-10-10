@@ -22,10 +22,11 @@
 # wrappers, response files, an unreadable or ambiguous entry, a pre-3.19 CMake) makes the
 # capability unbound: the build still succeeds, the identity is empty and the reason is recorded.
 #
-# Only per-source properties of SOURCES are written, plus CMAKE_EXPORT_COMPILE_COMMANDS when the
-# project left it undefined. Target-wide options, target-wide definitions, CMAKE_CXX_FLAGS and
-# the checked-in numeric flag recipe are never modified, so the TPE checkpoint identity cannot
-# move.
+# Only per-source properties of SOURCES are written, plus the compile-commands export: the cache
+# variable CMAKE_EXPORT_COMPILE_COMMANDS when the project left it undefined, and the per-target
+# EXPORT_COMPILE_COMMANDS property of TARGET whenever the database is on. Target-wide options,
+# target-wide definitions, CMAKE_CXX_FLAGS and the checked-in numeric flag recipe are never
+# modified, so the TPE checkpoint identity cannot move.
 #
 # Result variables (caller scope): PFH_RETURN_STATS_IDENTITY_TARGET is the generation target and
 # PFH_RETURN_STATS_IDENTITY_DIRECTORY is the per-configuration output directory (contains a
