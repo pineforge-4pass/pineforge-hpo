@@ -444,6 +444,20 @@ class SobolCliTests(unittest.TestCase):
         flags = [flag for dim in reversed(DISCRETE.dims) for flag in dim.flags()]
         return command[:flags_start] + flags + command[flags_end:]
 
+    def test_the_reversed_command_declares_the_dimensions_in_the_opposite_order(self) -> None:
+        # The order test above compares two runs; this pins that the second run's argv really
+        # is the first one reversed, so that comparison is never a command against itself.
+        def declared(command):
+            return sorted(DISCRETE.dims, key=lambda dim: command.index(dim.name))
+
+        extra = ("--seed", 5, "--max-trials", 16)
+        forward = self.argv(DISCRETE, *extra)
+        backward = self._reversed_command(*extra)
+        self.assertNotEqual(backward, forward)
+        self.assertEqual(sorted(backward), sorted(forward))  # same tokens, only reordered
+        self.assertEqual(declared(forward), DISCRETE.dims)
+        self.assertEqual(declared(backward), DISCRETE.dims[::-1])
+
     def test_floating_columns_match_the_oracle_where_it_is_exact(self) -> None:
         for scramble in ("digital_shift", "none"):
             with self.subTest(scramble=scramble):
@@ -919,6 +933,41 @@ class SobolCliTests(unittest.TestCase):
                     self.assertTrue(low <= row["parameters"]["Lg"] <= high)
 
     # ---- numeric identity capability -------------------------------------------------------------
+
+    def test_a_probe_failure_other_than_the_refusal_is_raised_not_read_as_unbound(self) -> None:
+        # identity_bound() is driven with a stand-in native that always exits with `status`;
+        # only the failure code in its stdout document differs. A healthy build never gives a
+        # non-refusal probe failure, so no real run reaches the raise.
+        global NATIVE
+        status = 7
+        saved_native, saved_state = NATIVE, dict(_IDENTITY_STATE)
+
+        def stand_in(code: str) -> Path:
+            path = self.directory / f"stand-in-{code}"
+            document = json.dumps({"ok": False, "failure": {"code": code}})
+            path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{document}'\n"
+                            f"echo stand-in-stderr >&2\nexit {status}\n", encoding="utf-8")
+            path.chmod(0o755)
+            return path
+
+        try:
+            NATIVE = stand_in("hpo_cli_usage")
+            _IDENTITY_STATE.clear()
+            with self.assertRaises(AssertionError) as raised:
+                identity_bound()
+            message = str(raised.exception)
+            self.assertIn(f"exit code {status}", message)
+            self.assertIn("hpo_cli_usage", message)
+            self.assertIn("stand-in-stderr", message)
+            self.assertNotIn("bound", _IDENTITY_STATE)
+            # The registered refusal at the same exit status is an unbound build, not an error.
+            NATIVE = stand_in("hpo_toolchain_unavailable")
+            _IDENTITY_STATE.clear()
+            self.assertFalse(identity_bound())
+        finally:
+            NATIVE = saved_native
+            _IDENTITY_STATE.clear()
+            _IDENTITY_STATE.update(saved_state)
 
     def test_unbound_identity_refuses_floating_spaces_only(self) -> None:
         discrete = json.loads(self.run_cli(DISCRETE, "--max-trials", 2).stdout)
