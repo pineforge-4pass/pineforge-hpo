@@ -154,10 +154,13 @@ function(pfh_return_stats_identity)
 
     # The compilation database is the byte custody of the generated command. A project that
     # left the switch undefined gets it on; an explicit OFF is respected and leaves the
-    # capability unbound.
-    if(NOT DEFINED CMAKE_EXPORT_COMPILE_COMMANDS)
+    # capability unbound. An EMPTY value counts as undefined: CMake 3.28.3 creates the cache
+    # entry with an empty value before the project runs, and DEFINED is true for it. FORCE is
+    # needed because a plain set(CACHE) does not overwrite an existing entry; it applies only
+    # to the empty value, so an explicit OFF or ON is never overwritten.
+    if(NOT DEFINED CMAKE_EXPORT_COMPILE_COMMANDS OR "${CMAKE_EXPORT_COMPILE_COMMANDS}" STREQUAL "")
         set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
-            "Write compile_commands.json (read by the return-statistics build identity)")
+            "Write compile_commands.json (read by the return-statistics build identity)" FORCE)
     endif()
 
     get_property(multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)

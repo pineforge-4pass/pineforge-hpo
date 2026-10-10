@@ -231,10 +231,12 @@ function(pfh_sobol_identity)
     set_property(SOURCE "${source_root}/src/core/sobol_identity.cpp" APPEND PROPERTY
         INCLUDE_DIRECTORIES "${output_directory}/${configuration}")
 
-    # The compilation database is the byte custody of the generated commands.
-    if(NOT DEFINED CMAKE_EXPORT_COMPILE_COMMANDS)
+    # The compilation database is the byte custody of the generated commands. An empty value
+    # counts as undefined (CMake 3.28.3 creates the cache entry empty and DEFINED is true for
+    # it); FORCE only in that branch, so an explicit OFF or ON is never overwritten.
+    if(NOT DEFINED CMAKE_EXPORT_COMPILE_COMMANDS OR "${CMAKE_EXPORT_COMPILE_COMMANDS}" STREQUAL "")
         set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
-            "Write compile_commands.json (read by the build identities)")
+            "Write compile_commands.json (read by the build identities)" FORCE)
     endif()
     get_property(multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
     if(multi_config)
