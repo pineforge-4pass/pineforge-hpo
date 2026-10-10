@@ -155,7 +155,7 @@ Implemented:
 - mixed continuous/discrete `DlibGlobalSampler` encoding;
 - multiple outstanding requests with ordered deterministic batch feedback;
 - minimize direction and abandoned failed/infeasible requests;
-- real scraped-strategy benchmark against seeded random search;
+- real third-party-strategy benchmark against seeded random search;
 - native TPE with bounded numeric Parzen mixtures, prior-smoothed categorical
   marginals, and explicit ask/tell/abandon lifecycle;
 - strict typed StudySpec config for TPE startup, EI candidate, gamma, prior, and
