@@ -250,7 +250,15 @@ def identity_bound() -> bool:
             failure = json.loads(probe.stdout).get("failure") or {}
         except ValueError:
             failure = {}
-        _IDENTITY_STATE["bound"] = probe.returncode == 0
+        if failure.get("code") == "hpo_toolchain_unavailable":
+            _IDENTITY_STATE["bound"] = False
+        elif probe.returncode != 0:
+            raise AssertionError(
+                f"the Sobol numeric identity probe failed with exit code {probe.returncode}, "
+                f"which is not the hpo_toolchain_unavailable refusal\n"
+                f"stdout:\n{probe.stdout}\nstderr:\n{probe.stderr}")
+        else:
+            _IDENTITY_STATE["bound"] = True
         _IDENTITY_STATE["refusal"] = failure
         _IDENTITY_STATE["stderr"] = probe.stderr
     return bool(_IDENTITY_STATE["bound"])
