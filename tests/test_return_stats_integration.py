@@ -57,16 +57,24 @@ DROPPED = {"-c", "-MD", "-MMD", "-MP", "-MG"}
 DROPPED_WITH_ARGUMENT = {"-o", "-MF", "-MT", "-MQ"}
 
 
-def identity_directory(build: Path) -> Path:
+def identity_directory(build: Path, configuration: str | None = None) -> Path:
+    """The directory the identity target wrote. A single-configuration tree holds exactly one
+    configuration directory (several are refused). A multi-configuration generator writes one per
+    configuration, so its caller names the configuration it built."""
     root = build / "generated" / "return_stats_identity"
+    if configuration is not None:
+        named = root / configuration
+        if not named.is_dir():
+            raise AssertionError(f"no directory for the configuration {configuration} in {root}")
+        return named
     directories = [path for path in root.iterdir() if path.is_dir()]
     if len(directories) != 1:
         raise AssertionError(f"expected one configuration directory in {root}: {directories}")
     return directories[0]
 
 
-def read_identity(build: Path):
-    directory = identity_directory(build)
+def read_identity(build: Path, configuration: str | None = None):
+    directory = identity_directory(build, configuration)
     descriptor = (directory / "return_stats_identity.descriptor.txt").read_bytes()
     identity = (directory / "return_stats_identity.txt").read_text().rstrip("\n")
     header = (directory / "return_stats_identity_generated.hpp").read_text()
@@ -303,10 +311,11 @@ class UnboundTreeTests(Base):
                                     "-DPINEFORGE_HPO_BUILD_NATIVE_CLI=OFF",
                                     "-DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=OFF")
         self.assertEqual(configured.returncode, 0, configured.stderr)
-        built = run(["cmake", "--build", str(tree), "--config", "Release", "--target",
+        configuration = "Release"  # built below and read back from its own directory
+        built = run(["cmake", "--build", str(tree), "--config", configuration, "--target",
                      "pineforge_hpo_core_return_stats_identity"], timeout=600)
         self.assertEqual(built.returncode, 0, built.stderr)
-        descriptor, identity, header = read_identity(tree)
+        descriptor, identity, header = read_identity(tree, configuration)
         self.assertIn("reason=multi_config_generator\n", descriptor.decode())
         self.assertEqual(identity, "")
         self.assertIn("inline constexpr bool kBound = false;", header)
