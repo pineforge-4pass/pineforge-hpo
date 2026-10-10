@@ -855,9 +855,58 @@ def scenario_ingredients(repository, base, generator):
           f"and the launcher state set after the call")
 
 
+def scenario_database_switch(repository, base, generator):
+    """Configure only: the compilation-database switch in three cases, each checked two ways.
+
+    The ingredients file reports what the helper saw, and compile_commands.json reports what
+    CMake itself wrote at generate time. Neither one is read as the expectation of the other:
+    both are compared against the expected value of the case.
+    """
+    # The documented default of the helper, from the comment above its switch in
+    # cmake/ReturnStatsIdentity.cmake: "A project that left the switch undefined gets it on".
+    default_enabled = "ON"
+    off = "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF"
+    on = "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+    cases = (
+        ("default", (), default_enabled),
+        ("explicit-off", (off,), off.partition("=")[2]),
+        ("explicit-on", (on,), on.partition("=")[2]),
+    )
+    tag = generator.replace(" ", "-")
+    for case, definitions, expected in cases:
+        source = base / f"database-{case}-{tag}"
+        build = base / f"database-{case}-build-{tag}"
+        write_fixture(source, repository)
+        process = configure(source, build, *definitions, generator=generator, check=False)
+        require(process.returncode == 0,
+                f"[{generator}] {case}: the configure failed:\n"
+                f"{process.stdout}\n{process.stderr}")
+        path = outputs(build) / INGREDIENTS
+        require(path.is_file(),
+                f"[{generator}] {case}: the ingredients file was not written: {path}")
+        text = path.read_text()
+        require(text.strip(), f"[{generator}] {case}: the ingredients file is empty")
+        values, sources, headers = parse_ingredients(path)
+        require("database_enabled" in values,
+                f"[{generator}] {case}: no database_enabled line:\n{text}")
+        require(values["database_enabled"] == expected,
+                f"[{generator}] {case}: wanted database_enabled {expected!r}, "
+                f"the file has {values['database_enabled']!r}")
+        written = (build / "compile_commands.json").is_file()
+        require(written == (values["database_enabled"] == "ON"),
+                f"[{generator}] {case}: compile_commands.json present={written} disagrees with "
+                f"database_enabled={values['database_enabled']!r}")
+        require(written == (expected == "ON"),
+                f"[{generator}] {case}: compile_commands.json present={written} disagrees with "
+                f"the expected {expected!r}")
+        print(f"PASS [{generator}] {case}: database_enabled="
+              f"{values['database_enabled']} and compile_commands.json present={written}")
+
+
 def ingredients_group(repository, base, generators):
     for generator in generators:
         scenario_ingredients(repository, base, generator)
+        scenario_database_switch(repository, base, generator)
 
 
 def scenario_api(repository, base, generator):
