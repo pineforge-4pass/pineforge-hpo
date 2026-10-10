@@ -768,6 +768,98 @@ def scenario_not_circular(repository, base, generator):
     print("PASS: the generated header cannot be an input of its own identity")
 
 
+def fixture_declarations(source):
+    """What the fixture's own build file declares for the helper call, read back from that file."""
+    text = (source / "CMakeLists.txt").read_text()
+    call = re.search(r"pfh_return_stats_identity\(([^)]*)\)", text).group(1)
+    keyword = lambda name: re.search(rf"\b{name}\s+(\S+)", call).group(1)
+    return {
+        "target": keyword("TARGET"),
+        "source": keyword("SOURCES"),
+        "header": keyword("HEADERS"),
+        "contract": re.search(r'set\(PFH_TEST_CONTRACT\s+"([^"]*)"', text).group(1),
+        "other_target": re.search(r"add_executable\((\S+)", text).group(1),
+    }
+
+
+def scenario_ingredients(repository, base, generator):
+    """Configure only: the ingredients file carries the helper call and the finished directory.
+
+    The writer runs at the end of the top-level directory, so it has to receive its arguments
+    from the call site, and it has to read the launcher state that the project sets after the
+    call. Every expected value below comes from what this test wrote into the fixture, never
+    from the helper or from a previous output.
+    """
+    tag = generator.replace(" ", "-")
+    source = base / f"ingredients-{tag}"
+    write_fixture(source, repository)
+    declared = fixture_declarations(source)
+    target, other = declared["target"], declared["other_target"]
+    require(target != other, "the fixture needs a second target to tell the bindings apart")
+
+    # Launcher state set after the helper call. The other target gets values of its own, so a
+    # launcher in the file can only have been read from the declared target.
+    expected = {
+        "launcher.target": "pfh-test-target-launcher",
+        "rule_launch.target": "pfh-test-target-rule-launch",
+        "rule_launch.global": "pfh-test-global-rule-launch",
+        "rule_launch.directory": "pfh-test-directory-rule-launch",
+    }
+    other_values = ("pfh-test-other-launcher", "pfh-test-other-rule-launch")
+    properties = [
+        (f"TARGET {target}", "CXX_COMPILER_LAUNCHER", expected["launcher.target"]),
+        (f"TARGET {target}", "RULE_LAUNCH_COMPILE", expected["rule_launch.target"]),
+        ("GLOBAL", "RULE_LAUNCH_COMPILE", expected["rule_launch.global"]),
+        ("DIRECTORY", "RULE_LAUNCH_COMPILE", expected["rule_launch.directory"]),
+        (f"TARGET {other}", "CXX_COMPILER_LAUNCHER", other_values[0]),
+        (f"TARGET {other}", "RULE_LAUNCH_COMPILE", other_values[1]),
+    ]
+    with open(source / "CMakeLists.txt", "a") as handle:
+        for scope, name, value in properties:
+            handle.write(f"set_property({scope} PROPERTY {name} {value})\n")
+
+    build = base / f"ingredients-build-{tag}"
+    process = configure(source, build, generator=generator, check=False)
+    require(process.returncode == 0,
+            f"[{generator}] the configure failed:\n{process.stdout}\n{process.stderr}")
+    path = outputs(build) / INGREDIENTS
+    require(path.is_file(), f"[{generator}] the ingredients file was not written: {path}")
+    text = path.read_text()
+    require(text.strip(), f"[{generator}] the ingredients file is empty")
+    require("$<" not in text, f"[{generator}] a generator expression was left unevaluated:\n{text}")
+    values, sources, headers = parse_ingredients(path)
+    missing = sorted(set(World(base, f"keys-{tag}").ingredients()) - set(values))
+    require(not missing, f"[{generator}] ingredient lines missing: {missing}\n{text}")
+
+    wanted = {
+        "target": target,
+        "contract": declared["contract"],
+        "configuration": CONFIGURATION,
+        "generator": generator,
+        "database_enabled": "ON",
+        **expected,
+    }
+    for key, value in wanted.items():
+        require(values[key] == value,
+                f"[{generator}] {key}: wanted {value!r}, the file has {values[key]!r}")
+    real = os.path.realpath
+    require(real(values["source.root"]) == real(source), f"[{generator}] source.root differs")
+    require(real(values["build.root"]) == real(build), f"[{generator}] build.root differs")
+    require([real(item) for item in sources] == [real(source / declared["source"])],
+            f"[{generator}] the source lines differ from the declared SOURCES: {sources}")
+    require([real(item) for item in headers] == [real(source / declared["header"])],
+            f"[{generator}] the header lines differ from the declared HEADERS: {headers}")
+    require(not any(value in text for value in other_values),
+            f"[{generator}] a launcher of another target was bound:\n{text}")
+    print(f"PASS [{generator}]: the ingredients file holds the declared target, contract, files "
+          f"and the launcher state set after the call")
+
+
+def ingredients_group(repository, base, generators):
+    for generator in generators:
+        scenario_ingredients(repository, base, generator)
+
+
 def scenario_api(repository, base, generator):
     source = base / "api"
     write_fixture(source, repository)
@@ -903,7 +995,8 @@ def scenario_plan(dlib, generators):
     the same inputs as the corresponding part of the default run.
     """
     steps = [("text_hygiene", lambda base: scenario_text_hygiene(REPOSITORY)),
-             ("synthetic", synthetic_group)]
+             ("synthetic", synthetic_group),
+             ("ingredients", lambda base: ingredients_group(REPOSITORY, base, generators))]
     for generator in generators:
         label = GENERATOR_TOKEN[generator]
         steps.append((f"fixture:{label}",

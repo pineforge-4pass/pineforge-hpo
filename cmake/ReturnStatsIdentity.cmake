@@ -196,8 +196,18 @@ function(pfh_return_stats_identity)
         _pfh_rsi_emit_ingredients("${ingredients_path}" "${RSI_TARGET}"
             "${CMAKE_CURRENT_SOURCE_DIR}" ${pairs})
     else()
-        cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _pfh_rsi_emit_ingredients
-            "${ingredients_path}" "${RSI_TARGET}" "${CMAKE_CURRENT_SOURCE_DIR}" ${pairs})
+        # The arguments of a deferred call are evaluated when it runs, at the end of the top-level
+        # directory, where the variables of this function no longer exist: written as
+        # "${RSI_TARGET}" they reach the writer empty. EVAL expands them here instead, and the
+        # bracket arguments keep the deferred call from expanding them a second time. The
+        # writer receives the same strings as in the direct call above.
+        set(deferred_call "cmake_language(DEFER DIRECTORY [==[${CMAKE_SOURCE_DIR}]==] CALL")
+        string(APPEND deferred_call " _pfh_rsi_emit_ingredients [==[${ingredients_path}]==]")
+        string(APPEND deferred_call " [==[${RSI_TARGET}]==] [==[${CMAKE_CURRENT_SOURCE_DIR}]==]")
+        foreach(pair IN LISTS pairs)
+            string(APPEND deferred_call " [==[${pair}]==]")
+        endforeach()
+        cmake_language(EVAL CODE "${deferred_call})")
     endif()
 
     set(identity_target "${RSI_TARGET}_return_stats_identity")
