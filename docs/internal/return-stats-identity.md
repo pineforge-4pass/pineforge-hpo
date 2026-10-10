@@ -158,8 +158,9 @@ directory or named like the generated header, so the identity cannot hash itself
 The helper writes only per-source properties of `SOURCES` (`COMPILE_OPTIONS`,
 `COMPILE_DEFINITIONS`, `SKIP_UNITY_BUILD_INCLUSION`, `SKIP_PRECOMPILE_HEADERS`), the
 `CMAKE_EXPORT_COMPILE_COMMANDS` cache entry when it is undefined, the per-target
-`EXPORT_COMPILE_COMMANDS` property of `TARGET` when that switch is on, and it adds the generated
-directory as a private include directory of each consumer. It never calls
+`EXPORT_COMPILE_COMMANDS` property of `TARGET` when that switch is on, and each consumer gets a
+dependency on the generation target and the per-configuration output directory as a private
+include directory. It never calls
 `target_compile_options`, `target_compile_definitions` or `add_compile_options`, and it never
 assigns `CMAKE_CXX_FLAGS`, so the target-wide flags that the numeric flag recipe hashes for the
 TPE checkpoint identity stay byte-identical. With CMake 3.19 or newer the ingredients are written
