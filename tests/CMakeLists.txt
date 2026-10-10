@@ -199,9 +199,11 @@ if(Python3_Interpreter_FOUND AND UNIX)
         FIXTURES_REQUIRED sobol_mapper_reference TIMEOUT 1800)
     # Licence artefacts: verbatim bytes and hashes, NOTICE text, wheel-metadata entry. With
     # PFH_SOBOL_SDIST and PFH_SOBOL_WHEEL set in the environment it also inspects built packages.
+    # The trailing -v goes to unittest (the script takes the repository root first): every skipped
+    # test then prints its own "... skipped '<reason>'" line beside the "(skipped=N)" summary.
     add_test(NAME pineforge_hpo_sobol_licence
         COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_sobol_licence.py"
-            "${PROJECT_SOURCE_DIR}")
+            "${PROJECT_SOURCE_DIR}" -v)
 else()
     message(STATUS "Skipping the Sobol oracle, table-generation, mapper and licence tests: "
         "a UNIX host with Python 3 is required")
