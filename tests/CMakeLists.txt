@@ -357,6 +357,12 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         -Wall -Wextra -Wpedantic)
     add_library(pineforge_hpo_test_signal_macro OBJECT EXCLUDE_FROM_ALL test_signal_macro.cpp)
     target_link_libraries(pineforge_hpo_test_signal_macro PRIVATE PineForgeHPO::engine_adapter)
+    # test_signal_macro.cpp includes src/cli/main.cpp, hence return_stats_identity.hpp and the
+    # generated header behind it: the generation dependency and the per-configuration include
+    # directory are given the way pfh_return_stats_identity gives them to its CONSUMERS.
+    add_dependencies(pineforge_hpo_test_signal_macro ${PFH_RETURN_STATS_IDENTITY_TARGET})
+    target_include_directories(pineforge_hpo_test_signal_macro PRIVATE
+        "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
     add_test(NAME pineforge_hpo_signal_macro
         COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
             --target pineforge_hpo_test_signal_macro)
