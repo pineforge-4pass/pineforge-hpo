@@ -922,6 +922,107 @@ def scenario_executed(base, generator):
     print(f"PASS [{generator}]: executed C++ and C commands equal the database entries")
 
 
+def fixture_declarations(source):
+    """What the fixture's own build file declares for the helper call, read back from that file."""
+    text = (source / "CMakeLists.txt").read_text()
+    call = re.search(r"pfh_sobol_identity\(([^)]*)\)", text).group(1)
+    keyword = lambda name: re.search(rf"\b{name}\s+(\S+)", call).group(1)
+    math = keyword("PORTABLE_MATH_TARGET")
+    math_files = re.search(rf"add_library\({re.escape(math)}\s+STATIC\s+([^)]*)\)", text).group(1)
+    return {
+        "core": keyword("TARGET"),
+        "math": math,
+        "math_files": math_files.split(),
+        "other": re.search(r"add_executable\((\S+)", text).group(1),
+    }
+
+
+def scenario_ingredients(base, generator):
+    """Configure only: the ingredients file carries the helper call and the finished directory.
+
+    The writer runs at the end of the top-level directory, so it has to receive its arguments
+    from the call site, and it has to read the launcher state that the project sets after the
+    call. Every expected value below comes from what this test wrote into the fixture or from the
+    helper's own inventory lists, never from a previous output.
+    """
+    tag = generator.replace(" ", "-")
+    source = base / f"ingredients-{tag}"
+    write_fixture(source)
+    declared = fixture_declarations(source)
+    core, math, other = declared["core"], declared["math"], declared["other"]
+    require(len({core, math, other}) == 3, "the fixture needs three distinct targets")
+
+    # Launcher state set after the helper call. The third target gets values of its own, so a
+    # launcher in the file can only have been read from the declared targets.
+    expected = {
+        "launcher.core": "pfh-test-core-launcher",
+        "launcher.math": "pfh-test-math-launcher",
+        "rule_launch.core": "pfh-test-core-rule-launch",
+        "rule_launch.math": "pfh-test-math-rule-launch",
+        "rule_launch.global": "pfh-test-global-rule-launch",
+        "rule_launch.directory": "pfh-test-directory-rule-launch",
+    }
+    other_values = ("pfh-test-other-cxx-launcher", "pfh-test-other-c-launcher",
+                    "pfh-test-other-rule-launch")
+    properties = [
+        (f"TARGET {core}", "CXX_COMPILER_LAUNCHER", expected["launcher.core"]),
+        (f"TARGET {math}", "C_COMPILER_LAUNCHER", expected["launcher.math"]),
+        (f"TARGET {core}", "RULE_LAUNCH_COMPILE", expected["rule_launch.core"]),
+        (f"TARGET {math}", "RULE_LAUNCH_COMPILE", expected["rule_launch.math"]),
+        ("GLOBAL", "RULE_LAUNCH_COMPILE", expected["rule_launch.global"]),
+        ("DIRECTORY", "RULE_LAUNCH_COMPILE", expected["rule_launch.directory"]),
+        (f"TARGET {other}", "CXX_COMPILER_LAUNCHER", other_values[0]),
+        (f"TARGET {other}", "C_COMPILER_LAUNCHER", other_values[1]),
+        (f"TARGET {other}", "RULE_LAUNCH_COMPILE", other_values[2]),
+    ]
+    with open(source / "CMakeLists.txt", "a") as handle:
+        for scope, name, value in properties:
+            handle.write(f"set_property({scope} PROPERTY {name} {value})\n")
+
+    build = base / f"ingredients-build-{tag}"
+    configure(source, build, generator=generator)
+    path = outputs(build) / INGREDIENTS
+    require(path.is_file(), f"[{generator}] the ingredients file was not written: {path}")
+    text = path.read_text()
+    require(text.strip(), f"[{generator}] the ingredients file is empty")
+    require("$<" not in text, f"[{generator}] a generator expression was left unevaluated:\n{text}")
+    values, cxx, c_files, headers, providers = parse_ingredients(path)
+    missing = sorted(set(World(base, f"keys-{tag}").ingredients()) - set(values))
+    require(not missing, f"[{generator}] ingredient lines missing: {missing}\n{text}")
+
+    wanted = {
+        "core.target": core,
+        "math.target": math,
+        "contract": CONTRACT,
+        "configuration": CONFIGURATION,
+        "generator": generator,
+        "database_enabled": "ON",
+        **expected,
+    }
+    for key, value in wanted.items():
+        require(values[key] == value,
+                f"[{generator}] {key}: wanted {value!r}, the file has {values[key]!r}")
+    real = os.path.realpath
+    require(real(values["source.root"]) == real(source), f"[{generator}] source.root differs")
+    require(real(values["build.root"]) == real(build), f"[{generator}] build.root differs")
+    cxx_rel, headers_rel = helper_inventory(REPOSITORY)
+    for label, found, relative in (("source.cxx", cxx, cxx_rel),
+                                   ("source.provider", providers, provider_inventory(REPOSITORY)),
+                                   ("header", headers, headers_rel),
+                                   ("source.c", c_files, declared["math_files"])):
+        require([real(item) for item in found] == [real(source / item) for item in relative],
+                f"[{generator}] the {label} lines differ from the declared files: {found}")
+    require(not any(value in text for value in other_values),
+            f"[{generator}] a launcher of another target was bound:\n{text}")
+    print(f"PASS [{generator}]: the ingredients file holds the declared targets, files and the "
+          f"launcher state set after the call")
+
+
+def ingredients_group(base, generators):
+    for generator in generators:
+        scenario_ingredients(base, generator)
+
+
 def scenario_not_circular():
     cxx_rel, headers_rel = helper_inventory(REPOSITORY)
     for rel in cxx_rel + headers_rel:
@@ -1158,7 +1259,8 @@ def scenario_plan(dlib, generators):
              ("providers_complete", lambda base: scenario_providers_complete(REPOSITORY)),
              ("synthetic", scenario_synthetic),
              ("fail_closed", scenario_fail_closed),
-             ("same_rule_as_x", scenario_same_rule_as_x)]
+             ("same_rule_as_x", scenario_same_rule_as_x),
+             ("ingredients", lambda base: ingredients_group(base, generators))]
     for generator in generators:
         label = GENERATOR_TOKEN[generator]
         steps.append((f"fixture:{label}", lambda base, g=generator: scenario_fixture(base, g)))
