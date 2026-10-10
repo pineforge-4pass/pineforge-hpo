@@ -128,7 +128,7 @@ replaced wholesale, and unknown keys are reported by line number only.
   a JSON object, members in byte order of the dimension name, no whitespace, each member
   `["<type>","<value>"]` with `integer` + decimal string, `real` + 16 lowercase hex digits of the
   binary64 bits (`-0.0` as `+0.0`), `boolean` + the literal `true`/`false`, `string` + a JSON
-  string (escapes only for `"` `\` `\b \f \n \r \t` and other bytes below 0x20 as `\u00xx`;
+  string (escapes only for a double quote, `\` `\b \f \n \r \t` and other bytes below 0x20 as `\u00xx`;
   everything else raw UTF-8). Whitespace, key order, number spelling, CRLF and the final LF do not
   change it; duplicates and order do. Goldens in the test were computed with `shasum -a 256` from
   this layout, not by the code under test. A Python writer needs exactly this recipe.

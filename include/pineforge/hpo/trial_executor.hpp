@@ -43,11 +43,11 @@ struct BacktestConfiguration {
     bool capture_equity_curve = true;
     /// Whether ReportSnapshot owns the complete C-ABI trade records (off in the HPO hot loop).
     bool capture_trades = false;
-    /// Computes the `returns.bar.*` statistics from the report's equity curve (see
+    /// Computes the `returns.bar` statistics from the report's equity curve (see
     /// docs/return-stats.md). Both return-statistics flags false, the default, means no
     /// reduction, no canary and no stored value: the executor behaves as before.
     bool return_stats_bar = false;
-    /// Computes the `returns.monthly.*` statistics; the chart timezone above selects the
+    /// Computes the `returns.monthly` statistics; the chart timezone above selects the
     /// calendar (only UTC is defined) and is read from this configuration, never from the
     /// process environment.
     bool return_stats_monthly = false;
