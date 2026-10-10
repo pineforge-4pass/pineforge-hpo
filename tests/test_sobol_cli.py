@@ -242,6 +242,8 @@ def identity_bound() -> bool:
                 [str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(csv), "--objective",
                  "metrics.all.net_profit", "--input-tf", "1", "--script-tf", "5",
                  "--chart-timezone", "UTC", "--fixed-input", "BatchPrefixTest", "1",
+                 "--bar-magnifier", "true", "--magnifier-samples", "6",
+                 "--magnifier-distribution", "triangle",
                  "--real-dim", "Level", "0", "1", "continuous", "--sampler", "sobol",
                  "--max-trials", "1"], text=True, capture_output=True, check=False, timeout=120)
         try:
