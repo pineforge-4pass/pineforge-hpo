@@ -7,7 +7,7 @@ page is deferred to the proof listed at the end. This page implements the pinned
 2026-10-09, pin file SHA-256
 `e0c6f0f4c4855f6c27886fd86f976c68aba8ee395b7803a4bd1d6208ebd34753`). Selected-window mode
 waits for the frozen window interface and is not implemented here. User-facing definitions are in
-[Return statistics](study-spec.md).
+[Return statistics](study-spec.md#return-statistics-legacy-mode).
 
 ## What the reducer is
 

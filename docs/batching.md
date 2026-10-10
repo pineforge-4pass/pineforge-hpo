@@ -138,7 +138,7 @@ worker count give identical result bytes at a fixed batch size and lag with no e
 `--no-improvement-trials` the terminal frontier follows the ordered drain exactly as for the other
 samplers, so the point-by-ID claim (every retained row equals the generator at its ID) is
 unconditional while the number of rows depends on the fixed batch size and lag. Deadline, signal
-and watchdog stops truncate at schedule-dependent points. See [Sobol](study-spec.md).
+and watchdog stops truncate at schedule-dependent points. See [Sobol](study-spec.md#sobol).
 
 ## Pruning and metering
 

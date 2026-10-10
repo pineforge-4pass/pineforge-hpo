@@ -48,6 +48,8 @@ BUILTIN_STL_SUPPORT    = YES
 CPP_CLI_SUPPORT        = NO
 PYTHON_DOCSTRING       = YES
 MARKDOWN_SUPPORT       = YES
+# Keep generated anchors equal to GitHub's: one link form serves both renderers.
+MARKDOWN_ID_STYLE      = GITHUB
 AUTOLINK_SUPPORT       = YES
 JAVADOC_AUTOBRIEF      = YES
 
