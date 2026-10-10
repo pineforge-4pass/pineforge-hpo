@@ -216,8 +216,9 @@ cannot narrow the binding; the generator refuses an ingredients file without the
 
 The helper writes only per-source properties of the four C++ sources (`COMPILE_OPTIONS`,
 `SKIP_UNITY_BUILD_INCLUSION`, `SKIP_PRECOMPILE_HEADERS`, and `INCLUDE_DIRECTORIES` of the identity
-unit alone) and the `CMAKE_EXPORT_COMPILE_COMMANDS` cache default. It reads, and never writes, a
-property of the two providers. It never writes a property of
+unit alone), the `CMAKE_EXPORT_COMPILE_COMMANDS` cache default and, when the compile-commands
+export is on, the per-target `EXPORT_COMPILE_COMMANDS` property of the core and math target. It
+reads that switch and writes no property of the two providers. It never writes another property of
 the core or math target, `CMAKE_CXX_FLAGS` or `CMAKE_C_FLAGS`, and adds no include directory to
 the core target, because that would appear in the command of every core unit and move the
 return-statistics descriptor. The low-level binding functions are in the new

@@ -34,7 +34,9 @@
 # definitions of TARGET and of PORTABLE_MATH_TARGET, CMAKE_CXX_FLAGS, CMAKE_C_FLAGS, the numeric
 # flag recipe of the TPE identity and the return-statistics helper are never touched. No include
 # directory is added to TARGET: the generated header reaches sobol_identity.cpp through a
-# per-source include directory, so no command of any other translation unit changes.
+# per-source include directory, so no command of any other translation unit changes. The one
+# target property it sets is EXPORT_COMPILE_COMMANDS, on TARGET and PORTABLE_MATH_TARGET while the
+# compile-commands export is on.
 #
 # Like the return-statistics helper, the identity is read from the compilation database at build
 # time, so usage requirements and every change made before the end of the top-level directory are
