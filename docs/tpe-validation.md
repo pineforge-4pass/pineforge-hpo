@@ -155,8 +155,8 @@ The executable tests are `tests/test_tpe_quality.cpp` and
 
 ## Real strategy
 
-Synthetic validation is complemented by 128 TPE trials on the scraped Shiroi
-Supertrend strategy using 3,334,340 one-minute ETH-USDT bars from 2020 onward.
+Synthetic validation is complemented by 128 TPE trials on a public third-party
+strategy (Shiroi Supertrend) using 3,334,340 one-minute ETH-USDT bars from 2020 onward.
 The engine aggregated those bars to the strategy's 15-minute timeframe. All
 trials were feasible, repeated runs were byte-for-byte deterministic, and the
 best account objective exceeded the equal-seed random and dlib results at the
