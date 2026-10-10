@@ -169,7 +169,9 @@ pfh::SearchSpace huge_space() {
     return pfh::SearchSpace(std::move(dimensions));
 }
 
-// A continuous real and a real categorical that contains zero: a spelled -0.0 is kept as is.
+// A continuous real and a real categorical that contains zero. The space is not finite, so
+// nothing is canonicalized and a spelled -0.0 is kept as is (a finite space refuses it for a
+// stepped real, see zero_lattice_space).
 pfh::SearchSpace zero_space() {
     std::vector<pfh::Dimension> dimensions;
     dimensions.emplace_back(pfh::RealDimension("X", -1.0, 1.0));
@@ -177,7 +179,9 @@ pfh::SearchSpace zero_space() {
     return pfh::SearchSpace(std::move(dimensions));
 }
 
-// The finite twin: the importer's lattice canonicalization decides the stored zero.
+// The finite twin. A stepped real must be its exact lattice value, exactly as the importer
+// demands (docs/internal/methods-c-native.md:92-94), so a spelled -0.0 for X is refused; only
+// the categorical zero Z is snapped to the declared +0.0.
 pfh::SearchSpace zero_lattice_space() {
     std::vector<pfh::Dimension> dimensions;
     dimensions.emplace_back(pfh::RealDimension("X", -1.0, 1.0, 0.5));
@@ -829,7 +833,17 @@ void signed_zero_parity_and_propagation() {
         {"Z", "-0.0", 1}, {"Z", "-0", 1}, {"Z", "0", 1}, {"Z", "1.5", 1}, {"Z", "1", 0},
         {"Z", "0.5", 0}};
     check_parity("zero continuous", zero_space(), zero_base, zero_cases);
-    check_parity("zero lattice", zero_lattice_space(), zero_base, zero_cases);
+    // The finite twin keeps the importer's rule: a stepped real must be the exact decoded lattice
+    // value (docs/internal/methods-c-native.md:92-94 and :233-236; commit 7ca70d0, "finite
+    // spaces keep the importer's lattice canonicalization and refusal semantics"). A spelled
+    // negative zero of X is the text "-0", not the lattice value "0", so the list and the
+    // importer both refuse it; snapping would go beyond the importer's rule. The categorical Z
+    // compares with ==, so its negative zeros are accepted and stored as the declared +0.0.
+    const std::vector<ParityCase> zero_lattice_cases{
+        {"X", "-0.0", 0}, {"X", "-0", 0}, {"X", "0", 1}, {"X", "-0e0", 0}, {"X", "1.0", 1},
+        {"Z", "-0.0", 1}, {"Z", "-0", 1}, {"Z", "0", 1}, {"Z", "1.5", 1}, {"Z", "1", 0},
+        {"Z", "0.5", 0}};
+    check_parity("zero lattice", zero_lattice_space(), zero_base, zero_lattice_cases);
 
     const auto space = zero_space();
     const auto line = [](const char* x, const char* z) {
@@ -878,15 +892,30 @@ void signed_zero_parity_and_propagation() {
     require(abi_imported == abi_negative,
             "the importer and the list hand the strategy different text for -0.0");
 
-    // A finite space is canonicalized through the lattice exactly as the importer does.
+    // A finite space is canonicalized through the lattice exactly as the importer does: a
+    // stepped real keeps its exact lattice value and only a categorical zero is snapped to the
+    // declared +0.0. X is already +0.0 here; the spelled -0.0 of Z is the one that is snapped.
     const auto lattice = zero_lattice_space();
-    const auto snapped = det::parse_candidate_list(line("-0.0", "-0.0"), lattice);
-    const auto lattice_imported = importer_candidate(lattice, "{\"X\":-0.0,\"Z\":-0.0}");
+    const auto snapped = det::parse_candidate_list(line("0.0", "-0.0"), lattice);
+    const auto lattice_imported = importer_candidate(lattice, "{\"X\":0.0,\"Z\":-0.0}");
     require(lattice_imported.has_value() &&
                 same_candidate_bits(*lattice_imported, snapped.at(0)),
             "lattice canonicalization of -0.0 differs from the importer");
     require(!std::signbit(real_of(snapped, "X")) && !std::signbit(real_of(snapped, "Z")),
-            "the lattice value of zero is +0.0 for the stepped real and the declared choice");
+            "only a categorical zero is snapped; the stepped real keeps its lattice +0.0");
+
+    // The stepped real X is not snapped: a spelled -0.0 is the text "-0", not its lattice value
+    // "0", so the list refuses it exactly as the importer does. The list parser words its own
+    // refusal for a non-canonical point; the core text is pinned on the ordinal call that the
+    // very same vector (mixed_sign: X = -0.0, Z = +0.0) reaches.
+    expect_refusal("lattice list line with X=-0.0", "hpo_study_spec_invalid", "search_space",
+                   [&] { (void)det::parse_candidate_list(line("-0.0", "0.0"), lattice); },
+                   "is not a canonical point of the finite search space");
+    expect_refusal("lattice ordinal of X=-0.0", "hpo_study_spec_invalid", "search_space",
+                   [&] { (void)lattice.candidate_ordinal(mixed_sign.at(0)); },
+                   "real parameter is not a canonical grid value");
+    require(!importer_candidate(lattice, "{\"X\":-0.0,\"Z\":0.0}").has_value(),
+            "the importer accepted a spelled -0.0 for a stepped real of a finite space");
 }
 
 void settings_and_budget() {
