@@ -446,7 +446,7 @@ The JSON loader recognizes a future `kind="registered"` shape, and the C++
 library exposes `ObjectiveFn<Observation>` for custom functions. The executable
 CLI does not resolve registered objective names yet.
 
-### Return statistics (legacy mode)
+### Return statistics (legacy mode) {#return-statistics-legacy-mode}
 
 Eighteen metric names, `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,
 sharpe_per_period,skew,kurt_raw,status}`, can be used in an objective or constraint expression or
@@ -592,7 +592,7 @@ constraint contract. Only genuine feasible objective values train the model or
 participate in reported best-trial selection. A future constraint-aware sampler
 may add explicit violation magnitudes instead of fabricated objective scores.
 
-### Candidate list
+### Candidate list {#candidate-list}
 
 ```json
 {"kind": "candidates", "seed": 0, "trials": 3,
@@ -656,7 +656,7 @@ deduplicated, cached or fanned out.
   dataset, window or fixed inputs, so the caller must use the same scoring context; native
   cannot refuse a wrong-window parent until the window is recorded in result provenance.
 
-### Sobol
+### Sobol {#sobol}
 
 ```json
 {"kind": "sobol", "seed": 20260718, "trials": 1024, "config": {"scramble": "digital_shift"}}
