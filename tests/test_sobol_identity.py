@@ -1018,9 +1018,67 @@ def scenario_ingredients(base, generator):
           f"launcher state set after the call")
 
 
+def scenario_database_switch(base, generator):
+    """Configure only: the compilation-database switch in three cases, each checked two ways.
+
+    The ingredients file reports what the helper saw, and compile_commands.json reports what
+    CMake itself wrote at generate time. Neither one is read as the expectation of the other:
+    both are compared against the expected value of the case. With the switch on, the database
+    also has to list a source of each of the helper's two targets; the expected names come from
+    the build file the fixture declares, never from the helper or from a previous output.
+    """
+    # The documented default of the helper (docs/internal/sobol-identity.md: it turns
+    # `CMAKE_EXPORT_COMPILE_COMMANDS` on "when the project left it undefined", like the
+    # return-statistics helper, whose comment says "A project that left the switch undefined
+    # gets it on").
+    default_enabled = "ON"
+    off = "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF"
+    on = "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+    cases = (
+        ("default", (), default_enabled),
+        ("explicit-off", (off,), off.partition("=")[2]),
+        ("explicit-on", (on,), on.partition("=")[2]),
+    )
+    tag = generator.replace(" ", "-")
+    for case, definitions, expected in cases:
+        source = base / f"database-{case}-{tag}"
+        build = base / f"database-{case}-build-{tag}"
+        write_fixture(source)
+        configure(source, build, *definitions, generator=generator)
+        path = outputs(build) / INGREDIENTS
+        require(path.is_file(),
+                f"[{generator}] {case}: the ingredients file was not written: {path}")
+        text = path.read_text()
+        require(text.strip(), f"[{generator}] {case}: the ingredients file is empty")
+        values = parse_ingredients(path)[0]
+        require("database_enabled" in values,
+                f"[{generator}] {case}: no database_enabled line:\n{text}")
+        require(values["database_enabled"] == expected,
+                f"[{generator}] {case}: wanted database_enabled {expected!r}, "
+                f"the file has {values['database_enabled']!r}")
+        written = (build / "compile_commands.json").is_file()
+        require(written == (expected == "ON"),
+                f"[{generator}] {case}: compile_commands.json present={written} disagrees with "
+                f"the expected {expected!r}")
+        if expected == "ON":
+            declared = fixture_declarations(source)
+            core = declared["core"]
+            core_files = re.search(rf"add_library\({re.escape(core)}\s+STATIC\s+([^)]*)\)",
+                                   (source / "CMakeLists.txt").read_text()).group(1).split()
+            listed = [entry["file"] for entry in read_database(build)]
+            targets = ((core, core_files), (declared["math"], declared["math_files"]))
+            for target, names in targets:
+                require(any(item.endswith(name) for item in listed for name in names),
+                        f"[{generator}] {case}: compile_commands.json has no entry for a source "
+                        f"of target {target} ({names}): {listed}")
+    print(f"PASS [{generator}]: the ingredients file and compile_commands.json follow the switch "
+          f"in the cases {', '.join(case for case, _, _ in cases)}")
+
+
 def ingredients_group(base, generators):
     for generator in generators:
         scenario_ingredients(base, generator)
+        scenario_database_switch(base, generator)
 
 
 def scenario_not_circular():
