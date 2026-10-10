@@ -363,6 +363,7 @@ def added_time(args, directory, plugin, label, csv, tf, trials, repeats):
             if flag:
                 require(document["return_stats"]["series"] == ["bar", "monthly"], "wrong series")
     median_off, median_on = statistics.median(off), statistics.median(on)
+    # One JSON record per line, starting with {"case": harnesses read the records line by line.
     print(json.dumps({
         "case": label, "trials_per_run": trials, "runs_each": len(off),
         "realized_input_bars": realized[0], "realized_script_bars": realized[1],
@@ -374,7 +375,7 @@ def added_time(args, directory, plugin, label, csv, tf, trials, repeats):
         "scope": "scheduler busy_seconds per completed trial, one worker: engine run, objective, "
                  "recorded metrics and the requested reduction; excludes dataset load, process "
                  "start and result serialization of the whole study",
-    }, indent=2), flush=True)
+    }, separators=(", ", ": ")), flush=True)
 
 
 def main():
