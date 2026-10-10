@@ -333,14 +333,14 @@ The `candidates` sampler adds the sampler string `candidates`, the implementatio
 list SHA-256, count, evaluated, scored, `complete`, `unevaluated_ranges`); no other run
 carries it and no trial row changes. A strict consumer must accept both additions as it accepts
 `early_stop`, and must read `candidate_list.complete` rather than infer coverage from
-`stop_reason` or `trials_completed`. See the [Candidate list](study-spec.md#candidate-list).
+`stop_reason` or `trials_completed`. See the [Candidate list](study-spec.md).
 The `sobol` sampler adds the sampler string `sobol`, the implementation identity
 `pineforge_sobol_gray64_joe_kuo_d6_v1` and a top-level `sobol` object (descriptor, identity and the
 part's `first_index`, `next_index` and `exact_stream`, 64-bit values as decimal strings); no other
 run carries it and no trial row changes. A strict consumer must accept both additions as it
-accepts `early_stop`. See [Sobol](study-spec.md#sobol).
+accepts `early_stop`. See [Sobol](study-spec.md).
 The return-statistics metrics (`returns.{bar,monthly}.*`, see
-[Return statistics](study-spec.md#return-statistics-legacy-mode)) add keys to a trial's `metrics`
+[Return statistics](study-spec.md)) add keys to a trial's `metrics`
 object and one result-level `return_stats` object only when an expression or `--record-metric`
 names them; otherwise nothing changes. A strict consumer must accept the object as it accepts
 `early_stop`.
