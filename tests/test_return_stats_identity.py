@@ -893,12 +893,15 @@ def scenario_database_switch(repository, base, generator):
                 f"[{generator}] {case}: wanted database_enabled {expected!r}, "
                 f"the file has {values['database_enabled']!r}")
         written = (build / "compile_commands.json").is_file()
-        require(written == (values["database_enabled"] == "ON"),
-                f"[{generator}] {case}: compile_commands.json present={written} disagrees with "
-                f"database_enabled={values['database_enabled']!r}")
         require(written == (expected == "ON"),
                 f"[{generator}] {case}: compile_commands.json present={written} disagrees with "
                 f"the expected {expected!r}")
+        if expected == "ON":
+            database = json.loads((build / "compile_commands.json").read_text())
+            declared_source = fixture_declarations(source)["source"]
+            require(any(entry["file"].endswith(declared_source) for entry in database),
+                    f"[{generator}] {case}: compile_commands.json has no entry for the declared "
+                    f"SOURCES file {declared_source!r}: {[entry['file'] for entry in database]}")
         print(f"PASS [{generator}] {case}: database_enabled="
               f"{values['database_enabled']} and compile_commands.json present={written}")
 
