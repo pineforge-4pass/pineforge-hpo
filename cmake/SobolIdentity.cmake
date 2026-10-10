@@ -238,6 +238,17 @@ function(pfh_sobol_identity)
         set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
             "Write compile_commands.json (read by the build identities)" FORCE)
     endif()
+    # Since CMake 3.20 a target's EXPORT_COMPILE_COMMANDS is initialized from the variable when
+    # the target is CREATED. The core and math targets exist before this call, so they kept the
+    # empty value and compile_commands.json would not list their sources: switching the variable
+    # on is not enough. The database must list the sources of exactly these two targets. The
+    # property is set whenever the database is on, not only in the branch above: in the integrated
+    # root the return-statistics helper runs first and has already switched the variable on, so
+    # this helper never enters that branch while its math target still has the empty value.
+    # An explicit OFF leaves both targets untouched.
+    if(CMAKE_EXPORT_COMPILE_COMMANDS)
+        set_property(TARGET ${SI_TARGET} ${SI_PORTABLE_MATH_TARGET} PROPERTY EXPORT_COMPILE_COMMANDS ON)
+    endif()
     get_property(multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
     if(multi_config)
         set(multi_config ON)

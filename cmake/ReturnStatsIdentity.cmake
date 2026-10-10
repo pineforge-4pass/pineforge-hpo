@@ -162,6 +162,14 @@ function(pfh_return_stats_identity)
         set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
             "Write compile_commands.json (read by the return-statistics build identity)" FORCE)
     endif()
+    # Since CMake 3.20 a target's EXPORT_COMPILE_COMMANDS is initialized from the variable when
+    # the target is CREATED. The reducer target exists before this call, so it kept the empty
+    # value and compile_commands.json would not list it: switching the variable on is not enough.
+    # Whenever the database is on (default, or an earlier helper or the project switched it on),
+    # the target is listed; an explicit OFF leaves the target untouched.
+    if(CMAKE_EXPORT_COMPILE_COMMANDS)
+        set_property(TARGET ${RSI_TARGET} PROPERTY EXPORT_COMPILE_COMMANDS ON)
+    endif()
 
     get_property(multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
     if(multi_config)
