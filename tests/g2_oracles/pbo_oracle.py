@@ -1519,7 +1519,8 @@ def module_layout(ledger: Ledger, name: str, counts, found: dict, *, quiet: bool
     blocks all hold one size) and fail every random case whose blocks hold two sizes; the run
     fails if no random case that the oracle computes is such a case (``module_random``).
     """
-    # Mutation: pbo.py:1150 `len(set(table.counts)) == 1` -> `True` fails every case of two sizes.
+    # Mutation: pbo.py:1214 (in `pbo`) `len(set(table.counts)) == 1` -> `True` fails every case
+    # of two sizes.
     ledger.compare(
         "module",
         f"{name}: equal_blocks",
@@ -1527,7 +1528,8 @@ def module_layout(ledger: Ledger, name: str, counts, found: dict, *, quiet: bool
         found.get("equal_blocks"),
         quiet=quiet,
     )
-    # Mutation: pbo.py:1151 `list(table.counts)` -> `[min(table.counts)] * len(table.counts)`.
+    # Mutation: pbo.py:1215 (in `pbo`) `list(table.counts)` ->
+    # `[min(table.counts)] * len(table.counts)`.
     ledger.compare(
         "module",
         f"{name}: block_counts",
@@ -1551,9 +1553,10 @@ def module_rate_and_coverage(
     neither key and fails both. The first mutation fails every case whose count ``n_eq0`` is not
     zero, the second fails every case.
     """
-    # Mutation: pbo.py:1157 `"pbo": rate_le0` -> `"pbo": float(n_lt0 / n_splits)`.
+    # Mutation: pbo.py:1221 (in `pbo`) `"pbo": rate_le0` -> `"pbo": float(n_lt0 / n_splits)`.
     ledger.compare("module", f"{name}: pbo", rate_le0, found.get("pbo"), quiet=quiet)
-    # Mutation: pbo.py:1091 `"usable": n_trials` -> `"usable": n_trials - 1` fails every case.
+    # Mutation: pbo.py:1153 (in `pbo`) `"usable": n_trials` -> `"usable": n_trials - 1` fails
+    # every case.
     ledger.compare(
         "module",
         f"{name}: coverage",
@@ -1725,27 +1728,37 @@ def module_refusals(ledger: Ledger, pbo) -> None:
     mutation of the module (read off the code; nothing has been run):
 
     * Zero variance, three cases: ``_half_statistics`` raises ``pbo_zero_variance`` with the flat
-      trial ids once every row was accepted (pbo.py:1032). Mutation: make ``ranking_statistic``
-      return 0.0 instead of None for a zero ``m2`` (pbo.py:924).
+      trial ids once every row was accepted (pbo.py:1094, in ``_half_statistics``, ``if flat:``).
+      Mutation: make ``ranking_statistic`` return 0.0 instead of None for a zero ``m2``
+      (pbo.py:986, in ``ranking_statistic``, ``return None`` after ``if not m2 > 0.0:``).
     * Odd S: ``_check_s`` raises ``pbo_odd_s`` first, before the roster or the parts are read
-      (pbo.py:286, called at 1082). Mutation: change the code ``pbo_odd_s`` to
+      (pbo.py:294, in ``_check_s``, ``raise PboError("pbo_odd_s"``; called at pbo.py:1144, in
+      ``pbo``, ``S = _check_s(S)``). Mutation: change the code ``pbo_odd_s`` to
       ``pbo_input_invalid`` there.
     * One trial: the roster is the one id of the row, so ``_declared_ids`` raises
-      ``pbo_too_few_trials`` (pbo.py:383) before the parts are read. ``_table_ids`` (pbo.py:670)
-      raises the same code for a table of one, so no one-line mutation of the module is caught by
-      this case alone. Mutation of the case instead: take the roster from the three ids of the
-      fixture and not from the one row; the call then reaches ``pbo_roster_mismatch``.
+      ``pbo_too_few_trials`` (pbo.py:394, in ``_declared_ids``, ``raise PboError(`` with
+      ``"pbo_too_few_trials",`` on the next line) before the parts are read. ``_table_ids``
+      (pbo.py:703, in ``_table_ids``, the same two lines) raises the same code for a table of one,
+      so no one-line mutation of the module is caught by this case alone. Mutation of the case
+      instead: take the roster from the three ids of the fixture and not from the one row; the
+      call then reaches ``pbo_roster_mismatch``.
     * Unknown sampler, two cases (``bogus``, and ``early_stop``, which since commit 556d654 is
       the study's own input and no sampler name; docs/pbo.md line 356): ``roster_label`` raises
-      ``pbo_sampler_unknown`` before the roster or the parts are read (pbo.py:973, called at
-      1085). Mutation: change that code to ``pbo_input_invalid`` (both cases fail). Mutation for
-      the ``early_stop`` case alone: add ``"early_stop"`` to ``DIAGNOSTIC_SAMPLERS`` (pbo.py:93);
-      ``roster_label`` then returns a label for the name, the call returns a result and the case
-      fails. The case keeps the refusal that the old roster row for this name stood for covered.
+      ``pbo_sampler_unknown`` before the roster or the parts are read (pbo.py:1035, in
+      ``roster_label``, ``"pbo_sampler_unknown",``; called at pbo.py:1147, in ``pbo``,
+      ``label = roster_label(sampler, early_stop=stopped)``). Mutation: change that code to
+      ``pbo_input_invalid`` (both cases fail). Mutation for the ``early_stop`` case alone: add
+      ``"early_stop"`` to ``DIAGNOSTIC_SAMPLERS`` (pbo.py:93); ``roster_label`` then returns a
+      label for the name, the call returns a result and the case fails. The case keeps the
+      refusal that the old roster row for this name stood for covered.
     * An error row: ``_parse_row`` raises ``pbo_status_error`` for a row whose status is one of
-      ``ERROR_ROW_STATUSES`` (pbo.py:708-709), the code that commit 92a9c7b gave to the
+      ``ERROR_ROW_STATUSES`` (pbo.py:744-747, in ``_parse_row``, the test
+      ``if status in ERROR_ROW_STATUSES:`` and the ``raise _RowProblem(`` below it with
+      ``"pbo_status_error",`` on its next line), the code that commit 92a9c7b gave to the
       failed-trial statuses (docs/pbo.md D5, line 184, and the table at line 346); ``_load_parts``
-      reports it with the id of the row (pbo.py:822, 864-866). The literal below is that code,
+      reports it with the id of the row (pbo.py:874, in ``_load_parts``,
+      ``failures.setdefault(problem.code, []).append((ids[index], detail))``; pbo.py:920-926,
+      the ``raise PboError(`` whose first argument is ``code``). The literal below is that code,
       read off the page and not off the module. The planted status is ``engine_error``: one of the
       six failed-trial statuses that the page lists (lines 65-66 and 346) and one of the nine of
       the shared vocabulary (``_rows.STATUSES``), so the module is shown a status of the
@@ -1754,20 +1767,23 @@ def module_refusals(ledger: Ledger, pbo) -> None:
       delete the line ``"engine_error",`` of ``ERROR_ROW_STATUSES`` (pbo.py:52); the row then
       reaches the ``ROSTER_ROW_STATUSES`` test, the call refuses with ``pbo_rows_incomplete`` and
       the same id, and the case fails (it would not have failed with the old literal). The other
-      mutation, which fails either literal: change the code ``pbo_status_error`` at pbo.py:709 to
+      mutation, which fails either literal: change the code ``pbo_status_error`` at pbo.py:745 (in
+      ``_parse_row``, ``raise _RowProblem(`` with ``"pbo_status_error",`` on the next line) to
       ``pbo_rows_incomplete``.
     * Uneven blocks, four deliberate layouts (``UNEVEN_LAYOUTS``; docs/pbo.md D2, line 181, and
       line 342): ``_check_return_blocks`` raises ``pbo_block_sizes_uneven`` when the largest
-      ``n_b`` minus the smallest is more than one (pbo.py:463-468), while the declared object is
-      checked and before any row is read, so the refusal names no id. Each layout has the rows of
-      ``moment_rows``, which the module would compute if it accepted the layout, so a mutation
-      that lets the layout through makes the call return a result and the case fail. One-line
-      mutations of the test at pbo.py:463, one for each layout: (2, 4): change ``> 1`` to
-      ``> 2``; (4, 3, 2, 3): change ``max(n_b) - min(n_b)`` to ``max(n_b) - n_b[0]`` (4 - 4 is
-      0); (2, 4, 8, 4): change ``> 1`` to ``> 6``; (8, 9, 10, 9): change the test to
-      ``max(n_b) > 2 * min(n_b)`` (10 > 16 is false). These layouts are no longer drawn by the
-      random cases (``random_series`` keeps the counts within one of each other), so these four
-      cases are what keeps the refusal of default D2 covered.
+      ``n_b`` minus the smallest is more than one (pbo.py:478-483, in ``_check_return_blocks``,
+      ``if max(n_b) - min(n_b) > 1:`` and the ``raise PboError(`` of ``"pbo_block_sizes_uneven",``
+      below it), while the declared object is checked and before any row is read, so the refusal
+      names no id. Each layout has the rows of ``moment_rows``, which the module would compute if
+      it accepted the layout, so a mutation that lets the layout through makes the call return a
+      result and the case fail. One-line mutations of the test at pbo.py:478 (in
+      ``_check_return_blocks``, ``if max(n_b) - min(n_b) > 1:``), one for each layout: (2, 4):
+      change ``> 1`` to ``> 2``; (4, 3, 2, 3): change ``max(n_b) - min(n_b)`` to
+      ``max(n_b) - n_b[0]`` (4 - 4 is 0); (2, 4, 8, 4): change ``> 1`` to ``> 6``; (8, 9, 10, 9):
+      change the test to ``max(n_b) > 2 * min(n_b)`` (10 > 16 is false). These layouts are no
+      longer drawn by the random cases (``random_series`` keeps the counts within one of each
+      other), so these four cases are what keeps the refusal of default D2 covered.
     """
     ledger.begin("module: refusals")
     for label, size, series, source in (
@@ -1880,11 +1896,13 @@ def module_rosters(ledger: Ledger, pbo) -> None:
     without with None. ``early_stop`` is no longer a sampler name, so the old row that gave it as
     one is gone; the module's refusal of that name has a case of its own in ``module_refusals``.
     Mutations of the module (read off the code; nothing has been run): replace
-    ``"diagnostic_adaptive_roster" if stopped else "paper_conformant"`` at pbo.py:971 by
-    ``"paper_conformant"`` and the grid, random and sobol rows with an early stop fail; replace
-    ``return "diagnostic_adaptive_roster"`` at pbo.py:969 by ``return "paper_conformant"`` and the
-    six adaptive rows fail; replace ``"early_stop": stopped`` at pbo.py:1163 by ``"early_stop":
-    False`` and the six rows with an early stop fail on the echoed flag.
+    ``"diagnostic_adaptive_roster" if stopped else "paper_conformant"`` at pbo.py:1033 (in
+    ``roster_label``) by ``"paper_conformant"`` and the grid, random and sobol rows with an early
+    stop fail; replace ``return "diagnostic_adaptive_roster"`` at pbo.py:1031 (in
+    ``roster_label``, under ``if sampler in DIAGNOSTIC_SAMPLERS:``) by
+    ``return "paper_conformant"`` and the six adaptive rows fail; replace
+    ``"early_stop": stopped`` at pbo.py:1227 (in ``pbo``) by ``"early_stop": False`` and the six
+    rows with an early stop fail on the echoed flag.
     """
     ledger.begin("module: the roster label of every sampler, without and with an early stop (D6)")
     rows = read_rows("f4_atom_s2_n3")
@@ -1934,7 +1952,7 @@ def module_random(ledger: Ledger, pbo, cases: list, seed: int) -> None:
             module_rate_and_coverage(
                 ledger, f"case {number}", oracle["rate_le0"], len(series), found, quiet=True
             )
-            # Mutation: pbo.py:945 `* (S - 2)` -> `* S` in `estimate_work` fails every case.
+            # Mutation: pbo.py:1007 `* (S - 2)` -> `* S` in `estimate_work` fails every case.
             ledger.compare(
                 "module",
                 f"case {number}: work_estimate",

@@ -397,9 +397,10 @@ module agree, that agreement is evidence for the enumeration of splits, the pool
 counts, the rates, the odds behind each lambda and the tie sizes -- including pooled means that
 are negative, zero or change sign. The ties that are compared with the module are those through
 identical block moments (the fixture `tie_s2_n3`, and the random cases, which copy whole trials
-and single blocks from earlier trials) and ties at a zero mean. A random case in which two trials
-tie exactly through different block moments, other than at a zero mean, is set aside, replaced
-and counted: no case compares such a tie with the module.
+and single blocks from earlier trials) and ties at a zero mean (kept in the random cases when
+they occur). A random case in which two trials tie exactly through different block moments,
+other than at a zero mean, is set aside, replaced and counted: no case compares such a tie with
+the module.
 
 It is NOT evidence for what the two routes share:
 
