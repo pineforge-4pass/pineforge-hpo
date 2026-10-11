@@ -1,7 +1,8 @@
 # X return statistics: reducer contract (legacy mode)
 
 **Status: the reducer, its wiring into the executor, the command line and the build, and all
-tests are committed but have never been compiled or executed.** Every execution claim in this
+tests are committed. A sealed 48-stage run has executed the return statistics (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).** Every execution claim in this
 page is deferred to the proof listed at the end. This page implements the pinned contract
 `pineforge-hpo-return-stats/v1`, revision 1 (authority: TOP's methods-x dispositions of
 2026-10-09, pin file SHA-256
@@ -133,7 +134,7 @@ including status, is null for it.
   independent of the TPE checkpoint identity. This reducer neither reads nor changes
   `numeric_build_identity` or `kTpeAlgorithmRevision`.
 
-## Integration (wired, unexecuted)
+## Integration (wired)
 
 * `CMakeLists.txt` compiles `src/core/return_stats.cpp` into `pineforge_hpo_core` and calls the
   build-identity helper, whose per-source options (`-fno-fast-math -ffp-contract=off
@@ -165,7 +166,7 @@ including status, is null for it.
   before compiling them. The default build writes `compile_commands.json` into the build
   directory, which the identity reads.
 
-## Proof still to be produced (nothing run yet)
+## Proof plan
 
 The tests in `tests/test_return_stats.cpp` combine hand-derived analytic cases, the frozen
 bit patterns of the author lane's stand-alone reference transcription (`fixtures_x3.py`, not

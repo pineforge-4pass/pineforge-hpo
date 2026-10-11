@@ -6,7 +6,9 @@ computed the statistics. This note describes how the identifier is produced, wha
 normalization rule that makes it location independent, when it is deliberately unavailable, and
 how to wire it into the root build. Contract string: `pineforge-hpo-return-stats/v1`.
 
-Status: the helper, the generator and their tests have not been configured, built or run yet.
+Status: the helper, the generator and their tests had not been configured, built or run when this
+note was written. A sealed 48-stage run has since executed the return statistics (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 Every statement below describes intended behaviour; it is confirmed only by the build-and-test
 proof listed at the end of this note.
 
@@ -245,7 +247,7 @@ if(dlib_SOURCE_DIR)
 endif()
 ```
 
-## Proof still owed
+## Proof plan
 
 The identity test checks the build binding and the normalization rule. These stay independent
 requirements and are not replaced by it:

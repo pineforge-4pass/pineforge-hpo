@@ -13,8 +13,9 @@
   complete Sobol result with a matching identity and verifies every parent row against the
   generator; other histories are refused with exit 4. Spaces with a floating-point column need a
   build whose Sobol numeric identity is bound and are refused before any trial otherwise. Runs
-  without the new options keep their bytes. No quality advantage is claimed. Execution proof is
-  pending.
+  without the new options keep their bytes. No quality advantage is claimed. A sealed 48-stage run
+  has executed the sampler (manifest
+  sha256 ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 - Add the `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,sharpe_per_period,
   skew,kurt_raw,status}` metrics (contract `pineforge-hpo-return-stats/v1`, legacy mode). They are
@@ -28,7 +29,8 @@
   builds and runs every ordinary study unchanged, and refuses a request for these metrics before
   any trial with `hpo_toolchain_unavailable` (reason `native_runner`) naming the exact unbound
   reason. The default build now also writes `compile_commands.json` into the build directory (one
-  extra file). Execution proof is pending.
+  extra file). A sealed 48-stage run has executed these metrics (manifest
+  sha256 ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 - `--sampler candidates`: an explicitly given `--max-trials 0` is refused (N is at least 1); the
   budget may still be omitted, and zero keeps its "no cap" meaning for every other sampler.
 
@@ -41,7 +43,8 @@
   `complete` (every position terminal, not every score valid) and missing ranges. A candidate
   result can seed TPE as rebuilt history through the existing loader. Candidate policy other
   than `sampler_default`, a pruner, positive patience and warm start are refused. Runs that do
-  not use the new flags keep their bytes. Execution proof is pending.
+  not use the new flags keep their bytes. A sealed 48-stage run has executed the sampler (manifest
+  sha256 ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 ## 0.12.0 (2026-10-08)
 

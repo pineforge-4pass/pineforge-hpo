@@ -2,9 +2,11 @@
 
 Status: source only, written 2026-10-09 on `ar/methods-c-wire` (base `e9639a51`, which is the
 native leaf `ar/methods-c-native`). Nothing was compiled, configured, run or imported: every C++
-and Python change below, and every test, is **unexecuted** until the proof phase. Binding
+and Python change below, and every test, had not been executed before the proof phase. Binding
 semantics are the AR pin `methods-c-contract.pin.md`. This note is internal. It promises no
 cost outcome, no whole-process memory bound and no universal warm-import behavior.
+A sealed 48-stage run has since executed the candidates sampler (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 ## What changed
 
@@ -61,7 +63,7 @@ condition (`&& sampler != "candidates"`) and the guarded block, so their bytes m
 literal comparison against a binary built at `d2f83326` is in
 `tests/test_candidate_list_cli.py` (`PFH_CANDIDATE_LIST_REFERENCE`, `..._SHA256`).
 
-## Tests written first (all unexecuted)
+## Tests written first
 
 * `tests/test_candidate_list.cpp` (unit): now compares accepted values by binary64 bits against the
   real importer, including signed-zero spaces (continuous and finite), and checks propagation
