@@ -65,6 +65,41 @@ def diagonal_totals(pair):
     }
 
 
+# The three NF5b pair maps with pair_k 3, derived by hand from the fixture rows (the third
+# dimension stays at the centre's value in every cell). Both the built-in route
+# (``neighbourhood``) and the public functions called directly are checked against these, so the
+# expected cells come from the contract and not from either route's own output.
+NF5B_MAPS = [
+    [
+        (2, 10, "diagonal", "never_evaluated", None, None, False, []),
+        (2, 20, "axis", "scored_ok", 7.0, 1.0, True, [[0, 1]]),
+        (2, 30, "diagonal", "never_evaluated", None, None, False, []),
+        (4, 10, "axis", "scored_ok", 7.5, 0.5, True, [[0, 3]]),
+        (4, 20, "centre", "scored_ok", 8.0, 0.0, True, [[0, 0]]),
+        (4, 30, "axis", "scored_ok", 4.0, 4.0, False, [[0, 4]]),
+        (6, 10, "diagonal", "never_evaluated", None, None, False, []),
+        (6, 20, "axis", "scored_ok", 6.0, 2.0, False, [[0, 2]]),
+        (6, 30, "diagonal", "never_evaluated", None, None, False, []),
+    ],
+    [
+        (2, "ema", "axis", "scored_ok", 7.0, 1.0, True, [[0, 1]]),
+        (2, "sma", "diagonal", "never_evaluated", None, None, False, []),
+        (4, "ema", "centre", "scored_ok", 8.0, 0.0, True, [[0, 0]]),
+        (4, "sma", "axis", "scored_ok", 7.5, 0.5, True, [[0, 5]]),
+        (6, "ema", "axis", "scored_ok", 6.0, 2.0, False, [[0, 2]]),
+        (6, "sma", "diagonal", "never_evaluated", None, None, False, []),
+    ],
+    [
+        ("ema", 10, "axis", "scored_ok", 7.5, 0.5, True, [[0, 3]]),
+        ("ema", 20, "centre", "scored_ok", 8.0, 0.0, True, [[0, 0]]),
+        ("ema", 30, "axis", "scored_ok", 4.0, 4.0, False, [[0, 4]]),
+        ("sma", 10, "diagonal", "never_evaluated", None, None, False, []),
+        ("sma", 20, "axis", "scored_ok", 7.5, 0.5, True, [[0, 5]]),
+        ("sma", 30, "diagonal", "never_evaluated", None, None, False, []),
+    ],
+]
+
+
 class RankPairsTests(unittest.TestCase):
     def test_nf5b_ranking_by_the_sum_of_not_near_counts(self):
         """NF5b: not-near counts Fast 1, Slow 1, Mode 0 give the three pair scores.
@@ -237,43 +272,7 @@ class NF5bTests(unittest.TestCase):
         without a row. Mode keeps its declared order ema, sma.
         """
         maps = self.run_nf5b(3)["centres"][0]["pair_maps"]
-        never = ("never_evaluated", None, None, False, [])
-        self.assertEqual(
-            project(maps[0]),
-            [
-                (2, 10, "diagonal", *never),
-                (2, 20, "axis", "scored_ok", 7.0, 1.0, True, [[0, 1]]),
-                (2, 30, "diagonal", *never),
-                (4, 10, "axis", "scored_ok", 7.5, 0.5, True, [[0, 3]]),
-                (4, 20, "centre", "scored_ok", 8.0, 0.0, True, [[0, 0]]),
-                (4, 30, "axis", "scored_ok", 4.0, 4.0, False, [[0, 4]]),
-                (6, 10, "diagonal", *never),
-                (6, 20, "axis", "scored_ok", 6.0, 2.0, False, [[0, 2]]),
-                (6, 30, "diagonal", *never),
-            ],
-        )
-        self.assertEqual(
-            project(maps[1]),
-            [
-                (2, "ema", "axis", "scored_ok", 7.0, 1.0, True, [[0, 1]]),
-                (2, "sma", "diagonal", *never),
-                (4, "ema", "centre", "scored_ok", 8.0, 0.0, True, [[0, 0]]),
-                (4, "sma", "axis", "scored_ok", 7.5, 0.5, True, [[0, 5]]),
-                (6, "ema", "axis", "scored_ok", 6.0, 2.0, False, [[0, 2]]),
-                (6, "sma", "diagonal", *never),
-            ],
-        )
-        self.assertEqual(
-            project(maps[2]),
-            [
-                ("ema", 10, "axis", "scored_ok", 7.5, 0.5, True, [[0, 3]]),
-                ("ema", 20, "centre", "scored_ok", 8.0, 0.0, True, [[0, 0]]),
-                ("ema", 30, "axis", "scored_ok", 4.0, 4.0, False, [[0, 4]]),
-                ("sma", 10, "diagonal", *never),
-                ("sma", 20, "axis", "scored_ok", 7.5, 0.5, True, [[0, 5]]),
-                ("sma", 30, "diagonal", *never),
-            ],
-        )
+        self.assertEqual([project(pair) for pair in maps], NF5B_MAPS)
         self.assertEqual(
             [diagonal_totals(pair) for pair in maps],
             [
@@ -349,8 +348,11 @@ class NF5bTests(unittest.TestCase):
             [(10, 20, 30), ("ema", "sma"), (10, 20, 30)],
         )
         self.assertEqual([plan.lookups for plan in plans], [8, 5, 5])
+        # The maps built here through the public functions are checked against the hand-derived
+        # cells, not against ``result``: ``neighbourhood`` calls ``plan_pairs`` and ``pair_maps``
+        # with these same arguments, so comparing with its output could not fail.
         self.assertEqual(
-            pair_maps(study, values, plans), result["centres"][0]["pair_maps"]
+            [project(pair) for pair in pair_maps(study, values, plans)], NF5B_MAPS
         )
         self.assertEqual(
             not_near_counts(result["centres"][0]["profile"]),

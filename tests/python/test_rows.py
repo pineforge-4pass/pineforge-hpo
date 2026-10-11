@@ -566,12 +566,22 @@ class ReadSourceTests(RowsTestCase):
         path = FIXTURES / "result_all.json"
         text = fixture_text("result_all.json")
         expected = read_source(path)
+        # The whole text, pinned against the fixture's own rows (identity and status, in file
+        # order): the caller builds this from the fixture, not from ``expected``, which ends in the
+        # same ``_source_from_text`` call, so a comparison with it could not fail.
         self.assertEqual(
-            _rows._source_from_text(path.read_bytes().decode("utf-8"), 0), expected
+            [(row.trial_id, row.status) for row in _rows._source_from_text(text, 0).rows],
+            [
+                (0, "ok"),
+                (1, "ok"),
+                (2, "ok"),
+                (3, "constraint_violation"),
+                (4, "engine_error"),
+                (5, "ok"),
+            ],
         )
         document = json.loads(text)
         for variant in (
-            text,
             json.dumps(document),
             json.dumps(document, indent=4),
             "\n\n" + text + "\n\n",
@@ -580,8 +590,20 @@ class ReadSourceTests(RowsTestCase):
         jsonl = fixture_text("rows.jsonl")
         expected = read_source(FIXTURES / "rows.jsonl")
         lines = [line for line in jsonl.split("\n") if line.strip()]
+        # The whole JSONL text, pinned against the fixture's own rows, as above: the bare text and
+        # the path end in the same ``_source_from_text`` call, so comparing them could not fail.
+        self.assertEqual(
+            [(row.trial_id, row.status) for row in _rows._source_from_text(jsonl, 0).rows],
+            [
+                (0, "ok"),
+                (1, "ok"),
+                (2, "ok"),
+                (3, "constraint_violation"),
+                (4, "engine_error"),
+                (5, "ok"),
+            ],
+        )
         for variant in (
-            jsonl,
             "\n".join(lines),
             "\r\n".join(lines) + "\r\n",
             "\n\n".join(lines) + "\n\n\n",

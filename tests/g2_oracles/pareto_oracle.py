@@ -550,11 +550,12 @@ def oracle_front(rows: list, axes: list) -> dict:
         excluded["metric_unavailable"] = sorted(nulled)
     if not ids:
         return refusal("pareto_no_eligible_rows")
-    covered = sorted(ids + [trial_id for listed in excluded.values() for trial_id in listed])
-    if covered != sorted(by_id):
-        raise AssertionError(
-            "oracle accounting error: a row is not eligible or excluded exactly once"
-        )
+    # A row is eligible or excluded exactly once by construction: ``ids`` holds the ok rows with no
+    # absent and no null axis value, and ``excluded`` holds every other row under one reason, the
+    # status reasons covering every non-ok status. An unhandled status is named by the ``stray``
+    # raise above (``set(row["status"]) - STATUS_REASONS - {"ok"}``), which is the check that can
+    # fail; a self-comparison of the two sets here could not. The eligibility counts are pinned by
+    # the hand cases (``section_eligibility``) and by ``section_fixtures``.
     involved = {
         "metric_not_recorded": [
             name

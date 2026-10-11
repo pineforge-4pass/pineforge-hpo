@@ -558,8 +558,11 @@ def exact_cscv(key_of, trials: int, size: int) -> dict:
             tie_sizes.append(len(winners))
         per_split[(train, test)] = record
     n_splits = len(order)
-    if below + atom + above != n_splits:
-        raise AssertionError("oracle accounting error: the weights do not add up to n_splits")
+    # Every split hands each of its ``len(winners)`` winners the weight ``1/len(winners)`` exactly
+    # once, so the three bins total ``n_splits`` by construction: a self-comparison here could not
+    # fail. The counts this returns are pinned per fixture in ``section_fixtures`` and
+    # ``section_signed`` (``expected["counts"]``) and compared with the module outright, so the
+    # property is checked from outside the oracle, not against its own loop.
     return {
         "status": "ok",
         "n_splits": n_splits,

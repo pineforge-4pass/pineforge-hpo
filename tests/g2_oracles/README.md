@@ -216,8 +216,9 @@ python3 tests/g2_oracles/pareto_oracle.py [--no-module] [--cases N] [--seed S]
 * **Eligibility and refusals** are decided from the contract's tables, not by the module's ladder
   of tests. The kind of every axis cell of every row (absent, null, number, nonfinite, other) is
   computed first; a status table gives the reason of a row that is not ok; the exclusion
-  families are sets (an ok row with an absent key, then an ok row with a null value); the
-  accounting must cover each row exactly once. The expected values of the eligibility hand cases
+  families are sets (an ok row with an absent key, then an ok row with a null value); a status the
+  table does not name is refused, so the eligibility accounting covers each row exactly once. The
+  expected values of the eligibility hand cases
   (an absent key beats a null value, the axes of a metric reason are listed in the order of the
   request) and of the contract's refusal fixtures are written from the contract text, not taken
   from the module. The order of the refusals (unknown axis, then unusable value, then no
@@ -288,8 +289,9 @@ python3 tests/g2_oracles/neighbourhood_oracle.py [--no-module] [--cases N] [--se
   cells, and the never-evaluated vectors as the vectors whose typed key is in no row (checked
   against the cells' classes). The gap and the band distance are one exact-rational step rounded
   once (the contract's one subtraction and one multiplication). Not independent, and labelled so:
-  the near flags are tested again with the same band arithmetic that classified the cells, which
-  checks the oracle against itself and not the module; the 4-ulp acceptance of an off-lattice
+  the near figure is read off the classification's own near flags (pinned by the worked fixtures
+  NF1, NF3 and NF6 and by the module comparison), not from a second band test that would restate
+  the classification's arithmetic; the 4-ulp acceptance of an off-lattice
   stepped real is the loader's rule restated in exact arithmetic (the pin names the loader, not
   the constant); and the validity rules for a row's values (an integer is an int on the lattice,
   a real an int or float inside the bounds, a boolean a bool, a categorical a declared choice of
@@ -331,9 +333,7 @@ python3 tests/g2_oracles/neighbourhood_oracle.py [--no-module] [--cases N] [--se
      `parameter_missing`, `parameter_invalid`, `no_varying_dimension`, `no_feasible_rows`.
   3. Reproduction, not independent: the 4-ulp acceptance of an off-lattice stepped real, and the
      validity rules for a row's value in each dimension kind (including an int accepted for a
-     float choice), are the loader's rules restated (the pin names the loader, not the rules); the
-     second band test that checks the near flags is the classification's own arithmetic, a check
-     of the oracle against itself.
+     float choice), are the loader's rules restated (the pin names the loader, not the rules).
   4. Random studies: one source, 3 to 14 vectors held, up to four finite dimensions plus at most
      one continuous real, log real or log integer, the fraction 0.25 and the ratio 2.0 only, a
      short list of bands, no `max_work`. Not reached by random data: several sources and
@@ -346,7 +346,9 @@ python3 tests/g2_oracles/neighbourhood_oracle.py [--no-module] [--cases N] [--se
      other statuses, but no fixture, hand case or random study holds one, so a module error that
      is specific to one of them would pass.
   5. The random small spaces of the one-move test hold a single row, so they test neighbour
-     generation and never classification; the random studies test classification.
+     generation and never classification; the random studies test classification, and their
+     per-centre class counts are recounted from the raw rows by a route other than the oracle's
+     partition (`section_studies_internal`).
   6. Route only: the gap, the band distance and the share and coverage ratios are computed in
      exact rationals and rounded once, and for finite doubles one IEEE subtraction,
      multiplication or division gives the same bits. Agreement on them therefore checks the sign
