@@ -331,7 +331,7 @@ identical command and compares every normalized token, so a drift between the tw
 test. Adopting the shared functions in the return-statistics generator is a separate change that
 needs a golden-descriptor comparison first.
 
-## Proof still owed
+## Proof plan
 
 The tests check the build binding. These stay independent requirements:
 

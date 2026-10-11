@@ -72,13 +72,14 @@ and the native result is relayed whole; `tests/python/test_return_stats_route.py
 
 ## Seams still open
 
-1. **Effective command versus emitted descriptor (required proof, not yet run).** The compilation
+1. **Effective command versus emitted descriptor (required proof).** The compilation
    database is what CMake intends to run; it is not proof of what the build invoked.
    `tests/test_return_stats_integration.py` deletes the real reducer object, rebuilds the real
    `pineforge_hpo_core` target verbosely, normalizes the executed command with its own
    implementation of the documented rule and requires that it equals the emitted descriptor
-   token for token and equals the database entry. It must run on the actual core target of the
-   supported build before any identity claim.
+   token for token and equals the database entry. It has run on the actual core target of the
+   supported build in the sealed 48-stage run (stage `I-xint-main`; manifest sha256
+   ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 2. **Blast radius.** The generation target runs `cmake -P` before every build of its consumers; a
    defect in that script would break ordinary builds (the engine adapter and the command line),
    not only statistics. It is unconditional by design; the first build of the supported
@@ -91,8 +92,9 @@ and the native result is relayed whole; `tests/python/test_return_stats_route.py
    a source that already carries some; nobody may add per-source options to `return_stats.cpp`
    elsewhere in the build.
 5. **Doxygen.** `docs/internal`, the touched public headers and the identity header (which includes
-   a header that exists only after a build) are swept by the zero-warning API build, which has
-   not run.
+   a header that exists only after a build) are swept by the zero-warning API build; the sealed
+   48-stage run ran it (stage `T-docs`, 0 warning bytes; manifest sha256
+   ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 6. **Pruned and prefix rows** report the statistics of their own curve, as pinned; who may count
    them is a future consumer's decision, not this feature's.
 

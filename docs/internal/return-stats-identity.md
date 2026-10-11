@@ -247,7 +247,7 @@ if(dlib_SOURCE_DIR)
 endif()
 ```
 
-## Proof still owed
+## Proof plan
 
 The identity test checks the build binding and the normalization rule. These stay independent
 requirements and are not replaced by it:
