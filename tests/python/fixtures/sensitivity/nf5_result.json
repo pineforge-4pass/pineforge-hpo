@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "space": {"parameters": {"Fast": {"kind": "integer", "low": 2, "high": 6, "step": 2, "log": false}, "Slow": {"kind": "integer", "low": 10, "high": 30, "step": 10, "log": false}}, "objective": {"expression": "metrics.all.net_profit_pct", "direction": "maximize", "constraints": []}},
+  "direction": "maximize",
+  "trials_completed": 8,
+  "trials_out": "all",
+  "trials": [
+    {"trial_id": 0, "status": "ok", "feasible": true, "objective": 8.0, "parameters": {"Fast": 4, "Slow": 20}},
+    {"trial_id": 1, "status": "ok", "feasible": true, "objective": 7.0, "parameters": {"Fast": 2, "Slow": 20}},
+    {"trial_id": 2, "status": "ok", "feasible": true, "objective": 6.0, "parameters": {"Fast": 6, "Slow": 20}},
+    {"trial_id": 3, "status": "ok", "feasible": true, "objective": 7.5, "parameters": {"Fast": 4, "Slow": 10}},
+    {"trial_id": 4, "status": "ok", "feasible": true, "objective": 4.0, "parameters": {"Fast": 4, "Slow": 30}},
+    {"trial_id": 5, "status": "ok", "feasible": true, "objective": 8.0, "parameters": {"Fast": 2, "Slow": 10}},
+    {"trial_id": 6, "status": "constraint_violation", "feasible": false, "objective": 9.0, "parameters": {"Fast": 6, "Slow": 30}},
+    {"trial_id": 7, "status": "engine_error", "feasible": false, "objective": null, "parameters": {"Fast": 6, "Slow": 10}}
+  ]
+}

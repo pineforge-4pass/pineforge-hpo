@@ -1,0 +1,13 @@
+{
+  "trials_completed": 7,
+  "trials_out": "all",
+  "trials": [
+    {"trial_id": 0, "status": "ok", "feasible": true, "objective": 1.0, "metrics": {"metrics.all.net_profit_pct": 1.0, "metrics.equity.max_equity_drawdown_pct": 2.0}},
+    {"trial_id": 1, "status": "ok", "feasible": true, "objective": 0.0},
+    {"trial_id": 2, "status": "pruned", "feasible": false, "objective": 100.0, "metrics": {"metrics.all.net_profit_pct": 100.0, "metrics.equity.max_equity_drawdown_pct": 0.5}},
+    {"trial_id": 3, "status": "ok", "feasible": true, "objective": 2.0, "metrics": {"metrics.all.net_profit_pct": 2.0, "metrics.equity.max_equity_drawdown_pct": 1.0}},
+    {"trial_id": 4, "status": "objective_error", "feasible": false, "objective": null, "metrics": {"metrics.all.net_profit_pct": 5.0, "metrics.equity.max_equity_drawdown_pct": 0.5}},
+    {"trial_id": 5, "status": "partial", "feasible": false, "objective": null, "metrics": {"metrics.all.net_profit_pct": null, "metrics.equity.max_equity_drawdown_pct": null}},
+    {"trial_id": 6, "status": "ok", "feasible": true, "objective": 4.0, "metrics": {"metrics.all.net_profit_pct": 4.0}}
+  ]
+}

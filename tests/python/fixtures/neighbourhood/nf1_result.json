@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "space": {"parameters": {"Fast": {"kind": "integer", "low": 2, "high": 10, "step": 2, "log": false}, "Flag": {"kind": "boolean"}, "Mode": {"kind": "categorical", "choices": ["ema", "sma", "wma"]}}, "objective": {"expression": "metrics.all.net_profit_pct", "direction": "maximize", "constraints": []}},
+  "direction": "maximize",
+  "trials_completed": 6,
+  "trials_out": "all",
+  "trials": [
+    {"trial_id": 0, "status": "ok", "feasible": true, "objective": 10.0, "parameters": {"Fast": 4, "Flag": false, "Mode": "ema"}},
+    {"trial_id": 1, "status": "ok", "feasible": true, "objective": 9.5, "parameters": {"Fast": 2, "Flag": false, "Mode": "ema"}},
+    {"trial_id": 2, "status": "ok", "feasible": true, "objective": 7.0, "parameters": {"Fast": 6, "Flag": false, "Mode": "ema"}},
+    {"trial_id": 3, "status": "constraint_violation", "feasible": false, "objective": 12.0, "parameters": {"Fast": 4, "Flag": false, "Mode": "sma"}},
+    {"trial_id": 4, "status": "engine_error", "feasible": false, "objective": null, "parameters": {"Fast": 4, "Flag": false, "Mode": "wma"}},
+    {"trial_id": 5, "status": "ok", "feasible": true, "objective": 10.5, "parameters": {"Fast": 8, "Flag": true, "Mode": "sma"}}
+  ]
+}

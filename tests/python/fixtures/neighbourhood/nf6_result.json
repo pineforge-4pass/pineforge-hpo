@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "space": {"parameters": {"Fast": {"kind": "integer", "low": 2, "high": 6, "step": 2, "log": false}}, "objective": {"expression": "metrics.all.max_drawdown_pct", "direction": "minimize", "constraints": []}},
+  "direction": "minimize",
+  "trials_completed": 3,
+  "trials_out": "all",
+  "trials": [
+    {"trial_id": 0, "status": "ok", "feasible": true, "objective": 3.0, "parameters": {"Fast": 4}},
+    {"trial_id": 1, "status": "ok", "feasible": true, "objective": 2.5, "parameters": {"Fast": 2}},
+    {"trial_id": 2, "status": "ok", "feasible": true, "objective": 5.0, "parameters": {"Fast": 6}}
+  ]
+}

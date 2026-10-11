@@ -1,0 +1,10 @@
+{
+  "description": "S=4, N=4, one interval per block (count 1, sum = the return, m2 = 0). Returns per block 0..3: trial 0 = (6, 2, 7, 3), trial 1 = (4, 9, 3, 11), trial 2 = (8, 5, 1, 9), trial 3 = (2, 4, 10, 7). A half of two blocks a and b pools to n=2, sum=ra+rb, m2=(ra-rb)^2/2, so its ranking statistic is g/sqrt(2) with g = (ra+rb)/|ra-rb|. Hand count in tests/python/test_pbo.py.",
+  "S": 4,
+  "rows": [
+    {"trial_id": 0, "status": "ok", "block_returns": {"status": "ok", "count": [1, 1, 1, 1], "sum": [6.0, 2.0, 7.0, 3.0], "m2": [0.0, 0.0, 0.0, 0.0]}},
+    {"trial_id": 1, "status": "ok", "block_returns": {"status": "ok", "count": [1, 1, 1, 1], "sum": [4.0, 9.0, 3.0, 11.0], "m2": [0.0, 0.0, 0.0, 0.0]}},
+    {"trial_id": 2, "status": "ok", "block_returns": {"status": "ok", "count": [1, 1, 1, 1], "sum": [8.0, 5.0, 1.0, 9.0], "m2": [0.0, 0.0, 0.0, 0.0]}},
+    {"trial_id": 3, "status": "ok", "block_returns": {"status": "ok", "count": [1, 1, 1, 1], "sum": [2.0, 4.0, 10.0, 7.0], "m2": [0.0, 0.0, 0.0, 0.0]}}
+  ]
+}
