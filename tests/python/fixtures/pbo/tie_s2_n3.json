@@ -1,0 +1,9 @@
+{
+  "description": "Planted tie among the training bests: S=2, N=3. Every block holds the 2 intervals (m-1, m+1), so count=2, sum=2m, m2=2 and the ranking statistic of a one-block half is m/sqrt(2). Block means (block 0, block 1): trial 0 = (4, 3), trial 1 = (4, 1), trial 2 = (1, 2). Trials 0 and 1 have identical block 0 moments, so they tie exactly when block 0 trains. Hand count in tests/python/test_pbo.py.",
+  "S": 2,
+  "rows": [
+    {"trial_id": 0, "status": "ok", "block_returns": {"status": "ok", "count": [2, 2], "sum": [8.0, 6.0], "m2": [2.0, 2.0]}},
+    {"trial_id": 1, "status": "ok", "block_returns": {"status": "ok", "count": [2, 2], "sum": [8.0, 2.0], "m2": [2.0, 2.0]}},
+    {"trial_id": 2, "status": "ok", "block_returns": {"status": "ok", "count": [2, 2], "sum": [2.0, 4.0], "m2": [2.0, 2.0]}}
+  ]
+}
