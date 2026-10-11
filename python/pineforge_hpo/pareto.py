@@ -164,7 +164,8 @@ def _check_axes(axes: Any) -> tuple:
         raise ParetoError("pareto_parameter_missing", "no axes were given")
     if not isinstance(axes, (list, tuple)):
         raise ParetoError(
-            "pareto_parameter_invalid", "axes must be a list of {name, direction} objects"
+            "pareto_parameter_invalid",
+            "axes must be a list of {name, direction} objects",
         )
     if not axes:
         raise ParetoError("pareto_parameter_missing", "no axes were given")
@@ -216,7 +217,9 @@ def _check_axes(axes: Any) -> tuple:
         directions.append(direction)
     if repeated:
         raise ParetoError(
-            "pareto_parameter_invalid", "an axis name is used more than once", names=repeated
+            "pareto_parameter_invalid",
+            "an axis name is used more than once",
+            names=repeated,
         )
     if len(names) < 2:
         raise ParetoError("pareto_parameter_invalid", "at least two axes are needed")

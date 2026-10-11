@@ -217,7 +217,9 @@ def brute_force(rows, axes):
 
     counts = {
         trial_id: sum(
-            1 for other in pool if other != trial_id and beats(pool[other], pool[trial_id])
+            1
+            for other in pool
+            if other != trial_id and beats(pool[other], pool[trial_id])
         )
         for trial_id in sorted(pool)
     }
@@ -308,7 +310,9 @@ class ConstantsTests(ParetoTestCase):
 class ParetoErrorTests(ParetoTestCase):
     def test_fields_are_kept_and_ids_are_ascending(self):
         """Positive control: the four fields come back as given, ids sorted."""
-        error = ParetoError("pareto_input_invalid", "one sentence", [5, 2, 9], ["b", "a"])
+        error = ParetoError(
+            "pareto_input_invalid", "one sentence", [5, 2, 9], ["b", "a"]
+        )
         self.assertEqual(error.code, "pareto_input_invalid")
         self.assertEqual(error.detail, "one sentence")
         self.assertEqual(error.ids, (2, 5, 9))
@@ -401,7 +405,9 @@ class WorkedFixtureTests(ParetoTestCase):
         self.assertEqual(result["rows_eligible"], 6)
         self.assertEqual(result["rows_excluded"], 0)
         self.assertEqual(result["excluded"], {})
-        self.assertEqual(result["domination_counts"], {0: 2, 1: 0, 2: 0, 3: 0, 4: 0, 5: 3})
+        self.assertEqual(
+            result["domination_counts"], {0: 2, 1: 0, 2: 0, 3: 0, 4: 0, 5: 3}
+        )
         self.assertEqual(result["axes"], AXES3)
         rows = fixture_document("pf2.json")["trials"]
         self.assertEqual(
@@ -479,7 +485,9 @@ class WorkedFixtureTests(ParetoTestCase):
             fixture_text("pf1_overflow.jsonl"),
             plain.replace(old, '"metrics.all.net_profit_pct": 1e999,', 1),
         )
-        self.assertEqual(fixture_rows("pf1.jsonl"), fixture_document("pf1.json")["trials"])
+        self.assertEqual(
+            fixture_rows("pf1.jsonl"), fixture_document("pf1.json")["trials"]
+        )
 
 
 class DominanceTests(ParetoTestCase):
@@ -571,13 +579,18 @@ class DominanceTests(ParetoTestCase):
 
     def test_one_eligible_row_is_its_own_front(self):
         """Positive control: a single eligible row is the front, with count 0."""
-        rows = [make_row(7, "ok", {PROFIT: 1.0, DRAWDOWN: 2.0}), make_row(9, "pruned", {})]
+        rows = [
+            make_row(7, "ok", {PROFIT: 1.0, DRAWDOWN: 2.0}),
+            make_row(9, "pruned", {}),
+        ]
         result = pareto_front(rows, AXES, with_domination_counts=True)
         self.assertEqual(result["pareto_front"], [7])
         self.assertEqual(result["n_front"], 1)
         self.assertEqual(result["n_distinct_vectors_on_front"], 1)
         self.assertEqual(result["domination_counts"], {7: 0})
-        self.assertEqual(result["excluded"], {"status_pruned": {"count": 1, "ids": [9]}})
+        self.assertEqual(
+            result["excluded"], {"status_pruned": {"count": 1, "ids": [9]}}
+        )
 
     def test_duplicate_parameter_vectors_keep_every_row(self):
         """Rule: rows with equal parameters and equal metrics all stay (pin P6)."""
@@ -619,7 +632,9 @@ class EligibilityTests(ParetoTestCase):
         good = {PROFIT: 1.0, DRAWDOWN: 1.0}
         better = {PROFIT: 9.0, DRAWDOWN: 0.5}
         rows = [make_row(0, "ok", good)]
-        rows += [make_row(index + 1, status, better) for index, status in enumerate(statuses)]
+        rows += [
+            make_row(index + 1, status, better) for index, status in enumerate(statuses)
+        ]
         result = pareto_front(rows, AXES)
         self.assertEqual(result["pareto_front"], [0])
         self.assertEqual(result["rows_eligible"], 1)
@@ -692,7 +707,9 @@ class EligibilityTests(ParetoTestCase):
         ]
         result = pareto_front(rows, AXES)
         self.assertEqual(result["pareto_front"], [0])
-        self.assertEqual(result["excluded"], {"status_pruned": {"count": 1, "ids": [1]}})
+        self.assertEqual(
+            result["excluded"], {"status_pruned": {"count": 1, "ids": [1]}}
+        )
 
 
 class ParameterRefusalTests(ParetoTestCase):
@@ -714,18 +731,24 @@ class ParameterRefusalTests(ParetoTestCase):
         """Refusal fixture: a direction omitted is pareto_parameter_missing, no default."""
         axes = [AXES[0], {"name": DRAWDOWN}]
         self.assertRefused(
-            self.refusal(self.source, axes), "pareto_parameter_missing", names=(DRAWDOWN,)
+            self.refusal(self.source, axes),
+            "pareto_parameter_missing",
+            names=(DRAWDOWN,),
         )
         axes = [AXES[0], {"name": DRAWDOWN, "direction": None}]
         self.assertRefused(
-            self.refusal(self.source, axes), "pareto_parameter_missing", names=(DRAWDOWN,)
+            self.refusal(self.source, axes),
+            "pareto_parameter_missing",
+            names=(DRAWDOWN,),
         )
 
     def test_name_omitted_is_missing(self):
         """Rule: an axis without a name is named by its position."""
         axes = [AXES[0], {"direction": "minimize"}]
         self.assertRefused(
-            self.refusal(self.source, axes), "pareto_parameter_missing", names=("axes[1]",)
+            self.refusal(self.source, axes),
+            "pareto_parameter_missing",
+            names=("axes[1]",),
         )
 
     def test_missing_wins_over_invalid(self):
@@ -751,7 +774,17 @@ class ParameterRefusalTests(ParetoTestCase):
 
     def test_direction_words_are_exact(self):
         """Refusal fixture: direction max (and every other word) is invalid, no inference."""
-        for word in ("max", "min", "MAXIMIZE", "Maximize", "maximise", "", 1, True, ["maximize"]):
+        for word in (
+            "max",
+            "min",
+            "MAXIMIZE",
+            "Maximize",
+            "maximise",
+            "",
+            1,
+            True,
+            ["maximize"],
+        ):
             axes = [AXES[0], {"name": DRAWDOWN, "direction": word}]
             with self.subTest(word=word):
                 error = self.refusal(self.source, axes)
@@ -773,7 +806,9 @@ class ParameterRefusalTests(ParetoTestCase):
                 self.assertRefused(error, "pareto_parameter_invalid")
         extra = [AXES[0], {"name": DRAWDOWN, "direction": "minimize", "weight": 2}]
         self.assertRefused(
-            self.refusal(self.source, extra), "pareto_parameter_invalid", names=("weight",)
+            self.refusal(self.source, extra),
+            "pareto_parameter_invalid",
+            names=("weight",),
         )
 
     def test_axes_may_be_a_tuple(self):
@@ -822,25 +857,35 @@ class SourceRefusalTests(ParetoTestCase):
         )
         for source in (5, None, ("a",), 1.5):
             with self.subTest(source=source):
-                self.assertEqual(self.refusal(source, AXES).code, "pareto_input_invalid")
+                self.assertEqual(
+                    self.refusal(source, AXES).code, "pareto_input_invalid"
+                )
 
     def test_duplicate_trial_id_is_invalid_input(self):
         """Refusal fixture: two rows with id 3 (draft 4.1)."""
         document = fixture_document("pf1.json")
         document["trials"][9]["trial_id"] = 3
-        self.assertRefused(self.refusal(document, AXES), "pareto_input_invalid", ids=(3,))
+        self.assertRefused(
+            self.refusal(document, AXES), "pareto_input_invalid", ids=(3,)
+        )
 
     def test_malformed_rows_are_invalid_input(self):
         """Rule: unknown status, feasible disagreeing with status, a null metrics member."""
         document = fixture_document("pf1.json")
         document["trials"][2]["feasible"] = False
-        self.assertRefused(self.refusal(document, AXES), "pareto_input_invalid", ids=(2,))
+        self.assertRefused(
+            self.refusal(document, AXES), "pareto_input_invalid", ids=(2,)
+        )
         document = fixture_document("pf1.json")
         document["trials"][5]["status"] = "weird"
-        self.assertRefused(self.refusal(document, AXES), "pareto_input_invalid", ids=(5,))
+        self.assertRefused(
+            self.refusal(document, AXES), "pareto_input_invalid", ids=(5,)
+        )
         document = fixture_document("pf1.json")
         document["trials"][1]["metrics"] = None
-        self.assertRefused(self.refusal(document, AXES), "pareto_input_invalid", ids=(1,))
+        self.assertRefused(
+            self.refusal(document, AXES), "pareto_input_invalid", ids=(1,)
+        )
 
     def test_nan_token_in_a_file_is_invalid_input(self):
         """Refusal fixture: the token NaN as row 0's profit (draft 4.1; pin P4)."""
@@ -878,7 +923,9 @@ class ValueRefusalTests(ParetoTestCase):
             document["trials"][0]["metrics"][PROFIT] = value
             with self.subTest(value=repr(value)):
                 error = self.refusal(document, AXES)
-                self.assertRefused(error, "pareto_input_invalid", ids=(0,), names=(PROFIT,))
+                self.assertRefused(
+                    error, "pareto_input_invalid", ids=(0,), names=(PROFIT,)
+                )
 
     def test_every_offending_row_and_axis_is_named(self):
         """Rule: ids ascending, axis names in request order, over all offending rows."""
@@ -886,7 +933,9 @@ class ValueRefusalTests(ParetoTestCase):
         document["trials"][4]["metrics"][DRAWDOWN] = "8.0"
         document["trials"][0]["metrics"][PROFIT] = True
         error = self.refusal(document, AXES)
-        self.assertRefused(error, "pareto_input_invalid", ids=(0, 4), names=(PROFIT, DRAWDOWN))
+        self.assertRefused(
+            error, "pareto_input_invalid", ids=(0, 4), names=(PROFIT, DRAWDOWN)
+        )
 
     def test_a_bad_value_is_refused_even_when_another_axis_is_absent(self):
         """Rule: a bad value on an ok row refuses the call; it is not hidden by an
@@ -960,7 +1009,9 @@ class AxisAndEligibilityRefusalTests(ParetoTestCase):
 
     def test_every_value_unavailable_has_no_eligible_rows(self):
         """Rule: no row remains after exclusions, here all for null values."""
-        rows = [make_row(index, "ok", {PROFIT: None, DRAWDOWN: 1.0}) for index in range(3)]
+        rows = [
+            make_row(index, "ok", {PROFIT: None, DRAWDOWN: 1.0}) for index in range(3)
+        ]
         self.assertRefused(self.refusal(rows, AXES), "pareto_no_eligible_rows")
 
     def test_a_source_without_rows_has_no_eligible_rows(self):
@@ -982,7 +1033,9 @@ class ContextRefusalTests(ParetoTestCase):
         self.assertEqual(pareto_front(document, AXES)["status"], "ok")
         document["trials"][4]["space_hash"] = "b" * 64
         error = self.refusal(document, AXES)
-        self.assertRefused(error, "pareto_context_mismatch", ids=(0, 4), names=("space_hash",))
+        self.assertRefused(
+            error, "pareto_context_mismatch", ids=(0, 4), names=("space_hash",)
+        )
 
     def test_backtest_counter_disagreement_among_ok_rows(self):
         """Rule: ok rows must agree on the four backtest counters (draft 3.2(e))."""
@@ -994,7 +1047,10 @@ class ContextRefusalTests(ParetoTestCase):
         document["trials"][3]["backtest"]["input_bars_processed"] = 999
         error = self.refusal(document, AXES)
         self.assertRefused(
-            error, "pareto_context_mismatch", ids=(0, 3), names=("input_bars_processed",)
+            error,
+            "pareto_context_mismatch",
+            ids=(0, 3),
+            names=("input_bars_processed",),
         )
 
     def test_spaces_are_not_read_or_compared(self):
@@ -1020,7 +1076,9 @@ class ResourceTests(ParetoTestCase):
         for name, axes, figure in cases:
             with self.subTest(name=name):
                 source = FIXTURES / name
-                self.assertEqual(pareto_front(source, axes, max_work=figure)["status"], "ok")
+                self.assertEqual(
+                    pareto_front(source, axes, max_work=figure)["status"], "ok"
+                )
                 self.assertEqual(
                     pareto_front(source, axes, max_work=figure + 1000)["status"], "ok"
                 )
@@ -1049,7 +1107,9 @@ class ResourceTests(ParetoTestCase):
         rows = [make_row(0, "ok", {PROFIT: 1.0, DRAWDOWN: 1.0})]
         rows += [make_row(index, "pruned", {}) for index in range(1, 5)]
         self.assertEqual(pareto_front(rows, AXES, max_work=5)["status"], "ok")
-        self.assertRefused(self.refusal(rows, AXES, max_work=4), "pareto_resource_exceeded")
+        self.assertRefused(
+            self.refusal(rows, AXES, max_work=4), "pareto_resource_exceeded"
+        )
 
 
 class CheckOrderTests(ParetoTestCase):
@@ -1076,7 +1136,10 @@ class CheckOrderTests(ParetoTestCase):
 
     def test_unknown_axes_come_before_no_eligible_rows(self):
         """Rule: an axis recorded nowhere is named even when no row would be eligible."""
-        rows = [make_row(0, "pruned", {PROFIT: 1.0}), make_row(1, "pruned", {PROFIT: 2.0})]
+        rows = [
+            make_row(0, "pruned", {PROFIT: 1.0}),
+            make_row(1, "pruned", {PROFIT: 2.0}),
+        ]
         self.assertEqual(self.refusal(rows, AXES).code, "pareto_axis_unknown")
 
     def test_invalid_values_come_before_the_resource_check(self):
@@ -1085,12 +1148,16 @@ class CheckOrderTests(ParetoTestCase):
         self.assertEqual(error.code, "pareto_input_invalid")
         document = fixture_document("pf1.json")
         document["trials"][0]["metrics"][PROFIT] = "10.0"
-        self.assertEqual(self.refusal(document, AXES, max_work=1).code, "pareto_input_invalid")
+        self.assertEqual(
+            self.refusal(document, AXES, max_work=1).code, "pareto_input_invalid"
+        )
 
     def test_no_eligible_rows_come_before_the_resource_check(self):
         """Rule: with nothing eligible the answer is no_eligible_rows, not a size refusal."""
         rows = [make_row(0, "pruned", {PROFIT: 1.0, DRAWDOWN: 1.0})]
-        self.assertEqual(self.refusal(rows, AXES, max_work=1).code, "pareto_no_eligible_rows")
+        self.assertEqual(
+            self.refusal(rows, AXES, max_work=1).code, "pareto_no_eligible_rows"
+        )
 
 
 class InvarianceTests(ParetoTestCase):
@@ -1133,11 +1200,18 @@ class InvarianceTests(ParetoTestCase):
         front, counts or digest (draft 3.6)."""
         for name, axes in (("pf1.json", AXES), ("pf2.json", AXES3), ("pf3.json", AXES)):
             with self.subTest(name=name):
-                forward = pareto_front(FIXTURES / name, axes, with_domination_counts=True)
+                forward = pareto_front(
+                    FIXTURES / name, axes, with_domination_counts=True
+                )
                 backward = pareto_front(
                     FIXTURES / name, list(reversed(axes)), with_domination_counts=True
                 )
-                for key in ("pareto_front", "domination_counts", "input_sha256", "n_front"):
+                for key in (
+                    "pareto_front",
+                    "domination_counts",
+                    "input_sha256",
+                    "n_front",
+                ):
                     self.assertEqual(forward[key], backward[key], key)
                 self.assertEqual(backward["axes"], list(reversed(axes)))
 
@@ -1174,7 +1248,8 @@ class InvarianceTests(ParetoTestCase):
         again = json.loads(json.dumps(result, sort_keys=True))
         counts = again.pop("domination_counts")
         self.assertEqual(
-            {int(key): value for key, value in counts.items()}, result.pop("domination_counts")
+            {int(key): value for key, value in counts.items()},
+            result.pop("domination_counts"),
         )
         self.assertEqual(again, result)
 

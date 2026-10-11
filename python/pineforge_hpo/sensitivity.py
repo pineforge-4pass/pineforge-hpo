@@ -60,9 +60,7 @@ def not_near_counts(profile: dict) -> dict:
     evaluated neighbours are not counted.
     """
     return {
-        name: sum(
-            1 for cell in cells if cell["class"] in _SCORED and not cell["near"]
-        )
+        name: sum(1 for cell in cells if cell["class"] in _SCORED and not cell["near"])
         for name, cells in profile.items()
     }
 

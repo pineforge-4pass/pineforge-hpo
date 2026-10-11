@@ -44,7 +44,9 @@ def fixture_document(name):
 
 
 def fixture_rows(name):
-    return [loads_strict(line) for line in fixture_text(name).split("\n") if line.strip()]
+    return [
+        loads_strict(line) for line in fixture_text(name).split("\n") if line.strip()
+    ]
 
 
 def make_row(trial_id, status="ok", objective=1.0, **extra):
@@ -170,7 +172,9 @@ class LoadsStrictTests(RowsTestCase):
     def test_duplicate_key_is_refused(self):
         """Rule: duplicate JSON keys refuse (N-draft 3.2(d); continuation.py:201-206)."""
         self.assertIn("duplicate JSON key", self.detail('{"a": 1, "a": 2}'))
-        self.assertIn("duplicate JSON key", self.detail('{"o": {"a": 1, "b": 2, "a": 3}}'))
+        self.assertIn(
+            "duplicate JSON key", self.detail('{"o": {"a": 1, "b": 2, "a": 3}}')
+        )
         self.assertIn("duplicate JSON key", self.detail('[{"x": 1}, {"y": 1, "y": 1}]'))
 
     def test_nan_token_is_refused(self):
@@ -217,7 +221,13 @@ class ValidateRowTests(RowsTestCase):
             self.assertEqual(row.feasible, status == "ok")
             self.assertEqual(row.objective, 1.5 if scored else None)
             self.assertIs(row.raw, raw)
-            for member in (row.parameters, row.metrics, row.backtest, row.space_hash, row.space):
+            for member in (
+                row.parameters,
+                row.metrics,
+                row.backtest,
+                row.space_hash,
+                row.space,
+            ):
                 self.assertIsNone(member)
 
     def test_unknown_status_is_refused(self):
@@ -272,7 +282,10 @@ class ValidateRowTests(RowsTestCase):
         """Rule: objective is null or a finite number (continuation.py:368-371)."""
         self.assertIsNone(validate_row(make_row(3, "engine_error", None), 0).objective)
         self.assertEqual(validate_row(make_row(3, "pruned", 2.5), 0).objective, 2.5)
-        self.assertEqual(self.refusal(validate_row, make_row(3, "pruned", float("nan")), 0).kind, "input_invalid")
+        self.assertEqual(
+            self.refusal(validate_row, make_row(3, "pruned", float("nan")), 0).kind,
+            "input_invalid",
+        )
         seven = validate_row(make_row(3, "ok", 7), 0).objective
         self.assertEqual(seven, 7.0)
         self.assertIs(type(seven), float)
@@ -324,8 +337,12 @@ class ValidateRowTests(RowsTestCase):
     def test_row_and_index_must_be_well_formed(self):
         """Rule: a row is a JSON object and the source index a non-negative int."""
         self.assertEqual(self.refusal(validate_row, [1, 2], 0).kind, "input_invalid")
-        self.assertEqual(self.refusal(validate_row, make_row(1), -1).kind, "input_invalid")
-        self.assertEqual(self.refusal(validate_row, make_row(1), True).kind, "input_invalid")
+        self.assertEqual(
+            self.refusal(validate_row, make_row(1), -1).kind, "input_invalid"
+        )
+        self.assertEqual(
+            self.refusal(validate_row, make_row(1), True).kind, "input_invalid"
+        )
 
 
 class UniqueIdsTests(RowsTestCase):
@@ -378,7 +395,9 @@ class ReadSourceTests(RowsTestCase):
         self.assertIs(type(source.rows[2].objective), float)
         self.assertEqual(source.direction, "maximize")
         self.assertEqual(source.space, SPACE)
-        self.assertEqual(source.rows[0].parameters, {"Fast": 4, "Flag": False, "Mode": "ema"})
+        self.assertEqual(
+            source.rows[0].parameters, {"Fast": 4, "Flag": False, "Mode": "ema"}
+        )
         self.assertEqual(source.rows[4].metrics, {"metrics.all.net_profit_pct": None})
         self.assertEqual(source.rows[0].backtest["input_tf_seconds"], 3600)
         self.assertEqual(source.rows[0].space_hash, "0123456789abcdef" * 4)
@@ -405,7 +424,9 @@ class ReadSourceTests(RowsTestCase):
         for mode in ("best-k", "none", "summary", None):
             document = fixture_document("result_all.json")
             document["trials_out"] = mode
-            self.assertEqual(self.refusal(read_source, document).kind, "rows_incomplete")
+            self.assertEqual(
+                self.refusal(read_source, document).kind, "rows_incomplete"
+            )
         document = fixture_document("result_all.json")
         document["trials_out"] = "all"
         self.assertEqual(len(read_source(document).rows), 6)
@@ -417,7 +438,9 @@ class ReadSourceTests(RowsTestCase):
         for wrong in (5, 7, 0, "6", 6.0, True, None):
             document = fixture_document("result_all.json")
             document["trials_completed"] = wrong
-            self.assertEqual(self.refusal(read_source, document).kind, "rows_incomplete")
+            self.assertEqual(
+                self.refusal(read_source, document).kind, "rows_incomplete"
+            )
         document = fixture_document("result_all.json")
         self.assertEqual(read_source(document).rows[5].trial_id, 5)
 
@@ -437,7 +460,11 @@ class ReadSourceTests(RowsTestCase):
 
     def test_result_shape_defects_are_invalid(self):
         """Rule: a result without a usable trials array is input_invalid."""
-        for document in ({"trials_out": "all"}, {"trials": {"a": 1}}, {"trials": []} | {"warm_start_trials": 3}):
+        for document in (
+            {"trials_out": "all"},
+            {"trials": {"a": 1}},
+            {"trials": []} | {"warm_start_trials": 3},
+        ):
             self.assertEqual(self.refusal(read_source, document).kind, "input_invalid")
         self.assertEqual(read_source({"trials": []}).rows, ())
 
@@ -539,7 +566,9 @@ class ReadSourceTests(RowsTestCase):
         path = FIXTURES / "result_all.json"
         text = fixture_text("result_all.json")
         expected = read_source(path)
-        self.assertEqual(_rows._source_from_text(path.read_bytes().decode("utf-8"), 0), expected)
+        self.assertEqual(
+            _rows._source_from_text(path.read_bytes().decode("utf-8"), 0), expected
+        )
         document = json.loads(text)
         for variant in (
             text,
@@ -560,12 +589,18 @@ class ReadSourceTests(RowsTestCase):
         ):
             self.assertEqual(_rows._source_from_text(variant, 0), expected)
         self.assertEqual(_rows._source_from_text(lines[0], 0).rows, expected.rows[:1])
-        self.assertEqual(_rows._source_from_text("\n".join(lines[:2]), 0).rows, expected.rows[:2])
+        self.assertEqual(
+            _rows._source_from_text("\n".join(lines[:2]), 0).rows, expected.rows[:2]
+        )
 
     def test_lone_row_object_is_a_one_row_source(self):
         """Rule: one row object, on one line or indented, is a one-row source."""
         raw = make_row(9, "ok", 2.5)
-        for text in (json.dumps(raw), json.dumps(raw, indent=2), "\n" + json.dumps(raw) + "\n"):
+        for text in (
+            json.dumps(raw),
+            json.dumps(raw, indent=2),
+            "\n" + json.dumps(raw) + "\n",
+        ):
             source = _rows._source_from_text(text, 2)
             self.assertEqual([row.trial_id for row in source.rows], [9])
             self.assertEqual(source.rows[0].source_index, 2)
@@ -575,23 +610,37 @@ class ReadSourceTests(RowsTestCase):
         """Rule: a source without rows is returned empty, not refused."""
         for text in ("", "\n", " \n \t\n"):
             source = _rows._source_from_text(text, 1)
-            self.assertEqual((source.index, source.rows, source.space, source.direction), (1, (), None, None))
+            self.assertEqual(
+                (source.index, source.rows, source.space, source.direction),
+                (1, (), None, None),
+            )
         self.assertEqual(read_source([]).rows, ())
 
     def test_source_must_be_a_path_a_result_or_a_list(self):
         """Rule: anything else, a missing file or a directory is input_invalid."""
         for source in (5, None, ("a",), 1.5):
             self.assertEqual(self.refusal(read_source, source).kind, "input_invalid")
-        self.assertEqual(self.refusal(read_source, FIXTURES / "missing.json").kind, "input_invalid")
+        self.assertEqual(
+            self.refusal(read_source, FIXTURES / "missing.json").kind, "input_invalid"
+        )
         self.assertEqual(self.refusal(read_source, FIXTURES).kind, "input_invalid")
         for index in (-1, True, "0", 1.0):
             self.assertEqual(self.refusal(read_source, [], index).kind, "input_invalid")
 
     def test_malformed_documents_are_invalid(self):
         """Rule: text that is neither one JSON document nor JSONL is input_invalid."""
-        for text in ('{not json}\n{}', '"a string"', "12", "[1, 2]", '[{"trial_id": 1}]', "[]\n[]"):
+        for text in (
+            "{not json}\n{}",
+            '"a string"',
+            "12",
+            "[1, 2]",
+            '[{"trial_id": 1}]',
+            "[]\n[]",
+        ):
             self.assertEqual(
-                self.refusal(_rows._source_from_text, text, 0).kind, "input_invalid", text
+                self.refusal(_rows._source_from_text, text, 0).kind,
+                "input_invalid",
+                text,
             )
 
 
@@ -616,8 +665,24 @@ class CanonicalSpaceTests(RowsTestCase):
             "objective": dict(reversed(list(SPACE["objective"].items()))),
         }
         self.assertEqual(canonical_space(reordered), canonical_space(SPACE))
-        as_int = {"parameters": {"x": {"kind": "real", "low": 0, "high": 1, "step": None, "log": False}}, "objective": SPACE["objective"]}
-        as_float = {"parameters": {"x": {"kind": "real", "low": 0.0, "high": 1.0, "step": None, "log": False}}, "objective": SPACE["objective"]}
+        as_int = {
+            "parameters": {
+                "x": {"kind": "real", "low": 0, "high": 1, "step": None, "log": False}
+            },
+            "objective": SPACE["objective"],
+        }
+        as_float = {
+            "parameters": {
+                "x": {
+                    "kind": "real",
+                    "low": 0.0,
+                    "high": 1.0,
+                    "step": None,
+                    "log": False,
+                }
+            },
+            "objective": SPACE["objective"],
+        }
         self.assertEqual(canonical_space(as_int), canonical_space(as_float))
         other = copy.deepcopy(SPACE)
         other["parameters"]["Fast"]["high"] = 12
@@ -625,9 +690,21 @@ class CanonicalSpaceTests(RowsTestCase):
 
     def test_malformed_space_is_refused(self):
         """Rule: a space that cannot be canonicalised is input_invalid, not a stray exception."""
-        unknown = {"parameters": {"x": {"kind": "weird"}}, "objective": SPACE["objective"]}
-        for bad in ({}, {"parameters": {}}, unknown, None, 5, {"parameters": 1, "objective": {}}):
-            self.assertEqual(self.refusal(canonical_space, bad).kind, "input_invalid", bad)
+        unknown = {
+            "parameters": {"x": {"kind": "weird"}},
+            "objective": SPACE["objective"],
+        }
+        for bad in (
+            {},
+            {"parameters": {}},
+            unknown,
+            None,
+            5,
+            {"parameters": 1, "objective": {}},
+        ):
+            self.assertEqual(
+                self.refusal(canonical_space, bad).kind, "input_invalid", bad
+            )
 
 
 class CommonSpaceTests(RowsTestCase):
@@ -655,7 +732,10 @@ class CommonSpaceTests(RowsTestCase):
             "objective": dict(reversed(list(SPACE["objective"].items()))),
             "parameters": dict(reversed(list(SPACE["parameters"].items()))),
         }
-        sources = [read_source(FIXTURES / "result_all.json", 0), read_source(reordered, 1)]
+        sources = [
+            read_source(FIXTURES / "result_all.json", 0),
+            read_source(reordered, 1),
+        ]
         self.assertEqual(common_space(sources), SPACE)
 
     def test_space_mismatch_between_two_sources(self):
@@ -673,13 +753,20 @@ class CommonSpaceTests(RowsTestCase):
         """Rule: objective, direction and constraints are compared too (N-draft 3.2(c))."""
         for change in (
             lambda space: space["objective"].update(direction="minimize"),
-            lambda space: space["objective"].update(expression="metrics.all.profit_factor"),
-            lambda space: space["objective"].update(constraints=["metrics.all.net_profit_pct > 0"]),
+            lambda space: space["objective"].update(
+                expression="metrics.all.profit_factor"
+            ),
+            lambda space: space["objective"].update(
+                constraints=["metrics.all.net_profit_pct > 0"]
+            ),
         ):
             other = fixture_document("result_all.json")
             change(other["space"])
             del other["direction"]
-            sources = [read_source(FIXTURES / "result_all.json", 0), read_source(other, 1)]
+            sources = [
+                read_source(FIXTURES / "result_all.json", 0),
+                read_source(other, 1),
+            ]
             error = self.refusal(common_space, sources)
             self.assertEqual(error.kind, "space_mismatch")
             self.assertEqual(error.names, ())
@@ -695,7 +782,10 @@ class CommonSpaceTests(RowsTestCase):
 
     def test_space_missing(self):
         """Rule: no space anywhere and none passed raises space_missing (N-draft 3.8)."""
-        self.assertEqual(self.refusal(common_space, [read_source(FIXTURES / "rows.jsonl")]).kind, "space_missing")
+        self.assertEqual(
+            self.refusal(common_space, [read_source(FIXTURES / "rows.jsonl")]).kind,
+            "space_missing",
+        )
         self.assertEqual(self.refusal(common_space, []).kind, "space_missing")
 
     def test_passed_space_is_only_a_fallback(self):
@@ -714,7 +804,9 @@ class CommonSpaceTests(RowsTestCase):
         """Rule: a passed space that is not a usable space is input_invalid."""
         bare = [read_source(FIXTURES / "rows.jsonl")]
         for bad in ({"parameters": 1, "objective": {}}, 5, {}):
-            self.assertEqual(self.refusal(common_space, bare, bad).kind, "input_invalid")
+            self.assertEqual(
+                self.refusal(common_space, bare, bad).kind, "input_invalid"
+            )
 
 
 class CheckContextTests(RowsTestCase):
@@ -736,6 +828,7 @@ class CheckContextTests(RowsTestCase):
 
     def test_backtest_counter_mismatch_among_ok_rows(self):
         """Rule: ok rows must agree on the four counters (N-draft 3.2(e), N14; P-draft 3.2(e))."""
+
         def mutate(document):
             document["trials"][1]["backtest"]["input_bars_processed"] = 999
 
@@ -752,6 +845,7 @@ class CheckContextTests(RowsTestCase):
             "input_tf_seconds",
             "script_tf_seconds",
         ):
+
             def mutate(document, name=name):
                 document["trials"][5]["backtest"][name] += 1
 
@@ -762,6 +856,7 @@ class CheckContextTests(RowsTestCase):
 
     def test_counters_of_rows_that_are_not_ok_are_not_compared(self):
         """Rule: only status ok rows count, so a violation row may differ."""
+
         def mutate(document):
             document["trials"][3]["backtest"]["script_tf_seconds"] = 60
 
@@ -769,6 +864,7 @@ class CheckContextTests(RowsTestCase):
 
     def test_space_hash_mismatch(self):
         """Rule: rows that carry space_hash must carry one value (N-draft 3.2(e))."""
+
         def mutate(document):
             document["trials"][4]["space_hash"] = "f" * 64
 
@@ -819,7 +915,9 @@ class VectorKeyTests(RowsTestCase):
         positive = vector_key({"n": 1, "x": 0.0}, REAL_SPACE)
         negative = vector_key({"n": 1, "x": -0.0}, REAL_SPACE)
         self.assertEqual(positive, negative)
-        self.assertEqual(positive, '{"n":["integer","1"],"x":["real","0000000000000000"]}')
+        self.assertEqual(
+            positive, '{"n":["integer","1"],"x":["real","0000000000000000"]}'
+        )
 
     def test_neighbouring_reals_have_different_keys(self):
         """Rule: equality is exact binary64, no tolerance (N-draft 3.4)."""
@@ -835,19 +933,23 @@ class VectorKeyTests(RowsTestCase):
     def test_int_in_a_real_dimension_is_the_same_real(self):
         """Rule: the native writer prints 1.0 as 1, so int and float keys agree."""
         self.assertEqual(
-            vector_key({"n": 1, "x": 1}, REAL_SPACE), vector_key({"n": 1, "x": 1.0}, REAL_SPACE)
+            vector_key({"n": 1, "x": 1}, REAL_SPACE),
+            vector_key({"n": 1, "x": 1.0}, REAL_SPACE),
         )
 
     def test_insertion_order_does_not_matter(self):
         """Rule: the key is canonical, whatever order the parameters were built in."""
         self.assertEqual(
-            vector_key({"x": 0.25, "n": 3}, REAL_SPACE), vector_key({"n": 3, "x": 0.25}, REAL_SPACE)
+            vector_key({"x": 0.25, "n": 3}, REAL_SPACE),
+            vector_key({"n": 3, "x": 0.25}, REAL_SPACE),
         )
 
     def test_categorical_values_keep_their_type(self):
         """Rule: a categorical value is keyed by the type of the matching choice."""
         space = {
-            "parameters": {"c": {"kind": "categorical", "choices": ["a", 1, 2.5, True]}},
+            "parameters": {
+                "c": {"kind": "categorical", "choices": ["a", 1, 2.5, True]}
+            },
             "objective": SPACE["objective"],
         }
         self.assertEqual(vector_key({"c": "a"}, space), '{"c":["string","a"]}')
@@ -862,7 +964,9 @@ class VectorKeyTests(RowsTestCase):
             "objective": SPACE["objective"],
         }
         self.assertEqual(vector_key({"c": 1}, floats), vector_key({"c": 1.0}, floats))
-        self.assertEqual(self.refusal(vector_key, {"c": "zzz"}, space).kind, "input_invalid")
+        self.assertEqual(
+            self.refusal(vector_key, {"c": "zzz"}, space).kind, "input_invalid"
+        )
 
     def test_defective_vectors_are_refused(self):
         """Rule: names must equal the dimensions and each value must fit its kind."""

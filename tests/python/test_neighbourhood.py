@@ -175,7 +175,10 @@ class ConstantsTests(unittest.TestCase):
     def test_error_fields_ids_and_document(self):
         """Positive control: the four fields, ascending ids, the refusal document."""
         error = NeighbourhoodError(
-            "neighbourhood_centre_invalid", "a sentence", [(1, 0), (0, 7), (0, 2)], ["b", "a"]
+            "neighbourhood_centre_invalid",
+            "a sentence",
+            [(1, 0), (0, 7), (0, 2)],
+            ["b", "a"],
         )
         self.assertEqual(error.code, "neighbourhood_centre_invalid")
         self.assertEqual(error.detail, "a sentence")
@@ -200,7 +203,9 @@ class ConstantsTests(unittest.TestCase):
 
     def test_error_survives_pickling(self):
         """Rule: the error crosses a process boundary with its fields intact."""
-        error = NeighbourhoodError("neighbourhood_space_mismatch", "differs", [(0, 1)], ["Fast"])
+        error = NeighbourhoodError(
+            "neighbourhood_space_mismatch", "differs", [(0, 1)], ["Fast"]
+        )
         # Round trip of an object built here; no untrusted bytes are loaded.
         again = pickle.loads(pickle.dumps(error))
         self.assertIsInstance(again, NeighbourhoodError)
@@ -374,7 +379,9 @@ class NF1Tests(unittest.TestCase):
         self.assertEqual(
             relative["band"], {"mode": "relative", "value": 0.125, "delta": 1.3125}
         )
-        self.assertEqual(relative["centres"][0]["profile"], base["centres"][0]["profile"])
+        self.assertEqual(
+            relative["centres"][0]["profile"], base["centres"][0]["profile"]
+        )
         self.assertEqual(
             relative["centres"][0]["share_near_best"],
             base["centres"][0]["share_near_best"],
@@ -804,7 +811,9 @@ class NF4Tests(unittest.TestCase):
         """Choice: a repeated choice is one value, so [a, a, b] has the neighbour b only."""
         spec = {"kind": "categorical", "choices": ["a", "a", "b"]}
         self.assertEqual(self.values(spec, "a"), ("b",))
-        self.assertTrue(dimension("X", {"kind": "categorical", "choices": ["a", "a"]}).constant)
+        self.assertTrue(
+            dimension("X", {"kind": "categorical", "choices": ["a", "a"]}).constant
+        )
 
     def test_categorical_choice_types_stay_apart(self):
         """Rule: 1, 1.0 and true are three choices (typed keys), declared order kept."""
@@ -837,7 +846,9 @@ class NF4Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             stepped.normalise(0.30000000000000004)
 
-    def test_stepped_real_row_value_within_four_units_is_taken_as_the_lattice_point(self):
+    def test_stepped_real_row_value_within_four_units_is_taken_as_the_lattice_point(
+        self,
+    ):
         """Choice: as continuation does, a value within 4 ulps of a lattice point is that point."""
         spec = {"kind": "real", "low": 0.5, "high": 2.0, "step": 0.5, "log": False}
         stepped = dimension("X", spec)
@@ -876,11 +887,19 @@ class NF4Tests(unittest.TestCase):
     def test_a_rule_needing_fraction_or_ratio_refuses_without_it(self):
         """Rule: ``neighbours`` raises when its fraction or ratio is None."""
         with self.assertRaises(ValueError):
-            dimension("X", {"kind": "real", "low": 0.0, "high": 1.0, "step": None, "log": False}).neighbours(0.5)
+            dimension(
+                "X",
+                {"kind": "real", "low": 0.0, "high": 1.0, "step": None, "log": False},
+            ).neighbours(0.5)
         with self.assertRaises(ValueError):
-            dimension("X", {"kind": "real", "low": 1.0, "high": 8.0, "step": None, "log": True}).neighbours(2.0)
+            dimension(
+                "X",
+                {"kind": "real", "low": 1.0, "high": 8.0, "step": None, "log": True},
+            ).neighbours(2.0)
         with self.assertRaises(ValueError):
-            dimension("X", {"kind": "integer", "low": 1, "high": 8, "step": 1, "log": True}).neighbours(2)
+            dimension(
+                "X", {"kind": "integer", "low": 1, "high": 8, "step": 1, "log": True}
+            ).neighbours(2)
 
     def test_whole_table_through_the_public_function(self):
         """The table once more, through ``neighbourhood`` with one centre row.
@@ -894,10 +913,34 @@ class NF4Tests(unittest.TestCase):
         space = {
             "parameters": {
                 "A": {"kind": "integer", "low": 2, "high": 10, "step": 2, "log": False},
-                "B": {"kind": "integer", "low": 1, "high": 1000, "step": 1, "log": True},
-                "C": {"kind": "real", "low": 0.5, "high": 2.0, "step": 0.5, "log": False},
-                "D": {"kind": "real", "low": 0.0, "high": 1.0, "step": None, "log": False},
-                "E": {"kind": "real", "low": 0.125, "high": 8.0, "step": None, "log": True},
+                "B": {
+                    "kind": "integer",
+                    "low": 1,
+                    "high": 1000,
+                    "step": 1,
+                    "log": True,
+                },
+                "C": {
+                    "kind": "real",
+                    "low": 0.5,
+                    "high": 2.0,
+                    "step": 0.5,
+                    "log": False,
+                },
+                "D": {
+                    "kind": "real",
+                    "low": 0.0,
+                    "high": 1.0,
+                    "step": None,
+                    "log": False,
+                },
+                "E": {
+                    "kind": "real",
+                    "low": 0.125,
+                    "high": 8.0,
+                    "step": None,
+                    "log": True,
+                },
                 "F": {"kind": "boolean"},
                 "G": {"kind": "categorical", "choices": ["ema", "sma", "wma"]},
                 "H": {"kind": "integer", "low": 5, "high": 5, "step": 1, "log": False},
@@ -1008,7 +1051,8 @@ class BruteForceTests(unittest.TestCase):
         }
         result = neighbourhood([source], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=0)
         return {
-            tuple(vector[each] for each in names) for vector in result["missing_vectors"]
+            tuple(vector[each] for each in names)
+            for vector in result["missing_vectors"]
         }
 
     def check_every_centre(self, specs):
@@ -1066,7 +1110,9 @@ class BruteForceTests(unittest.TestCase):
                 for target in (Fraction(centre) - delta, Fraction(centre) + delta)
                 if target != Fraction(centre) and 0 <= target <= 4
             )
-            self.assertEqual(reals.neighbours(centre, fraction, None).values, expected, centre)
+            self.assertEqual(
+                reals.neighbours(centre, fraction, None).values, expected, centre
+            )
 
     def test_log_real_against_exact_rational_arithmetic(self):
         """Log real 0.0625..16, rho = 4: v/4 and v*4 are exact; bounds applied exactly."""
@@ -1078,7 +1124,9 @@ class BruteForceTests(unittest.TestCase):
                 for target in (Fraction(centre) / 4, Fraction(centre) * 4)
                 if Fraction(1, 16) <= target <= 16
             )
-            self.assertEqual(reals.neighbours(centre, None, 4.0).values, expected, centre)
+            self.assertEqual(
+                reals.neighbours(centre, None, 4.0).values, expected, centre
+            )
 
     def test_log_integer_against_decimal_arithmetic(self):
         """Log integer 1..1000 against a Decimal computation rounded half up.
@@ -1262,7 +1310,9 @@ class TopIdsTests(RefusalTestCase):
         for k in (0, -1, True, 1.5, "2", None):
             with self.assertRaises(NeighbourhoodError) as caught:
                 top_ids([NF5], k)
-            self.assertEqual(caught.exception.code, "neighbourhood_parameter_invalid", k)
+            self.assertEqual(
+                caught.exception.code, "neighbourhood_parameter_invalid", k
+            )
             self.assertEqual(caught.exception.names, ("k",))
 
     def test_sources_are_refused_like_in_the_analysis(self):
@@ -1291,7 +1341,9 @@ class InvarianceTests(unittest.TestCase):
         reversed_doc["trials"].reverse()
         self.assertEqual(
             dumped(
-                neighbourhood([reversed_doc], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=3)
+                neighbourhood(
+                    [reversed_doc], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=3
+                )
             ),
             base,
         )
@@ -1300,7 +1352,9 @@ class InvarianceTests(unittest.TestCase):
             random.Random(seed).shuffle(shuffled["trials"])
             self.assertEqual(
                 dumped(
-                    neighbourhood([shuffled], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=3)
+                    neighbourhood(
+                        [shuffled], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=3
+                    )
                 ),
                 base,
             )
@@ -1367,9 +1421,7 @@ class InvarianceTests(unittest.TestCase):
 
     def test_result_is_plain_json(self):
         """Rule 3.7: the result survives a strict JSON round trip unchanged."""
-        result = neighbourhood(
-            [NF5B], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=3
-        )
+        result = neighbourhood([NF5B], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=3)
         again = json.loads(dumped(result))
         self.assertEqual(again, result)
 
@@ -1500,7 +1552,13 @@ class RefusalTests(RefusalTestCase):
         def only_constants():
             space = {
                 "parameters": {
-                    "A": {"kind": "integer", "low": 5, "high": 5, "step": 1, "log": False},
+                    "A": {
+                        "kind": "integer",
+                        "low": 5,
+                        "high": 5,
+                        "step": 1,
+                        "log": False,
+                    },
                     "B": {"kind": "categorical", "choices": ["only"]},
                 },
                 "objective": OBJECTIVE,
@@ -1575,7 +1633,9 @@ class RefusalTests(RefusalTestCase):
             "missing parameter": lambda d: d["trials"][1]["parameters"].pop("Mode"),
             "no parameters": lambda d: d["trials"][1].pop("parameters"),
             "wrong type": lambda d: d["trials"][1]["parameters"].update(Fast=4.0),
-            "bool for integer": lambda d: d["trials"][1]["parameters"].update(Fast=True),
+            "bool for integer": lambda d: d["trials"][1]["parameters"].update(
+                Fast=True
+            ),
             "not a choice": lambda d: d["trials"][1]["parameters"].update(Mode="hma"),
             "above the bound": lambda d: d["trials"][1]["parameters"].update(Fast=12),
             "repeated id": lambda d: d["trials"][1].update(trial_id=0),
@@ -1590,7 +1650,9 @@ class RefusalTests(RefusalTestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "nan.jsonl"
             first = json.dumps(self.nf1()["trials"][0])
-            path.write_text(first + "\n" + first.replace("10.0", "NaN") + "\n", encoding="utf-8")
+            path.write_text(
+                first + "\n" + first.replace("10.0", "NaN") + "\n", encoding="utf-8"
+            )
             error = self.refusal(
                 "neighbourhood_input_invalid",
                 [path],
@@ -1890,7 +1952,9 @@ class RefusalTests(RefusalTestCase):
                 arguments.update(change)
                 with self.assertRaises(NeighbourhoodError) as caught:
                     neighbourhood([NF1], **arguments)
-                self.assertEqual(caught.exception.code, "neighbourhood_parameter_invalid")
+                self.assertEqual(
+                    caught.exception.code, "neighbourhood_parameter_invalid"
+                )
                 self.assertEqual(caught.exception.names, (name,))
 
     def test_relative_band_at_a_zero_reference_is_degenerate(self):

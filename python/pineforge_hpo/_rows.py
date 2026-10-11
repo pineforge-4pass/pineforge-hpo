@@ -411,7 +411,10 @@ def _result_source(result: dict, index: int) -> Source:
         )
     direction = _result_direction(result, space)
     labelled = chain(
-        ((f"warm_start_trials[{position}]", raw) for position, raw in enumerate(inherited)),
+        (
+            (f"warm_start_trials[{position}]", raw)
+            for position, raw in enumerate(inherited)
+        ),
         ((f"trials[{position}]", raw) for position, raw in enumerate(own)),
     )
     return Source(index, _build_rows(labelled, index), space, direction)
@@ -530,7 +533,8 @@ def _passed(space: Any) -> dict:
         return recorded_space(space)
     except (ValueError, KeyError, TypeError, AttributeError):
         raise RowsError(
-            "input_invalid", "the passed space is neither a recorded space nor a StudySpec"
+            "input_invalid",
+            "the passed space is neither a recorded space nor a StudySpec",
         ) from None
 
 
@@ -627,7 +631,9 @@ def check_context(rows: Iterable[Row]) -> None:
             differing = [
                 name
                 for position, name in enumerate(_COUNTERS)
-                if any(counters[position] != expected[position] for _, counters in scored)
+                if any(
+                    counters[position] != expected[position] for _, counters in scored
+                )
             ]
             raise RowsError(
                 "context_mismatch",

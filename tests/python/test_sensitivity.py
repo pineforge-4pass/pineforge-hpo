@@ -184,7 +184,8 @@ class NF5Tests(unittest.TestCase):
         )
         self.assertEqual(result["missing_vectors"], [{"Fast": 2, "Slow": 30}])
         self.assertEqual(
-            result["admission"], {"rows": 8, "lookups": 12, "work": 20, "max_work": None}
+            result["admission"],
+            {"rows": 8, "lookups": 12, "work": 20, "max_work": None},
         )
         self.assertEqual(result["rules"]["pair_k"], 1)
 
@@ -207,9 +208,7 @@ class NF5Tests(unittest.TestCase):
 
 class NF5bTests(unittest.TestCase):
     def run_nf5b(self, pair_k):
-        return neighbourhood(
-            [NF5B], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=pair_k
-        )
+        return neighbourhood([NF5B], centres=[(0, 0)], band=ABSOLUTE_1, pair_k=pair_k)
 
     def test_ranking_for_pair_k_one_two_and_three(self):
         """NF5b: pair_k 1 -> [(Fast, Slow)]; 2 -> + (Fast, Mode); 3 -> + (Mode, Slow).
@@ -362,7 +361,8 @@ class NF5bTests(unittest.TestCase):
         """Rule 3.9: rows 6, axis lookups 2 + 1 + 2 = 5, pair lookups 8 + 5 + 5 = 18."""
         result = self.run_nf5b(3)
         self.assertEqual(
-            result["admission"], {"rows": 6, "lookups": 23, "work": 29, "max_work": None}
+            result["admission"],
+            {"rows": 6, "lookups": 23, "work": 29, "max_work": None},
         )
 
 
@@ -377,7 +377,13 @@ class AxisOrderTests(unittest.TestCase):
         """
         space = {
             "parameters": {
-                "Fast": {"kind": "integer", "low": 2, "high": 6, "step": 2, "log": False},
+                "Fast": {
+                    "kind": "integer",
+                    "low": 2,
+                    "high": 6,
+                    "step": 2,
+                    "log": False,
+                },
                 "Mode": {"kind": "categorical", "choices": ["wma", "ema", "sma"]},
             },
             "objective": OBJECTIVE,
@@ -398,7 +404,10 @@ class AxisOrderTests(unittest.TestCase):
         pair = result["centres"][0]["pair_maps"][0]
         self.assertEqual(pair["dimensions"], ["Fast", "Mode"])
         self.assertEqual(
-            [(item["values"]["Fast"], item["values"]["Mode"]) for item in pair["cells"]],
+            [
+                (item["values"]["Fast"], item["values"]["Mode"])
+                for item in pair["cells"]
+            ],
             [
                 (2, "wma"),
                 (2, "ema"),

@@ -592,8 +592,7 @@ class Study:
         if conflicting:
             raise _refusal(
                 "duplicate_conflict",
-                "scored rows of one parameter vector disagree in status or "
-                "objective",
+                "scored rows of one parameter vector disagree in status or objective",
                 conflicting,
             )
 
@@ -843,10 +842,7 @@ def _require_rules(study: Study, fraction: Any, ratio: Any) -> None:
         name
         for name in study.varying
         if (study.dimensions[name].rule == "fraction" and fraction is None)
-        or (
-            study.dimensions[name].rule in ("ratio", "ratio_rounded")
-            and ratio is None
-        )
+        or (study.dimensions[name].rule in ("ratio", "ratio_rounded") and ratio is None)
     ]
     if absent:
         raise _refusal(
