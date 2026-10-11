@@ -4,10 +4,11 @@ Status: source only, written 2026-10-09 on `ar/methods-g1-integrated`. The Sobol
 sampler, continuation code and the numeric identity helper were written by their own lanes; this
 note records the places where they meet the shared files (the command line, the root and test build
 files, the Python route, the licence inputs) and the decisions taken there. Nothing was compiled,
-configured, run, imported or syntax-checked; every change and every test named below is unexecuted
+configured, run, imported or syntax-checked; every change and every test named below was unexecuted
 and confirmed only by the proof listed at the end. This note is internal and public-safe. It makes
 no quality claim for the sampler, promises no cost outcome and claims no cross-architecture
-equality.
+equality. A sealed 48-stage run has since executed the Sobol sampler (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 The sampler itself is described in `docs/internal/methods-sobol-native.md`; the numeric identity,
 its binding and its limits are in `docs/internal/sobol-identity.md`. This note does not repeat
@@ -129,7 +130,7 @@ provider list complete and the limits are in `docs/internal/sobol-identity.md`.
    includes a header that exists only after a build) are swept by the zero-warning API build,
    which has not run.
 
-## Proof routes (all unexecuted)
+## Proof routes
 
 Configure the proof build with `-DPINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY=ON` and
 `-DPINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY=ON`, so that an unbound main build fails the tests

@@ -3,11 +3,13 @@
 Status: source only, written 2026-10-09 on `ar/methods-cx-integrated`. The base is the composed
 head `005e68d8e0ab8e1667f8f992bcc5ade28169ef9b` (tree `921e3a75e433788f5d2ef4bb6120c99c4a9e27ec`):
 the clean C integration, the X reducer and the first identity helper. Nothing was compiled,
-configured, run, imported or syntax-checked; every change and every test below is unexecuted.
+configured, run, imported or syntax-checked; every change and every test below was unexecuted.
 The identity helper was then repaired by its own lane (v2 identity bound to the generated compile
 command, no duplicate contract constant, `identity_bound` and an unbound reason) and cherry-picked
 here; the follow-up in this note completes the shared seam on top of it. This note is internal and
 public-safe. It promises no cost outcome, no memory bound and no cross-architecture equality.
+A sealed 48-stage run has since executed the candidates sampler and the return statistics
+(manifest sha256 ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 ## What this lane changed
 
@@ -103,7 +105,7 @@ on the sampler, see `docs/internal/methods-c-wire.md`) and then reports the same
 object and the same identity with no further change. It must not reuse the TPE checkpoint
 identity for statistics, and any selected-window mode stays gated on the frozen window interface.
 
-## Proof routes (all unexecuted)
+## Proof routes
 
 * Unit: `pineforge_hpo_return_stats` (analytic, degenerate, month boundary, overflow, status
   invariant, a differential sweep), `pineforge_hpo_candidate_list`.

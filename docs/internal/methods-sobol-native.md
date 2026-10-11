@@ -1,8 +1,10 @@
 # Sobol native descriptor and parent admission (internal note)
 
-Status: source preparation, UNEXECUTED. Nothing described here was compiled or run when it was
+Status: source preparation. Nothing described here was compiled or run when it was
 written. The first compile and every test result belong to the spot proof. This note is for the one
 integrator who wires the Sobol sampler into the native runner; it changes no public behavior by itself.
+A sealed 48-stage run has since executed the Sobol sampler (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 ## Scope
 

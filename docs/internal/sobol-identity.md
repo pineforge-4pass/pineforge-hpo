@@ -6,7 +6,9 @@ differ. This note describes how the identity is produced, what it binds and what
 when it is deliberately unavailable, and how to wire it into the root build. Prefix:
 `portable-sobol-v1`.
 
-Status: the helpers, the runtime unit and their tests have not been configured, built or run yet.
+Status: the helpers, the runtime unit and their tests had not been configured, built or run when
+this note was written. A sealed 48-stage run has since executed the Sobol sampler (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 Every statement below describes intended behaviour and is confirmed only by the build-and-test
 proof listed at the end of this note.
 
