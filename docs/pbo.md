@@ -1,5 +1,3 @@
-PBO on real data not proven (blocked by design, exit 3)
-
 # Probability of backtest overfitting (PBO) from block moments
 
 **Status: the module `python/pineforge_hpo/pbo.py`, its tests and its fixtures are committed
