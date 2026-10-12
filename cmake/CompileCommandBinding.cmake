@@ -92,7 +92,7 @@ function(pfh_ccb_compiler_custody prefix compiler)
     set(banner "unavailable")
     execute_process(COMMAND "${compiler}" --version
         RESULT_VARIABLE banner_status OUTPUT_VARIABLE banner_text ERROR_QUIET
-        TIMEOUT 30 OUTPUT_STRIP_TRAILING_WHITESPACE)
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(banner_status EQUAL 0 AND NOT "${banner_text}" STREQUAL "")
         string(FIND "${banner_text}" "\n" newline_at)
         if(newline_at EQUAL -1)
@@ -111,7 +111,7 @@ function(pfh_ccb_compiler_custody prefix compiler)
     set(target "unavailable")
     execute_process(COMMAND "${compiler}" -dumpmachine
         RESULT_VARIABLE target_status OUTPUT_VARIABLE target_text ERROR_QUIET
-        TIMEOUT 30 OUTPUT_STRIP_TRAILING_WHITESPACE)
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(target_status EQUAL 0 AND NOT "${target_text}" STREQUAL "")
         string(REPLACE "\n" "" target "${target_text}")
         string(REPLACE ";" "," target "${target}")

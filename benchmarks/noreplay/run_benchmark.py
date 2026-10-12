@@ -1,4 +1,4 @@
-"""Foreground 8-GiB continuation/fit measurements with explicit censored rows."""
+"""Foreground 8-GiB continuation/fit measurements without process time limits."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def measure(executable, mode, inputs, history, switch, timeout, output, fixture=None):
+def measure(executable, mode, inputs, history, switch, output, fixture=None):
     label = f"{executable.name}-{mode}-{inputs}-{history}-{switch}"
     stdout_path = output / (label + ".json")
     stderr_path = output / (label + ".stderr")
@@ -31,10 +31,6 @@ def measure(executable, mode, inputs, history, switch, timeout, output, fixture=
         "MemoryMax=8G",
         "-p",
         "MemorySwapMax=0",
-        "/usr/bin/timeout",
-        "--signal=TERM",
-        "--kill-after=5s",
-        str(timeout),
         str(executable),
         mode,
         str(inputs),
@@ -52,14 +48,9 @@ def measure(executable, mode, inputs, history, switch, timeout, output, fixture=
         "inputs": inputs,
         "history": history,
         "history_switch": switch,
-        "timeout_s": timeout,
         "wall_s": time.monotonic() - started,
         "exit": process.returncode,
-        "status": "ok"
-        if process.returncode == 0
-        else "timeout"
-        if process.returncode == 124
-        else "failed",
+        "status": "ok" if process.returncode == 0 else "failed",
     }
     if process.returncode == 0:
         result.update(json.loads(stdout_path.read_text()))
@@ -78,7 +69,6 @@ def main():
         choices=("resume", "batch", "replay", "sequence", "prepare"),
         required=True,
     )
-    parser.add_argument("--replay-timeout", type=int, default=60)
     parser.add_argument("--only", choices=("baseline", "native"))
     args = parser.parse_args()
     args.output = args.output.resolve()
@@ -86,37 +76,30 @@ def main():
     baseline, native = args.baseline.resolve(), args.native.resolve()
     rows = []
     if args.phase == "prepare":
-        cases = [(baseline, "prepare", inputs, 8000, 0, 900) for inputs in (5, 32)]
+        cases = [(baseline, "prepare", inputs, 8000, 0) for inputs in (5, 32)]
     elif args.phase == "resume":
         cases = [
-            (native, mode, inputs, history, 0, 600)
+            (native, mode, inputs, history, 0)
             for inputs in (5, 32)
             for history in (1000, 8000, 50000, 500000, 1000000)
             for mode in ("resume", "checkpoint")
         ]
     elif args.phase == "batch":
         cases = [
-            (executable, "batch", inputs, history, switch, 900)
+            (executable, "batch", inputs, history, switch)
             for inputs in (5, 32)
             for history in (100000, 500000, 2000000)
             for executable, switch in ((baseline, 0), (native, 0), (native, 1000))
         ]
     elif args.phase == "replay":
         cases = [
-            (
-                baseline,
-                "legacy",
-                inputs,
-                history,
-                0,
-                300 if history <= 8000 else args.replay_timeout,
-            )
+            (baseline, "legacy", inputs, history, 0)
             for inputs in (5, 32)
             for history in (1000, 8000, 50000, 500000, 1000000)
         ]
     else:
         cases = [
-            (executable, "sequence", inputs, history, switch, 600)
+            (executable, "sequence", inputs, history, switch)
             for inputs in (5, 32)
             for history, switch in ((128, 0), (4104, 0), (256, 32))
             for executable in (baseline, native)
@@ -125,14 +108,6 @@ def main():
         selected = baseline if args.only == "baseline" else native
         cases = [case for case in cases if case[0] == selected]
     for case in cases:
-        if args.phase == "replay" and case[3] > 8000:
-            prefix = next(
-                row
-                for row in rows
-                if row["inputs"] == case[2] and row["history"] == 8000
-            )
-            prefix_seconds = prefix.get("import_s", prefix["timeout_s"])
-            case = (*case[:-1], min(case[-1], max(1, int(prefix_seconds / 2))))
         fixture = (
             args.output / f"fixture-{case[2]}.bin"
             if args.phase in ("prepare", "replay", "resume")
@@ -183,8 +158,8 @@ def main():
         "boundary": "sampler import plus first ask/tell; batch=8 cold-cache asks plus tells; "
         "replay=actual legacy warm_start(source,8) plus first ask/tell. Histories <=8000 "
         "match uninterrupted proposals; larger fixtures use that matching prefix and "
-        "synthetic suffix and are censored before the prefix finishes, not completed "
-        "million-trial uninterrupted continuations",
+        "synthetic suffix, not genuine million-trial uninterrupted continuations; "
+        "processes have no time limit",
         "fixture": "5 continuous; 32=4 int32 grids plus 28 continuous, exact permuted "
         "immutable columns and objective ties; continuation uses genuine seeded first "
         "8000 rows followed by synthetic rows; sequence uses genuine seeded proposals",

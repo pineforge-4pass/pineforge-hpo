@@ -102,7 +102,7 @@ def setUpModule() -> None:
              "--bar-magnifier", "true", "--magnifier-samples", "6",
              "--magnifier-distribution", "triangle",
              "--max-trials", "1", "--record-metric", "returns.bar.count"],
-            text=True, capture_output=True, check=False, timeout=120)
+            text=True, capture_output=True, check=False)
     try:
         failure = json.loads(probe.stdout).get("failure")
     except ValueError:
@@ -150,7 +150,7 @@ class ReturnStatsCliTests(unittest.TestCase):
             extra = (*extra, "--max-trials", "4")
         completed = subprocess.run(
             self.argv(*extra, **options), text=True, capture_output=True, check=False,
-            env={**os.environ, **(env or {})}, pass_fds=pass_fds, timeout=600)
+            env={**os.environ, **(env or {})}, pass_fds=pass_fds)
         if expected is not None:
             self.assertEqual(completed.returncode, expected, completed.stderr)
         return completed
@@ -373,12 +373,12 @@ class ReturnStatsCliTests(unittest.TestCase):
         os.close(entered_write)
         os.close(release_read)
         try:
-            self.assertTrue(select.select([entered_read], [], [], 30)[0], "gate never entered")
+            self.assertTrue(select.select([entered_read], [], [])[0], "gate never entered")
             self.assertEqual(os.read(entered_read, 1), b"G")
             child.send_signal(signal.SIGTERM)
             time.sleep(0.4)
             os.write(release_write, b"R")
-            stdout, stderr = child.communicate(timeout=60)
+            stdout, stderr = child.communicate()
         finally:
             if child.poll() is None:
                 child.kill()

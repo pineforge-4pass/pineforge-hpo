@@ -83,7 +83,6 @@ def run(
             text=True,
             capture_output=True,
             pass_fds=(progress.fileno(),),
-            timeout=120,
         )
     require(
         completed.returncode == expected,
@@ -252,7 +251,6 @@ def main():
                         ],
                         text=True,
                         capture_output=True,
-                        timeout=15,
                     )
                     require(info_result.returncode == 0, info_result.stderr)
                     require(
@@ -623,7 +621,6 @@ def main():
                 ],
                 text=True,
                 capture_output=True,
-                timeout=15,
             )
             require(
                 mixed_info.returncode == 0

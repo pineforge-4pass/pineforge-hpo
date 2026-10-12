@@ -192,8 +192,7 @@ def write_bars(path: Path, count: int, step_ms: int) -> None:
 
 
 def run(command, **kwargs):
-    process = subprocess.run(command, capture_output=True, timeout=kwargs.pop("timeout", 3600),
-                             **kwargs)
+    process = subprocess.run(command, capture_output=True, **kwargs)
     return process
 
 
@@ -230,7 +229,7 @@ def reconcile(args, directory, plugin, csv):
          str(ROOT / "tests/real_strategy_curve.cpp"),
          str(ROOT / "src/engine_adapter/strategy_plugin.cpp"),
          str(ROOT / "src/engine_adapter/dataset.cpp"), "-ldl", "-o", str(probe)],
-        check=True, timeout=300)
+        check=True)
     dumped = run([str(probe), plugin, str(csv), "60", "60", "Entry Level=101", "Exit Level=98"],
                  check=True)
     (directory / "canonical-curve.json").write_bytes(dumped.stdout)

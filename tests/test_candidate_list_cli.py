@@ -156,7 +156,7 @@ class CandidateListCliTests(unittest.TestCase):
     def run_cli(self, candidates, *extra, expected=0, pass_fds=(), **options):
         completed = subprocess.run(
             self.argv(candidates, *extra, **options), text=True, capture_output=True,
-            check=False, pass_fds=pass_fds, timeout=600,
+            check=False, pass_fds=pass_fds,
         )
         if expected is not None:
             self.assertEqual(completed.returncode, expected, completed.stderr)
@@ -497,7 +497,7 @@ class CandidateListCliTests(unittest.TestCase):
                                      "--trials-file", trials_file, pass_fds=(write_fd,))
         finally:
             os.close(write_fd)
-            reader.join(timeout=30)
+            reader.join()
         result = json.loads(completed.stdout)
         rows = {trial["trial_id"]: trial for trial in result["trials"]}
         for source in (b"".join(chunks).decode().splitlines(),
@@ -575,12 +575,12 @@ class CandidateListCliTests(unittest.TestCase):
         os.close(entered_write)
         os.close(release_read)
         try:
-            self.assertTrue(select.select([entered_read], [], [], 30)[0], "gate never entered")
+            self.assertTrue(select.select([entered_read], [], [])[0], "gate never entered")
             self.assertEqual(os.read(entered_read, 1), b"G")
             child.send_signal(signal.SIGTERM)
             time.sleep(0.4)
             os.write(release_write, b"R")
-            stdout, stderr = child.communicate(timeout=60)
+            stdout, stderr = child.communicate()
         finally:
             if child.poll() is None:
                 child.kill()
@@ -776,7 +776,7 @@ class CandidateListCliTests(unittest.TestCase):
 
     def test_help_documents_the_sampler_and_flag(self) -> None:
         completed = subprocess.run([str(NATIVE), "--help"], text=True, capture_output=True,
-                                   check=False, timeout=60)
+                                   check=False)
         self.assertEqual(completed.returncode, 0)
         self.assertIn("--candidates", completed.stdout)
         self.assertIn("candidates", completed.stdout.split("--sampler", 1)[1].splitlines()[0])

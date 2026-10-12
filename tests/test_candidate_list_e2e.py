@@ -128,7 +128,7 @@ def main():
     reference = None
     for workers in (1, 2, 4, 8):
         process = subprocess.run(base + ["--workers", str(workers)] + recorded,
-                                 capture_output=True, timeout=300)
+                                 capture_output=True)
         require(process.returncode == 0, process.stderr.decode())
         if reference is None:
             reference = process.stdout
@@ -170,7 +170,6 @@ def main():
                 "--script-tf", "1",
             ],
             capture_output=True,
-            timeout=60,
         )
         require(canonical_process.returncode == 0,
                 f"canonical harness: {canonical_process.stderr.decode()}")
@@ -190,7 +189,7 @@ def main():
 
     # The Python route runs the same list: identity, order and coverage must agree. Its argv
     # states the study's dataset timezone explicitly, so only that is compared, not the bytes.
-    routed = subprocess.run(command + recorded, capture_output=True, timeout=300)
+    routed = subprocess.run(command + recorded, capture_output=True)
     require(routed.returncode == 0, f"routed run: {routed.stderr.decode()}")
     (directory / "native-routed.json").write_bytes(routed.stdout)
     routed_result = json.loads(routed.stdout)

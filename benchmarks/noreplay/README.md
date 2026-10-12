@@ -35,8 +35,9 @@ done
 ```
 
 Every child runs foreground through `systemd-run` with `MemoryMax=8G` and
-`MemorySwapMax=0`. Each phase emits a CSV, SHA-256 metadata sidecar and per-case
-stdout/stderr. Never compare timing runs sharing their CPU host with other heavy work.
+`MemorySwapMax=0`, without a process time limit. Each phase emits a CSV, SHA-256
+metadata sidecar and per-case stdout/stderr. Never compare timing runs sharing
+their CPU host with other heavy work.
 Single measurements are diagnostic, not a statistical performance guarantee.
 
 ## Fixtures and boundaries
@@ -51,9 +52,9 @@ Single measurements are diagnostic, not a statistical performance guarantee.
 - `prepare` generates genuine seeded 8k parent fixtures once. `replay` calls the old
   `warm_start(source, 8)` and measures import plus the first new ask/tell. The 1k/8k
   fixtures match uninterrupted proposals. Larger fixtures have the same matching
-  8k prefix and a synthetic suffix; their deliberately short timeouts censor startup
-  before the matching prefix ends. They are lower bounds on actual old import work,
-  **not** completed 50k–1M uninterrupted-history replay measurements or extrapolations.
+  8k prefix and a synthetic suffix. Current runs wait for completion and record the
+  measured duration or a process failure. These fixtures are **not** genuine
+  50k–1M uninterrupted-history replay measurements.
 - `resume` imports the same parent fixtures, then measures one new ask/tell, with and
   without a checkpoint. Constructing a checkpoint parent is outside the import timer.
   Checkpoints in this timing fixture originate from direct import; exact restoration
@@ -61,7 +62,11 @@ Single measurements are diagnostic, not a statistical performance guarantee.
 - `batch` imports deterministic permuted immutable columns before the timer and
   times eight cold-cache asks plus eight tells. It includes full-history model fitting,
   candidate acquisition and pending constant-liar updates, not just sorting. Bounded
-  import/setup cost is excluded equally. OOM/timeout rows remain explicit in evidence.
+  import/setup cost is excluded equally. Process failures, including OOM, remain explicit.
+
+The published results below retain their historical censored rows and bounds. The
+current runner no longer imposes those time limits or emits a `timeout` row status;
+its CSV metadata sidecar describes the uncapped measurement boundary.
 
 ## Exactness and migration
 

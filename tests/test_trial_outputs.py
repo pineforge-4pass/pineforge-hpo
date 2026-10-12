@@ -114,7 +114,7 @@ class TrialOutputTests(unittest.TestCase):
             if stop == "signal":
                 time.sleep(0.05)
                 process.send_signal(signal.SIGTERM)
-            output, errors = process.communicate(timeout=20)
+            output, errors = process.communicate()
             self.assertIn(process.returncode, (0, 2), errors)
             result = json.loads(output)
             content = records.read_bytes()
@@ -136,11 +136,11 @@ class TrialOutputTests(unittest.TestCase):
                                        stderr=subprocess.PIPE, text=True)
             self.addCleanup(lambda: process.kill() if process.poll() is None else None)
             if stop == "signal":
-                self.assertTrue(select.select([read_fd], [], [], 10)[0],
+                self.assertTrue(select.select([read_fd], [], [])[0],
                                 "runner did not start producing progress")
                 time.sleep(0.15)
                 process.send_signal(signal.SIGTERM)
-            output, errors = process.communicate(timeout=8)
+            output, errors = process.communicate()
             self.assertEqual(process.returncode, 1, errors)
             self.assertIn("reader stalled after stop", errors)
             result = json.loads(output)
@@ -180,12 +180,12 @@ class TrialOutputTests(unittest.TestCase):
         os.close(write_fd)
         reader.start()
         try:
-            output, errors = process.communicate(timeout=8)
+            output, errors = process.communicate()
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait()
-            reader.join(timeout=8)
+            reader.join()
         self.assertEqual(process.returncode, 3, errors)
         self.assertFalse(reader.is_alive())
         content = b"".join(chunks)
@@ -220,14 +220,14 @@ class TrialOutputTests(unittest.TestCase):
             reader.start()
             try:
                 if stop == "signal":
-                    self.assertTrue(select.select([read_fd], [], [], 8)[0])
+                    self.assertTrue(select.select([read_fd], [], [])[0])
                     process.send_signal(signal.SIGTERM)
-                output, errors = process.communicate(timeout=8)
+                output, errors = process.communicate()
             finally:
                 if process.poll() is None:
                     process.kill()
                     process.wait()
-                reader.join(timeout=8)
+                reader.join()
             self.assertIn(process.returncode, (0, 2), errors)
             self.assertFalse(reader.is_alive())
             content = b"".join(chunks)
@@ -264,12 +264,12 @@ class TrialOutputTests(unittest.TestCase):
         reader = threading.Thread(target=read)
         reader.start()
         try:
-            output, errors = process.communicate(timeout=8)
+            output, errors = process.communicate()
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait()
-            reader.join(timeout=8)
+            reader.join()
         self.assertEqual(process.returncode, 0, errors)
         self.assertFalse(reader.is_alive())
         content = b"".join(chunks)

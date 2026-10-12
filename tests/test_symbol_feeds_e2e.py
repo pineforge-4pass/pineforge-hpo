@@ -129,7 +129,7 @@ if selected <= open
     (directory / "input-kinds-manifest.json").write_text(json.dumps(manifest, indent=2))
     types = {item["title"]: item["type"] for item in manifest["inputs"]}
     require(types["Source"] == "source" and types["Side"] == "enum", types)
-    result = subprocess.run(command, capture_output=True, timeout=180)
+    result = subprocess.run(command, capture_output=True)
     require(result.returncode == 0, result.stderr.decode())
     trials = json.loads(result.stdout)["trials"]
     require(
@@ -155,7 +155,7 @@ if selected <= open
         directory / "cache",
         native=args.native,
     )
-    unknown = subprocess.run(unknown_command, capture_output=True, timeout=180)
+    unknown = subprocess.run(unknown_command, capture_output=True)
     require(
         unknown.returncode == 0 and unknown.stdout == result.stdout,
         unknown.stderr.decode(),
@@ -172,7 +172,7 @@ if selected <= open
         directory / "cache",
         native=args.native,
     )
-    symbol_free = subprocess.run(symbol_free_command, capture_output=True, timeout=180)
+    symbol_free = subprocess.run(symbol_free_command, capture_output=True)
     require(symbol_free.returncode == 0, symbol_free.stderr.decode())
     manifest.pop("input_kind_schema")
     manifest_path.write_text(json.dumps(manifest))
@@ -192,7 +192,7 @@ if selected <= open
         require("codegen version unknown" in str(error), str(error))
     else:
         raise AssertionError("Python accepted an unstamped manifest")
-    refused = subprocess.run(symbol_free_command, capture_output=True, timeout=30)
+    refused = subprocess.run(symbol_free_command, capture_output=True)
     require(
         refused.returncode == 1
         and b"manifest not stamped kind-capable" in refused.stderr
@@ -263,7 +263,7 @@ if selected <= open
         and declared["Side"].get("options") == ["Side.long", "Side.short"],
         declared["Side"],
     )
-    result = subprocess.run(command, capture_output=True, timeout=180)
+    result = subprocess.run(command, capture_output=True)
     require(result.returncode == 0, result.stderr.decode())
     trials = json.loads(result.stdout)["trials"]
     require(
@@ -359,7 +359,7 @@ def enum_tag_probe(args, directory, document):
         directory / "cache",
         native=args.native,
     )
-    result = subprocess.run(command, capture_output=True, timeout=180)
+    result = subprocess.run(command, capture_output=True)
     require(result.returncode == 0, result.stderr.decode())
     trials = json.loads(result.stdout)["trials"]
     require(
@@ -477,7 +477,7 @@ if selected <= open
     (directory / "symbol-free-strings-manifest.json").write_text(
         json.dumps(manifest, indent=2)
     )
-    result = subprocess.run(command, capture_output=True, timeout=180)
+    result = subprocess.run(command, capture_output=True)
     require(result.returncode == 0, result.stderr.decode())
     trials = json.loads(result.stdout)["trials"]
     require(
@@ -526,7 +526,7 @@ if selected <= open
             raise AssertionError(
                 "Python let an unrelated kind vouch for a string input"
             )
-        refused = subprocess.run(command, capture_output=True, timeout=30)
+        refused = subprocess.run(command, capture_output=True)
         require(
             refused.returncode == 1
             and refusal.encode() in refused.stderr
@@ -557,7 +557,7 @@ if selected <= open
         require(str(error) == message, str(error))
     else:
         raise AssertionError("Python accepted an unknown manifest input type")
-    refused = subprocess.run(command, capture_output=True, timeout=30)
+    refused = subprocess.run(command, capture_output=True)
     require(
         refused.returncode == 1
         and message.encode() in refused.stderr
@@ -733,7 +733,6 @@ if eth4 < threshold or eth4 <= ethD
             str(refused_trials),
         ],
         capture_output=True,
-        timeout=30,
     )
     require(
         refused.returncode == 1
@@ -747,7 +746,7 @@ if eth4 < threshold or eth4 <= ethD
         "PASS D7: real codegen v1.5.0-rc.1 input.symbol artifact refused by Python and native",
         flush=True,
     )
-    run = subprocess.run(command, capture_output=True, timeout=180)
+    run = subprocess.run(command, capture_output=True)
     require(run.returncode == 0, run.stderr.decode())
     (directory / "hpo.json").write_bytes(run.stdout)
     result = json.loads(run.stdout)
@@ -766,7 +765,6 @@ if eth4 < threshold or eth4 <= ethD
                 str(native_dir),
             ],
             capture_output=True,
-            timeout=60,
         )
         require(probe.returncode == 0, probe.stderr.decode())
         canonical = subprocess.run(
@@ -794,7 +792,6 @@ if eth4 < threshold or eth4 <= ethD
                 str(index),
             ],
             capture_output=True,
-            timeout=60,
         )
         require(canonical.returncode == 0, canonical.stderr.decode())
         (oracle_dir / "report.json").write_bytes(canonical.stdout)

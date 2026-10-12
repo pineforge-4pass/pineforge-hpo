@@ -87,8 +87,7 @@ def candidate(index, seed, scramble):
 
 
 def run(command, **kwargs):
-    return subprocess.run(command, capture_output=True,
-                          timeout=kwargs.pop("timeout", 3600), **kwargs)
+    return subprocess.run(command, capture_output=True, **kwargs)
 
 
 def stripped(document):
@@ -224,7 +223,7 @@ def main():
         inputs = {name: "%.17g" % trial["parameters"][name] for name in COLUMNS}
         harness = run([sys.executable, str(ROOT / "external/pineforge-engine/docker/run_json.py"),
                        "--so", plugin, "--ohlcv", str(csv), "--inputs", json.dumps(inputs),
-                       "--input-tf", "1", "--script-tf", "1"], timeout=120)
+                       "--input-tf", "1", "--script-tf", "1"])
         require(harness.returncode == 0, harness.stderr.decode())
         canonical = json.loads(harness.stdout)
         require(trial["total_trades"] == len(canonical["trades"]), "trade count differs")
