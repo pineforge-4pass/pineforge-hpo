@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `pineforge_hpo.holdout` (`holdout_compare`), a post-hoc module that joins the finished rows of a selection study with those of a second finished study by exact parameter vector and reports, for the best selection vectors, what the second study recorded (contract `pineforge-hpo-holdout/v1`); it splits no data, runs no trial and makes no claim about the data either study used.
+
 ## 0.14.0 (2026-10-13)
 
 - Strategy compilation has no time limit by default; `compile_timeout_seconds` still
