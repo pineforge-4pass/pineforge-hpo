@@ -228,10 +228,14 @@ class PboBlocksCliTests(unittest.TestCase):
 
     def test_impossible_curve_layout_is_a_study_refusal(self):
         # Three points give K=2<S=4. S=2,K=2 also cannot give two intervals per half.
+        # 4294967294 = 2**32 - 2 is valid input but exceeds the five-point curve's K=4.
         for curve, blocks in (("1,2,1.5", "4"), ("1,2,1.5", "2"), (CURVE, "4294967294")):
             with self.subTest(curve=curve, S=blocks):
                 completed = self.run_cli("--pbo-blocks", blocks, curve=curve, expected=1)
                 self.assert_refusal(completed, "hpo_study_spec_invalid", {"reason": "study"})
+                self.assertIn(
+                    "--pbo-blocks cannot form a usable layout for the full-window curve",
+                    completed.stderr)
 
     def test_bad_equities_keep_trials_ok_and_publish_only_the_status(self):
         for curve, status, code in (
@@ -377,6 +381,11 @@ class PboBlocksCliTests(unittest.TestCase):
                                  space=("--int-dim", "Length", "10", "21", "1"), batch=(),
                                  expected=1)
         self.assert_refusal(completed, "hpo_report_invalid", {})
+        # Trial 1 shifts its opening times, leaving a gap at ID 1. Rows queued behind the gap
+        # (trials 2 and later) must not be written; only trial 0 may precede it, and whether the
+        # writer had already drained it when the refusal came depends on thread timing.
+        rows = [json.loads(line) for line in stream.read_text().splitlines()]
+        self.assertLessEqual({row["trial_id"] for row in rows}, {0})
 
     def test_payloads_survive_retention_streams_and_parallel_completion(self):
         for workers in (1, 4):

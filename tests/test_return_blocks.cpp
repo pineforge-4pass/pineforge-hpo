@@ -540,6 +540,18 @@ void case_nonfinite_inputs() {
         EXPECT(reduction.moments.status == ReturnBlocksStatus::Nonfinite);
         EXPECT_INTS(reduction.moments.count, (std::vector<std::int64_t>{1, 2}));
     }
+    // K = 4, S = 2: block 0 has returns (2e154 / 1 - 1 = 2e154, 0), sum 2e154
+    // and mean 1e154. Each squared deviation is (1e154)^2 = 1e308, which is finite,
+    // but their sum 2e308 overflows. Block 1 has two zero returns, sum 0 and m2 = 0.
+    {
+        const Curve curve = curve_of({1.0, 2e154, 2e154, 2e154, 2e154});
+        const Reduction reduction = reduce(curve, 2);
+        EXPECT(reduction.layout.usable);
+        EXPECT(reduction.moments.status == ReturnBlocksStatus::Nonfinite);
+        EXPECT_INTS(reduction.moments.count, (std::vector<std::int64_t>{2, 2}));
+        EXPECT_BITS_VECTOR(reduction.moments.sum, (std::vector<double>{2e154, 0.0}));
+        EXPECT_BITS_VECTOR(reduction.moments.m2, (std::vector<double>{kInf, 0.0}));
+    }
 }
 
 void case_skipped_and_nonfinite_precedence() {

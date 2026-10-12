@@ -384,6 +384,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_property(TEST pineforge_hpo_engine_adapter APPEND PROPERTY
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
 
     add_executable(pineforge_hpo_test_symbol_feeds test_symbol_feeds.cpp)
     target_include_directories(pineforge_hpo_test_symbol_feeds PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")

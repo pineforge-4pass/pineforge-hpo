@@ -1263,6 +1263,7 @@ public:
                 // A block-layout refusal can leave a gap in the ordered stream. Release any
                 // workers waiting for stream capacity before propagating the result refusal.
                 progress_failed_ = true;
+                pending_.clear();
                 reason_.store(StopReason::kCancelled);
                 changed_.notify_all();
             }

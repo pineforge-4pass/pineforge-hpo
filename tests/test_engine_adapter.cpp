@@ -625,6 +625,7 @@ PF_API void fake_metadata_reset(void) {
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -969,6 +970,25 @@ void test_return_blocks_snapshot(const std::filesystem::path& plugin_path) {
                     result.report.return_block_layout.n_b.empty() &&
                     result.report.return_blocks.count.empty(),
                 "an unrequested trial carried a layout or moments");
+    }
+
+    // Block requests need a bound return-statistics identity.
+    {
+        BacktestConfiguration configuration = test_configuration();
+        configuration.pbo_blocks = 2;
+        const auto dataset = test_dataset();
+        try {
+            TrialExecutor executor(plugin, dataset, configuration);
+        } catch (const pineforge::hpo::HpoError& error) {
+            const char* required = std::getenv("PFH_REQUIRE_RETURN_STATS_IDENTITY");
+            if (error.code() == "hpo_toolchain_unavailable" &&
+                std::string(error.what()).find("identity is unbound") != std::string::npos &&
+                (required == nullptr || std::string(required) != "1")) {
+                std::cout << "skipping return-block cases: return-statistics identity is unbound\n";
+                return;
+            }
+            throw;
+        }
     }
 
     // Request on over the full window with a five-point curve. The curve is built by the fake from

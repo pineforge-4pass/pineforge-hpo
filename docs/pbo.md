@@ -32,6 +32,8 @@ the curve times at those points, including point `K` as the last boundary. `n_b`
 intervals in each block. The block-size rules below must hold, including `K >= S` and at least
 two intervals in the smallest half. A curve too short for the request is refused with exit 1
 and `hpo_study_spec_invalid`, reason `study`.
+A curve whose opening times decrease cannot form a layout and is refused the same way as a
+curve that is too short (exit 1, `hpo_study_spec_invalid`, reason `study`).
 
 Only completed `ok` and `constraint_violation` trials carry `block_returns`. Prefix rungs,
 pruned trials, failed trials and partial trials carry no full-window payload. An `ok` payload
