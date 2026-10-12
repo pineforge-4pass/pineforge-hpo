@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0 (2026-10-13)
+
 - Add the opt-in `rolling` schedule (StudySpec `execution.schedule: "rolling"`, native
   `--schedule rolling`). Whenever a trial finishes, the runner feeds its result back and at once
   proposes a new trial into the freed worker slot, instead of waiting for a batch to end, so every
