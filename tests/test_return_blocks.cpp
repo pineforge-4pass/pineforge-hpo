@@ -645,6 +645,25 @@ void case_near_constant_rounding() {
     EXPECT_BITS_VECTOR(reduction.moments.m2, (std::vector<double>{m2_0, m2_1}));
 }
 
+void case_second_pass_is_not_fused() {
+    g_case = "second pass is not fused";
+    // The expected bits come from a separate script that follows the recipe with one rounded product
+    // per step and, for contrast, a fused multiply-add per step with the exact rational value. On
+    // this curve the first block's second moment differs by one unit in the last place between the
+    // two forms (plain ...60da, fused ...60db), so a fused second pass cannot pass this check.
+    const Curve curve = curve_of({94.7, 94.8, 94.9, 95.1, 95.4, 95.3, 95.4, 95.6});
+    const Reduction reduction = reduce(curve, 2);
+    EXPECT(reduction.moments.status == ReturnBlocksStatus::Ok);
+    EXPECT_INTS(reduction.moments.count, (std::vector<std::int64_t>{4, 3}));
+    EXPECT(reduction.moments.sum.size() == 2 && reduction.moments.m2.size() == 2);
+    if (reduction.moments.sum.size() == 2 && reduction.moments.m2.size() == 2) {
+        EXPECT(bits_of(reduction.moments.sum[0]) == 0x3f7e3304da8fb900ULL);
+        EXPECT(bits_of(reduction.moments.m2[0]) == 0x3ec96c8ab4a060daULL);
+        EXPECT(bits_of(reduction.moments.sum[1]) == 0x3f612eda0cf4b900ULL);
+        EXPECT(bits_of(reduction.moments.m2[1]) == 0x3ed5827e20b424e2ULL);
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Refusal of a layout the reducer was not given by compute_block_layout
 // ---------------------------------------------------------------------------------------------
@@ -798,6 +817,7 @@ int main() {
     case_single_interval_blocks();
     case_constant_curves();
     case_near_constant_rounding();
+    case_second_pass_is_not_fused();
     case_skipped_and_negative_equity();
     case_nonfinite_inputs();
     case_skipped_and_nonfinite_precedence();
