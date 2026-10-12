@@ -374,7 +374,7 @@ OHLCV rows with timestamps compatible with PineForge's public bar contract.
 - `chart_timezone`: chart timezone; defaults to `UTC`.
 
 Multi-dataset train/validation/test roles and walk-forward folds are not
-executable yet.
+executable yet. A post hoc analysis of finished per-window studies exists as a library function (`pineforge_hpo.walkforward`); v1 analyses finished studies; native in-loop walk-forward comes later.
 
 ## Objective
 
@@ -1439,5 +1439,5 @@ binary plus independently encoded new-trial chunks for subsequent continuation.
 - continuation or resume of a `candidates` list (its results can seed TPE history only);
 - conditional/hierarchical spaces;
 - multi-objective directions and Pareto output;
-- walk-forward folds;
+- walk-forward folds; a post hoc analysis of finished per-window studies exists outside the runner (v1 analyses finished studies; native in-loop walk-forward comes later);
 - true shared-account execution.
