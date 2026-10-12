@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Strategy compilation has no time limit by default; `compile_timeout_seconds` still
+  sets an explicit limit. The artifact lock wait still stops after 120 seconds with an
+  error that names the stuck lock and identifies a lock that never frees as a deadlock
+  to report.
 - Add the opt-in `rolling` schedule (StudySpec `execution.schedule: "rolling"`, native
   `--schedule rolling`). Whenever a trial finishes, the runner feeds its result back and at once
   proposes a new trial into the freed worker slot, instead of waiting for a batch to end, so every

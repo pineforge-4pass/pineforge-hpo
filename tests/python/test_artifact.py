@@ -5,6 +5,7 @@ from dataclasses import replace
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from pineforge_hpo.artifact import (  # noqa: E402
     ArtifactBuildError,
     ArtifactBuilder,
     CANONICAL_COMPILE_FLAGS,
+    _KeyLock,
 )
 from pineforge_hpo.transpile import (  # noqa: E402
     CodegenIdentity,
@@ -83,7 +85,8 @@ def make_compiler(root: Path, version: str = "fake-cxx 1.2.3") -> tuple[Path, Pa
         "with log.open('a', encoding='utf-8') as handle:\n"
         "    handle.write(json.dumps(sys.argv[1:]) + '\\n')\n"
         "if os.environ.get('FAKE_COMPILER_FAIL') == '1':\n"
-        "    print('intentional compiler failure', file=sys.stderr); raise SystemExit(23)\n"
+        "    print('intentional compiler failure', file=sys.stderr); "
+        "raise SystemExit(23)\n"
         "output = pathlib.Path(sys.argv[sys.argv.index('-o') + 1])\n"
         "output.write_bytes(b'fake strategy plugin')\n",
         encoding="utf-8",
@@ -128,6 +131,82 @@ class ArtifactBuilderTest(unittest.TestCase):
             plugin_validator=validator,
             **kwargs,
         )
+
+    def build_with_recorded_compile_timeouts(self, **kwargs) -> list[float | None]:
+        compile_timeouts = []
+
+        def run(command, **options):
+            if "--version" in command:
+                stdout = "fake-cxx 1.2.3"
+            elif "-dumpmachine" in command:
+                stdout = "fake-target"
+            else:
+                compile_timeouts.append(options["timeout"])
+                output = Path(command[command.index("-o") + 1])
+                output.write_bytes(b"fake strategy plugin")
+                stdout = ""
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+        with (
+            patch("pineforge_hpo.artifact.subprocess.run", side_effect=run),
+            patch("pineforge_hpo.artifact.codegen_identity", return_value=self.codegen),
+            patch(
+                "pineforge_hpo.artifact.transpile_source", return_value=self.transpiled
+            ),
+        ):
+            artifact = self.builder(**kwargs).build("pine bytes")
+
+        self.assertFalse(artifact.cache_hit)
+        return compile_timeouts
+
+    def test_default_compile_timeout_is_unlimited(self) -> None:
+        self.assertEqual(self.build_with_recorded_compile_timeouts(), [None])
+
+    def test_explicit_compile_timeout_reaches_subprocess(self) -> None:
+        self.assertEqual(
+            self.build_with_recorded_compile_timeouts(compile_timeout_seconds=17.0),
+            [17.0],
+        )
+
+    def test_non_positive_compile_timeout_is_refused(self) -> None:
+        for timeout in (0.0, -1.0):
+            with (
+                self.subTest(timeout=timeout),
+                patch(
+                    "pineforge_hpo.artifact.subprocess.run",
+                    side_effect=AssertionError("invalid timeout reached subprocess"),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    ArtifactBuildError, "build timeouts must be positive"
+                ) as caught:
+                    self.builder(compile_timeout_seconds=timeout).build("pine bytes")
+                self.assertEqual(caught.exception.stage, "configuration")
+
+    def test_lock_timeout_reports_deadlock_and_path(self) -> None:
+        timeout = self.builder().lock_timeout_seconds
+        self.assertEqual(timeout, 120.0)
+        lock_path = self.cache / "locks" / "stuck.lock"
+        lock = _KeyLock(lock_path, timeout)
+        locking = "msvcrt.locking" if os.name == "nt" else "fcntl.flock"
+        with (
+            patch(locking, side_effect=BlockingIOError),
+            patch("pineforge_hpo.artifact.time.monotonic", side_effect=[0.0, 120.0]),
+            patch(
+                "pineforge_hpo.artifact.time.sleep",
+                side_effect=AssertionError("expired lock wait must not sleep"),
+            ),
+        ):
+            with self.assertRaises(ArtifactBuildError) as caught:
+                with lock:
+                    self.fail("unavailable lock was acquired")
+
+        self.assertEqual(caught.exception.stage, "cache")
+        self.assertIn(str(lock_path), str(caught.exception))
+        self.assertIn(
+            "A lock that never frees is a deadlock to report.", str(caught.exception)
+        )
+        self.assertIsNone(lock._handle)
 
     def test_content_cache_hit_skips_transpile_and_compile(self) -> None:
         with (
