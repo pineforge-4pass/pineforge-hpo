@@ -10,7 +10,8 @@ Contract ``pineforge-hpo-walkforward/v1``, algorithm ``exact_per_window_v1``:
 Only ``ok`` rows with finite metric cells compete. Other statuses are excluded as
 ``status_<status>``, absent cells as ``metric_not_recorded`` and null cells as
 ``metric_unavailable``, in that order. An invalid cell on an ok row, or a non-finite
-or JSON-unwritable cell on any row, refuses the call. Numeric cells are binary64;
+or JSON-unwritable cell on any row, or an integer too large for binary64 on any
+row, refuses the call. Numeric cells are binary64;
 booleans are not numbers. The metric is ``objective`` or an exact recorded name.
 
 Selection minimises ``(sign * value, trial_id)``, with sign -1.0 for maximize and

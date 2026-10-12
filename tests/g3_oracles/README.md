@@ -408,7 +408,7 @@ v1 analyses finished studies; native in-loop walk-forward comes later.
   per-code multiplicities. Assertions check the generated names, code set and
   multiplicities. Random counts come from the requested `--cases` value.
 
-The expected counts below describe the program, not an observed execution. With
+The counts below follow from the case lists in the program. With
 `F = len(FIXTURE_NAMES)`, `R = sum(REFUSAL_MULTIPLICITIES)` and `N = --cases`,
 phase 1 has `2F + R + 2 = 81` fixture, `N + 10` internal and 9 control comparisons.
 Phase 2 adds one internal import-boundary check, 10 controls and

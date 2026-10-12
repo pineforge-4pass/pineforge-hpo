@@ -1,7 +1,7 @@
 # Walk-forward analysis of finished per-window studies (`pineforge_hpo.walkforward`)
 
-This page documents python/pineforge_hpo/walkforward.py. Its tests run with the package's unit tests;
-an independent oracle in tests/g3_oracles recomputes its numbers with exact arithmetic and is run by hand.
+This page documents `python/pineforge_hpo/walkforward.py`. Its tests run with the package's unit tests;
+an independent oracle in `tests/g3_oracles` recomputes its numbers with exact arithmetic and is run by hand.
 The contract id is
 `pineforge-hpo-walkforward/v1` and the algorithm name is `exact_per_window_v1`.
 
@@ -186,7 +186,7 @@ are module-local and are not codes of the shared failure catalog.
 | `walkforward_parameter_invalid` | a plan that is not a list of distinct non-empty text labels; `sources` not a mapping; a bad metric, direction, space or `max_work` |
 | `walkforward_window_unknown` | a `sources` key not in the plan |
 | `walkforward_no_supplied_sources` | every plan window has no source |
-| `walkforward_input_invalid` | a source the reader refuses; an `ok` row's metric cell that is not a finite number and not `null`; a cell of any row that is a non-finite number or cannot be written as JSON; a row whose `parameters` are absent or do not fit the space |
+| `walkforward_input_invalid` | a source the reader refuses; an `ok` row's metric cell that is not a finite number and not `null`; a cell of any row that is a non-finite number, an integer too large for binary64, or cannot be written as JSON; a row whose `parameters` are absent or do not fit the space |
 | `walkforward_rows_incomplete` | a result that keeps only some of its trials |
 | `walkforward_space_missing` | nothing records a space and none was passed |
 | `walkforward_space_mismatch` | the supplied windows record different spaces, or rows record different `space_hash` values |

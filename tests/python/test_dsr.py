@@ -396,7 +396,7 @@ class WorkedFixtureTests(DsrTestCase):
 
     def test_a_oracle_pins(self):
         """Fixture A: expected values were computed by the independent oracle
-        with exact arithmetic.
+        (exact rationals for V and den, decimal series for the normal functions).
 
         N is the five rows read, not the three eligible rows; V=1/4 and den=3/2.
         Catches using eligible count for N, dropping q1 or changing normal weights.
@@ -485,7 +485,7 @@ class EligibilityTests(DsrTestCase):
 
     def test_c_oracle_pins(self):
         """Fixture C: expected values were computed by the independent oracle
-        with exact arithmetic.
+        (exact rationals for V and den, decimal series for the normal functions).
 
         N=9 rather than 2; moments remain V=1/2, den=17/8. Catches using only
         the eligible rows to set N or taking the wrong normal argument.
@@ -736,7 +736,7 @@ class ExactnessTests(DsrTestCase):
 
     def test_iv_boolean_oracle_pins(self):
         """Boolean skew: expected values were computed by the independent oracle
-        with exact arithmetic.
+        (exact rationals for V and den, decimal series for the normal functions).
 
         N=3 rows read, with one boolean row excluded. Catches eligible N
         in the formula even if counts are echoed correctly.
@@ -825,7 +825,7 @@ class ResultShapeTests(DsrTestCase):
 
     def test_max_oracle_pins(self):
         """Eligible maximum: expected values were computed by the independent oracle
-        with exact arithmetic.
+        (exact rationals for V and den, decimal series for the normal functions).
 
         The pruned higher-SR row counts toward N=3 but not V=1/8. Catches default
         N=2 even if selected_is_max is correctly computed over eligible rows.

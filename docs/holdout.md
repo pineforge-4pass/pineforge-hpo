@@ -44,7 +44,7 @@ Signature:
 | `selection` | Source 0: the study the user tuned on. A path (text or `os.PathLike`) to a complete result JSON or to a rows JSONL file, an already parsed result dictionary, or an already parsed list of rows. |
 | `holdout` | Source 1: the second study, in the same four shapes. |
 | `metric` | Exactly `"objective"`, or the exact name of a recorded metric (a key of the rows' `metrics` object, spelled as recorded). Required and keyword-only, with no default. |
-| `direction` | Exactly `maximize` or `minimize`. Required and keyword-only, with no default. `None` only for `metric="objective"`, and only when both sources record a direction and the two agree. For a named metric the module does not know the sign convention and refuses `None` (see [What is not claimed](#what-is-not-claimed)). |
+| `direction` | Exactly `maximize` or `minimize`. Required and keyword-only, with no default. `None` only for `metric="objective"`, and only when both sources record a direction and the two agree. For a named metric the module does not know the sign convention and refuses `None` (see choice H1 below). |
 | `k` | A positive integer, required and keyword-only, with no default: how many of the best eligible selection vectors are followed. Above the number of eligible selection vectors it is clipped. |
 | `space` | `None` (the default), a recorded-space dict or a `StudySpec`, used only when no row and no result records a space. A passed space is compared with no recorded one. |
 | `max_work` | `None` (no bound, the default) or a positive integer bound on the admission figure (see [Resource rule](#resource-rule)). |
