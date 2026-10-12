@@ -28,7 +28,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-transpile = ["pineforge-codegen>=1.1.0,<1.4"]
+transpile = ["pineforge-codegen>=1.1.0,<2"]
 dev = ["ruff==0.15.20"]
 
 [project.scripts]
