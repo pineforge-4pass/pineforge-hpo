@@ -2,13 +2,6 @@
 
 ## Unreleased
 
-## 0.14.0 (2026-10-13)
-
-- Strategy compilation has no time limit by default; `compile_timeout_seconds` still
-  sets an explicit limit. The artifact lock wait still stops after 120 seconds with an
-  error that names the stuck lock and identifies a lock that never frees as a deadlock
-  to report.
-- Remove test and CI time limits; only the CI platform bound applies. Product behavior is unchanged.
 - Add the native-only `--pbo-blocks S` flag for full-window bar-return moments. Completed `ok`
   and `constraint_violation` trials carry `block_returns`, and the result declares their shared
   `return_blocks` layout and numeric build identity. Bad-data payloads publish status only;
@@ -18,6 +11,14 @@
 - The return-statistics numeric build identity value changed because its hashed reducer source
   grew to include return blocks. Evidence bound to the old value applies to its own version;
   the new value requires its own validation.
+
+## 0.14.0 (2026-10-13)
+
+- Strategy compilation has no time limit by default; `compile_timeout_seconds` still
+  sets an explicit limit. The artifact lock wait still stops after 120 seconds with an
+  error that names the stuck lock and identifies a lock that never frees as a deadlock
+  to report.
+- Remove test and CI time limits; only the CI platform bound applies. Product behavior is unchanged.
 - Add the opt-in `rolling` schedule (StudySpec `execution.schedule: "rolling"`, native
   `--schedule rolling`). Whenever a trial finishes, the runner feeds its result back and at once
   proposes a new trial into the freed worker slot, instead of waiting for a batch to end, so every
