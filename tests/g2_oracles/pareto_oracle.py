@@ -17,8 +17,8 @@ and never takes a number from the module:
 * eligibility and the refusals are decided from the contract's tables, not by the module's ladder
   of tests: the kind of every axis cell of every row (absent, null, number, nonfinite, other) is
   computed first, a status table names the reason of a row that is not ok, the exclusion families
-  are sets (an ok row with an absent key, then an ok row with a null value), and the accounting
-  must cover every row exactly once. The order of the refusals is the one the module's own
+  are sets (an ok row with an absent key, then an ok row with a null value); the pinned counts of
+  the fixtures cover that every row is eligible or excluded once. The order of the refusals is the one the module's own
   documentation states; the pin does not state it, so that order is a reproduction, not an
   independent reading.
 
@@ -494,7 +494,8 @@ def oracle_front(rows: list, axes: list) -> dict:
     Eligibility and refusals are decided from the contract's tables, not by a ladder of tests
     over the rows: the kind of every axis cell of every row is computed first (``cell_kind``),
     the exclusion families are sets, a row's reason follows from which sets contain it
-    (``STATUS_REASONS`` for the statuses), the accounting must cover every row exactly once, and
+    (``STATUS_REASONS`` for the statuses; the pinned counts of the fixtures cover that each row is
+    eligible or excluded once), and
     the front comes from the three dominance formulations below. The order of the refusals (an
     unknown axis, then an unusable value, then no eligible row) is the one the module's own
     documentation states; the pin does not state it."""
@@ -550,11 +551,12 @@ def oracle_front(rows: list, axes: list) -> dict:
         excluded["metric_unavailable"] = sorted(nulled)
     if not ids:
         return refusal("pareto_no_eligible_rows")
-    covered = sorted(ids + [trial_id for listed in excluded.values() for trial_id in listed])
-    if covered != sorted(by_id):
-        raise AssertionError(
-            "oracle accounting error: a row is not eligible or excluded exactly once"
-        )
+    # A row is eligible or excluded exactly once by construction: ``ids`` holds the ok rows with no
+    # absent and no null axis value, and ``excluded`` holds every other row under one reason, the
+    # status reasons covering every non-ok status. An unhandled status is named by the ``stray``
+    # raise above (``set(row["status"]) - STATUS_REASONS - {"ok"}``), which is the check that can
+    # fail; a self-comparison of the two sets here could not. The eligibility counts are pinned by
+    # the hand cases (``section_eligibility``) and by ``section_fixtures``.
     involved = {
         "metric_not_recorded": [
             name

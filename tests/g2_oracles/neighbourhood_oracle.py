@@ -781,8 +781,9 @@ def analyse(
     leave it out and take 0, so each one states the value it compares.
     Every cell is read off a partition of the rows by typed-tuple distance from the centre and
     classified by the contract's table; the counts, the share near the best and the coverage are
-    recomputed from the finished cells' own values (the near flags are tested again with the
-    same band arithmetic, a consistency check of the oracle); a never-evaluated vector is one
+    recomputed from the finished cells' own values (the near figure is read off the cells' flags,
+    which the classification sets; pinned literals and the module comparison cover it); a
+    never-evaluated vector is one
     whose typed key is in no row, which is checked against the cell's class.
 
     A continuous or log real dimension whose moves are not exactly binary64 numbers is declined
@@ -876,21 +877,17 @@ def analyse(
                     note({**values, **cell["values"]}, cell["class"])
         cells = [cell for name in study.varying for cell in profile[name]]
         by_class = {klass: [cell for cell in cells if cell["class"] == klass] for klass in CLASSES}
-        # The band test again, with the arithmetic that ``classify`` used: a check of the oracle
-        # against itself (the flags and the counts agree), not an independent reading of the band.
-        near_cells = [
-            cell for cell in by_class["scored_ok"] if study.gap(cell["objective"]) <= study.delta
-        ]
-        if len(near_cells) != sum(1 for cell in cells if cell["near"]):
-            raise AssertionError(
-                "oracle accounting error: the near flags differ from a fresh band test"
-            )
         scored = by_class["scored_ok"] + by_class["scored_infeasible"]
         counts = {
             "geometric": len(cells),
             **{klass: len(listed) for klass, listed in by_class.items()},
         }
-        counts["near"] = len(near_cells)
+        # The near figure is read off the classification's own flags (``classify`` set ``near`` on
+        # each scored ok cell with the band test ``gap <= delta``, and False on every other cell).
+        # Those flags are the figures the module comparison (``module_studies``) and the worked
+        # fixtures NF1, NF3 and NF6 pin, so no second band test of the same arithmetic is made
+        # here: it would restate the classification and could never fail.
+        counts["near"] = sum(1 for cell in cells if cell["near"])
         counts["better_neighbours"] = sum(
             1 for cell in by_class["scored_ok"] if study.better(cell["objective"], row["objective"])
         )
@@ -903,7 +900,7 @@ def analyse(
                 "centre_near": gap <= study.delta,
                 "counts": counts,
                 "dropped": {"bounds": bounds_total, "same_as_centre": same_total},
-                "share_near_best": ratio_of(len(near_cells), len(scored)),
+                "share_near_best": ratio_of(counts["near"], len(scored)),
                 "coverage": ratio_of(len(scored) + len(by_class["unscorable"]), len(cells)),
                 "profile": profile,
                 "pair_maps": maps,
@@ -2794,6 +2791,41 @@ def random_studies(rng: random.Random, count: int) -> list:
     return [random_study(rng) for _ in range(count)]
 
 
+def class_of_rows(rows: list) -> str:
+    """The contract's class of one vector, read from the rows that hold it: a scored row speaks for
+    the vector (the scored rows must agree, or the contract refuses), a vector with only unscorable
+    rows is unscorable, a vector with no row is never evaluated. The same lookup as ``classify``,
+    but reached from a row list and not from the oracle's partition."""
+    scored = [row for row in rows if STATUS_CLASS[row["status"]] in SCORED_CLASSES]
+    if scored:
+        outcomes = {(row["status"], row["objective"]) for row in scored}
+        if len(outcomes) != 1:
+            raise ValueError("the scored rows of one vector disagree, which the contract refuses")
+        ((status, _),) = outcomes
+        return STATUS_CLASS[status]
+    if rows:
+        return "unscorable"
+    return "never_evaluated"
+
+
+def recount_class_counts(study: Study, centre_row: dict, profile: dict) -> dict:
+    """The class counts of one centre, recounted from the raw rows by a route independent of the
+    oracle's own grouping and counting (it shares the status table, the typed key, the neighbour list and
+    the classification rule): the rows are indexed by their typed vector key with a plain scan (not the
+    ``partition`` distance and ``rows_at``), and every generated neighbour's class is read off that
+    index. A cell the oracle's partition or counters got wrong shows here, where a self-comparison
+    of the same figures could not fail."""
+    held: dict = {}
+    for row in study.rows:
+        held.setdefault(row["key"], []).append(row)
+    counted = {klass: 0 for klass in CLASSES}
+    for name in study.varying:
+        for entry in profile[name]:
+            vector = {**centre_row["values"], name: entry["value"]}
+            counted[class_of_rows(held.get(study.key(vector), []))] += 1
+    return counted
+
+
 def section_studies_internal(ledger: Ledger, studies: list, seed: int) -> None:
     ledger.begin(
         f"random studies (seed {seed}): the oracle classifies and aggregates the rows of "
@@ -2805,15 +2837,21 @@ def section_studies_internal(ledger: Ledger, studies: list, seed: int) -> None:
     )
     for number, study in enumerate(studies):
         document = analyse(study["sources"], study["centres"], study["band"], **study["params"])
+        oracle_study = Study(study["sources"])
+        centre_rows = {(row["source"], row["id"]): row for row in oracle_study.rows}
         tally["duplicate_rows"] += document["duplicate_rows"]
         for centre in document["centres"]:
             counts = centre["counts"]
             ledger.compare(
                 "internal",
                 f"study {number}, centre {centre['source']}:{centre['trial_id']}: "
-                "the class counts add up to geometric",
-                sum(counts[klass] for klass in CLASSES),
-                counts["geometric"],
+                "the class counts, recounted from the raw rows",
+                {klass: counts[klass] for klass in CLASSES},
+                recount_class_counts(
+                    oracle_study,
+                    centre_rows[(centre["source"], centre["trial_id"])],
+                    centre["profile"],
+                ),
                 quiet=True,
             )
             for klass in CLASSES:
