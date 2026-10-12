@@ -75,7 +75,8 @@ defect decides the code: the arguments (``holdout_parameter_missing`` before
 ``holdout_parameter_invalid``); the two sources (``holdout_input_invalid``,
 ``holdout_rows_incomplete``); the space of both sources (``holdout_space_missing``,
 ``holdout_space_mismatch``); the direction rule; the context of each source on its own
-(``holdout_context_mismatch``); the ancestor rows of the holdout source
+(``holdout_context_mismatch``); the second read of each path source, selection first
+(``holdout_input_invalid``); the ancestor rows of the holdout source
 (``holdout_ancestor_rows``); the key of every row (``holdout_input_invalid``); the
 metric name (``holdout_metric_unknown``); every metric value
 (``holdout_value_invalid``); the eligible rows of the selection source
@@ -663,10 +664,10 @@ def holdout_compare(
     followed: list = []
     unmatched: list = []
     matched: list = []
-    holders = {}
+    holder_ids: dict = {}
     for index, row in ordered:
         if index == 1:
-            holders.setdefault(keys[(1, row.trial_id)], []).append(row.trial_id)
+            holder_ids.setdefault(keys[(1, row.trial_id)], []).append(row.trial_id)
     for _, value, key in selection_order[:k_followed]:
         trial_id = vectors[0][key][0]
         if key in pool:
@@ -697,7 +698,7 @@ def holdout_compare(
             )
             matched.append((holdout_rank[key], value, holdout_value))
             continue
-        holds = holders.get(key, [])
+        holds = holder_ids.get(key, [])
         unmatched.append(
             {
                 "selection_trial_id": trial_id,

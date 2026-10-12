@@ -77,7 +77,8 @@ used; a value recorded by the second study is only as held-out as the caller mad
   `holdout_input_invalid` naming that source, with empty `ids` and `names`. This
   includes a pipe whose first read consumed its data. The comparison counts ancestor
   and own rows for a complete result, all rows for a rows file, and zero for an empty
-  path. Parsed objects need no second read.
+  path. The comparison is by row count: a file replaced between the reads by another
+  with the same row count is not detected. Parsed objects need no second read.
 * **Strict reading.** Duplicate JSON keys, the tokens `NaN`, `Infinity` and `-Infinity`, and a
   number that overflows to infinity are refused wherever they stand in a file.
 * **Rows.** `trial_id` is an integer from 0 to 2^64 - 2 and unique inside a source; `status` is one
@@ -232,7 +233,7 @@ belong to this module; they are not codes of the shared failure catalog.
 
 | Code | Trigger |
 | --- | --- |
-| `holdout_input_invalid` | invalid input; path re-read fails or changes the row count |
+| `holdout_input_invalid` | a source that cannot be read; a malformed row, unknown status, `feasible` disagreeing with the status, invalid or repeated `trial_id`; a duplicate key, `NaN` or `Infinity` token or overflow; a malformed recorded space or dimension; a passed `space` whose content is malformed, when no row or result records a space; a row whose parameter vector cannot be keyed; a path source whose second read raises or yields a different number of rows than the first (the refusal names that source, with empty `ids` and `names`) |
 | `holdout_rows_incomplete` | a result with `trials_out` other than `all`, or `trials_completed` or `warm_start.trials` disagreeing with the rows |
 | `holdout_space_missing` | no row or result records a space and none was passed |
 | `holdout_space_mismatch` | the two sources' rows and results record more than one canonical space |
@@ -246,14 +247,6 @@ belong to this module; they are not codes of the shared failure catalog.
 | `holdout_duplicate_vector` | two eligible rows of one source share a parameter vector and disagree on the metric value |
 | `holdout_resource_exceeded` | the admission figure is above a `max_work` the caller supplied |
 
-`holdout_input_invalid` covers a source that cannot be read; a malformed row, unknown
-status, `feasible` disagreeing with the status, invalid or repeated `trial_id`; a
-duplicate key, `NaN` or `Infinity` token or overflow; a malformed recorded space or
-dimension; a passed `space` whose content is malformed, when no row or result records
-a space; and a row whose parameter vector cannot be keyed. A path re-read fails this
-check when it raises or yields a different number of rows from the first read. The
-refusal names that source, with empty `ids` and `names`.
-
 The cell check uses the digest's key-sorted JSON writer. An object cell with keys of
 mixed types that cannot be sorted is refused as `holdout_value_invalid` in any row,
 like any cell this writer cannot write.
@@ -261,8 +254,8 @@ like any cell this writer cannot write.
 The checks run in this order and the first defect decides the code: the arguments
 (missing before invalid, in the order `metric`, `k`, `direction`, `max_work`, then the
 type of `space`); reading the sources; the space of both sources; the direction rule;
-the context of each source; the ancestor rows of the holdout source; the key of every
-row; the metric name; the metric values; the eligible rows of the selection source;
+the context of each source; the second read of each path source, selection first; the
+ancestor rows of the holdout source; the key of every row; the metric name; the metric values; the eligible rows of the selection source;
 the repeated vectors; the admission figure; and the finite difference of each matched
 vector. The missing-direction argument check applies only to a string `metric` other
 than `"objective"`: `metric=7`, `direction=None`, `k=1` instead refuses as

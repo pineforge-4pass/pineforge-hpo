@@ -1514,6 +1514,58 @@ class AncestorTests(HoldoutTestCase):
         self.assertIn("holdout source", error.detail)
         self.assertIn("did not read the same twice", error.detail)
 
+    def test_a_path_that_fails_midway_refuses_instead_of_losing_ancestors(self):
+        """Catch returning zero ancestors when the second path read raises.
+
+        A path that switches to a missing file midway lets the first read succeed
+        and makes the second read raise OSError. Sweep limits 1 through 8 without
+        assuming how many __fspath__ calls each open makes. The fixture has one
+        ancestor (id 7) and one own row (id 20), with no overlap with selection id 0.
+        Successful reads must equal the parsed result, keeping that one ancestor.
+        Returning an empty ancestor list when the second read raises would give a
+        document with holdout.ancestor_rows 0. No limit would then produce the
+        re-read refusal, so the assertion requiring that refusal would fail.
+        """
+
+        class _Flaky(os.PathLike):
+            def __init__(self, limit):
+                self.limit = limit
+                self.calls = 0
+
+            def __fspath__(self):
+                self.calls += 1
+                if self.calls <= self.limit:
+                    return str(FIXTURES / "ancestor_result_compact.json")
+                return str(FIXTURES / "no-such-file.json")
+
+        result = result_of(
+            [make_row(7, "ok", 1.0, "B")], [make_row(20, "ok", 2.0, "A")]
+        )
+        selection = [make_row(0, "ok", 3.0, "A")]
+        options = {"metric": "objective", "direction": "maximize", "k": 1, "space": S1}
+        expected = holdout_compare(selection, result, **options)
+        errors = []
+        documents = []
+        for limit in range(1, 9):
+            try:
+                document = holdout_compare(selection, _Flaky(limit), **options)
+            except HoldoutError as error:
+                errors.append(error)
+            else:
+                documents.append(document)
+
+        for error in errors:
+            self.assertRefused(error, "holdout_input_invalid")
+        reread_errors = [
+            error for error in errors if "did not read the same twice" in error.detail
+        ]
+        self.assertTrue(reread_errors)
+        for error in reread_errors:
+            self.assertIn("holdout source", error.detail)
+        self.assertTrue(documents)
+        for document in documents:
+            self.assertEqual(document, expected)
+
     def test_a_plain_file_preserves_ancestor_counts(self):
         """Catch refusing a stable file or reporting zero for its one ancestor.
 

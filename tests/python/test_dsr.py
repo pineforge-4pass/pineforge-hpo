@@ -2,8 +2,9 @@
 
 Exact and tabular expectations for all-eligible inline fixtures are hand-derived
 in the test docstrings. ORACLE_PINNED contains the expected SR0, z and DSR values
-for fixtures with excluded rows, computed by the independent oracle with exact
-arithmetic. No expectation is computed from the product module.
+for fixtures with excluded rows, computed by the independent oracle (exact
+rationals for V and den, decimal series for the normal functions). No
+expectation is computed from the product module.
 """
 
 from __future__ import annotations
