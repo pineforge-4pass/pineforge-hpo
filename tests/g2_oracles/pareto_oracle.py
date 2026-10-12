@@ -17,8 +17,8 @@ and never takes a number from the module:
 * eligibility and the refusals are decided from the contract's tables, not by the module's ladder
   of tests: the kind of every axis cell of every row (absent, null, number, nonfinite, other) is
   computed first, a status table names the reason of a row that is not ok, the exclusion families
-  are sets (an ok row with an absent key, then an ok row with a null value), and the accounting
-  must cover every row exactly once. The order of the refusals is the one the module's own
+  are sets (an ok row with an absent key, then an ok row with a null value); the pinned counts of
+  the fixtures cover that every row is eligible or excluded once. The order of the refusals is the one the module's own
   documentation states; the pin does not state it, so that order is a reproduction, not an
   independent reading.
 
@@ -494,7 +494,8 @@ def oracle_front(rows: list, axes: list) -> dict:
     Eligibility and refusals are decided from the contract's tables, not by a ladder of tests
     over the rows: the kind of every axis cell of every row is computed first (``cell_kind``),
     the exclusion families are sets, a row's reason follows from which sets contain it
-    (``STATUS_REASONS`` for the statuses), the accounting must cover every row exactly once, and
+    (``STATUS_REASONS`` for the statuses; the pinned counts of the fixtures cover that each row is
+    eligible or excluded once), and
     the front comes from the three dominance formulations below. The order of the refusals (an
     unknown axis, then an unusable value, then no eligible row) is the one the module's own
     documentation states; the pin does not state it."""

@@ -781,8 +781,9 @@ def analyse(
     leave it out and take 0, so each one states the value it compares.
     Every cell is read off a partition of the rows by typed-tuple distance from the centre and
     classified by the contract's table; the counts, the share near the best and the coverage are
-    recomputed from the finished cells' own values (the near flags are tested again with the
-    same band arithmetic, a consistency check of the oracle); a never-evaluated vector is one
+    recomputed from the finished cells' own values (the near figure is read off the cells' flags,
+    which the classification sets; pinned literals and the module comparison cover it); a
+    never-evaluated vector is one
     whose typed key is in no row, which is checked against the cell's class.
 
     A continuous or log real dimension whose moves are not exactly binary64 numbers is declined
@@ -2809,7 +2810,8 @@ def class_of_rows(rows: list) -> str:
 
 def recount_class_counts(study: Study, centre_row: dict, profile: dict) -> dict:
     """The class counts of one centre, recounted from the raw rows by a route independent of the
-    oracle's own: the rows are indexed by their typed vector key with a plain scan (not the
+    oracle's own grouping and counting (it shares the status table, the typed key, the neighbour list and
+    the classification rule): the rows are indexed by their typed vector key with a plain scan (not the
     ``partition`` distance and ``rows_at``), and every generated neighbour's class is read off that
     index. A cell the oracle's partition or counters got wrong shows here, where a self-comparison
     of the same figures could not fail."""
