@@ -113,6 +113,19 @@ requires `pf_abi_version`, `strategy_create`, `strategy_free`,
 `run_backtest_full`, and `report_free`, then checks that `pf_abi_version()`
 matches the selected engine ABI.
 
+That load happens while a fresh artifact is published. A study whose enum input
+carries an `options` list and whose search gives that dimension ordinal choices
+also loads the plugin in the HPO process, and only then, cached and precompiled
+artifacts included, with the same user rights as the native runner that later
+loads and runs it: it reads the strategy's settings receipt to learn the
+declaration index of each enum member, because the manifest lists an enum
+input's `options` as their tags only. A tag choice needs no load; it is matched
+exactly as the manifest lists it (a bare member name or a tag of another case is
+refused), checked against the manifest options alone, and reaches the runner
+unchanged. A plugin whose receipt cannot be read is refused rather than checked
+against the positions in `options`, which are the declaration indices only for a
+fully listed enum.
+
 ### Search spaces and samplers
 
 The native search-space model implements:

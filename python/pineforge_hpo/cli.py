@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import math
@@ -297,7 +298,12 @@ def _value_matches_input_type(value: object, input_type: str) -> bool:
 
 
 def _validate_value_against_manifest(
-    value: object, manifest: Mapping[str, Any], *, where: str
+    value: object,
+    manifest: Mapping[str, Any],
+    *,
+    where: str,
+    option_values: Sequence[str] | None = None,
+    enum_ordinal: bool = False,
 ) -> None:
     input_type = manifest.get("type")
     if not isinstance(input_type, str) or not _value_matches_input_type(
@@ -333,6 +339,39 @@ def _validate_value_against_manifest(
                 manifest.get("title"),
             )
     options = manifest.get("options")
+    if enum_ordinal and input_type == "enum" and isinstance(options, list):
+        # An enum input's categorical choice is one of two forms: the member's
+        # tag or the member's ordinal, its index in the enum declaration. From
+        # codegen 1.4.0 on the manifest lists an enum's options as their string
+        # tags, which the native runner accepts directly, so a tag needs no
+        # receipt: it is accepted iff it is exactly one of the manifest options
+        # and reaches the runner unchanged. An ordinal needs the parallel
+        # `option_values` the compiled plugin reports in its settings receipt,
+        # whose positions equal the declaration indices only for a fully listed
+        # enum; with no receipt to read there is nothing to check an ordinal
+        # against and the study is refused rather than validated against a
+        # guess. HPO itself refuses a boolean or a float as an enum choice, so
+        # neither form is offered to the engine.
+        if isinstance(value, str):
+            if value in options:
+                return
+        elif isinstance(value, int) and not isinstance(value, bool):
+            if option_values is None:
+                raise _cli_error(
+                    "hpo_study_spec_invalid",
+                    {"reason": "artifact_metadata"},
+                    f"{where}: the enum ordinals for input "
+                    f"{manifest.get('title')!r} cannot be read from the strategy's "
+                    "settings receipt; rebuild the strategy with codegen >= 1.4.0",
+                )
+            if str(value) in option_values:
+                return
+        raise _setting_error(
+            "strategy_set_input",
+            "invalid_input_option",
+            f"{where} is not one of the Pine input options",
+            manifest.get("title"),
+        )
     if isinstance(options, list) and not any(
         _same_scalar(value, option) for option in options
     ):
@@ -461,12 +500,141 @@ def _artifact_input_metadata(path: Path) -> tuple[str | None, bool]:
         return None, False
 
 
+_SETTINGS_OK = 0
+_SETTINGS_BUFFER_TOO_SMALL = 4
+
+
+def _plugin_option_values(plugin: Path) -> dict[str, tuple[str, ...]] | None:
+    """Read every input's option ordinals from a compiled strategy plugin.
+
+    The plugin's settings receipt (`strategy_get_effective_settings`) lists each
+    declared input's `options` and the parallel `option_values`; for an enum
+    input those are the members' declaration indices, which the codegen manifest
+    does not carry. The plugin is a self-contained shared object, loaded the way
+    the artifact builder validates it, and the receipt is read from a fresh
+    strategy without running a trial. A plugin that does not export the receipt,
+    or one whose receipt cannot be read, yields None, which makes an enum
+    search dimension fail closed in the validator.
+    """
+    try:
+        library = ctypes.CDLL(str(plugin), mode=getattr(ctypes, "RTLD_LOCAL", 0))
+    except OSError:
+        return None
+    if not hasattr(library, "strategy_create_checked") or not hasattr(
+        library, "strategy_get_effective_settings"
+    ):
+        return None
+    create = library.strategy_create_checked
+    create.argtypes = [
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ]
+    create.restype = ctypes.c_int
+    read = library.strategy_get_effective_settings
+    read.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ]
+    read.restype = ctypes.c_int
+    release = getattr(library, "strategy_free", None)
+    error = ctypes.create_string_buffer(256)
+    strategy = ctypes.c_void_p()
+    if create(None, ctypes.byref(strategy), error, len(error)) != _SETTINGS_OK:
+        return None
+    if not strategy.value:
+        return None
+    try:
+        required = ctypes.c_size_t()
+        if (
+            read(strategy, None, 0, ctypes.byref(required), error, len(error))
+            != _SETTINGS_BUFFER_TOO_SMALL
+        ):
+            return None
+        if required.value == 0:
+            return None
+        buffer = ctypes.create_string_buffer(required.value)
+        if (
+            read(
+                strategy,
+                buffer,
+                required.value,
+                ctypes.byref(required),
+                error,
+                len(error),
+            )
+            != _SETTINGS_OK
+        ):
+            return None
+        document = json.loads(buffer.value.decode("utf-8"))
+    except (ValueError, UnicodeError, OSError):
+        return None
+    finally:
+        if release is not None:
+            release.argtypes = [ctypes.c_void_p]
+            release.restype = None
+            release(strategy)
+    entries = document.get("inputs") if isinstance(document, dict) else None
+    if not isinstance(entries, list):
+        return None
+    values: dict[str, tuple[str, ...]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return None
+        name = entry.get("name")
+        options = entry.get("option_values")
+        if (
+            not isinstance(name, str)
+            or not isinstance(options, list)
+            or not all(isinstance(option, str) for option in options)
+        ):
+            return None
+        values[name] = tuple(options)
+    return values
+
+
+def _enum_ordinals_needed(
+    study: StudySpec, inputs: Sequence[Mapping[str, Any]]
+) -> bool:
+    """True when a search dimension needs the plugin's declared enum ordinals.
+
+    Only a categorical search dimension whose artifact manifest entry is an enum
+    with an `options` list and whose choices include a non-tag (ordinal) value is
+    checked against the receipt, so only that shape justifies loading the
+    plugin. A study whose enum choices are all tag strings never does, because a
+    tag is checked against the manifest options alone; numeric, boolean, string
+    and source dimensions never do either.
+    """
+    by_title: dict[str, Mapping[str, Any]] = {}
+    for item in inputs:
+        title = item.get("title")
+        if isinstance(title, str):
+            by_title[title] = item
+    for name, parameter in study.strategy.search_space.items():
+        if parameter.kind != "categorical":
+            continue
+        manifest = by_title.get(name)
+        if manifest is None or manifest.get("type") != "enum":
+            continue
+        if not isinstance(manifest.get("options"), list):
+            continue
+        if any(not isinstance(choice, str) for choice in parameter.choices):
+            return True
+    return False
+
+
 def _validate_manifest_inputs(
     study: StudySpec,
     inputs: Sequence[Mapping[str, Any]],
     *,
     codegen_version: str | None = None,
     input_kinds_emitted: bool = False,
+    option_values: Mapping[str, Sequence[str]] | None = None,
 ) -> None:
     requested = set(study.strategy.search_space) | set(study.strategy.fixed_inputs)
     by_title: dict[str, Mapping[str, Any]] = {}
@@ -530,9 +698,14 @@ def _validate_manifest_inputs(
                 f"codegen version {codegen_version or 'unknown'}",
             )
         if parameter.kind == "categorical":
+            declared_ordinals = option_values.get(name) if option_values else None
             for index, choice in enumerate(parameter.choices):
                 _validate_value_against_manifest(
-                    choice, manifest, where=f"search_space.{name}.choices[{index}]"
+                    choice,
+                    manifest,
+                    where=f"search_space.{name}.choices[{index}]",
+                    option_values=declared_ordinals,
+                    enum_ordinal=True,
                 )
             continue
         expected_kind = {
@@ -965,6 +1138,11 @@ def prepare_run(
             built.inputs,
             codegen_version=codegen_version,
             input_kinds_emitted=input_kinds_emitted,
+            option_values=(
+                _plugin_option_values(built.plugin_path)
+                if _enum_ordinals_needed(study, built.inputs)
+                else None
+            ),
         )
         artifact = _artifact_json(built)
     else:
@@ -978,6 +1156,11 @@ def prepare_run(
             inputs,
             codegen_version=codegen_version,
             input_kinds_emitted=input_kinds_emitted,
+            option_values=(
+                _plugin_option_values(Path(artifact["plugin"]))
+                if _enum_ordinals_needed(study, inputs)
+                else None
+            ),
         )
 
     native_path = _resolve_native(None if native is None else str(native))
