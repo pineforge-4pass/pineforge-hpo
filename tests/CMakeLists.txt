@@ -527,6 +527,15 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             set_property(TEST pineforge_hpo_return_stats_cli APPEND PROPERTY
                 ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
         endif()
+        add_test(NAME pineforge_hpo_pbo_blocks_cli
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_pbo_blocks_cli.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+            set_property(TEST pineforge_hpo_pbo_blocks_cli APPEND PROPERTY
+                ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+        endif()
         add_test(NAME pineforge_hpo_trial_outputs
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>

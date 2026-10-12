@@ -1,3 +1,5 @@
+PBO on real data not proven (blocked by design, exit 3)
+
 # Probability of backtest overfitting (PBO) from block moments
 
 **Status: the module `python/pineforge_hpo/pbo.py`, its tests and its fixtures are committed
@@ -5,15 +7,59 @@ but have never been executed.** Every execution claim in this page is deferred t
 phase. The module is a pure, standard-library-only reference: any faster implementation must
 reproduce its results bit for bit.
 
-**What this page does not offer yet.** The module reads a table of block moments (count,
-sum and centred second moment per block, one record per trial). The optimizer does **not**
-produce that table yet: the native block payload is a later piece of work, so today the
-module works on tables that a caller supplies and cannot be fed from a finished study by
-itself.
+**Native input.** The native runner accepts `--pbo-blocks S` to publish a table of block moments
+(count, sum and centred second moment per block, one record per completed trial) and its
+result-level layout. This integration still needs execution verification. Publishing the
+payload does not prove PBO on real data or validate a market interpretation.
 
 The method is combinatorially symmetric cross-validation (CSCV) and the probability of backtest
 overfitting of Bailey, Borwein, Lopez de Prado and Zhu, "The Probability of Backtest
 Overfitting" (revised version of February 27, 2015). Page numbers below are that paper's.
+
+## Requesting native blocks
+
+Append `--pbo-blocks 16`, for example, to a native `pineforge-hpo-native run` command. This is a
+native flag only; there is no StudySpec key or Python `run` option for it. Without the flag the
+runner does no block reduction and adds no block keys; result bytes keep their existing format.
+
+`S` must be an even integer from 2 to 4294967294. An invalid value is refused before loading a
+plugin, dataset or trial, with exit 1 and `hpo_study_spec_invalid`, reason `study`. A requested
+run also needs the bound return-statistics build identity; an unbound build is refused before
+those inputs are loaded with `hpo_toolchain_unavailable`, reason `native_runner`.
+
+Blocks use the full-window reported equity curve, without an added anchor: `K` is its point
+count minus one. Interval `k` is the simple return `E[k+1] / E[k] - 1` and belongs to block
+`floor(k*S/K)`. Block `b` opens at point `ceil(b*K/S)`; the layout's `boundary_time_ms` copies
+the curve times at those points, including point `K` as the last boundary. `n_b` counts all
+intervals in each block. The block-size rules below must hold, including `K >= S` and at least
+two intervals in the smallest half. A curve too short for the request is refused with exit 1
+and `hpo_study_spec_invalid`, reason `study`.
+
+Only completed `ok` and `constraint_violation` trials carry `block_returns`. Prefix rungs,
+pruned trials, failed trials and partial trials carry no full-window payload. An `ok` payload
+contains `status`, integer `count[S]`, numeric `sum[S]` and numeric `m2[S]`. The moments are
+reduced in interval order: sum, divide by count to get the mean, then sum the squared deviations
+from that mean; a one-interval block has `m2 = 0`.
+An unusable curve from which no reduction ran carries no fabricated payload or layout.
+
+A non-positive prior equity skips an interval and gives a status-only payload
+`{"status": "non_positive_equity"}`. A non-finite equity, derived return or moment gives
+`{"status": "non_finite"}`. Neither status carries arrays or changes a successful trial into
+a failed one. The Python module refuses the former as `pbo_non_positive_equity` and the latter
+as `pbo_rows_incomplete`, naming the affected trial ids.
+
+The result-level `return_blocks` object has exactly seven wire keys: `contract`, `series`, `S`,
+`K`, `n_b`, `boundary_time_ms` and `numeric_build_identity`. Its contract is
+`pineforge-hpo-return-blocks/v1` and its series is `bar`. Counts, sizes and boundary times are
+JSON integers. The layout comes from the lowest-id eligible completed full-window snapshot
+with a usable layout, including a constraint-violating trial; it is kept even if trial retention
+discards that row. Every completed layout must agree with it and every published count array
+must equal its `n_b`. A disagreement refuses the result with exit 1 and `hpo_report_invalid`.
+Without such a snapshot the result omits `return_blocks` and does not claim usable PBO input.
+
+Blocks and return statistics share the return-statistics numeric build identity. Adding the
+block reducer grew the hashed reducer source and changed that identity value. Evidence naming
+the previous value applies to its own version; it does not validate the new value.
 
 ## What is computed
 
@@ -65,8 +111,8 @@ table).
   row refuses, with the code of its own named under Refusals, when its status is a failed-trial
   status (`error`, `objective_error`, `constraint_error`, `engine_error`, `trial_error` or
   `trial_timeout`), `pruned` or `partial`, or when its `block_returns` status is
-  `non_positive_equity` (an equity at or below zero skipped an interval; that text is this
-  module's reading of the payload status, because the native payload does not exist yet). A
+  `non_positive_equity` (a prior equity at or below zero skipped an interval). A `non_finite`
+  payload refuses as incomplete, with the affected trial ids. A
   missing, non-text or unknown row status, a missing or null payload, or any other payload status
   than `ok` refuses as incomplete.
 * Input rules of this module: `S` is an even integer from 2; the roster holds at least 2 trials;
@@ -141,19 +187,17 @@ object. The same holds for the dataset: the module sees `K`, the times of the bl
 and the `dataset_identity` text that the caller states, so two datasets that carry the same
 length, the same time axis and the same text are not distinguished by anything the module can see.
 
-### Readings of the wire
+### Native wire
 
 The pinned wire (dossier clause 3.3) fixes the row key `block_returns` (`status`, `count[S]`,
 `sum[S]`, `m2[S]`) and the result-level object `return_blocks` (contract
 `pineforge-hpo-return-blocks/v1`, series, `S`, `K`, `n_b[]`, `boundary_time_ms[S+1]` and "own
-numeric identity"). It does not give every text and name that this module compares, so the module
-reads the following as it does. Each is a **reading** of the wire, not a pinned value: it has to
-be confirmed or changed when the native reducer and the integration are written, and a wrong
-reading refuses instead of computing a number.
+numeric identity"). The native writer uses the following texts and names, matching the module's
+input checks. A different spelling refuses instead of computing a number.
 
 | Reading | What the module does | If the wire says otherwise |
 | --- | --- | --- |
-| `ok` is the status text of a usable `block_returns` payload, and `non_positive_equity` the text of a payload that skipped an interval | computes `ok`; refuses `non_positive_equity` with a code of its own | every row refuses (`pbo_rows_incomplete`) |
+| `ok` is the status text of a usable `block_returns` payload; `non_positive_equity` and `non_finite` are status-only payloads | computes `ok`; refuses `non_positive_equity` as `pbo_non_positive_equity` and `non_finite` as `pbo_rows_incomplete` | every row refuses (`pbo_rows_incomplete`) |
 | `numeric_build_identity` is the key that holds the "own numeric identity" of the pin | requires that key in the declared object | the declared object refuses (`pbo_input_invalid`: an absent key and an unknown key) |
 | `bar` is the text of the series | accepts the series `bar` only | the declared object refuses (`pbo_return_blocks_mismatch`) |
 | a `return_blocks` key on each row, as the carrier of the object of the part the row came from | removed: an earlier version of this module read it, but the pinned row wire carries only `block_returns` | the module reads no key of a row except `trial_id`, `status` and `block_returns` and ignores the others; the declared object of a part is handed over with the part |
@@ -283,7 +327,7 @@ evaluated once and used in both directions.
   refusal of N < 2 (the paper gives none); the paper's own inconsistencies (12,780 splits on pp.
   11 and 22 where eq. 2.3 gives C(16, 8) = 12,870, which is used; "mean" on p. 28 versus the
   median elsewhere); noise-level and planted-winner checks, which are descriptive only and never
-  an acceptance oracle; how block moments are carried from the engine into result rows; and
+  an acceptance oracle; execution verification of the native curve-to-moments path; and
   window-selected input, which is not part of this version.
 * The module checks the parts against the roster and against each other; it cannot know that the
   roster is the lineage's true trial set, only that the rows of all the parts are exactly the
@@ -385,7 +429,9 @@ statistics of one pair of halves. The lambda lists, which grow with `n_splits`, 
 `neighbourhood`: they are listed in `pineforge_hpo.pbo.CODES` and are not members of the failure
 catalog (see [Stable failure codes](failure-codes.md)). The tests are in
 `tests/python/test_pbo.py`; their fixtures are the small JSON files in
-`tests/python/fixtures/pbo/`, each with its hand count written in the test that uses it.
+`tests/python/fixtures/pbo/`, each with its hand count written in the test that uses it. The
+native wire tests are in `tests/test_pbo_blocks_cli.py`, using supplied synthetic equity curves
+and hand-derived moment literals. These contracts remain subject to execution verification.
 
 ## What an independent oracle confirms
 
@@ -423,8 +469,8 @@ the platform's math library, and must be cited as that.
 `tests/g2_oracles/pbo_real_rows.py` compares a real lineage. Read its exit code as: 0 AGREE; 1
 DISAGREE, or a failure; 2 a refusal, either the module's (`MODULE REFUSED`) or the script's own
 for a result that keeps only some of its trials (`REFUSED BY THE SCRIPT`), which is also the code
-of a usage error; 3 BLOCKED, no row carries a `block_returns` payload, which holds for every row
-the native runner of this tree writes today, so nothing was compared; 4 the oracle was skipped
+of a usage error; 3 BLOCKED, no row carries a `block_returns` payload, as with native input that
+never requested blocks, so nothing was compared; 4 the oracle was skipped
 as too large (`--oracle-limit`), so the module's numbers are not cross-checked; 5 the rows are
 not native output; 6 INCONCLUSIVE (nothing disagrees, but a comparison that exact ties touch
 differs inside the range they allow). A run that compared nothing never exits 0.

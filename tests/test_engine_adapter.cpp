@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -61,14 +62,15 @@ double parse_or(const std::map<std::string, std::string>& values,
 
 // A data-driven external-engine fixture. Values depend on the candidate, never on
 // invocation order, worker count, sampler feedback, or the runner's stop settings.
-std::string sequence_value(const FakeStrategy& state, const char* key, int index) {
+std::string sequence_value(const FakeStrategy& state, const char* key, int index,
+                           char delimiter = ',') {
     const auto found = state.inputs.find(key);
     if (found == state.inputs.end())
         return {};
     std::vector<std::string> values;
     std::istringstream stream(found->second);
     std::string value;
-    while (std::getline(stream, value, ','))
+    while (std::getline(stream, value, delimiter))
         values.push_back(value);
     if (values.empty() || index < 0)
         return {};
@@ -103,12 +105,13 @@ std::vector<double> parse_equity_curve(const std::string& text) {
     return equities;
 }
 
-void allocate_curve_values(pf_report_t* report, const std::vector<double>& equities) {
+void allocate_curve_values(pf_report_t* report, const std::vector<double>& equities,
+                           std::int64_t time_offset = 0) {
     report->equity_curve = new pf_equity_point_t[equities.size()];
     report->equity_curve_len = static_cast<int64_t>(equities.size());
     for (std::size_t index = 0; index < equities.size(); ++index) {
         report->equity_curve[index].time_ms =
-            1'700'000'000'000LL + static_cast<int64_t>(index) * 60'000;
+            1'700'000'000'000LL + time_offset + static_cast<int64_t>(index) * 60'000;
         report->equity_curve[index].equity = equities[index];
         report->equity_curve[index].open_profit = 0.25 * static_cast<double>(index);
     }
@@ -417,8 +420,18 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     report->metrics.equity.max_equity_drawdown = 12.5;
     report->metrics.equity.open_pl = 3.5;
     const auto curve_equity = state->inputs.find("CurveEquity");
-    if (curve_equity != state->inputs.end() && !curve_equity->second.empty()) {
-        allocate_curve_values(report, parse_equity_curve(curve_equity->second));
+    const auto sequence_curve = sequence_value(*state, "SequenceCurveEquity", length, ';');
+    const auto sequence_time = sequence_value(*state, "SequenceCurveTimeOffsetMs", length);
+    const auto time_offset = sequence_time.empty() ? std::int64_t{0} :
+        static_cast<std::int64_t>(std::stoll(sequence_time));
+    const auto prefix_curve = state->inputs.find("PrefixCurveEquity");
+    if (prefix_curve != state->inputs.end() &&
+        bar_count < parse_or(state->inputs, "FullWindowBars", 0.0)) {
+        allocate_curve_values(report, parse_equity_curve(prefix_curve->second), time_offset);
+    } else if (!sequence_curve.empty()) {
+        allocate_curve_values(report, parse_equity_curve(sequence_curve), time_offset);
+    } else if (curve_equity != state->inputs.end() && !curve_equity->second.empty()) {
+        allocate_curve_values(report, parse_equity_curve(curve_equity->second), time_offset);
     } else {
         allocate_curve(report, 2, initial_capital);
     }
