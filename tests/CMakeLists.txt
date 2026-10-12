@@ -87,6 +87,14 @@ target_compile_options(pineforge_hpo_test_return_stats PRIVATE
     -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_return_stats COMMAND pineforge_hpo_test_return_stats)
 
+# The block reducer lives in the same strict translation unit as the statistics reducer, and this
+# test freezes exact dyadic literals, so it needs the same two flags.
+add_executable(pineforge_hpo_test_return_blocks test_return_blocks.cpp)
+target_link_libraries(pineforge_hpo_test_return_blocks PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_return_blocks PRIVATE
+    -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_return_blocks COMMAND pineforge_hpo_test_return_blocks)
+
 # Both public headers in one translation unit, and the real build's generated identity read back
 # against its own descriptor. The generation target is an unconditional build dependency.
 add_executable(pineforge_hpo_test_return_stats_headers test_return_stats_headers.cpp)

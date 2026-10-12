@@ -17,6 +17,7 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__)
 #error "return_stats requires IEEE-754 semantics: build without -ffast-math or -ffinite-math-only"
@@ -454,6 +455,115 @@ ReturnSeriesStats evaluate_series(const Walk& walk,
     return out;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Return blocks (contract pineforge-hpo-return-blocks/v1)
+// ---------------------------------------------------------------------------------------------
+
+enum class BlockIntervalKind { Valid, Skipped, Nonfinite };
+
+// One interval of a block. Unlike the statistics series above, a non-finite equity or a non-finite
+// derived return is its own kind rather than a skipped interval: the module refuses a row whose
+// block status is not ok, so the cause has to survive into the status and is never repaired,
+// imputed or dropped. A prior equity that is not positive skips the interval; a current equity at
+// or below zero is allowed, exactly as in classify_interval.
+BlockIntervalKind classify_block_interval(double prior,
+                                          double current,
+                                          double& simple_return) noexcept {
+    if (!std::isfinite(prior) || !std::isfinite(current))
+        return BlockIntervalKind::Nonfinite;
+    if (!(prior > 0.0))
+        return BlockIntervalKind::Skipped;
+    const double ratio = current / prior;
+    const double value = ratio - 1.0;
+    if (!std::isfinite(value))
+        return BlockIntervalKind::Nonfinite;
+    simple_return = value;
+    return BlockIntervalKind::Valid;
+}
+
+// The adjacent curve points of one block, visited by interval index: interval k is the pair
+// (curve[k], curve[k + 1]), and a block is a level set of floor(k * S / K), so block b holds
+// exactly the intervals [a_b, a_(b+1)) the layout gives, in ascending k.
+class BlockWalk {
+public:
+    BlockWalk(const PointReader& in, std::int64_t begin, std::int64_t end) noexcept
+        : in_(in), begin_(begin), end_(end) {}
+
+    template <typename Visit>
+    bool operator()(Visit&& visit) const noexcept {
+        for (std::int64_t index = begin_; index < end_; ++index) {
+            const std::size_t k = static_cast<std::size_t>(index);
+            visit(index, in_.equity(k), in_.equity(k + 1));
+        }
+        return true;
+    }
+
+private:
+    const PointReader& in_;
+    std::int64_t begin_;
+    std::int64_t end_;
+};
+
+// ceil(block * intervals / blocks) without an overflowing product. With q = K / S and r = K % S
+// the quotient is `block * q + ceil(block * r / S)`, and both block * r + S - 1 and its quotient
+// stay below 2^64 because the block count is a 32-bit unsigned value (S <= 2^32 - 1 gives
+// S * S < 2^64) and q <= K, which the view bound holds below 2^53.
+std::int64_t block_begin(std::int64_t block,
+                         std::int64_t intervals,
+                         std::uint64_t blocks) noexcept {
+    const std::uint64_t quotient = static_cast<std::uint64_t>(intervals) / blocks;
+    const std::uint64_t remainder = static_cast<std::uint64_t>(intervals) % blocks;
+    const std::uint64_t index = static_cast<std::uint64_t>(block);
+    return static_cast<std::int64_t>(index * quotient + (index * remainder + blocks - 1) / blocks);
+}
+
+struct BlockTally {
+    std::int64_t count = 0;
+    double sum = 0.0;
+    bool skipped = false;
+    bool nonfinite = false;
+};
+
+// First pass of one block: classify every interval and sum the usable returns in ascending k.
+BlockTally tally_block(const BlockWalk& walk) noexcept {
+    BlockTally tally;
+    walk([&tally](std::int64_t, double prior, double current) {
+        double value = 0.0;
+        switch (classify_block_interval(prior, current, value)) {
+        case BlockIntervalKind::Skipped:
+            tally.skipped = true;
+            break;
+        case BlockIntervalKind::Nonfinite:
+            tally.nonfinite = true;
+            break;
+        case BlockIntervalKind::Valid:
+            ++tally.count;
+            tally.sum += value;
+            break;
+        }
+    });
+    return tally;
+}
+
+// Second pass of one block: the centred second moment. Each deviation and each squared deviation
+// is stored before it is added, in ascending k, so a conforming compiler has nothing to fuse.
+double centred_block(const BlockWalk& walk, double mean, bool& nonfinite) noexcept {
+    double m2 = 0.0;
+    walk([&m2, &nonfinite, mean](std::int64_t, double prior, double current) {
+        double value = 0.0;
+        if (classify_block_interval(prior, current, value) != BlockIntervalKind::Valid)
+            return;
+        const double deviation = value - mean;
+        const double square = deviation * deviation;
+        if (!std::isfinite(square))
+            nonfinite = true;
+        m2 += square;
+    });
+    if (!std::isfinite(m2))
+        nonfinite = true;
+    return m2;
+}
+
 // Bar period basis: P = (n - 1) / span_years for n >= 3 and a positive span, with the
 // timestamp difference taken without signed overflow.
 ReturnPeriodFailure bar_period(const PointReader& in, double& periods_per_year) noexcept {
@@ -597,6 +707,130 @@ bool return_stats_contraction_free() noexcept {
     const double separate = addend + product;
     const double fused = std::fma(first, first, addend);
     return separate == 0.0 && fused == 0x1p-54;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Return blocks (contract pineforge-hpo-return-blocks/v1)
+// ---------------------------------------------------------------------------------------------
+
+std::string_view return_blocks_status_text(ReturnBlocksStatus status) noexcept {
+    switch (status) {
+    case ReturnBlocksStatus::Ok:
+        return "ok";
+    case ReturnBlocksStatus::NonPositiveEquity:
+        return "non_positive_equity";
+    case ReturnBlocksStatus::Nonfinite:
+        return "non_finite";
+    case ReturnBlocksStatus::NotRequested:
+    case ReturnBlocksStatus::UnusableCurve:
+    case ReturnBlocksStatus::UnusableLayout:
+        break;
+    }
+    return {};
+}
+
+ReturnBlockLayout compute_block_layout(const EquityPointsView& points,
+                                       std::uint32_t blocks) noexcept {
+    ReturnBlockLayout layout;
+    // A view with no point at all is usable as a view but carries no interval, and K = count - 1
+    // is not representable below one point, so both are refused before any arithmetic.
+    if (!view_is_usable(points) || points.count == 0)
+        return layout;
+    const std::uint64_t size = blocks;
+    if (size < 2 || size % 2 != 0)
+        return layout;
+    const std::int64_t intervals = static_cast<std::int64_t>(points.count) - 1;
+    if (static_cast<std::uint64_t>(intervals) < size)
+        return layout;
+    // The module refuses a half of the blocks holding fewer than two intervals. The sizes differ
+    // by at most one, so the smallest S / 2 of them add up to at least (S / 2) * (K / S).
+    if ((size / 2) * (static_cast<std::uint64_t>(intervals) / size) < 2)
+        return layout;
+
+    layout.blocks = blocks;
+    layout.intervals = intervals;
+    layout.usable = true;
+    layout.n_b.resize(static_cast<std::size_t>(size));
+    layout.boundary_time_ms.resize(static_cast<std::size_t>(size) + 1);
+    const PointReader reader(points);
+    std::int64_t previous = 0;
+    for (std::uint64_t block = 0; block <= size; ++block) {
+        const std::int64_t begin = block_begin(static_cast<std::int64_t>(block), intervals, size);
+        layout.boundary_time_ms[static_cast<std::size_t>(block)] =
+            reader.time_ms(static_cast<std::size_t>(begin));
+        if (block != 0)
+            layout.n_b[static_cast<std::size_t>(block - 1)] = begin - previous;
+        previous = begin;
+    }
+    return layout;
+}
+
+ReturnBlockMoments reduce_return_blocks(const EquityPointsView& points,
+                                        const ReturnBlockLayout& layout) noexcept {
+    ReturnBlockMoments moments;
+    if (!view_is_usable(points) || points.count == 0) {
+        moments.status = ReturnBlocksStatus::UnusableCurve;
+        return moments;
+    }
+    const std::int64_t intervals = layout.intervals;
+    const std::uint64_t size = layout.blocks;
+    const std::int64_t curve_intervals = static_cast<std::int64_t>(points.count) - 1;
+    if (!layout.usable || size < 2 || size % 2 != 0 || intervals < 1 ||
+        intervals != curve_intervals ||
+        layout.n_b.size() != static_cast<std::size_t>(size) ||
+        layout.boundary_time_ms.size() != static_cast<std::size_t>(size) + 1) {
+        moments.status = ReturnBlocksStatus::UnusableLayout;
+        return moments;
+    }
+    // The declared sizes must be this rule's own before any arithmetic runs on them: cursor holds
+    // a_b, so every size is checked against a_(b+1) - a_b and the last one ends at K, which is what
+    // makes the sizes add up and leaves no block empty.
+    std::int64_t cursor = 0;
+    for (std::uint64_t block = 0; block < size; ++block) {
+        const std::int64_t next =
+            block_begin(static_cast<std::int64_t>(block + 1), intervals, size);
+        if (layout.n_b[static_cast<std::size_t>(block)] != next - cursor) {
+            moments.status = ReturnBlocksStatus::UnusableLayout;
+            return moments;
+        }
+        cursor = next;
+    }
+
+    const std::size_t length = static_cast<std::size_t>(size);
+    moments.count.assign(length, 0);
+    moments.sum.assign(length, 0.0);
+    moments.m2.assign(length, 0.0);
+    const PointReader reader(points);
+    bool skipped = false;
+    bool nonfinite = false;
+    std::int64_t begin = 0;
+    for (std::size_t block = 0; block < length; ++block) {
+        const std::int64_t end =
+            block_begin(static_cast<std::int64_t>(block + 1), intervals, size);
+        const BlockWalk walk(reader, begin, end);
+        const BlockTally tally = tally_block(walk);
+        moments.count[block] = tally.count;
+        moments.sum[block] = tally.sum;
+        skipped = skipped || tally.skipped;
+        nonfinite = nonfinite || tally.nonfinite || !std::isfinite(tally.sum);
+        if (tally.count >= 1) {
+            const double mean = tally.sum / static_cast<double>(tally.count);
+            if (!std::isfinite(mean)) {
+                nonfinite = true;
+            } else if (tally.count >= 2) {
+                // count = 1 keeps m2 = 0, the value the module requires of a one-interval block.
+                moments.m2[block] = centred_block(walk, mean, nonfinite);
+            }
+        }
+        begin = end;
+    }
+    if (nonfinite)
+        moments.status = ReturnBlocksStatus::Nonfinite;
+    else if (skipped)
+        moments.status = ReturnBlocksStatus::NonPositiveEquity;
+    else
+        moments.status = ReturnBlocksStatus::Ok;
+    return moments;
 }
 
 }  // namespace pineforge::hpo
