@@ -3,7 +3,8 @@
 // A pure reducer over a borrowed (time_ms, equity) array. It reads the engine-owned curve in
 // place, keeps no state and uses only + - * / and sqrt in a fixed sequential order: ascending
 // index, centred two-pass. The return-statistics functions here allocate nothing; the return-block
-// functions at the end of the file allocate only their returned vectors. Build this translation
+// functions at the end of the file allocate their returned vectors and, in the reducer, one
+// temporary layout of the same size. Build this translation
 // unit with floating-point contraction and fast-math disabled (-fno-fast-math -ffp-contract=off);
 // the product of a multiplication is always stored before it is added so that a conforming
 // compiler has no expression to fuse, and the flags stay required for compilers that fuse across

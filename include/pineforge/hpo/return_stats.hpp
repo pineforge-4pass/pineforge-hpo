@@ -230,8 +230,9 @@ enum class ReturnBlocksStatus : std::uint8_t {
     Nonfinite = 3,
     /// The borrowed view cannot be read; no reduction was attempted.
     UnusableCurve = 4,
-    /// No layout can be formed for this curve: S is odd or below 2, K is below S, or a block-size
-    /// rule of the module fails.
+    /// No layout can be formed for this curve: S is odd or below 2, K is below S, a block-size
+    /// rule of the module fails, an opening timestamp is below the one before it, or the layout
+    /// handed to the reducer is not the one the rule gives for this curve and its block count.
     UnusableLayout = 5,
 };
 
@@ -246,12 +247,13 @@ std::string_view return_blocks_status_text(ReturnBlocksStatus status) noexcept;
 /// points and belongs to block `floor(k * S / K)`; block b opens at the point
 /// `a_b = ceil(b * K / S)`, so `n_b[b] = a_(b+1) - a_b`, `sum(n_b) = K`, and
 /// `boundary_time_ms[b]` is that opening point's timestamp copied unchanged from the curve, for
-/// b = 0..S (the last entry is the curve's final point). The layout therefore depends on the
-/// curve length and S only, never on the equities.
+/// b = 0..S (the last entry is the curve's final point). The sizes depend on the curve length and
+/// S only, never on the equities; the times are the curve's own.
 ///
-/// `usable` is true exactly when the request can be served and every size rule the module checks
-/// holds: S is even and at least 2, K is at least S, and the smallest half of the blocks holds at
-/// least two intervals. A layout that is not usable carries no sizes and no times.
+/// `usable` is true exactly when the request can be served and every rule the module checks
+/// holds: S is even and at least 2, K is at least S, the smallest half of the blocks holds at
+/// least two intervals, and the opening timestamps are non-decreasing (equal times are allowed).
+/// A layout that is not usable carries no sizes and no times.
 struct ReturnBlockLayout {
     std::uint32_t blocks = 0;    ///< S, the block count; 0 when the layout is not usable.
     std::int64_t intervals = 0;  ///< K, the interval count; 0 when the layout is not usable.
@@ -288,9 +290,12 @@ ReturnBlockLayout compute_block_layout(const EquityPointsView& points,
 
 /// Reduces the bar returns of a curve into the blocks of its own layout.
 ///
-/// A pure function of the immutable curve view and the layout, and the layout is a function of
-/// the curve length and S: no worker, global or random state is read and nothing is retained
-/// except the returned vectors. An interval whose prior equity is not positive is skipped, while
+/// A pure function of the immutable curve view and the layout: no worker, global or random state
+/// is read and nothing is retained except the returned vectors. The layout is accepted only when
+/// it equals the one `compute_block_layout` returns for the same curve and `layout.blocks`;
+/// anything else (including a layout marked usable that the rule would refuse) gives status
+/// UnusableLayout and no arrays. If both a skipped interval and a non-finite value occur, the
+/// status is Nonfinite. An interval whose prior equity is not positive is skipped, while
 /// a current equity at or below zero is allowed; a non-finite equity, return or moment gives
 /// status Nonfinite instead of an error, so a request never fails the trial it describes.
 ///

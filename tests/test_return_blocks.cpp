@@ -10,9 +10,11 @@
 // repetition rather than about correctness (the determinism case and the layout invariance case):
 // those compare two runs of the same pure function with each other and expect equality.
 //
-// The curves below are dyadic on purpose: every equity and every return is a sum of powers of two
+// Most curves below are dyadic on purpose: every equity and every return is a sum of powers of two
 // that binary64 holds exactly, so each count, sum, mean and centred moment has an exact rational
-// value that can be written out as a literal.
+// value that can be written out as a literal. Two cases are not dyadic and say so: the
+// near-constant case is a step-by-step transcription of the recipe, and the unfused case pins bit
+// patterns found with exact rational arithmetic (see its comment).
 #include <pineforge/hpo/return_stats.hpp>
 
 #include <cmath>
@@ -544,10 +546,9 @@ void case_skipped_and_nonfinite_precedence() {
     g_case = "non-finite outranks a skipped interval";
     // Equities 1, 0, 1, NaN, 1 hold K = 4 intervals and S = 2 gives the sizes (2, 2). The second
     // interval has the prior 0, which is not positive, so it is skipped; the third and fourth
-    // intervals touch the NaN and are not finite. Both causes are present at once, and the intended
-    // rule (the design note: a non-finite value is the more severe) is that a non-finite interval
-    // wins and never hides behind a skipped one, so the status is Nonfinite, not
-    // NonPositiveEquity.
+    // intervals touch the NaN and are not finite. Both causes are present at once. The rule chosen
+    // here is that a non-finite interval is the more severe and never hides behind a skipped one,
+    // so the status is Nonfinite, not NonPositiveEquity.
     const Curve curve = curve_of({1.0, 0.0, 1.0, kNaN, 1.0});
     const Reduction reduction = reduce(curve, 2);
     EXPECT(reduction.layout.usable);
@@ -647,10 +648,13 @@ void case_near_constant_rounding() {
 
 void case_second_pass_is_not_fused() {
     g_case = "second pass is not fused";
-    // The expected bits come from a separate script that follows the recipe with one rounded product
-    // per step and, for contrast, a fused multiply-add per step with the exact rational value. On
-    // this curve the first block's second moment differs by one unit in the last place between the
-    // two forms (plain ...60da, fused ...60db), so a fused second pass cannot pass this check.
+    // How the expected bits were obtained: with exact rational arithmetic, each return is the
+    // binary64 quotient minus one, the sum is taken in ascending order, the mean is the sum divided
+    // by the count, and every squared deviation is rounded once before it is added. A fused
+    // multiply-add per step (one rounding of deviation * deviation + running total, from the exact
+    // rational value) was computed for contrast. On this curve the first block's second moment
+    // differs by one unit in the last place between the two forms (plain ...60da, fused ...60db),
+    // so a fused second pass cannot pass this check.
     const Curve curve = curve_of({94.7, 94.8, 94.9, 95.1, 95.4, 95.3, 95.4, 95.6});
     const Reduction reduction = reduce(curve, 2);
     EXPECT(reduction.moments.status == ReturnBlocksStatus::Ok);
@@ -748,6 +752,19 @@ void case_reducer_rejects_foreign_layouts() {
         forged.boundary_time_ms = {0, 0, 0, 0, 0};
         EXPECT(reduce_return_blocks(view_of(pair), forged).status ==
                ReturnBlocksStatus::UnusableLayout);
+    }
+    // A layout marked usable but empty (no intervals, no sizes, no times) for a block count the
+    // rule itself refuses (zero, odd, or a count no curve could serve). The rule's own layout for
+    // such a count is the empty default, so every other field matches; only the requirement that
+    // the recomputed layout be usable refuses it, and nothing may be allocated for the count.
+    for (const std::uint32_t refused_blocks : {0U, 3U, 8U}) {
+        const Curve five = curve_of({1.0, 2.0, 1.5, 1.5, 1.875});
+        ReturnBlockLayout forged;
+        forged.usable = true;
+        forged.blocks = refused_blocks;
+        const ReturnBlockMoments moments = reduce_return_blocks(view_of(five), forged);
+        EXPECT(moments.status == ReturnBlocksStatus::UnusableLayout);
+        EXPECT(moments.count.empty());
     }
     // A layout built for another curve of the same length is the same layout, and is accepted:
     // the sizes and times are the ones the rule gives for K = 4 and S = 2.
