@@ -1,11 +1,13 @@
 // X return statistics, legacy mode (contract pineforge-hpo-return-stats/v1).
 //
 // A pure reducer over a borrowed (time_ms, equity) array. It reads the engine-owned curve in
-// place, allocates nothing, keeps no state and uses only + - * / and sqrt in a fixed sequential
-// order: ascending index, centred two-pass. Build this translation unit with floating-point
-// contraction and fast-math disabled (-fno-fast-math -ffp-contract=off); the product of a
-// multiplication is always stored before it is added so that a conforming compiler has no
-// expression to fuse, and the flags stay required for compilers that fuse across statements.
+// place, keeps no state and uses only + - * / and sqrt in a fixed sequential order: ascending
+// index, centred two-pass. The return-statistics functions here allocate nothing; the return-block
+// functions at the end of the file allocate only their returned vectors. Build this translation
+// unit with floating-point contraction and fast-math disabled (-fno-fast-math -ffp-contract=off);
+// the product of a multiplication is always stored before it is added so that a conforming
+// compiler has no expression to fuse, and the flags stay required for compilers that fuse across
+// statements.
 #include <pineforge/hpo/return_stats.hpp>
 
 #include <array>
@@ -730,7 +732,7 @@ std::string_view return_blocks_status_text(ReturnBlocksStatus status) noexcept {
 }
 
 ReturnBlockLayout compute_block_layout(const EquityPointsView& points,
-                                       std::uint32_t blocks) noexcept {
+                                       std::uint32_t blocks) {
     ReturnBlockLayout layout;
     // A view with no point at all is usable as a view but carries no interval, and K = count - 1
     // is not representable below one point, so both are refused before any arithmetic.
@@ -766,7 +768,7 @@ ReturnBlockLayout compute_block_layout(const EquityPointsView& points,
 }
 
 ReturnBlockMoments reduce_return_blocks(const EquityPointsView& points,
-                                        const ReturnBlockLayout& layout) noexcept {
+                                        const ReturnBlockLayout& layout) {
     ReturnBlockMoments moments;
     if (!view_is_usable(points) || points.count == 0) {
         moments.status = ReturnBlocksStatus::UnusableCurve;

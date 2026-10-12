@@ -1,6 +1,4 @@
 // Native tests of the X return-block layout and moments (contract pineforge-hpo-return-blocks/v1).
-// Written without compiling or running anything: no claim of execution is made here, and no test
-// runner is available on this machine. All native execution is scheduled on the spark machines.
 //
 // Build this test, and src/core/return_stats.cpp, with -fno-fast-math -ffp-contract=off: every
 // literal below assumes one rounded division and subtraction per return, and one rounded product
@@ -172,8 +170,9 @@ void case_contract_surface() {
     EXPECT(return_blocks_status_text(ReturnBlocksStatus::NonPositiveEquity) ==
            "non_positive_equity");
     EXPECT(return_blocks_status_text(ReturnBlocksStatus::Nonfinite) == "non_finite");
-    // The three statuses that are library outcomes carry no wire text at all: a payload may be
-    // published only with `ok`, so none of them may ever be printed as one.
+    // The three statuses that are library outcomes carry no wire text at all, so none of them may
+    // ever be printed as a payload status: a payload carrying moment arrays is published only with
+    // `ok`, and the two other wire statuses above are published status-only.
     EXPECT(return_blocks_status_text(ReturnBlocksStatus::NotRequested).empty());
     EXPECT(return_blocks_status_text(ReturnBlocksStatus::UnusableCurve).empty());
     EXPECT(return_blocks_status_text(ReturnBlocksStatus::UnusableLayout).empty());

@@ -216,9 +216,10 @@ bool return_stats_contraction_free() noexcept;
 
 /// Status of one row's block moments.
 ///
-/// A payload may be published only with status Ok. Every other status makes the PBO module
-/// refuse the row by name, which is what the executor needs: requesting blocks must never turn a
-/// successful trial into a failed one, because that would move the optimizer's history.
+/// A payload carrying moment arrays is published only with status Ok. The other two wire statuses,
+/// NonPositiveEquity and Nonfinite, are published status-only so the module refuses the row by
+/// name. That is what the executor needs: requesting blocks must never turn a successful trial
+/// into a failed one, because that would move the optimizer's history.
 enum class ReturnBlocksStatus : std::uint8_t {
     NotRequested = 0,  ///< No blocks were requested: no layout and no payload.
     Ok = 1,            ///< Every interval of every block was usable; wire text `ok`.
@@ -265,7 +266,8 @@ struct ReturnBlockLayout {
 /// centred second moment: the sum of the squared deviations from the mean of that same block. The
 /// three vectors hold S entries each as soon as a reduction ran, and are empty otherwise. A block
 /// whose intervals were all unusable has count 0, sum 0 and m2 0. A value that is not finite is
-/// stored as computed: it accompanies status Nonfinite, which is never published.
+/// stored as computed: it accompanies status Nonfinite, which is published status-only with the
+/// wire text `non_finite`, and the module refuses that row by name.
 struct ReturnBlockMoments {
     /// Outcome of the reduction; NotRequested until a requested reduction runs.
     ReturnBlocksStatus status = ReturnBlocksStatus::NotRequested;
@@ -282,7 +284,7 @@ struct ReturnBlockMoments {
 /// that is not usable. No interval is ever dropped from K. An accepted request allocates S and
 /// S + 1 entries, which cannot exceed the point count of a curve the caller already holds.
 ReturnBlockLayout compute_block_layout(const EquityPointsView& points,
-                                       std::uint32_t blocks) noexcept;
+                                       std::uint32_t blocks);
 
 /// Reduces the bar returns of a curve into the blocks of its own layout.
 ///
@@ -298,6 +300,6 @@ ReturnBlockLayout compute_block_layout(const EquityPointsView& points,
 /// block of one interval. This translation unit must therefore be built with floating-point
 /// contraction and fast-math disabled, like the statistics reducer it sits beside.
 ReturnBlockMoments reduce_return_blocks(const EquityPointsView& points,
-                                        const ReturnBlockLayout& layout) noexcept;
+                                        const ReturnBlockLayout& layout);
 
 }  // namespace pineforge::hpo
