@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0 (2026-10-13)
+
 - Strategy compilation has no time limit by default; `compile_timeout_seconds` still
   sets an explicit limit. The artifact lock wait still stops after 120 seconds with an
   error that names the stuck lock and identifies a lock that never frees as a deadlock
