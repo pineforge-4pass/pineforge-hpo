@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.13.1 (2026-10-12)
+
+Re-release of 0.13.0 with the version file corrected; no code change.
+
+## 0.13.0 (2026-10-11)
+
 - Add the `sobol` sampler (native `--sampler sobol [--sobol-scramble digital_shift|none]`; StudySpec
   `sampler.kind: "sobol"` with `sampler.config.scramble`). It issues the 64-bit Gray-code Sobol
   sequence (Joe-Kuo criterion-6 direction numbers for dimensions 2 to 1024, vendored verbatim with
