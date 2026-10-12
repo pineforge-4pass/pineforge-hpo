@@ -241,10 +241,14 @@ void case_layout_rules() {
             expected_times.push_back(static_cast<std::int64_t>(2 * index + 1) * 1000);
         EXPECT_INTS(reduction.layout.boundary_time_ms, expected_times);
         // The last opening point is the last point of the curve.
-        EXPECT(reduction.layout.boundary_time_ms.back() == curve.back().time_ms);
+        if (reduction.layout.usable) {
+            EXPECT(reduction.layout.boundary_time_ms.back() == curve.back().time_ms);
+        }
         // The smallest half of the blocks holds at least two intervals: S / 2 = 8 blocks of the
         // fifteen two-interval blocks add up to 16 >= 2, which is what the module requires.
-        EXPECT(reduction.layout.n_b.front() - reduction.layout.n_b.back() == 1);
+        if (reduction.layout.usable) {
+            EXPECT(reduction.layout.n_b.front() - reduction.layout.n_b.back() == 1);
+        }
     }
 
     // K = 8 (nine points), S = 8: every block holds one interval and the smallest half holds 4 >= 2
@@ -360,10 +364,12 @@ void case_boundary_times_are_copied() {
     const Reduction reduction = reduce(curve, 2);
     EXPECT(reduction.layout.usable);
     EXPECT_INTS(reduction.layout.boundary_time_ms, (std::vector<std::int64_t>{5, 25, 45}));
-    EXPECT(reduction.layout.boundary_time_ms.back() == curve.back().time_ms);
-    for (std::size_t index = 1; index < reduction.layout.boundary_time_ms.size(); ++index) {
-        EXPECT(reduction.layout.boundary_time_ms[index] >=
-               reduction.layout.boundary_time_ms[index - 1]);
+    if (reduction.layout.usable) {
+        EXPECT(reduction.layout.boundary_time_ms.back() == curve.back().time_ms);
+        for (std::size_t index = 1; index < reduction.layout.boundary_time_ms.size(); ++index) {
+            EXPECT(reduction.layout.boundary_time_ms[index] >=
+                   reduction.layout.boundary_time_ms[index - 1]);
+        }
     }
 }
 
@@ -534,6 +540,111 @@ void case_nonfinite_inputs() {
     }
 }
 
+void case_skipped_and_nonfinite_precedence() {
+    g_case = "non-finite outranks a skipped interval";
+    // Equities 1, 0, 1, NaN, 1 hold K = 4 intervals and S = 2 gives the sizes (2, 2). The second
+    // interval has the prior 0, which is not positive, so it is skipped; the third and fourth
+    // intervals touch the NaN and are not finite. Both causes are present at once, and the intended
+    // rule (the design note: a non-finite value is the more severe) is that a non-finite interval
+    // wins and never hides behind a skipped one, so the status is Nonfinite, not
+    // NonPositiveEquity.
+    const Curve curve = curve_of({1.0, 0.0, 1.0, kNaN, 1.0});
+    const Reduction reduction = reduce(curve, 2);
+    EXPECT(reduction.layout.usable);
+    EXPECT(reduction.moments.status == ReturnBlocksStatus::Nonfinite);
+    // Block 0 = (valid, skipped): the one usable return is 0 / 1 - 1 = -1, so count 1 with m2 = 0
+    // by rule. Block 1 = (nonfinite, nonfinite): count 0, sum 0, m2 0.
+    EXPECT_INTS(reduction.moments.count, (std::vector<std::int64_t>{1, 0}));
+    EXPECT_BITS_VECTOR(reduction.moments.sum, (std::vector<double>{-1.0, 0.0}));
+    EXPECT_BITS_VECTOR(reduction.moments.m2, (std::vector<double>{0.0, 0.0}));
+}
+
+void case_time_order_is_required() {
+    g_case = "opening times must not decrease";
+    // K = 4 (five points), S = 2: the opening points are 0, 2 and 4, so the layout copies the
+    // timestamps of those points. A later opening point stamped before an earlier one cannot be
+    // served, because the module requires non-decreasing opening times, so the layout is refused
+    // rather than published with times the module would reject.
+    {
+        const Curve curve = curve_at({100, 10, 5, 30, 40}, {1.0, 2.0, 4.0, 8.0, 16.0});
+        const Reduction reduction = reduce(curve, 2);
+        EXPECT(!reduction.layout.usable);
+        EXPECT(reduction.moments.status == ReturnBlocksStatus::UnusableLayout);
+        EXPECT(reduction.layout.boundary_time_ms.empty());
+    }
+    // Equal opening times are allowed: the opening points share one timestamp and every later one
+    // is not below the previous, so the request is served.
+    {
+        const Curve curve = curve_at({7, 7, 7, 7, 7}, {1.0, 2.0, 4.0, 8.0, 16.0});
+        const Reduction reduction = reduce(curve, 2);
+        EXPECT(reduction.layout.usable);
+        EXPECT_INTS(reduction.layout.boundary_time_ms, (std::vector<std::int64_t>{7, 7, 7}));
+        EXPECT(reduction.moments.status == ReturnBlocksStatus::Ok);
+    }
+}
+
+void case_near_constant_rounding() {
+    g_case = "near-constant rounding";
+    // The returns of this curve are all near one common value and none is exactly representable in
+    // binary64: 100.1, 100.2, ... are not dyadic. A near-constant series is exactly where the
+    // order of the recipe shows in the bits, because the centred second moment is a small
+    // difference of nearly equal numbers (small against the mean), so a reordered pass or a
+    // sum-of-squares formula gives different bits that a loose tolerance would hide. The
+    // expectations below are an independent transcription of the recipe, not a call to the reducer:
+    // ratio = current / prior, return = ratio - 1, sum by ascending addition, mean = sum / count,
+    // then the squared deviation of each return from that mean, each product stored before it is
+    // added, in a second ascending pass. Every intermediate is a named double.
+    const double e0 = 100.0;
+    const double e1 = 100.1;
+    const double e2 = 100.2;
+    const double e3 = 100.3;
+    const double e4 = 100.4;
+    const double e5 = 100.5;
+    const Curve curve = curve_of({e0, e1, e2, e3, e4, e5});
+    const Reduction reduction = reduce(curve, 2);
+    // K = 5, S = 2 -> a_b = 0, 3, 5, so block 0 holds intervals 0, 1, 2 and block 1 holds 3, 4.
+    EXPECT(reduction.layout.usable);
+    EXPECT(reduction.moments.status == ReturnBlocksStatus::Ok);
+
+    const double r0 = e1 / e0 - 1.0;
+    const double r1 = e2 / e1 - 1.0;
+    const double r2 = e3 / e2 - 1.0;
+    const double r3 = e4 / e3 - 1.0;
+    const double r4 = e5 / e4 - 1.0;
+
+    // Block 0: three returns, summed in ascending order.
+    const double t0 = 0.0 + r0;
+    const double t1 = t0 + r1;
+    const double t2 = t1 + r2;
+    const double sum0 = t2;
+    const double mean0 = sum0 / 3.0;
+    const double d00 = r0 - mean0;
+    const double d01 = r1 - mean0;
+    const double d02 = r2 - mean0;
+    const double s00 = d00 * d00;
+    const double s01 = d01 * d01;
+    const double s02 = d02 * d02;
+    const double q00 = 0.0 + s00;
+    const double q01 = q00 + s01;
+    const double m2_0 = q01 + s02;
+
+    // Block 1: two returns.
+    const double u0 = 0.0 + r3;
+    const double u1 = u0 + r4;
+    const double sum1 = u1;
+    const double mean1 = sum1 / 2.0;
+    const double d10 = r3 - mean1;
+    const double d11 = r4 - mean1;
+    const double s10 = d10 * d10;
+    const double s11 = d11 * d11;
+    const double q10 = 0.0 + s10;
+    const double m2_1 = q10 + s11;
+
+    EXPECT_INTS(reduction.moments.count, (std::vector<std::int64_t>{3, 2}));
+    EXPECT_BITS_VECTOR(reduction.moments.sum, (std::vector<double>{sum0, sum1}));
+    EXPECT_BITS_VECTOR(reduction.moments.m2, (std::vector<double>{m2_0, m2_1}));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Refusal of a layout the reducer was not given by compute_block_layout
 // ---------------------------------------------------------------------------------------------
@@ -579,6 +690,44 @@ void case_reducer_rejects_foreign_layouts() {
         altered.usable = false;
         EXPECT(reduce_return_blocks(view, altered).status == ReturnBlocksStatus::UnusableLayout);
         EXPECT(reduce_return_blocks(view, ReturnBlockLayout{}).status ==
+               ReturnBlocksStatus::UnusableLayout);
+    }
+    // A forged layout with more blocks than intervals (S = 8 above K = 4) marked usable: this rule
+    // can never produce it, so it is refused even though its declared sizes add up.
+    {
+        ReturnBlockLayout altered = good;
+        altered.blocks = 8;
+        altered.n_b = {1, 1, 1, 1, 0, 0, 0, 0};
+        altered.boundary_time_ms = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        EXPECT(reduce_return_blocks(view, altered).status == ReturnBlocksStatus::UnusableLayout);
+    }
+    // A forged odd S marked usable.
+    {
+        ReturnBlockLayout altered = good;
+        altered.blocks = 3;
+        altered.n_b = {2, 1, 1};
+        altered.boundary_time_ms = {0, 0, 0, 0};
+        EXPECT(reduce_return_blocks(view, altered).status == ReturnBlocksStatus::UnusableLayout);
+    }
+    // A forged opening timestamp: the sizes are the rule's own but the second boundary time is
+    // wrong (the rule gives 0, 2000, 4000), which the module would not catch but this reducer must.
+    {
+        ReturnBlockLayout altered = good;
+        altered.boundary_time_ms = {0, 3000, 4000};
+        EXPECT(reduce_return_blocks(view, altered).status == ReturnBlocksStatus::UnusableLayout);
+    }
+    // A forged layout with K = 2 and S = 4 marked usable and sizes {1, 0, 1, 0}: those sizes are
+    // the floor rule's own for S above K and add up, so a size-by-size check would accept them,
+    // but S is above K and the request cannot be served.
+    {
+        const Curve pair = curve_of({1.0, 2.0, 4.0});
+        ReturnBlockLayout forged;
+        forged.blocks = 4;
+        forged.intervals = 2;
+        forged.usable = true;
+        forged.n_b = {1, 0, 1, 0};
+        forged.boundary_time_ms = {0, 0, 0, 0, 0};
+        EXPECT(reduce_return_blocks(view_of(pair), forged).status ==
                ReturnBlocksStatus::UnusableLayout);
     }
     // A layout built for another curve of the same length is the same layout, and is accepted:
@@ -643,12 +792,15 @@ int main() {
     case_refused_layouts();
     case_layouts_are_independent_of_equity();
     case_boundary_times_are_copied();
+    case_time_order_is_required();
     case_two_blocks_of_two();
     case_two_blocks_of_four();
     case_single_interval_blocks();
     case_constant_curves();
+    case_near_constant_rounding();
     case_skipped_and_negative_equity();
     case_nonfinite_inputs();
+    case_skipped_and_nonfinite_precedence();
     case_reducer_rejects_foreign_layouts();
     case_determinism();
     if (g_failures != 0) {

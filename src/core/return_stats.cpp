@@ -764,6 +764,13 @@ ReturnBlockLayout compute_block_layout(const EquityPointsView& points,
             layout.n_b[static_cast<std::size_t>(block - 1)] = begin - previous;
         previous = begin;
     }
+    // The module requires the opening timestamps to be non-decreasing; equal times are allowed.
+    // A boundary point whose time is below the previous one means the layout cannot be served, so
+    // the request is refused here rather than published with times the module would reject.
+    for (std::size_t index = 1; index < layout.boundary_time_ms.size(); ++index) {
+        if (layout.boundary_time_ms[index] < layout.boundary_time_ms[index - 1])
+            return ReturnBlockLayout{};
+    }
     return layout;
 }
 
@@ -774,29 +781,19 @@ ReturnBlockMoments reduce_return_blocks(const EquityPointsView& points,
         moments.status = ReturnBlocksStatus::UnusableCurve;
         return moments;
     }
-    const std::int64_t intervals = layout.intervals;
-    const std::uint64_t size = layout.blocks;
-    const std::int64_t curve_intervals = static_cast<std::int64_t>(points.count) - 1;
-    if (!layout.usable || size < 2 || size % 2 != 0 || intervals < 1 ||
-        intervals != curve_intervals ||
-        layout.n_b.size() != static_cast<std::size_t>(size) ||
-        layout.boundary_time_ms.size() != static_cast<std::size_t>(size) + 1) {
+    // The layout must be exactly the one this rule computes for this curve and this block count,
+    // so a forged or stale layout (a wrong S, K, size, opening timestamp or usability flag) is
+    // refused before any arithmetic runs on it. Recomputing it also re-checks the size rules the
+    // module checks, including that no block is empty.
+    const ReturnBlockLayout expected = compute_block_layout(points, layout.blocks);
+    if (!layout.usable || !expected.usable || layout.intervals != expected.intervals ||
+        layout.n_b != expected.n_b || layout.boundary_time_ms != expected.boundary_time_ms) {
         moments.status = ReturnBlocksStatus::UnusableLayout;
         return moments;
     }
-    // The declared sizes must be this rule's own before any arithmetic runs on them: cursor holds
-    // a_b, so every size is checked against a_(b+1) - a_b and the last one ends at K, which is what
-    // makes the sizes add up and leaves no block empty.
-    std::int64_t cursor = 0;
-    for (std::uint64_t block = 0; block < size; ++block) {
-        const std::int64_t next =
-            block_begin(static_cast<std::int64_t>(block + 1), intervals, size);
-        if (layout.n_b[static_cast<std::size_t>(block)] != next - cursor) {
-            moments.status = ReturnBlocksStatus::UnusableLayout;
-            return moments;
-        }
-        cursor = next;
-    }
+
+    const std::int64_t intervals = layout.intervals;
+    const std::uint64_t size = layout.blocks;
 
     const std::size_t length = static_cast<std::size_t>(size);
     moments.count.assign(length, 0);

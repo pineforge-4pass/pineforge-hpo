@@ -86,6 +86,35 @@ void allocate_curve(pf_report_t* report, int64_t count, double base) {
     ++outstanding_reports;
 }
 
+// The default curve of the fixture holds two points. A test may instead name the equities of a
+// longer curve through the CurveEquity input (comma-separated) so the adapter's full-window block
+// reduction can be exercised; the timestamps and the third member follow allocate_curve. With no
+// such input the curve is the same two points as before.
+std::vector<double> parse_equity_curve(const std::string& text) {
+    std::vector<double> equities;
+    std::istringstream stream(text);
+    std::string item;
+    while (std::getline(stream, item, ',')) {
+        if (item.empty()) {
+            continue;
+        }
+        equities.push_back(std::strtod(item.c_str(), nullptr));
+    }
+    return equities;
+}
+
+void allocate_curve_values(pf_report_t* report, const std::vector<double>& equities) {
+    report->equity_curve = new pf_equity_point_t[equities.size()];
+    report->equity_curve_len = static_cast<int64_t>(equities.size());
+    for (std::size_t index = 0; index < equities.size(); ++index) {
+        report->equity_curve[index].time_ms =
+            1'700'000'000'000LL + static_cast<int64_t>(index) * 60'000;
+        report->equity_curve[index].equity = equities[index];
+        report->equity_curve[index].open_profit = 0.25 * static_cast<double>(index);
+    }
+    ++outstanding_reports;
+}
+
 }  // namespace
 
 extern "C" {
@@ -387,7 +416,12 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
     report->metrics.equity.sortino_monthly = score / 20.0;
     report->metrics.equity.max_equity_drawdown = 12.5;
     report->metrics.equity.open_pl = 3.5;
-    allocate_curve(report, 2, initial_capital);
+    const auto curve_equity = state->inputs.find("CurveEquity");
+    if (curve_equity != state->inputs.end() && !curve_equity->second.empty()) {
+        allocate_curve_values(report, parse_equity_curve(curve_equity->second));
+    } else {
+        allocate_curve(report, 2, initial_capital);
+    }
     const auto trace = state->inputs.find("CompletionTraceFd");
     if (trace != state->inputs.end()) {
         const auto line = std::to_string(length) + "\n";
@@ -900,6 +934,88 @@ void test_trial_executor(const std::filesystem::path& plugin_path) {
     require(counters.reused_handle_runs() == 0, "a strategy handle was reused across trials");
 }
 
+void test_return_blocks_snapshot(const std::filesystem::path& plugin_path) {
+    using pineforge::hpo::ReturnBlocksStatus;
+
+    auto plugin = std::make_shared<const StrategyPlugin>(plugin_path);
+
+    // No request: the snapshot carries the default layout and the NotRequested status, so the
+    // default path reduces nothing and adds no output.
+    {
+        TrialExecutor executor(plugin, test_dataset(), test_configuration());
+        const auto result = executor.execute({{"Length", "14"}});
+        require(result.succeeded(), "trial without a block request failed: " + result.error);
+        require(result.report.return_blocks.status == ReturnBlocksStatus::NotRequested,
+                "blocks were reduced without a request");
+        require(!result.report.return_block_layout.usable &&
+                    result.report.return_block_layout.n_b.empty() &&
+                    result.report.return_blocks.count.empty(),
+                "an unrequested trial carried a layout or moments");
+    }
+
+    // Request on over the full window with a five-point curve. The curve is built by the fake from
+    // the CurveEquity input; K = 4 and S = 2 give the sizes (2, 2). The counts match n_b, and the
+    // sums and centred moments are derived by hand from the same curve: returns (1, -0.25, 0, 0.25)
+    // for equities (1, 2, 1.5, 1.5, 1.875), so block 0 sums to 0.75 with m2 = 0.625^2 + 0.625^2 =
+    // 0.78125 and block 1 sums to 0.25 with m2 = 0.125^2 + 0.125^2 = 0.03125.
+    {
+        BacktestConfiguration configuration = test_configuration();
+        configuration.pbo_blocks = 2;
+        TrialExecutor executor(plugin, test_dataset(), configuration);
+        const auto result =
+            executor.execute({{"Length", "14"}, {"CurveEquity", "1,2,1.5,1.5,1.875"}});
+        require(result.succeeded(), "full-window block trial failed: " + result.error);
+        require(result.report.return_blocks.status == ReturnBlocksStatus::Ok,
+                "the full-window block reduction did not report ok");
+        require(result.report.return_block_layout.usable, "the layout was not usable");
+        require(result.report.return_block_layout.blocks == 2 &&
+                    result.report.return_block_layout.intervals == 4,
+                "the layout has the wrong S or K");
+        require(result.report.return_block_layout.n_b == std::vector<std::int64_t>{2, 2},
+                "the block sizes were not the hand-derived (2, 2)");
+        // The opening points 0, 2 and 4 carry the fixture's timestamps, 60 seconds apart.
+        const std::vector<std::int64_t> expected_times = {
+            1'700'000'000'000LL, 1'700'000'120'000LL, 1'700'000'240'000LL};
+        require(result.report.return_block_layout.boundary_time_ms == expected_times,
+                "the boundary times were not the opening points' timestamps");
+        require(result.report.return_blocks.count == std::vector<std::int64_t>{2, 2},
+                "the counts did not match n_b");
+        require(result.report.return_blocks.sum == std::vector<double>{0.75, 0.25},
+                "the block sums were not the hand-derived values");
+        require(result.report.return_blocks.m2 == std::vector<double>{0.78125, 0.03125},
+                "the centred moments were not the hand-derived values");
+    }
+
+    // A shorter prefix with the request on: prefix rungs are never reduced against the full-window
+    // block count, so the snapshot carries no payload.
+    {
+        BacktestConfiguration configuration = test_configuration();
+        configuration.pbo_blocks = 2;
+        TrialExecutor executor(plugin, test_dataset(), configuration);
+        const auto result = executor.execute_prefix(
+            {{"Length", "14"}, {"BatchPrefixTest", "1"}}, {}, 1);
+        require(result.succeeded(), "prefix block trial failed: " + result.error);
+        require(result.report.return_blocks.status == ReturnBlocksStatus::NotRequested,
+                "a prefix rung was reduced against the full-window block count");
+        require(!result.report.return_block_layout.usable, "a prefix rung carried a layout");
+    }
+
+    // A curve too short for S: the two-point default curve has K = 1 < S = 4, so the request cannot
+    // be served. The call returns normally with a refusal status in the snapshot and never throws,
+    // so requesting blocks cannot turn the trial into a failure.
+    {
+        BacktestConfiguration configuration = test_configuration();
+        configuration.pbo_blocks = 4;
+        TrialExecutor executor(plugin, test_dataset(), configuration);
+        const auto result = executor.execute({{"Length", "14"}});
+        require(result.succeeded(), "short-curve block trial failed: " + result.error);
+        require(result.report.return_blocks.status == ReturnBlocksStatus::UnusableLayout,
+                "a curve too short for S did not carry the refusal status");
+        require(result.report.return_blocks.count.empty(), "a refused reduction carried counts");
+        require(!result.report.return_block_layout.usable, "a refused request carried a layout");
+    }
+}
+
 void test_missing_timezone_symbol(const std::filesystem::path& plugin_path) {
     auto plugin = std::make_shared<const StrategyPlugin>(plugin_path);
     FakeCounters counters(plugin_path);
@@ -1078,6 +1194,7 @@ int main(int argc, char** argv) {
                            "<coded> <status> <checked-no-getters> <bad-abi>");
         test_dataset_loader();
         test_trial_executor(argv[1]);
+        test_return_blocks_snapshot(argv[1]);
         test_lot_grid_metadata(argv[1]);
         test_missing_timezone_symbol(argv[2]);
         test_missing_metadata_symbol(argv[3]);
