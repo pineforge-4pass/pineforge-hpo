@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.13.2 (2026-10-12)
+
+The `transpile` extra is capped below codegen 1.4 until HPO supports the `Enum.member` enum options of codegen 1.4 and 1.5; no code change.
+
 ## 0.13.1 (2026-10-12)
 
 Re-release of 0.13.0 with the version file corrected; no code change.
