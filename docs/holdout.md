@@ -72,6 +72,12 @@ used; a value recorded by the second study is only as held-out as the caller mad
   source's rows: such a holdout source may be reporting the selection study's own rows, and the
   trial ids are the only witness available, so an id that repeats by a coincidence of numbering is
   refused like a real overlap. A rows source has no ancestor rows by construction.
+  A path source is read twice to count ancestors. If the second read fails or yields
+  a different number of rows from the first read, the call refuses
+  `holdout_input_invalid` naming that source, with empty `ids` and `names`. This
+  includes a pipe whose first read consumed its data. The comparison counts ancestor
+  and own rows for a complete result, all rows for a rows file, and zero for an empty
+  path. Parsed objects need no second read.
 * **Strict reading.** Duplicate JSON keys, the tokens `NaN`, `Infinity` and `-Infinity`, and a
   number that overflows to infinity are refused wherever they stand in a file.
 * **Rows.** `trial_id` is an integer from 0 to 2^64 - 2 and unique inside a source; `status` is one
@@ -226,7 +232,7 @@ belong to this module; they are not codes of the shared failure catalog.
 
 | Code | Trigger |
 | --- | --- |
-| `holdout_input_invalid` | a source that cannot be read; a malformed row, unknown status, `feasible` disagreeing with the status, invalid or repeated `trial_id`; a duplicate key, `NaN` or `Infinity` token or overflow; a malformed recorded space or dimension; a passed `space` whose content is malformed, when no row or result records a space; a row whose parameter vector cannot be keyed |
+| `holdout_input_invalid` | invalid input; path re-read fails or changes the row count |
 | `holdout_rows_incomplete` | a result with `trials_out` other than `all`, or `trials_completed` or `warm_start.trials` disagreeing with the rows |
 | `holdout_space_missing` | no row or result records a space and none was passed |
 | `holdout_space_mismatch` | the two sources' rows and results record more than one canonical space |
@@ -239,6 +245,14 @@ belong to this module; they are not codes of the shared failure catalog.
 | `holdout_no_eligible_rows` | the selection source has no eligible row (an empty or wholly ineligible holdout source does not refuse) |
 | `holdout_duplicate_vector` | two eligible rows of one source share a parameter vector and disagree on the metric value |
 | `holdout_resource_exceeded` | the admission figure is above a `max_work` the caller supplied |
+
+`holdout_input_invalid` covers a source that cannot be read; a malformed row, unknown
+status, `feasible` disagreeing with the status, invalid or repeated `trial_id`; a
+duplicate key, `NaN` or `Infinity` token or overflow; a malformed recorded space or
+dimension; a passed `space` whose content is malformed, when no row or result records
+a space; and a row whose parameter vector cannot be keyed. A path re-read fails this
+check when it raises or yields a different number of rows from the first read. The
+refusal names that source, with empty `ids` and `names`.
 
 The cell check uses the digest's key-sorted JSON writer. An object cell with keys of
 mixed types that cannot be sorted is refused as `holdout_value_invalid` in any row,
@@ -270,8 +284,8 @@ work = rows_read + n_sel * (n_sel - 1) / 2 + n_hol * (n_hol - 1) / 2
 bound on the reference cost of ordering the two sources, not a count of the module's comparisons:
 the pool is no larger than the eligible holdout vectors and the matched set is no larger than either
 set charged (it is a subset of both the followed selection vectors and the pool), so, with the
-ranking of the selection source itself, the module's comparisons stay within twice the two pair
-terms. The figure is exact once the exclusions
+ranking of the selection source itself, the module's ranking comparisons stay within
+twice the two pair terms. The figure is exact once the exclusions
 are known and before any pair is compared. The call is refused as `holdout_resource_exceeded` only
 when the caller supplied a `max_work` and the figure is above it; a figure equal to `max_work` is
 admitted. There is no built-in cap. A faster exact algorithm may replace the reference only if its

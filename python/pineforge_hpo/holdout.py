@@ -65,6 +65,9 @@ Contract ``pineforge-hpo-holdout/v1``, algorithm ``exact_join_midrank_v1``:
   such a source may be reporting the selection study's own rows; the trial id is the
   only witness available, so an id that repeats by a coincidence of numbering is
   refused like a real overlap.
+  A path is read twice to count ancestors. If the second read fails or yields a
+  different number of rows, the call refuses ``holdout_input_invalid`` for that
+  source rather than reporting zero ancestors. Parsed sources need no second read.
 
 A refusal is raised as ``HoldoutError``; ``HoldoutError.document()`` renders it as the
 refused result document (no comparison). The checks run in this order, so the first
@@ -93,6 +96,7 @@ from typing import Any, Iterable
 from ._rows import (
     _content_lines,
     _is_one_value,
+    _source_from_text,
     RowsError,
     check_context,
     common_space,
@@ -321,23 +325,35 @@ def _document_of_text(text: str) -> Any:
     return loads_strict(text)
 
 
-def _ancestor_ids(source: Any) -> list:
+def _ancestor_ids(value: Any, source: Any) -> list:
     """The ancestor trial ids one source carries, by the reader's own dispatch.
 
     A complete result carries its ``warm_start_trials`` before its own rows; a rows
     file, a parsed list of rows or an empty source carries none. A source given as a
-    path is read again here as the reader read it.
+    path is read again here as the reader read it. A failed second read or a row
+    count different from ``len(source.rows)`` refuses ``holdout_input_invalid``
+    naming that source, with empty ids and names. Parsed sources are unaffected.
     """
-    if isinstance(source, dict):
-        return _ancestors_from_value(source)
-    if not isinstance(source, (str, os.PathLike)):
+    if isinstance(value, dict):
+        return _ancestors_from_value(value)
+    if not isinstance(value, (str, os.PathLike)):
         return []
+    refusal = HoldoutError(
+        "holdout_input_invalid",
+        f"the {_SOURCE_WORDS[source.index]} source path did not read the same twice",
+        ids=(),
+        names=(),
+    )
     try:
-        with open(source, "rb") as stream:
+        with open(value, "rb") as stream:
             content = stream.read()
-        document = _document_of_text(content.decode("utf-8"))
+        text = content.decode("utf-8")
+        reread = _source_from_text(text, source.index)
+        document = _document_of_text(text)
     except (OSError, UnicodeDecodeError, RowsError):
-        return []
+        raise refusal from None
+    if len(reread.rows) != len(source.rows):
+        raise refusal
     return _ancestors_from_value(document)
 
 
@@ -522,7 +538,10 @@ def holdout_compare(
             check_context(source.rows)
         except RowsError as error:
             raise _from_rows_error(error) from None
-    ancestors = (_ancestor_ids(selection), _ancestor_ids(holdout))
+    ancestors = (
+        _ancestor_ids(selection, selection_source),
+        _ancestor_ids(holdout, holdout_source),
+    )
     selection_ids = {row.trial_id for row in selection_source.rows}
     repeated = sorted(t for t in ancestors[1] if t in selection_ids)
     if repeated:
@@ -644,6 +663,10 @@ def holdout_compare(
     followed: list = []
     unmatched: list = []
     matched: list = []
+    holders = {}
+    for index, row in ordered:
+        if index == 1:
+            holders.setdefault(keys[(1, row.trial_id)], []).append(row.trial_id)
     for _, value, key in selection_order[:k_followed]:
         trial_id = vectors[0][key][0]
         if key in pool:
@@ -674,11 +697,7 @@ def holdout_compare(
             )
             matched.append((holdout_rank[key], value, holdout_value))
             continue
-        holds = sorted(
-            row.trial_id
-            for row in holdout_source.rows
-            if keys[(1, row.trial_id)] == key
-        )
+        holds = holders.get(key, [])
         unmatched.append(
             {
                 "selection_trial_id": trial_id,

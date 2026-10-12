@@ -11,6 +11,7 @@ import ast
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import random
 import unittest
@@ -1482,6 +1483,57 @@ class DuplicateVectorTests(HoldoutTestCase):
 
 
 class AncestorTests(HoldoutTestCase):
+    def test_a_consumed_pipe_path_refuses_instead_of_losing_ancestors(self):
+        """Catch returning zero ancestors when a path cannot be read consistently.
+
+        The first read consumes the pipe's complete result, so the second read is
+        empty. Returning zero ancestors on a failed re-read would produce a document
+        with holdout.ancestor_rows 0 instead of refusing holdout_input_invalid.
+        The result has one ancestor (id 7) and one own row (id 20), so the second
+        read's zero rows disagree with the first read's two rows.
+        """
+        result = result_of(
+            [make_row(7, "ok", 1.0, "B")], [make_row(20, "ok", 2.0, "A")]
+        )
+        payload = json.dumps(result, separators=(",", ":")).encode("utf-8")
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(os.close, read_fd)
+        try:
+            self.assertEqual(os.write(write_fd, payload), len(payload))
+        finally:
+            os.close(write_fd)
+        error = self.refusal(
+            [make_row(0, "ok", 3.0, "A")],
+            f"/dev/fd/{read_fd}",
+            metric="objective",
+            direction="maximize",
+            k=1,
+            space=S1,
+        )
+        self.assertRefused(error, "holdout_input_invalid")
+        self.assertIn("holdout source", error.detail)
+        self.assertIn("did not read the same twice", error.detail)
+
+    def test_a_plain_file_preserves_ancestor_counts(self):
+        """Catch refusing a stable file or reporting zero for its one ancestor.
+
+        The same complete result as the pipe case carries ancestor id 7 and own
+        row id 20. Both file reads contain two rows, so selection.ancestor_rows
+        is 0, holdout.ancestor_rows is 1, and the result equals the parsed source.
+        """
+        result = result_of(
+            [make_row(7, "ok", 1.0, "B")], [make_row(20, "ok", 2.0, "A")]
+        )
+        path = FIXTURES / "ancestor_result_compact.json"
+        self.assertEqual(json.loads(fixture_text(path.name)), result)
+        selection = [make_row(0, "ok", 3.0, "A")]
+        options = {"metric": "objective", "direction": "maximize", "k": 1, "space": S1}
+        document = holdout_compare(selection, path, **options)
+        self.assertEqual(document["status"], "ok")
+        self.assertEqual(document["selection"]["ancestor_rows"], 0)
+        self.assertEqual(document["holdout"]["ancestor_rows"], 1)
+        self.assertEqual(document, holdout_compare(selection, result, **options))
+
     def test_the_ancestor_counts_and_their_refusal(self):
         """Ancestor counts come from the result value, so a dictionary and its file
         count alike. Catch missing ancestors, mistaken file dispatch or refusing
