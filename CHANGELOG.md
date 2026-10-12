@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add `pineforge_hpo.walkforward.walkforward`, a post hoc analysis of finished per-window studies
+  (contract `pineforge-hpo-walkforward/v1`, algorithm `exact_per_window_v1`): it selects the best row
+  of each supplied window, reports the previous window's selected parameter vector in the next
+  window's rows with its rank or the reason it is absent, and lists the selected values per dimension;
+  it runs no window, evaluates nothing and writes no file. v1 analyses finished studies; native
+  in-loop walk-forward comes later.
+
 - Add the post hoc `dsr` module (`pineforge_hpo.dsr`, contract `pineforge-hpo-dsr/v1`): a library
   function that reads the recorded `returns.<series>.{sharpe_per_period,count,skew,kurt_raw,status}`
   statistics of a finished study and returns the deflated Sharpe ratio of one selected trial under
