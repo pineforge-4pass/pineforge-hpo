@@ -19,8 +19,8 @@
   `batch_lag` are refused together with `rolling`, and TPE needs `constant_liar` enabled. The default
   `batches` schedule is unchanged and keeps the bytes of 0.12.0; the byte-replay rules of
   `docs/batching.md` do not apply to a rolling study.
-- Move the pinned gitlinks to engine v1.5.0-rc.1 (`fa5f8c5`) and codegen v1.5.0-rc.1
-  (`87c8016`); the C ABI version `PF_ABI_VERSION` remains 4.
+- Move the pinned gitlinks to engine v1.5.0 (`b802cee`) and codegen v1.5.0
+  (`52101f9`); the C ABI version `PF_ABI_VERSION` remains 4.
 - Accept an enum input's categorical choice in either of two forms: the member's tag (for
   example `Side.long`) or the member's ordinal, the index of that member in the enum
   declaration. The rule applies when the manifest lists an enum input's `options`, which
