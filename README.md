@@ -75,8 +75,9 @@ require the independently pinned serial golden rather than silently skipping it.
 From 1.0.0 on, codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may
 still compile, but equal `PF_ABI_VERSION` values do not guarantee a compatible C++ source
 layout or the same behavior. The optional `transpile` extra requires `pineforge-codegen`
->= 1.1.0 and < 2, so install the release that matches your engine (`pineforge-codegen==1.2.0` for the
-gitlinks). The native adapter reads the equity statistics by their engine 1.0 names, so it
+>= 1.1.0 and < 1.4, so install the release that matches your engine (`pineforge-codegen==1.2.0` for the
+gitlinks). Codegen 1.4 and later list enum inputs as `Enum.member` tags, and HPO supports that from its next
+release. The native adapter reads the equity statistics by their engine 1.0 names, so it
 needs engine headers >= 1.1.0 (including the checked-settings API). Regenerate a
 precompiled plugin referenced from a StudySpec with
 codegen 1.2.0 and rebuild it against engine v1.2.0: plugins from engine v0.13.x or earlier
