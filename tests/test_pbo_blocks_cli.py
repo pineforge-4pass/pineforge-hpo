@@ -63,14 +63,15 @@ ROW_KEYS = (
 )
 
 
-def native_argv(csv, *extra, curve=CURVE, native=NATIVE, plugin=PLUGIN, space=SPACE):
+def native_argv(csv, *extra, curve=CURVE, native=NATIVE, plugin=PLUGIN, space=SPACE,
+                batch=("--batch-size", "2")):
     return [
         str(native), "run", "--strategy", str(plugin), "--ohlcv", str(csv),
         "--objective", "metrics.all.net_profit", "--input-tf", "1", "--script-tf", "5",
         "--chart-timezone", "UTC", "--bar-magnifier", "true", "--magnifier-samples", "6",
         "--magnifier-distribution", "triangle", "--fixed-input", "BatchPrefixTest", "1",
         "--fixed-input", "BatchPrefixJitter", "0", "--fixed-input", "CurveEquity", curve,
-        *space, "--sampler", "grid", "--max-trials", "4", "--batch-size", "2",
+        *space, "--sampler", "grid", "--max-trials", "4", *batch,
         *[str(item) for item in extra],
     ]
 
@@ -207,8 +208,13 @@ class PboBlocksCliTests(unittest.TestCase):
         never = self.directory / "never.jsonl"
         absent_csv = self.directory / "absent.csv"
         absent_plugin = self.directory / "absent-plugin"
+        # Mutation: in src/cli/main.cpp parse_pbo_blocks, use the naive guard
+        # value > std::numeric_limits<std::uint32_t>::max() / 10.
+        # 4294967298 = 2**32 + 2: prefix 429496729 equals max/10, so its last
+        # digit overflows to valid S=2. 4294967300 = 2**32 + 4 also covers
+        # unchecked wrapping to valid S=4 (the naive guard rejects its prefix).
         for value in ("3", "0", "1", "-2", "2.0", "", "abc", "4294967295",
-                      "4294967296", "18446744073709551616"):
+                      "4294967296", "4294967298", "4294967300", "18446744073709551616"):
             with self.subTest(S=value):
                 completed = subprocess.run(
                     native_argv(absent_csv, "--trials-file", never, "--pbo-blocks", value,
@@ -287,6 +293,23 @@ class PboBlocksCliTests(unittest.TestCase):
                     self.assertEqual(document["trials"], [])
                     self.assertEqual(document["summary"]["best_k"], [])
 
+    def test_constraint_errors_carry_no_trial_or_result_blocks(self):
+        # Reuse test_native_cli.py's invalid constraint: constraints force Reject
+        # even when the objective policy allows IEEE division and non-finite values.
+        # Mutation: in src/cli/main.cpp completed_trial, append
+        # || trial.status == "constraint_error" to the one-line return expression.
+        # That copies full-window moments, admits their layout and renders blocks.
+        document = self.result("--pbo-blocks", "2", "--constraint", "1 / 0",
+                               "--division-by-zero", "ieee", "--non-finite", "allow",
+                               expected=2)
+        # Length 10..13 with step 1 gives (13-10)/1+1 = 4 constraint-error rows.
+        self.assertEqual([row["status"] for row in document["trials"]],
+                         ["constraint_error", "constraint_error",
+                          "constraint_error", "constraint_error"])
+        for row in document["trials"]:
+            self.assertNotIn("block_returns", row)
+        self.assertNotIn("return_blocks", document)
+
     def test_engine_and_objective_errors_carry_no_blocks(self):
         for extra, status in ((["--fixed-input", "SequenceScore", "error"], "engine_error"),
                               (["--fixed-input", "SequenceScore", "nan"], "objective_error"),
@@ -333,10 +356,26 @@ class PboBlocksCliTests(unittest.TestCase):
                     self.assert_refusal(completed, "hpo_report_invalid", {})
 
     def test_layout_refusal_releases_parallel_stream_workers(self):
+        # The rolling schedule feeds trials into free workers without waiting for a batch, so
+        # while delayed trial 1 (Length 11) is outstanding the other trials finish and queue
+        # behind it in the ordered stream. With 4 workers the stream holds at most 2*4 = 8 pending
+        # rows; the 10 trials after trial 0 and 1 exceed that, so workers wait for capacity.
+        # (Batched schedules cannot reach this wait: at most 2*batch_size rows are ever in flight.)
+        # Length 10..21 gives (21-10)/1+1 = 12 trials. The 12-entry offset
+        # sequence is indexed by Length % 12, so only Length 11 shifts by 1 ms.
+        # Mutation: in src/cli/main.cpp RunState::finish, change the catch's
+        # if (options_.pbo_blocks != 0) to if (false), or remove that catch.
+        # With the catch removed this test must HANG, not merely fail, as worker
+        # joins precede closing the gapped writer (confirm under a mutation harness).
+        # This test has no time limit and makes no elapsed-time assertion.
         stream = self.directory / "refused.jsonl"
-        completed = self.run_cli("--pbo-blocks", "2", "--workers", "4", "--batch-size", "4",
-                                 "--trials-file", stream, "--fixed-input",
-                                 "SequenceCurveTimeOffsetMs", "0,1", expected=1)
+        completed = self.run_cli("--pbo-blocks", "2", "--workers", "4", "--schedule", "rolling",
+                                 "--max-trials", "12", "--trials-file",
+                                 stream, "--fixed-input", "DelayAtLength", "11",
+                                 "--fixed-input", "DelayAtLengthMs", "400", "--fixed-input",
+                                 "SequenceCurveTimeOffsetMs", "0,0,0,0,0,0,0,0,0,0,0,1",
+                                 space=("--int-dim", "Length", "10", "21", "1"), batch=(),
+                                 expected=1)
         self.assert_refusal(completed, "hpo_report_invalid", {})
 
     def test_payloads_survive_retention_streams_and_parallel_completion(self):
@@ -419,11 +458,27 @@ class PboBlocksCliTests(unittest.TestCase):
             self.skipTest("reference binary not supplied: no default byte comparison was made")
         reference = Path(path).resolve()
         self.assertEqual(hashlib.sha256(reference.read_bytes()).hexdigest(), digest.lower())
-        for extra in ([], ["--workers", "4"], ["--pruner", "median"]):
+        # Mutation: in src/cli/main.cpp render_trial, replace its closing line
+        # with out << ", \"block_returns\": null}"; ordinary stdout then differs.
+        # Stream-only mutation: in RunState::finish, change the pending_ append
+        # from render_trial(record) + "\n" to render_trial(record) + "\n\n".
+        # The new trial-file byte comparison catches it even if stdout agrees.
+        old_stream = self.directory / "reference-trials.jsonl"
+        new_stream = self.directory / "native-trials.jsonl"
+        # Profits Length + 100000/1000 = 110..113 all violate net_profit < 0;
+        # no feasible trial remains, hence the constraint invocation exits 2.
+        for extra, expected in (([], 0), (["--workers", "4"], 0),
+                                (["--pruner", "median"], 0),
+                                (["--trials-file", new_stream], 0),
+                                (["--trials-out", "best-k", "--best-k", "1"], 0),
+                                (["--constraint", "metrics.all.net_profit < 0"], 2)):
             with self.subTest(extra=extra):
-                old = self.run_cli(*extra, native=reference)
-                new = self.run_cli(*extra)
+                old_extra = ["--trials-file", old_stream] if "--trials-file" in extra else extra
+                old = self.run_cli(*old_extra, native=reference, expected=expected)
+                new = self.run_cli(*extra, expected=expected)
                 self.assertEqual(new.stdout, old.stdout)
+                if "--trials-file" in extra:
+                    self.assertEqual(new_stream.read_bytes(), old_stream.read_bytes())
 
 
 if __name__ == "__main__":

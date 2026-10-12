@@ -361,6 +361,11 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
+    if (state->inputs.count("DelayAtLength") &&
+        length == parse_or(state->inputs, "DelayAtLength", -1.0)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(
+            static_cast<int>(parse_or(state->inputs, "DelayAtLengthMs", 0.0))));
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(
         static_cast<int>(parse_or(state->inputs, "DelayMs", 0.0))));
     const auto delay = sequence_value(*state, "SequenceDelayMs", length);

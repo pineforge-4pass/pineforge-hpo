@@ -12,7 +12,8 @@
 - Add the native-only `--pbo-blocks S` flag for full-window bar-return moments. Completed `ok`
   and `constraint_violation` trials carry `block_returns`, and the result declares their shared
   `return_blocks` layout and numeric build identity. Bad-data payloads publish status only;
-  failed and pruned trials carry none. Runs without the flag keep their existing result bytes.
+  failed and pruned trials carry none. Runs that request neither the flag nor return statistics
+  keep their existing result bytes.
   PBO on real data remains unproven.
 - The return-statistics numeric build identity value changed because its hashed reducer source
   grew to include return blocks. Evidence bound to the old value applies to its own version;
