@@ -398,6 +398,21 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     target_include_directories(pineforge_hpo_symbol_feed_report PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
     target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE PineForgeHPO::engine_adapter)
 
+    # Rolling-schedule replay: the test runs the real native binary on the rolling schedule at
+    # several worker counts, reads each result file and replays every proposal from it.
+    if(TARGET pineforge-hpo-native)
+        add_executable(pineforge_hpo_test_rolling_replay test_rolling_replay.cpp)
+        target_link_libraries(pineforge_hpo_test_rolling_replay PRIVATE PineForgeHPO::core)
+        target_compile_options(pineforge_hpo_test_rolling_replay PRIVATE -Wall -Wextra -Wpedantic)
+        add_dependencies(pineforge_hpo_test_rolling_replay
+            pineforge-hpo-native pineforge_hpo_fake_strategy)
+        add_test(NAME pineforge_hpo_rolling_replay
+            COMMAND pineforge_hpo_test_rolling_replay
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_rolling_replay PROPERTIES TIMEOUT 600)
+    endif()
+
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
         add_test(NAME pineforge_hpo_failure_codes
@@ -465,6 +480,29 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_batching.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_rolling_schedule
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_rolling_schedule.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_rolling_schedule PROPERTIES TIMEOUT 600)
+        # The default schedule must give the bytes of v0.12.0: a native binary built from the
+        # v0.12.0 tag is compared with this build on the same studies. That needs a second build,
+        # so configure with -DPINEFORGE_HPO_V012_NATIVE=/path/to/pineforge-hpo-native. The test is
+        # always registered; without that path it reports itself skipped (exit status 77) instead
+        # of being absent from the test list.
+        set(pfh_v012_native "${PINEFORGE_HPO_V012_NATIVE}")
+        if(NOT pfh_v012_native)
+            set(pfh_v012_native "not-provided")
+        endif()
+        add_test(NAME pineforge_hpo_rolling_default_v012
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_rolling_default_v012.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                "${pfh_v012_native}"
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_rolling_default_v012 PROPERTIES
+            TIMEOUT 900 SKIP_RETURN_CODE 77)
         add_test(NAME pineforge_hpo_no_improvement
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_no_improvement.py"

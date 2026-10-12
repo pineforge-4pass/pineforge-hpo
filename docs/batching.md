@@ -15,7 +15,7 @@ and [the native output contract](api.md).
 
 ## What changes, and what does not
 
-The default remains the 0.1.x proposal schedule: `batch_size=workers`,
+The default remains the 0.1.x proposal schedule: `schedule=batches`, `batch_size=workers`,
 `batch_lag=0`, `pruner=none`. Explicit batch size decouples execution resources
 from optimizer decisions. A persistent FIFO pool replaces per-batch thread
 creation; workers execute, while one coordinator owns proposals, ordered
@@ -78,8 +78,11 @@ The confidence intervals do not prove equivalence or rule out meaningful quality
 
 ## Replay contract: ordered_batches_v1
 
-Every sampler emits `replay_contract: "ordered_batches_v1"` for fresh-run
-proposal/feedback ordering. This is not a row-only TPE continuation guarantee.
+With the default `batches` schedule, every sampler emits `replay_contract: "ordered_batches_v1"`
+for fresh-run proposal/feedback ordering. A study that sets `schedule: "rolling"` emits
+`rolling_completion_v1` instead and is outside this section; see
+[Rolling schedule](#rolling-schedule-rolling_completion_v1). This is not a row-only TPE
+continuation guarantee.
 Since 0.7.0, TPE separately emits `continuation_contract: "sampler_checkpoint_v2"`: a
 matching complete checkpoint/numerical build and matching future lag-zero schedule
 preserve the exact sequence. Row-only parents (including JSONL) rebuild history and
@@ -129,6 +132,112 @@ cross-architecture floating point or wall-clock-truncated studies. Deadline,
 signal, and watchdog truncation can execute different numbers of trials at
 different worker counts. Progress lines deliberately arrive on terminal
 completion, so their arrival order is not the fingerprinted trial ordering.
+
+## Rolling schedule: rolling_completion_v1 {#rolling-schedule-rolling_completion_v1}
+
+Since 0.14.0, `execution.schedule` chooses how trials are scheduled. It takes
+`"batches"` or `"rolling"`, and the default is `"batches"`.
+
+- `"batches"` is the default and stays byte-identical to 0.12.0. A study that 0.12.0
+  accepts, and that leaves `schedule` unset or sets it to `"batches"`, produces the same
+  `trials[]` bytes as 0.12.0 and the same `batch_size`, `batch_lag`, `replay_contract`
+  (`ordered_batches_v1`) and `continuation_contract` values, and its result gains no
+  rolling field. The result also records the version of the build that produced it in
+  `pineforge_hpo_version`; that value names the running release and is not part of this
+  comparison.
+- `"rolling"` keeps every worker busy. The runner first proposes up to one trial per
+  worker, with nothing finished yet. Whenever a trial finishes, the coordinator feeds its
+  result back to the sampler, if the sampler takes feedback (a tell for a feasible trial
+  with a finite objective, an abandon for any other trial), and at once proposes a new
+  trial into the freed worker slot, from whatever has finished at that moment. It does not
+  wait for a batch to end and it does not wait for earlier trial ids to finish. Proposals
+  continue until the trial budget, the search space or a stop condition ends the study.
+
+A rolling study's result is NOT byte-replayable. Running the same study again can give
+different `trials[]`, a different `completion_order`, and, when a patience rule or a time
+limit stops the study, a different number of trials. The order in which trials finish
+depends on the worker count, the load on the machine and how long each trial takes, and
+that order decides what each new proposal sees. The result says so itself: its
+`replay_contract` is `rolling_completion_v1`, never `ordered_batches_v1`. A result that
+names `ordered_batches_v1` may be relied on for the byte-replay rules in this document; a
+result that names `rolling_completion_v1` may not, and nothing promised for
+`ordered_batches_v1` applies to it.
+
+A rolling result does carry a log from which every proposal can be audited and
+re-derived:
+
+- `completion_order` (study level) lists the ids of the finished trials, each once, in
+  the exact order the coordinator fed them back.
+- `completed_before` (study level) is an array indexed by trial id: `completed_before[i]`
+  is the number of entries of `completion_order` that had been fed back when trial `i` was
+  proposed. The proposal saw exactly the first `completed_before[i]` entries of
+  `completion_order`, in that order, and nothing else; a trial that was proposed earlier
+  and was still running is not in that prefix. The completion log -- `completion_order`
+  and `completed_before` -- is complete whatever `trials_out` says, and a per-trial record
+  carries neither.
+
+For example, with two workers a run might finish trials 1, 0, 3, 2, 5 and 4, in that
+order. Its `completion_order` is `[1, 0, 3, 2, 5, 4]`, and `completed_before` is
+`[0, 0, 1, 2, 3, 4]` (indexed by trial id, trials 0 to 5). Trial 3 was proposed after
+trials 1 and 0 had finished, in that order; trial 2 was still running, so trial 3 did not
+see it.
+
+The acceptance gate for `rolling` reads only the result file. It does not compare bytes
+between runs; it audits the log and replays the proposals from it:
+
+- Audit. Every id in `completion_order` appears once and is a terminal trial of this run;
+  every id in a trial's prefix is smaller than that trial's own id; and `completed_before`
+  never decreases as the trial id increases.
+- Replay from the log. Start a fresh sampler with the same seed, search space, sampler
+  configuration and candidate policy, all recorded in the result (and the same parent
+  history, for a continuation). For each trial in id order, feed back the entries of
+  `completion_order` that its prefix adds, as a tell or an abandon exactly as above, then
+  ask for the next candidate. The candidate must reproduce the `parameters` recorded for
+  that trial. Replay needs every trial's recorded outcome, so run it on a result written
+  with `trials_out` set to `all`, which is the default.
+
+Replaying the log re-derives the recorded proposals; it does not make a second run of
+the study produce the same bytes.
+
+A study that uses the `tpe` sampler with `constant_liar` set to false is refused when
+`schedule` is `"rolling"`, as it is with `batch_lag: 1`, because every rolling proposal is
+made while other trials are still running.
+
+With `--progress-fd` or `--trials-file`, finished trials are written in trial-id order, and a
+trial that finishes while twice the worker count of finished trials are already waiting to be
+written is held back, and so is not fed back, until the earliest unfinished trial finishes and
+the backlog is written; in that mode a rolling study can therefore wait for an earlier trial id.
+
+### Pruning, patience and continuation under `rolling`
+
+Pruning. A trial's cuts are taken from the pruner immediately before that trial is
+proposed, from the rung scores of exactly the trials in its logged prefix, and stay
+frozen while the trial runs. The pruner is fed once per fed-back trial, in
+`completion_order`. The `pruning.cut` that a pruned trial records can therefore be
+recomputed from the log, and the replay does so.
+
+Patience. The no-improvement count advances in `completion_order`: each fed-back
+terminal trial that does not strictly improve the best consumes one count, by the rules
+in "No-improvement stopping". The trial that consumes the Nth count latches the stop,
+and its id is `trigger_trial_id`. After the latch no further trial is proposed; trials
+that are already running finish and are fed back, because patience never cancels a
+running trial; later improvements stay in the report and can become best, but cannot
+unlatch the stop. At most `workers - 1` trials are fed back after the trigger.
+`drained_through_trial_id` is the highest trial id that was proposed and finished: after a
+patience stop that is the highest proposed id, and a trial that a deadline or a signal kept
+from ever starting is never named. With the same seed and worker count, two rolling runs
+can stop at different trials; replaying the log re-derives each stop.
+
+Continuation. A rolling result makes no exact-continuation claim. Its
+`continuation_contract` is `rolling_completion_v1` and it carries no `tpe_sampler_state`.
+A rolling study that is given a parent history ignores any checkpoint in it and rebuilds
+the sampler's trainable history from the parent's rows in trial-id order. A `batches`
+study that continues from a rolling result likewise finds no checkpoint and rebuilds;
+that study keeps its own `ordered_batches_v1` contract, which, as always, holds for the
+same parent bytes. Because `completed_before` is indexed by trial id, a rolling study that
+continues a parent of P trials writes P leading zeros before the entries of its own trials,
+which takes at least 8 bytes of memory per parent trial (about 800 MB for a parent of 100
+million trials) and puts the same P zeros into the result file.
 
 ## Sobol replay
 
@@ -195,17 +304,22 @@ parent candidates; future lag-one TPE rebuilds history. Patience does not streng
 those existing continuation contracts.
 
 The coordinator checks patience in ordered completion/feedback, independently of
-worker arrival and progress-write timing. On the Nth non-improving terminal it
-latches that global trial ID and freezes the current and queued batches, whose
-highest already-proposed ID is F. It submits no further batch and drains those
-batches, including every sampler reservation and terminal record through F.
-Patience never cancels worker claims.
+worker arrival and progress-write timing. Under the `rolling` schedule the same
+counter runs over `completion_order`: the Nth non-improving trial in that order
+latches the stop, and the stop drains only the trials that are still running,
+because a `rolling` proposal is made only when a worker slot is free. Under
+`batches`, on the Nth non-improving terminal the coordinator latches that global
+trial ID and freezes the current and queued batches, whose highest already-proposed
+ID is F. It submits no further batch and drains those batches, including every
+sampler reservation and terminal record through F. Patience never cancels worker
+claims.
 Later improvements remain in the report and can become best, but cannot unlatch
 the trigger. For fixed batch B and lag L, the tail is bounded by `(L+1)*B-1`, with
 smaller tails possible at budget/exhaustion boundaries.
 
 The implicit batch size remains the number of workers.
-To get the same stop trial with a different number of workers, pass an explicit batch size.
+With the `batches` schedule, to get the same stop trial with a different number of workers, pass an explicit batch size.
+A `rolling` study has no such recipe: its stop trial can differ between runs, and the stop is audited from the log (see [Rolling schedule](#rolling-schedule-rolling_completion_v1)).
 All other replay inputs listed above must also match. Fatal watchdog/output failure
 has priority, followed by observed cancellation/deadline, latched `no_improvement`,
 and natural budget/exhaustion. In particular, a trigger on the last budgeted trial
@@ -229,7 +343,10 @@ Enabled final study results add this object:
 The trigger is null until latched. `drained_through_trial_id` is the last terminal
 ID consumed by ordered feedback, or null before any such result; after an ordinary
 patience drain it equals F. A watchdog or other external stop may report only a
-partial drain. This snapshot is synchronized with the watchdog's final writer.
+partial drain. Under the `rolling` schedule `trigger_trial_id` is the Nth
+non-improving trial in `completion_order`, and `drained_through_trial_id` is the
+highest proposed trial id that finished: the stop drains every running trial, so by then
+no lower id is still outstanding. This snapshot is synchronized with the watchdog's final writer.
 Fatal watchdog metadata may name trigger or drain IDs absent from the fatal result's trial list.
 Off studies omit the object and retain prior output/checkpoint formats and Python
 native argv. A normal patience stop has a feasible new-part result and exits 0;

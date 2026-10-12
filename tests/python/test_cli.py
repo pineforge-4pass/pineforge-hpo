@@ -364,6 +364,28 @@ class CliTests(unittest.TestCase):
         ):
             self.assertEqual(command[command.index(name) + 1], value)
 
+    def test_native_command_forwards_rolling_schedule_only_when_set(self) -> None:
+        # Rolling forwards --schedule; the default batches must not add the flag, so a study
+        # without schedule keeps its argv (and bytes) as before.
+        self._write_study(
+            execution={"workers": 2, "isolation": "threads", "schedule": "rolling"}
+        )
+        rolling = _native_command(
+            load_study_spec(self.study_path),
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        self.assertEqual(rolling[rolling.index("--schedule") + 1], "rolling")
+        self._write_study(execution={"workers": 2, "isolation": "threads"})
+        default = _native_command(
+            load_study_spec(self.study_path),
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        self.assertNotIn("--schedule", default)
+
     def test_candidate_policy_maps_to_native(self) -> None:
         document = json.loads(self.study_path.read_text(encoding="utf-8"))
         document["sampler"] = {

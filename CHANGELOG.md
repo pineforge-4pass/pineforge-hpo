@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add the opt-in `rolling` schedule (StudySpec `execution.schedule: "rolling"`, native
+  `--schedule rolling`). Whenever a trial finishes, the runner feeds its result back and at once
+  proposes a new trial into the freed worker slot, instead of waiting for a batch to end, so every
+  worker stays busy. A rolling result is not byte-replayable: it names
+  `replay_contract: "rolling_completion_v1"` (never `ordered_batches_v1`) and carries the study-level
+  `completion_order` and `completed_before`, a log of what each proposal saw, from which every
+  proposal can be audited and re-derived. Pruner cuts and the patience count follow the same order,
+  and a patience stop feeds back at most `workers - 1` further trials. A rolling result carries no
+  TPE checkpoint, so a continuation rebuilds its history from the rows. `batch_size` and
+  `batch_lag` are refused together with `rolling`, and TPE needs `constant_liar` enabled. The default
+  `batches` schedule is unchanged and keeps the bytes of 0.12.0; the byte-replay rules of
+  `docs/batching.md` do not apply to a rolling study.
+
 ## 0.13.2 (2026-10-12)
 
 The `transpile` extra is capped below codegen 1.4 until HPO supports the `Enum.member` enum options of codegen 1.4 and 1.5; no code change.

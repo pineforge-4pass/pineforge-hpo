@@ -305,6 +305,25 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
             return;
         }
     }
+    // Second, independent gate: lets a test hold two trials in flight at once.
+    if (state->inputs.count("Gate2AtLength") &&
+        length == parse_or(state->inputs, "Gate2AtLength", -1.0)) {
+        const int entered = static_cast<int>(parse_or(state->inputs, "Gate2EnteredFd", -1.0));
+        const int release = static_cast<int>(parse_or(state->inputs, "Gate2ReleaseFd", -1.0));
+        char token = 'G';
+        if (::write(entered, &token, 1) != 1) {
+            state->error = "cannot notify second test trial gate";
+            return;
+        }
+        ssize_t count;
+        do {
+            count = ::read(release, &token, 1);
+        } while (count < 0 && errno == EINTR);
+        if (count != 1) {
+            state->error = "second test trial gate closed without release";
+            return;
+        }
+    }
     if (length == parse_or(state->inputs, "HangAtLength", -1.0)) {
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
