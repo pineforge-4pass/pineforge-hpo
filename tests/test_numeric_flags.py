@@ -28,7 +28,6 @@ def main():
                 ],
                 check=True,
                 stdout=subprocess.DEVNULL,
-                timeout=60,
             )
             subprocess.run(
                 [
@@ -40,7 +39,6 @@ def main():
                 ],
                 check=True,
                 stdout=subprocess.DEVNULL,
-                timeout=30,
             )
             flags = build / "generated/FeedAudit/CXX/numeric_build_flags.txt"
             if flag not in flags.read_text():

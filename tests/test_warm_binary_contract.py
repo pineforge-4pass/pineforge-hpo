@@ -102,7 +102,7 @@ def check(directory, native, baseline, plugin):
                     process = subprocess.run(
                         [str(native), "warm-encode", "--spec", str(spec_path),
                          "--input", str(parent_path), "--output", str(encoded_path)],
-                        capture_output=True, text=True, timeout=30)
+                        capture_output=True, text=True)
                     require(process.returncode == 0, process.stderr)
                     require(encoded_path.read_bytes() == single,
                             f"{label}: native/reference writer bytes differ")

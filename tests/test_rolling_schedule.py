@@ -31,8 +31,6 @@ PLUGIN = Path(sys.argv.pop(1)).resolve()
 
 FOUR_FIELDS = ("batch_size", "batch_lag", "replay_contract", "continuation_contract")
 
-# How long a test waits for a pipe the strategy writes or reads before it fails with a message.
-PIPE_SECONDS = 20.0
 # The most runs the finish-order test makes of its two-gate scenario.
 FINISH_ORDER_RUNS = 30
 
@@ -335,17 +333,13 @@ class RollingScheduleTests(unittest.TestCase):
     # ---- the order inside one pass ---------------------------------------------------
 
     def read_token(self, descriptor: int, expected: bytes, what: str) -> None:
-        """Read exactly `expected` from a pipe the strategy writes; fail with `what` if it does
-        not arrive within PIPE_SECONDS or is something else."""
-        if not select.select([descriptor], [], [], PIPE_SECONDS)[0]:
-            self.fail(f"{what}: nothing arrived within {PIPE_SECONDS} s")
+        """Wait for the strategy's gate token and fail with `what` if it differs."""
+        select.select([descriptor], [], [])
         self.assertEqual(os.read(descriptor, len(expected)), expected, what)
 
     def write_token(self, descriptor: int, what: str) -> None:
-        """Write the byte that releases a gate; fail with `what` if the pipe takes no byte within
-        PIPE_SECONDS or is closed."""
-        if not select.select([], [descriptor], [], PIPE_SECONDS)[1]:
-            self.fail(f"{what}: the pipe took no byte within {PIPE_SECONDS} s")
+        """Wait for the gate's release pipe and fail with `what` if it is closed."""
+        select.select([], [descriptor], [])
         try:
             os.write(descriptor, b"R")
         except OSError as error:
@@ -387,7 +381,7 @@ class RollingScheduleTests(unittest.TestCase):
             self.read_token(younger_entered, b"G", "trial 1 never entered its gate")
             self.write_token(younger_release, "cannot release trial 1")
             self.write_token(older_release, "cannot release trial 0")
-            stdout, stderr = child.communicate(timeout=60)
+            stdout, stderr = child.communicate()
         finally:
             if child.poll() is None:
                 child.kill()

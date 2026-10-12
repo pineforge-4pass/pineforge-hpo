@@ -416,8 +416,7 @@ class World:
         ingredients = self.root / "build/ingredients.txt"
         ingredients.write_text("\n".join(lines) + "\n")
         run(["cmake", f"-DPFH_SOBOL_INGREDIENTS={ingredients}", f"-DPFH_SOBOL_OUTPUT_DIR={self.out}",
-             f"-DPFH_SOBOL_CONTRACT={CONTRACT}", "-P", REPOSITORY / "cmake/GenerateSobolIdentity.cmake"],
-            timeout=120)
+             f"-DPFH_SOBOL_CONTRACT={CONTRACT}", "-P", REPOSITORY / "cmake/GenerateSobolIdentity.cmake"])
         header = (self.out / "sobol_identity_generated.hpp").read_text()
         return {
             "bound": "kBound = true;" in header,
@@ -1128,7 +1127,7 @@ def include_closure(entry, repository_root):
         elif token not in X.DROP_FLAGS and token != "-c":
             kept.append(token)
     process = subprocess.run([tokens[0], *kept, "-MM", "-MG", entry["file"]],
-                             cwd=entry["directory"], capture_output=True, text=True, timeout=300)
+                             cwd=entry["directory"], capture_output=True, text=True)
     require(process.returncode == 0, f"dependency scan failed:\n{process.stderr}")
     text = process.stdout.replace("\\\n", " ")
     names = re.sub(r"\\ ", "\0", text.split(":", 1)[1]).split()

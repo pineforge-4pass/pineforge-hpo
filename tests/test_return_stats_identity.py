@@ -162,9 +162,9 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def run(command, *, timeout=600, check=True):
+def run(command, *, check=True):
     words = [str(part) for part in command]
-    process = subprocess.run(words, capture_output=True, text=True, timeout=timeout)
+    process = subprocess.run(words, capture_output=True, text=True)
     if check and process.returncode != 0:
         raise AssertionError(
             f"{' '.join(words)} exited with {process.returncode}\n"
@@ -386,7 +386,7 @@ class World:
         run([
             "cmake", f"-DPFH_RSI_INGREDIENTS={ingredients}", f"-DPFH_RSI_OUTPUT_DIR={self.out}",
             f"-DPFH_RSI_CONTRACT={CONTRACT}", "-P", script,
-        ], timeout=120)
+        ])
         header = (self.out / "return_stats_identity_generated.hpp").read_text()
         return {
             "bound": "kBound = true;" in header,

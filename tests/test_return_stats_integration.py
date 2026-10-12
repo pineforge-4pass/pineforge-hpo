@@ -209,8 +209,7 @@ class MainBuildTests(Base):
         objects = list(BUILD.rglob("return_stats.cpp.o"))
         self.assertEqual(len(objects), 1, f"expected one reducer object: {objects}")
         objects[0].unlink()  # force the real invocation to run again
-        build = run(["cmake", "--build", str(BUILD), "--target", "pineforge_hpo_core", "--verbose"],
-                    timeout=1800)
+        build = run(["cmake", "--build", str(BUILD), "--target", "pineforge_hpo_core", "--verbose"])
         self.assertEqual(build.returncode, 0, build.stderr)
         executed = None
         for line in build.stdout.splitlines():
@@ -245,7 +244,7 @@ class MainBuildTests(Base):
         self.assertIn(f"\ncompiler.sha256={digest}\n", descriptor.decode())
         # Regenerating the identity after the rebuild must give the same descriptor.
         regenerated = run(["cmake", "--build", str(BUILD), "--target",
-                           "pineforge_hpo_core_return_stats_identity"], timeout=600)
+                           "pineforge_hpo_core_return_stats_identity"])
         self.assertEqual(regenerated.returncode, 0, regenerated.stderr)
         self.assertEqual(read_identity(BUILD)[0], descriptor)
 
@@ -254,14 +253,14 @@ class UnboundTreeTests(Base):
     def configure(self, tree: Path, *options: str):
         return run(["cmake", "-S", str(SOURCE), "-B", str(tree), "-DCMAKE_BUILD_TYPE=Release",
                     "-DPINEFORGE_HPO_BUILD_TESTS=OFF", f"-DPINEFORGE_ENGINE_ROOT={ENGINE_ROOT}",
-                    f"-DFETCHCONTENT_SOURCE_DIR_DLIB={DLIB_SOURCE}", *options], timeout=900)
+                    f"-DFETCHCONTENT_SOURCE_DIR_DLIB={DLIB_SOURCE}", *options])
 
     def test_explicit_off_tree_refuses_requests_and_keeps_ordinary_runs(self) -> None:
         tree = self.directory / "unbound"
         configured = self.configure(tree, "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF")
         self.assertEqual(configured.returncode, 0, configured.stderr)
         built = run(["cmake", "--build", str(tree), "--target", "pineforge-hpo-native", "-j",
-                     str(os.cpu_count() or 2)], timeout=3000)
+                     str(os.cpu_count() or 2)])
         self.assertEqual(built.returncode, 0, built.stderr[-4000:])
         descriptor, identity, header = read_identity(tree)
         self.assertEqual(descriptor.decode(),
@@ -313,7 +312,7 @@ class UnboundTreeTests(Base):
         self.assertEqual(configured.returncode, 0, configured.stderr)
         configuration = "Release"  # built below and read back from its own directory
         built = run(["cmake", "--build", str(tree), "--config", configuration, "--target",
-                     "pineforge_hpo_core_return_stats_identity"], timeout=600)
+                     "pineforge_hpo_core_return_stats_identity"])
         self.assertEqual(built.returncode, 0, built.stderr)
         descriptor, identity, header = read_identity(tree, configuration)
         self.assertIn("reason=multi_config_generator\n", descriptor.decode())

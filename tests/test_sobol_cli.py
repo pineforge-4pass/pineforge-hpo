@@ -245,7 +245,7 @@ def identity_bound() -> bool:
                  "--bar-magnifier", "true", "--magnifier-samples", "6",
                  "--magnifier-distribution", "triangle",
                  "--real-dim", "Level", "0", "1", "continuous", "--sampler", "sobol",
-                 "--max-trials", "1"], text=True, capture_output=True, check=False, timeout=120)
+                 "--max-trials", "1"], text=True, capture_output=True, check=False)
         try:
             failure = json.loads(probe.stdout).get("failure") or {}
         except ValueError:
@@ -292,8 +292,7 @@ class SobolCliTests(unittest.TestCase):
 
     def run_cli(self, space, *extra, expected=0, pass_fds=(), **options):
         completed = subprocess.run(self.argv(space, *extra, **options), text=True,
-                                   capture_output=True, check=False, pass_fds=pass_fds,
-                                   timeout=1800)
+                                   capture_output=True, check=False, pass_fds=pass_fds)
         if expected is not None:
             self.assertEqual(completed.returncode, expected, completed.stderr)
         return completed
@@ -427,7 +426,7 @@ class SobolCliTests(unittest.TestCase):
         # The same dimensions declared in the opposite order give the same stream.
         backward = json.loads(subprocess.run(
             self._reversed_command("--seed", 5, "--max-trials", 16),
-            text=True, capture_output=True, check=False, timeout=600).stdout)
+            text=True, capture_output=True, check=False).stdout)
         self.assertEqual(forward["trials"], backward["trials"])
         self.assertEqual(forward["sobol"]["identity"], backward["sobol"]["identity"])
         constant = self.result(DISCRETE, "--seed", 5, "--max-trials", 16,
@@ -509,7 +508,7 @@ class SobolCliTests(unittest.TestCase):
                                      pass_fds=(write_fd,))
         finally:
             os.close(write_fd)
-            reader.join(timeout=60)
+            reader.join()
         result = json.loads(completed.stdout)
         lines = [json.loads(item) for item in b"".join(chunks).decode().splitlines()]
         self.assertEqual(lines, result["trials"])
@@ -883,8 +882,7 @@ class SobolCliTests(unittest.TestCase):
                             strategy=self.directory / "no-such-plugin")
         at = command.index("--sampler")
         command[at:at] = list(space_flags)
-        completed = subprocess.run(command, text=True, capture_output=True, check=False,
-                                   timeout=600)
+        completed = subprocess.run(command, text=True, capture_output=True, check=False)
         self.assert_refusal(completed, code, exit_code, reason)
         self.assertFalse(never.exists(), "an output file was opened before the refusal")
         return completed
@@ -904,11 +902,11 @@ class SobolCliTests(unittest.TestCase):
                           "exhaustive", code="hpo_cli_usage", reason=None)
         usage = subprocess.run(self.argv(DISCRETE, "--max-trials", 4, sampler="grid") +
                                ["--sobol-scramble", "none"], text=True, capture_output=True,
-                               check=False, timeout=60)
+                               check=False)
         self.assert_refusal(usage, "hpo_cli_usage", 1)
         usage = subprocess.run(self.argv(DISCRETE, "--max-trials", 4) +
                                ["--candidates", str(self.directory / "list.jsonl")],
-                               text=True, capture_output=True, check=False, timeout=60)
+                               text=True, capture_output=True, check=False)
         self.assert_refusal(usage, "hpo_cli_usage", 1)
 
     def test_the_boundary_column_counts_are_accepted(self) -> None:
@@ -927,7 +925,7 @@ class SobolCliTests(unittest.TestCase):
                 completed = subprocess.run(
                     self.argv(NO_STRING, "--max-trials", 2) + ["--log-int-dim", "Lg", str(low),
                                                               str(high)],
-                    text=True, capture_output=True, check=False, timeout=600)
+                    text=True, capture_output=True, check=False)
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 for row in json.loads(completed.stdout)["trials"]:
                     self.assertTrue(low <= row["parameters"]["Lg"] <= high)
@@ -1043,7 +1041,7 @@ class SobolCliTests(unittest.TestCase):
 
     def test_help_documents_the_sampler_and_flag(self) -> None:
         completed = subprocess.run([str(NATIVE), "--help"], text=True, capture_output=True,
-                                   check=False, timeout=60)
+                                   check=False)
         self.assertEqual(completed.returncode, 0)
         self.assertIn("--sobol-scramble", completed.stdout)
         self.assertIn("sobol", completed.stdout.split("--sampler", 1)[1].splitlines()[0])

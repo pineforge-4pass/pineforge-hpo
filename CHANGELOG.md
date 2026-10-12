@@ -6,6 +6,7 @@
   sets an explicit limit. The artifact lock wait still stops after 120 seconds with an
   error that names the stuck lock and identifies a lock that never frees as a deadlock
   to report.
+- Remove test and CI time limits; only the CI platform bound applies. Product behavior is unchanged.
 - Add the opt-in `rolling` schedule (StudySpec `execution.schedule: "rolling"`, native
   `--schedule rolling`). Whenever a trial finishes, the runner feeds its result back and at once
   proposes a new trial into the freed worker slot, instead of waiting for a batch to end, so every

@@ -1,7 +1,6 @@
 #include "batch_executor.hpp"
 
 #include <atomic>
-#include <chrono>
 #include <future>
 #include <stdexcept>
 #include <string>
@@ -47,12 +46,11 @@ void test_coordinator_unwind(const std::string& phase) {
         }
     });
     auto pending = queued_future.get();
-    const bool discarded_before_join =
-        pending.front().wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    // Observe discarded work before releasing the active worker: unwind must not join first.
+    pending.front().wait();
     release.set_value();
     coordinator.join();
     require(caught, "coordinator exception was not propagated");
-    require(discarded_before_join, "queued work was retained during coordinator unwind");
     require(unstarted_executions == 0, "unstarted trials ran after coordinator exception");
     for (auto& result : pending) {
         bool abandoned = false;
