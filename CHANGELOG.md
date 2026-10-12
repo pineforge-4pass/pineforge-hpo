@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add the post hoc `dsr` module (`pineforge_hpo.dsr`, contract `pineforge-hpo-dsr/v1`): a library
+  function that reads the recorded `returns.<series>.{sharpe_per_period,count,skew,kurt_raw,status}`
+  statistics of a finished study and returns the deflated Sharpe ratio of one selected trial under
+  a trial count the caller states or the eligible rows imply, with module-local `dsr_*` refusal
+  codes, no command-line flag and no native field.
+
 - Add `pineforge_hpo.holdout` (`holdout_compare`), a post-hoc module that joins the finished rows of a selection study with those of a second finished study by exact parameter vector and reports, for the best selection vectors, what the second study recorded (contract `pineforge-hpo-holdout/v1`); it splits no data, runs no trial and makes no claim about the data either study used.
 
 ## 0.14.0 (2026-10-13)
