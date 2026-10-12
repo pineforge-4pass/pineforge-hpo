@@ -132,6 +132,13 @@ struct Options {
     double trial_timeout_seconds = 0.0;
     std::uint64_t batch_size = 0;
     unsigned batch_lag = 0;
+    // execution.schedule, forwarded as --schedule. "batches" is the default and keeps the bytes of
+    // 0.12.0; "rolling" refills a free worker slot at once. The *_given flags record that a flag
+    // was present, so --schedule rolling can refuse an explicit --batch-size or --batch-lag even
+    // when its value is the default (presence, not value).
+    std::string schedule = "batches";
+    bool batch_size_given = false;
+    bool batch_lag_given = false;
     std::filesystem::path scheduler_stats;
     pfh::PrunerKind pruner = pfh::PrunerKind::None;
     std::string pruner_name = "none";
@@ -310,6 +317,8 @@ void print_help() {
               << "  --no-improvement-trials N   ordered patience; 0 disables (default)\n"
               << "  --seed N                    sampler seed; dlib max 2147483647\n"
               << "  --workers N                 execution threads\n"
+              << "  --schedule batches|rolling  proposal schedule; rolling refills a free\n"
+              << "                              worker slot at once (default: batches)\n"
               << "  --batch-size N              proposals per batch; default: workers\n"
               << "  --batch-lag 0|1             fixed feedback lag; default: 0\n"
               << "  --scheduler-stats FILE      nondeterministic timing sidecar\n"
@@ -460,15 +469,22 @@ Options parse_options(int argc, char** argv) {
             out.workers = static_cast<unsigned>(value);
         } else if (option == "--warm-start") {
             out.warm_start = require_value(argc, argv, i, option);
+        } else if (option == "--schedule") {
+            const auto value = require_value(argc, argv, i, option);
+            if (value != "batches" && value != "rolling")
+                usage_error("--schedule must be batches or rolling");
+            out.schedule = value;
         } else if (option == "--batch-size") {
             out.batch_size = parse_u64(require_value(argc, argv, i, option), option);
             if (out.batch_size == 0 || out.batch_size > 1'000'000)
                 usage_error("--batch-size must be between 1 and 1000000");
+            out.batch_size_given = true;
         } else if (option == "--batch-lag") {
             const auto value = parse_u64(require_value(argc, argv, i, option), option);
             if (value > 1)
                 usage_error("--batch-lag must be 0 or 1");
             out.batch_lag = static_cast<unsigned>(value);
+            out.batch_lag_given = true;
         } else if (option == "--scheduler-stats") {
             out.scheduler_stats = require_value(argc, argv, i, option);
         } else if (option == "--pruner") {
@@ -1457,6 +1473,64 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
     return record;
 }
 
+// Study-level completion log of the rolling schedule. `order` lists the finished trial ids, each
+// once, in the exact order the coordinator fed them back; `completed_before` is indexed by trial
+// id and holds the number of `order` entries the proposal for that trial had seen. It is written
+// only for the rolling schedule and is complete whatever `trials_out` says. The watchdog thread
+// can read it while the rolling loop appends (a truncated timeout result carries it), so every
+// access holds the mutex.
+struct CompletionLog {
+    void note_proposal(std::uint64_t trial_id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        const auto index = static_cast<std::size_t>(trial_id);
+        if (index >= completed_before.size())
+            completed_before.resize(index + 1, 0);
+        completed_before[index] = order.size();
+    }
+    void note_completion(std::uint64_t trial_id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        order.push_back(trial_id);
+    }
+    std::pair<std::vector<std::uint64_t>, std::vector<std::uint64_t>> snapshot() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return {order, completed_before};
+    }
+
+    mutable std::mutex mutex;
+    std::vector<std::uint64_t> order;
+    std::vector<std::uint64_t> completed_before;
+};
+
+// Finish order of the rolling schedule. Each rolling task takes the next number from one shared
+// counter as its last step, once its result is final, and records it under its trial id. The
+// coordinator reads (and removes) the number only after the trial's future is ready, so the task
+// has always written it by then. A pass feeds the trials it collected back in the order of these
+// numbers, which is the order the tasks finished in, whatever order they were proposed in.
+class FinishNumbers final {
+public:
+    void stamp(std::uint64_t trial_id) {
+        const auto number = next_.fetch_add(1);
+        std::lock_guard<std::mutex> lock(mutex_);
+        numbers_.emplace(trial_id, number);
+    }
+
+    std::uint64_t take(std::uint64_t trial_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = numbers_.find(trial_id);
+        if (found == numbers_.end())
+            throw pfh::TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "a rolling trial finished without a finish number");
+        const auto number = found->second;
+        numbers_.erase(found);
+        return number;
+    }
+
+private:
+    std::atomic<std::uint64_t> next_{0};
+    std::mutex mutex_;
+    std::map<std::uint64_t, std::uint64_t> numbers_;
+};
+
 std::string render_results(const Options& options,
                            const pfh::SearchSpace& space,
                            const std::optional<std::uint64_t>& finite_cardinality,
@@ -1465,7 +1539,8 @@ std::string render_results(const Options& options,
                            std::uint64_t duplicate_proposals_skipped,
                            const std::string& requested_stop_reason = {},
                            const TrialArchive* archive = nullptr,
-                           const pfh::detail::NoImprovementSnapshot& early_stop = {}) {
+                           const pfh::detail::NoImprovementSnapshot& early_stop = {},
+                           const CompletionLog* rolling_log = nullptr) {
     const bool finite_space = std::all_of(space.dimensions().begin(), space.dimensions().end(),
         [](const pfh::Dimension& dimension) {
             return std::visit([](const auto& item) {
@@ -1571,15 +1646,40 @@ std::string render_results(const Options& options,
         out << "{},\n";
     }
     out << "  \"direction\": \""
-        << (options.direction == Direction::kMaximize ? "maximize" : "minimize") << "\",\n"
-        << "  \"batch_size\": " << (options.batch_size ? options.batch_size : options.workers)
-        << ",\n  \"batch_lag\": " << options.batch_lag
-        << ",\n  \"replay_contract\": \""
-        << "ordered_batches_v1"
-        << "\",\n  \"continuation_contract\": \""
-        << (options.sampler == "tpe" ? "sampler_checkpoint_v2" : "ordered_batches_v1")
-        << "\",\n"
-        << "  \"pruner\": \"" << options.pruner_name << "\",\n"
+        << (options.direction == Direction::kMaximize ? "maximize" : "minimize") << "\",\n";
+    if (options.schedule == "rolling") {
+        // A rolling result is not byte-replayable, so it names its own replay contract and
+        // reports batch_size and batch_lag as null (the schedule has neither). The completion
+        // log goes next to the contract fields and is written whatever trials_out says.
+        out << "  \"batch_size\": null,\n  \"batch_lag\": null,\n"
+            << "  \"replay_contract\": \"rolling_completion_v1\",\n"
+            << "  \"continuation_contract\": \"rolling_completion_v1\",\n";
+        auto [order, completed_before] = rolling_log
+            ? rolling_log->snapshot()
+            : std::pair<std::vector<std::uint64_t>, std::vector<std::uint64_t>>{};
+        out << "  \"completion_order\": [";
+        for (std::size_t index = 0; index < order.size(); ++index) {
+            if (index)
+                out << ", ";
+            out << order[index];
+        }
+        out << "],\n  \"completed_before\": [";
+        for (std::size_t index = 0; index < completed_before.size(); ++index) {
+            if (index)
+                out << ", ";
+            out << completed_before[index];
+        }
+        out << "],\n";
+    } else {
+        out << "  \"batch_size\": " << (options.batch_size ? options.batch_size : options.workers)
+            << ",\n  \"batch_lag\": " << options.batch_lag
+            << ",\n  \"replay_contract\": \""
+            << "ordered_batches_v1"
+            << "\",\n  \"continuation_contract\": \""
+            << (options.sampler == "tpe" ? "sampler_checkpoint_v2" : "ordered_batches_v1")
+            << "\",\n";
+    }
+    out << "  \"pruner\": \"" << options.pruner_name << "\",\n"
         << "  \"pruner_eta\": " << options.pruner_eta << ",\n"
         << "  \"pruner_rungs\": [";
     for (std::size_t rung = 0; rung < options.pruner_rungs.size(); ++rung) {
@@ -1985,6 +2085,19 @@ int run(Options options) {
         throw pfh::TypedHpoError<std::invalid_argument>(
             "hpo_study_spec_invalid", {{"reason", "sampler"}},
             "lag-one TPE requires constant liar enabled");
+    const bool rolling = options.schedule == "rolling";
+    if (rolling && (options.batch_size_given || options.batch_lag_given))
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            options.batch_size_given
+                ? "--schedule rolling takes neither --batch-size nor --batch-lag; remove "
+                  "--batch-size"
+                : "--schedule rolling takes neither --batch-size nor --batch-lag; remove "
+                  "--batch-lag");
+    if (rolling && options.sampler == "tpe" && !options.tpe_config.constant_liar)
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "sampler"}},
+            "rolling TPE requires constant liar enabled");
     pfh::SearchSpace space(options.dimensions);
     std::optional<std::uint64_t> finite_cardinality;
     try {
@@ -2167,12 +2280,26 @@ int run(Options options) {
     pfh::detail::NoImprovementStop no_improvement(
         options.no_improvement_trials, options.direction == Direction::kMinimize);
     std::atomic<std::uint64_t> duplicate_proposals_skipped{0};
+    // Completion log of the rolling schedule. The watchdog thread only reads it, under the log's
+    // own mutex, while the rolling loop appends.
+    CompletionLog rolling_log;
+    // The finish number of every rolling trial that has finished and is not yet fed back. It is
+    // declared before the worker pool because the tasks use it and must not outlive it.
+    FinishNumbers rolling_finish;
+    // Highest trial id the rolling loop fed back as a terminal trial (a trial that never started
+    // because of a deadline or signal is not terminal). The result reports it as
+    // drained_through_trial_id: the stop drains every running trial, so no lower id is outstanding.
+    std::optional<std::uint64_t> rolling_drained_through_id;
+    const auto rolling_log_ptr = [&]() -> const CompletionLog* {
+        return rolling ? &rolling_log : nullptr;
+    };
     RunState state(options, started, archive, [&](const std::vector<TrialRecord>& completed,
                                                 std::exception_ptr failure) {
         write_results(options, append_process_failure(
             render_results(options, space, finite_cardinality, completed,
                            best_trial(options, completed), duplicate_proposals_skipped.load(),
-                           "trial_timeout", &archive, no_improvement.snapshot()), failure, 3));
+                           "trial_timeout", &archive, no_improvement.snapshot(),
+                           rolling_log_ptr()), failure, 3));
         print_process_failure(failure);
     });
     const auto direction = options.direction == Direction::kMaximize
@@ -2264,8 +2391,131 @@ int run(Options options) {
                 submit_batch();
         }
     };
+    // The rolling schedule keeps every worker busy. It proposes up to one trial per worker with
+    // nothing finished, then repeats one pass until nothing is in flight: collect every trial that
+    // is ready in this pass, feed all of them back (the sampler, the completion log, the patience
+    // counter and the pruner see each trial once, in the order the trials finished: every task
+    // takes a number from a shared counter as its last step and the pass sorts by it), and only
+    // then fill each free slot with one new proposal. No proposal is made between two feeds of one
+    // pass, so all proposals of a pass see the same prefix of the completion log. There is no
+    // per-batch barrier and no queue of proposed trials that have not started: the number of
+    // trials in flight never exceeds the worker count, so a stop only has running trials to drain.
+    // Each proposal snapshots the pruner cuts of exactly the trials it saw, and patience counts
+    // in the order the trials were fed back.
+    const auto evaluate_rolling = [&](auto propose, auto feedback) {
+        std::vector<std::future<TrialRecord>> inflight;
+        std::uint64_t proposed = 0;
+        bool exhausted = false;  // budget, space or sampler exhausted, or a stop: drain running
+        bool latched = false;    // patience latched: no further proposal, running trials finish
+
+        // Proposes one trial into a free worker slot; false when no further proposal may be made.
+        const auto propose_one = [&]() -> bool {
+            if (latched || exhausted)
+                return false;
+            if (state.stopped()) {
+                exhausted = true;
+                return false;
+            }
+            if (options.max_trials && proposed >= options.max_trials) {
+                exhausted = true;
+                return false;
+            }
+            if (proposed == available_ids) {
+                exhausted = true;
+                return false;
+            }
+            const auto proposal_start = RunState::Clock::now();
+            auto candidate = propose();
+            proposal_seconds +=
+                std::chrono::duration<double>(RunState::Clock::now() - proposal_start).count();
+            if (!candidate) {
+                exhausted = true;
+                return false;
+            }
+            // Only this thread feeds trials back, so the pruner cuts and the length of the
+            // completion log taken here describe exactly the trials this proposal saw.
+            const auto cuts = pruner.cuts();
+            rolling_log.note_proposal(candidate->id);
+            ++proposed;
+            // Every task takes its finish number as its last step, whichever way it returns.
+            inflight.push_back(workers.submit([&, candidate = std::move(*candidate), cuts] {
+                if (!state.begin(candidate)) {
+                    state.skip(candidate.id);
+                    auto never_started = make_trial_record(candidate, options);
+                    rolling_finish.stamp(never_started.trial_id);
+                    return never_started;
+                }
+                auto trial = evaluate_candidate(candidate, space, options, executor, objective,
+                                                constraints, expressions, constraint_policy,
+                                                pruner, bar_counts, cuts);
+                state.finish(trial);
+                rolling_finish.stamp(trial.trial_id);
+                return trial;
+            }));
+            return true;
+        };
+
+        for (std::size_t slot = 0; slot < worker_count; ++slot)
+            if (!propose_one())
+                break;
+        while (!inflight.empty()) {
+            // Collect every trial that is ready in this pass, each with the number its task took
+            // when it finished. The number is read only after the future is ready.
+            std::vector<std::pair<std::uint64_t, TrialRecord>> ready;
+            std::size_t index = 0;
+            while (index < inflight.size()) {
+                if (inflight[index].wait_for(std::chrono::milliseconds(0)) !=
+                    std::future_status::ready) {
+                    ++index;
+                    continue;
+                }
+                auto finished = inflight[index].get();
+                const auto finish_number = rolling_finish.take(finished.trial_id);
+                ready.emplace_back(finish_number, std::move(finished));
+                inflight.erase(inflight.begin() + static_cast<std::ptrdiff_t>(index));
+            }
+            if (ready.empty()) {
+                // Nothing is ready: observe external stops, then wait briefly on the oldest trial.
+                state.stopped();
+                inflight.front().wait_for(std::chrono::milliseconds(2));
+                continue;
+            }
+            // Feed all of them back, in the order they finished, before any proposal is made.
+            std::stable_sort(ready.begin(), ready.end(), [](const auto& left, const auto& right) {
+                return left.first < right.first;
+            });
+            for (auto& entry : ready) {
+                TrialRecord& trial = entry.second;
+                feedback(trial);
+                if (trial.status == "pending")
+                    continue;
+                rolling_log.note_completion(trial.trial_id);
+                if (!rolling_drained_through_id || trial.trial_id > *rolling_drained_through_id)
+                    rolling_drained_through_id = trial.trial_id;
+                if (options.no_improvement_trials && no_improvement.observe(
+                        trial.trial_id, trial.status == "ok" && trial.feasible,
+                        trial.objective)) {
+                    // Patience latches: no further proposal. Trials that are still running
+                    // finish and are fed back, at most one fewer than the worker count.
+                    latched = true;
+                }
+                pruner.observe(trial.rung_scores);
+            }
+            // Then fill each free slot with one new proposal; propose_one refuses once the
+            // study is latched or exhausted.
+            for (std::size_t slot = 0; slot < ready.size(); ++slot)
+                if (!propose_one())
+                    break;
+        }
+    };
+    const auto evaluate_loop = [&](auto propose, auto feedback) {
+        if (rolling)
+            evaluate_rolling(propose, feedback);
+        else
+            evaluate_batches(propose, feedback);
+    };
     const auto evaluate_adaptive = [&](auto& sampler) {
-        evaluate_batches([&] {
+        evaluate_loop([&] {
             auto candidate = sampler.ask();
             if constexpr (std::is_same_v<std::decay_t<decltype(sampler)>, pfh::TpeSampler>)
                 duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
@@ -2292,9 +2542,12 @@ int run(Options options) {
         options.numeric_build_identity =
             pfh::detail::sampler_checkpoint_numeric_identity(sampler.sampler_state());
         if (options.warm_history) {
-            const auto replay_batch = options.batch_lag == 0 ? batch_size : 0;
-            const auto state = options.batch_lag == 0 ? options.warm_history->sampler_state :
-                                                       std::string{};
+            // A rolling study never restores a checkpoint, so it rebuilds the trainable history
+            // from the parent's rows in id order (replay batch 0 and an empty checkpoint, exactly
+            // as a lag-one continuation does).
+            const auto replay_batch = (rolling || options.batch_lag != 0) ? 0 : batch_size;
+            const auto state = (rolling || options.batch_lag != 0)
+                ? std::string{} : options.warm_history->sampler_state;
             try {
                 options.parent_numeric_build_identity =
                     pfh::detail::sampler_checkpoint_numeric_identity(state);
@@ -2309,13 +2562,15 @@ int run(Options options) {
         // Observe external stops at evaluation completion, before checkpointing/cleanup.
         if (options.no_improvement_trials)
             state.stopped();
-        if (sampler.outstanding() == 0)
+        // A rolling result carries no tpe_sampler_state, so a later continuation finds no
+        // checkpoint and rebuilds. A batches study keeps its exact-continuation contract.
+        if (!rolling && sampler.outstanding() == 0)
             options.tpe_sampler_state = sampler.sampler_state();
         duplicate_proposals_skipped.store(sampler.duplicate_proposals_skipped());
     } else if (options.sampler == "candidates") {
         pfh::detail::CandidateListCursor cursor(*options.candidate_list);
-        evaluate_batches([&]() -> std::optional<pfh::Candidate> { return cursor.next(); },
-                         [](const TrialRecord&) {});
+        evaluate_loop([&]() -> std::optional<pfh::Candidate> { return cursor.next(); },
+                      [](const TrialRecord&) {});
     } else if (options.sampler == "sobol") {
         // Dedicated with-replacement branch. The trial ID is the raw index, starting at the
         // admitted parent's next ID. There is no reseeding with continuation_seed, no parent
@@ -2324,8 +2579,8 @@ int run(Options options) {
         pfh::SobolSampler sampler(space, options.seed,
                                   *pfh::detail::sobol_scramble_from_name(options.sobol_scramble),
                                   options.sobol_first_index, options.max_trials);
-        evaluate_batches([&]() -> std::optional<pfh::Candidate> { return sampler.next(); },
-                         [](const TrialRecord&) {});
+        evaluate_loop([&]() -> std::optional<pfh::Candidate> { return sampler.next(); },
+                      [](const TrialRecord&) {});
         // Observe external stops at evaluation completion, as the other patience-aware samplers do.
         if (options.no_improvement_trials)
             state.stopped();
@@ -2340,7 +2595,7 @@ int run(Options options) {
                 options.warm_history ? 0 : options.max_trials);
         std::uint64_t next_id = options.warm_history ? options.warm_history->next_id : 0;
         std::uint64_t fallback_ordinal = 0;
-        evaluate_batches([&]() -> std::optional<pfh::Candidate> {
+        evaluate_loop([&]() -> std::optional<pfh::Candidate> {
             for (std::uint64_t attempt = 0;; ++attempt) {
                 auto candidate = sampler->next();
                 if (!candidate)
@@ -2376,13 +2631,21 @@ int run(Options options) {
 
     const auto render_start = RunState::Clock::now();
     const auto progress_failure = state.progress_error();
-    const auto early_stop = no_improvement.snapshot();
+    auto early_stop = no_improvement.snapshot();
+    // observe() records the id of the last trial fed back, which in completion order need not be
+    // the highest id. Under the rolling schedule the stop drains every running trial, so report
+    // the highest terminal trial id instead. After a patience stop that is the highest proposed
+    // id; a trial that was proposed but never started because of a deadline or signal is never
+    // named.
+    if (rolling && early_stop.patience_trials && rolling_drained_through_id)
+        early_stop.drained_through_trial_id = rolling_drained_through_id;
     std::string stop_reason = state.stop_reason();
     if (stop_reason.empty() && early_stop.trigger_trial_id)
         stop_reason = "no_improvement";
     const auto json = append_process_failure(
         render_results(options, space, finite_cardinality, trials, best_index,
-                       duplicate_proposals_skipped.load(), stop_reason, &archive, early_stop),
+                       duplicate_proposals_skipped.load(), stop_reason, &archive, early_stop,
+                       rolling_log_ptr()),
         progress_failure, 1);
     const auto write_start = RunState::Clock::now();
     write_result_file(options, json);

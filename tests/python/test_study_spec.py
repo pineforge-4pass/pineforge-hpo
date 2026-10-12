@@ -76,6 +76,50 @@ class StudySpecTest(unittest.TestCase):
             path.write_text(json.dumps(document), encoding="utf-8")
             self.assertTrue(load_study_spec(path).sampler.config.constant_liar)
 
+    def test_schedule_defaults_and_parses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            document = valid_document()
+            path = Path(temporary) / "study.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertEqual(load_study_spec(path).execution.schedule, "batches")
+            document["execution"]["schedule"] = "rolling"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertEqual(load_study_spec(path).execution.schedule, "rolling")
+            document["execution"]["schedule"] = "bogus"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(StudySpecError, "schedule"):
+                load_study_spec(path)
+
+    def test_rolling_refuses_batch_size_and_batch_lag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "study.json"
+            for key, value in (("batch_size", 8), ("batch_lag", 0), ("batch_lag", 1)):
+                with self.subTest(key=key, value=value):
+                    document = valid_document()
+                    document["execution"]["schedule"] = "rolling"
+                    document["execution"][key] = value
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(StudySpecError, key):
+                        load_study_spec(path)
+
+    def test_rolling_tpe_requires_constant_liar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            document = valid_document()
+            document["execution"]["schedule"] = "rolling"
+            document["sampler"] = {
+                "kind": "tpe",
+                "seed": 1234,
+                "trials": 100,
+                "config": {"constant_liar": False},
+            }
+            path = Path(temporary) / "study.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(StudySpecError, "schedule.*constant_liar"):
+                load_study_spec(path)
+            document["sampler"]["config"]["constant_liar"] = True
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertTrue(load_study_spec(path).sampler.config.constant_liar)
+
     def test_batching_and_pruning_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             document = valid_document()

@@ -742,6 +742,8 @@ def _native_command(
         command.extend(("--symbol-feeds", str(study.symbol_feeds)))
     elif study.symbol_feeds is not None:
         command.extend(("--symbol-feeds-spec", str(study.spec_path)))
+    if study.execution.schedule != "batches":
+        command.extend(("--schedule", study.execution.schedule))
     if study.execution.batch_size is not None:
         command.extend(("--batch-size", str(study.execution.batch_size)))
     if study.execution.batch_lag:

@@ -243,6 +243,10 @@ Since 0.7.0, TPE results expose
 `continuation_contract: "sampler_checkpoint_v2"`, and `tpe_sampler_state` when no
 candidates remain outstanding. `TpeSampler::sampler_state()` provides the same
 opaque `PFHTPE2` checkpoint to C++ callers and refuses outstanding candidates.
+These values describe the default `batches` schedule. A study that sets
+`execution.schedule` to `rolling` (since 0.14.0) names `rolling_completion_v1` for both
+contracts, carries no `tpe_sampler_state`, and adds the study-level `completion_order` and
+`completed_before` log of what each proposal saw; see the [rolling schedule](batching.md).
 The two MT19937-64 engines use explicit canonical 312-word arrays plus positions,
 not implementation-specific standard-library stream operators. All-zero/degenerate
 MT states are rejected. SHA-256 provides integrity only, not authenticity; warm
