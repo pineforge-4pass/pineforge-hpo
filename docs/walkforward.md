@@ -222,7 +222,7 @@ built-in cap. Neither time nor memory has been measured.
 | ID | Choice |
 | --- | --- |
 | W1 | The window plan is the caller's ordered list of distinct non-empty text labels; every label in the result is the caller's key. |
-| W2 | A `sources` key not in the plan is refused; `never_run` lists the plan labels with no source, in plan order (the module cannot tell whether such a window's study was run). A missing source is never an error. |
+| W2 | A `sources` key not in the plan is refused; `never_run` lists the plan labels with no source, in plan order (the module cannot tell whether such a window's study was run). A plan label with no source is never an error by itself; W3 refuses a plan in which no label has one. |
 | W3 | A plan with no supplied source is refused; a plan of one window is allowed. |
 | W4 | Each window is read on its own, with its own context check; the recorded spaces must be equal across the supplied windows, and every row that records a `space_hash` must record the same one (a result's own top-level `space_hash` is not read); the bar and timeframe counters are compared inside a window only. |
 | W5 | The metric is `"objective"` or a recorded name; the direction is required, and for `"objective"` it must agree with every recorded direction (the common space's own checked first, then each source's). |

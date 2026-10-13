@@ -322,7 +322,7 @@ v1 analyses finished studies; native in-loop walk-forward comes later.
 * **Recomputes** each supplied window's eligible rows, exclusions and their key
   order, selected row and recorded parameters; every carry-over entry, including
   absent and ineligible carrying rows, duplicate handling, `better`, `equal` and
-  exact mid-rank; the supplied and never-run lists, chain breaks, stability values,
+  exact mid-rank; the supplied and `never_run` lists, chain breaks, stability values,
   distinct counts and extremes; and the integer admission figure. Fixture digests
   are rebuilt from literal preimage texts.
 * **Method.** Selection takes the eligible row for which there is no strictly
@@ -355,7 +355,7 @@ v1 analyses finished studies; native in-loop walk-forward comes later.
 * **Fixtures.** Twenty-two accepted cases cover the three-window worked example;
   absent and pruned carrying rows; equal carried duplicates and conflicting
   duplicates unrelated to the carried key; one or two supplied windows, including
-  a never-run middle window; a supplied middle window without a selection, also
+  a middle window with no source; a supplied middle window without a selection, also
   with reversed row order; a target without eligible rows; both directions for
   the recorded profit metric, absent and null cells and exclusion key order;
   recorded real values represented by integers and floats, signed zeros and
@@ -387,7 +387,7 @@ v1 analyses finished studies; native in-loop walk-forward comes later.
   reference untouched: change the second window's last objective from 5 to 4
   (the tied selection becomes id 0); replace a mid-rank of
   2.5 with ordinal 1 (an exact difference of 1.5); remove a label from one literal
-  digest preimage; shorten a two-label never-run list; and replace the triangular
+  digest preimage; shorten a two-label `never_run` list; and replace the triangular
   allowance with an ordered-pair allowance (work becomes 36 instead of 27).
   All five must disagree with the unchanged reference. They are implemented in
   phase 1 against the pins and literal-derived reference, and in phase 2 against
