@@ -1,8 +1,8 @@
 {
   "schema": "pineforge-hpo-failure-catalog-diff/v1",
   "from": {
-    "version": "0.13.2",
-    "tag": "v0.13.2",
+    "version": "0.14.0",
+    "tag": "v0.14.0",
     "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
   },
   "to": {
