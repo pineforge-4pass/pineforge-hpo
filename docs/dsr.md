@@ -140,9 +140,10 @@ expression with a caller-given benchmark in place of `SR0`) is not computed here
 * **Binary64 in a pinned order:** the rest of the computation above (all but V and den).
   Every step is one addition, subtraction, multiplication, division or square root
   in scalar binary64; nothing is fused and no operation is re-associated. `sqrt` is
-  correctly rounded (IEEE 754). The tests compare these results only within 8 ulps
-  or the propagated bounds below, so the binary64 order is documented, not pinned
-  bit for bit.
+  correctly rounded (IEEE 754). The tests compare these results only within a
+  tolerance (8 ulps of `SR0` and the propagated bounds below, or 5e-4 against printed
+  normal-table values; the saturated values 0.0 and 1.0 are compared exactly), so the
+  binary64 order is documented, not pinned bit for bit.
 * **Depends on the platform's normal distribution functions:** `SR0`, `z` and `DSR`, through
   `statistics.NormalDist`, whose `cdf` and `inv_cdf` are floating-point approximations with no
   correctly-rounded guarantee. An independent oracle with exact rationals and a 40-digit decimal
