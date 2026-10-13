@@ -213,21 +213,29 @@ def load_curves(path: Path) -> dict:
     return curves
 
 
+def exact_centred_m2(returns: list, mean: Fraction) -> Fraction:
+    return sum(((value - mean) ** 2 for value in returns), Fraction(0))
+
+
+def check_m2_identity(centred: Fraction, pairwise: Fraction) -> None:
+    curve_require(
+        centred == pairwise, "curve_m2_identity", "centred and pairwise exact M disagree",
+    )
+
+
 def exact_block(returns: list) -> dict:
     """Exact Q/M and a separately rounded replay, from interval returns only."""
     count = len(returns)
     curve_require(count > 0, "curve_count", "a block has no intervals")
     total = sum(returns, Fraction(0))
     mean = total / count
-    centred = sum(((value - mean) ** 2 for value in returns), Fraction(0))
+    centred = exact_centred_m2(returns, mean)
     pairwise = sum(
         ((left - right) ** 2
          for index, left in enumerate(returns) for right in returns[index + 1:]),
         Fraction(0),
     ) / count
-    curve_require(
-        centred == pairwise, "curve_m2_identity", "centred and pairwise exact M disagree",
-    )
+    check_m2_identity(centred, pairwise)
     replay_sum = Fraction(0)
     for value in returns:
         replay_sum = rn(replay_sum + value)

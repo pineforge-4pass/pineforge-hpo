@@ -99,6 +99,7 @@ def curve_agreement(completed, rows: int, size: int) -> str:
     require(rows > 0 and completed.returncode == 0
             and completed.stdout.splitlines().count(expected) == 1,
             "the exact curve check did not compare every native row and block")
+    print(expected)
     return expected
 
 

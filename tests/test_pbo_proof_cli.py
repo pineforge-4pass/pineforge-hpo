@@ -36,10 +36,14 @@ class ProofCliTests(unittest.TestCase):
     def command(self, executable, trace, *extra):
         return [
             str(executable), "run", "--strategy", str(PLUGIN), "--ohlcv", str(self.csv),
-            "--input-tf", "1", "--script-tf", "1", "--chart-timezone", "UTC",
+            "--input-tf", "1", "--script-tf", "5", "--chart-timezone", "UTC",
+            "--bar-magnifier", "true", "--magnifier-samples", "6",
+            "--magnifier-distribution", "triangle",
             "--objective", "metrics.all.net_profit", "--sampler", "grid",
             "--int-dim", "Length", "10", "11", "1", "--max-trials", "2", "--seed", "17",
             "--workers", "1", "--batch-size", "1",
+            "--fixed-input", "BatchPrefixTest", "1",
+            "--fixed-input", "BatchPrefixJitter", "0",
             "--fixed-input", "CurveEquity", ",".join(map(str, EQUITIES)),
             "--fixed-input", "ProofRunTrace", str(trace), *extra,
         ]
@@ -91,6 +95,10 @@ class ProofCliTests(unittest.TestCase):
         self.assertEqual([record["trial_id"] for record in records], [0, 1])
         actual_calls = [tuple(map(int, line.split(",")))
                         for line in trace.read_text(encoding="utf-8").splitlines()]
+        # The 32 bars and default rungs give ceil(32*0.25)=8, ceil(32*0.5)=16, then 32.
+        # The median needs two prior observations per rung, so both trials finish all rungs.
+        # One worker runs Length 10 before 11: full-window invocations are 3 and 6,
+        # or 1 and 2 without prefixes. Only those full-window curves may be dumped.
         expected_calls = (
             [(10, 8, 1), (10, 16, 2), (10, 32, 3),
              (11, 8, 4), (11, 16, 5), (11, 32, 6)]

@@ -114,6 +114,29 @@ class RoundingTests(unittest.TestCase):
         self.assertEqual(block["sum_bits"], 0x3ff0000000000000)
         self.assertEqual(block["m2_bits"], 0x3fe5555555555556)
 
+    def test_m2_identity_requires_equal_exact_values(self):
+        checker.check_m2_identity(F(2, 3), F(4, 6))
+        with self.assertRaises(checker.CurveCheckError) as caught:
+            checker.check_m2_identity(F(2), F(5, 2))
+        self.assertEqual(caught.exception.code, "curve_m2_identity")
+
+    def test_exact_block_rejects_an_incorrect_centred_sum(self):
+        # Returns (1,2,3) have Q=6, mean=2, centred M=1+0+1=2,
+        # and pairwise M=(1+4+1)/3=2. Perturbing only centred M gives 5/2.
+        returns = [F(1), F(2), F(3)]
+        block = checker.exact_block(returns)
+        self.assertEqual((block["Q"], block["M"], block["pairwise_M"]), (F(6), F(2), F(2)))
+        centred_sum = checker.exact_centred_m2
+
+        def perturbed(values, mean):
+            return centred_sum(values, mean) + F(1, 2)
+
+        with patch.object(checker, "exact_centred_m2", side_effect=perturbed) as altered:
+            with self.assertRaises(checker.CurveCheckError) as caught:
+                checker.exact_block(returns)
+        altered.assert_called_once_with(returns, F(2))
+        self.assertEqual(caught.exception.code, "curve_m2_identity")
+
 
 class CurveTests(unittest.TestCase):
     def setUp(self):
@@ -271,6 +294,29 @@ class ControlTests(unittest.TestCase):
     def check_control(self, control):
         return controls.check_control(control, self.curves, 4, [0, 1], "hand-derived-dataset")
 
+    def test_curve_control_rejects_a_different_check_code(self):
+        control = {"name": "boundary_time", "stage": "curve", "code": "curve_boundary",
+                   "result": self.result}
+        error = checker.CurveCheckError("curve_count", "count differs")
+        with patch.object(checker, "check_curves", side_effect=error) as checked:
+            with self.assertRaisesRegex(
+                AssertionError,
+                "boundary_time: wrong curve check curve_count, expected curve_boundary",
+            ):
+                self.check_control(control)
+        checked.assert_called_once_with(self.result, self.result["trials"], self.curves, 4,
+                                        roster=[0, 1])
+
+    def test_curve_control_accepts_its_intended_check_code(self):
+        control = {"name": "boundary_time", "stage": "curve", "code": "curve_boundary",
+                   "result": self.result}
+        error = checker.CurveCheckError("curve_boundary", "boundary differs")
+        with patch.object(checker, "check_curves", side_effect=error) as checked:
+            self.assertEqual(self.check_control(control),
+                             {"name": "boundary_time", "stage": "curve", "code": "curve_boundary"})
+        checked.assert_called_once_with(self.result, self.result["trials"], self.curves, 4,
+                                        roster=[0, 1])
+
     def test_all_seven_controls_reach_their_named_checks(self):
         original = copy.deepcopy(self.result)
         expected = [
@@ -385,20 +431,27 @@ class DriverTests(unittest.TestCase):
                         proof.final_agreement(subprocess.CompletedProcess([], 0, output))
 
     def test_curve_verdict_requires_all_blocks_and_nonzero_rows(self):
-        with redirect_stdout(io.StringIO()):
-            valid = subprocess.CompletedProcess([], 0, "CURVES: AGREE rows=25 blocks=400\n")
+        valid = subprocess.CompletedProcess([], 0, "CURVES: AGREE rows=25 blocks=400\n")
+        output = io.StringIO()
+        with redirect_stdout(output):
             self.assertEqual(proof.curve_agreement(valid, 25, 16),
                              "CURVES: AGREE rows=25 blocks=400")
-            for code, output, rows in (
-                (1, valid.stdout, 25), (0, "", 25),
-                (0, "CURVES: AGREE rows=25 blocks=399\n", 25),
-                (0, valid.stdout * 2, 25), (0, "CURVES: AGREE rows=0 blocks=0\n", 0),
-            ):
-                with self.subTest(code=code, rows=rows, output=output):
+        self.assertEqual(output.getvalue().splitlines(),
+                         ["curve-check exit code: 0", "CURVES: AGREE rows=25 blocks=400"])
+        for code, text, rows in (
+            (1, valid.stdout, 25), (0, "", 25),
+            (0, "CURVES: AGREE rows=25 blocks=399\n", 25),
+            (0, "CURVES: AGREE rows=24 blocks=384\n", 25),
+            (0, valid.stdout * 2, 25), (0, "CURVES: AGREE rows=0 blocks=0\n", 0),
+        ):
+            with self.subTest(code=code, rows=rows, output=text):
+                output = io.StringIO()
+                with redirect_stdout(output):
                     with self.assertRaisesRegex(AssertionError, "every native row and block"):
                         proof.curve_agreement(
-                            subprocess.CompletedProcess([], code, output), rows, 16,
+                            subprocess.CompletedProcess([], code, text), rows, 16,
                         )
+                self.assertNotIn("CURVES:", output.getvalue())
 
     def test_driver_requires_every_observed_control_code(self):
         result, curves = control_result()
