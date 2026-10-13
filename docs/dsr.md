@@ -9,12 +9,14 @@ The module is `python/pineforge_hpo/dsr.py`. The contract id is
 the caller selected, and returns the deflated Sharpe ratio of that trial: the statistic of Bailey
 and López de Prado, "The Deflated Sharpe Ratio" (2014), which **under the paper's assumptions**
 is the probability that the trial's true Sharpe ratio is above the expected maximum Sharpe ratio
-of N unskilled trials of the same kind, over the trial count the caller states. The module's
-fixed interpretation records that the trials of a tuned study are not independent, so the number
-is a deflated reading under a stated N and not a significance test of the strategy. It runs no
+of N unskilled trials of the same kind, over a trial count N (the caller's `n_trials`,
+or by default every row read). The module's fixed interpretation records that the trials
+of a tuned study are not independent, so the number is a deflated reading under a stated N
+and not a significance test of the strategy. It runs no
 trial, writes no file, keeps no state and changes no native result: the only side effect is
 reading the one file named. It is a library function; there is no command-line flag and no field
 in a native result.
+v1 analyses finished studies; native in-loop walk-forward comes later.
 
 ```python
 from pineforge_hpo.dsr import DsrError, dsr
@@ -135,16 +137,19 @@ expression with a caller-given benchmark in place of `SR0`) is not computed here
   algebraic forms of the same expression give the same rational and the same bits. The rounded
   `den` is the value reported and the value the square root uses, so `den` has one value. `SR`,
   `T`, `N`, `g3` and `g4` are the recorded values, unchanged.
-* **Binary64 in a pinned order:** the whole of the computation above. Every step is one addition,
-  subtraction, multiplication, division or square root in scalar binary64; nothing is fused and
-  no operation is re-associated. `sqrt` is correctly rounded (IEEE 754).
+* **Binary64 in a pinned order:** the rest of the computation above (all but V and den).
+  Every step is one addition, subtraction, multiplication, division or square root
+  in scalar binary64; nothing is fused and no operation is re-associated. `sqrt` is
+  correctly rounded (IEEE 754). The tests compare these results only within 8 ulps
+  or the propagated bounds below, so the binary64 order is documented, not pinned
+  bit for bit.
 * **Depends on the platform's normal distribution functions:** `SR0`, `z` and `DSR`, through
   `statistics.NormalDist`, whose `cdf` and `inv_cdf` are floating-point approximations with no
   correctly-rounded guarantee. An independent oracle with exact rationals and a 40-digit decimal
   series accepts these three within the stated bounds (8 ulps of `SR0` for `sr0`, the
   propagated `8*ulp(SR0)*sqrt(T-1)/sqrt(den) + 4*ulp(|z|)` for `z`, and `phi(z)*tol_z + 1e-15`
-  for `dsr`, where `phi` is the standard normal density and `tol_z` is the `z` bound), and no
-  other tolerance is used anywhere.
+  for `dsr`, where `phi` is the standard normal density and `tol_z` is the `z` bound).
+  The unit tests also check hand-derived normal-table values within 5e-4.
 * **Guards.** The call is refused as `dsr_zero_sharpe_variance` when V is exactly zero **or**
   rounds to `0.0`, and as `dsr_statistic_undefined` when `den` is zero or negative on the exact
   rational value, when `den` rounds to `0.0`, when T < 2, or when any intermediate is not finite.
@@ -264,6 +269,7 @@ the `D` of the PBO page.
 Not part of this contract: the probabilistic Sharpe ratio, an annualised Sharpe ratio, a Sharpe
 ratio taken from the objective, several sources at once, a sweep read as one call, any threshold
 or pass/fail verdict, and any out-of-sample reading.
+v1 analyses finished studies; native in-loop walk-forward comes later.
 
 ## What is not claimed
 
@@ -311,11 +317,13 @@ the digest-independent part of the document.
 It is NOT evidence where the oracle repeats the module's own reading: the order in which the
 refusals are checked; the order of the eligibility ladder (its check 2 against its check 1); the
 two arguments `1 - 1/N` and `1 - 1/(N*E)`, which the oracle reproduces with the module's own
-roundings; the one rounding of V and `den`, which both sides perform on the same exact rational —
-and, because on every case tried a two-pass binary64 V and a binary64 `den` were found equal to
-the rounded rational, **no test separates an exact V or `den` from those binary64 routes**; the
+roundings; the one rounding of V and `den`, which both sides perform on the same exact rational; the
 `input_sha256` recipe, which the oracle reproduces and compares for one fixture only (a pruned
 row whose skew is an integer beyond the interpreter's integer-to-text limit), and the
 `interpretation` text, which is neither recomputed nor compared; and `Phi_inv` itself, which
 only the module calls — the stated bounds stand in for it, and the
 oracle's accuracy is the reason the bounds are the module's error and not a shared one.
+
+The [0.1, 0.2, 0.3] fixture separates a raw one-pass binary64 V, the saturation fixture
+a two-pass binary64 V and the monthly fixture a binary64 den; this does not establish
+the route against every binary64 implementation.

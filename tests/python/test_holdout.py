@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import random
+import tempfile
 import unittest
 
 from pineforge_hpo import holdout
@@ -1149,6 +1150,33 @@ class StatisticsTests(HoldoutTestCase):
 
 
 class DigestTests(HoldoutTestCase):
+    def test_named_metric_digest_keeps_integer_and_non_ok_cells(self):
+        """Metric m contributes 3.0 for ok id0 and 'pending' for pruned id1.
+
+        The holdout ok id7 contributes 2.0. The page's five-field preimages use
+        source indices 0,0,1 and the literal keys of arms A,B,A respectively.
+        raw_digest independently writes compact, key-sorted ASCII JSON, hashes
+        each row, sorts those bytes and hashes their concatenation. Catches
+        writing integer 3 as 3 rather than 3.0, or replacing the pruned string
+        with null; each error changes a covered cell in a per-row preimage.
+        """
+        selection = [
+            make_row(0, "ok", 1.0, "A", metrics={"m": 3}),
+            make_row(1, "pruned", None, "B", metrics={"m": "pending"}),
+        ]
+        holdout_rows = [make_row(7, "ok", 1.0, "A", metrics={"m": 2.0})]
+        document = holdout_compare(
+            selection,
+            holdout_rows,
+            metric="m",
+            direction="maximize",
+            k=1,
+            space=S1,
+        )
+        self.assertEqual(
+            document["input_sha256"], raw_digest([selection, holdout_rows], "m")
+        )
+
     def test_the_digest_and_determinism(self):
         """The digest is independently rebuilt from the recipe in docs/holdout.md
         and must equal the module's; with the rows of both sources reordered the
@@ -1553,6 +1581,71 @@ class AncestorTests(HoldoutTestCase):
                 errors.append(error)
             else:
                 documents.append(document)
+
+        for error in errors:
+            self.assertRefused(error, "holdout_input_invalid")
+        reread_errors = [
+            error for error in errors if "did not read the same twice" in error.detail
+        ]
+        self.assertTrue(reread_errors)
+        for error in reread_errors:
+            self.assertIn("holdout source", error.detail)
+        self.assertTrue(documents)
+        for document in documents:
+            self.assertEqual(document, expected)
+
+    def test_a_path_with_more_rows_on_reread_refuses(self):
+        """Catch refusing only when the second read has fewer rows than the first.
+
+        File A has ancestor id 7 and own id 20, so the first read sees two rows.
+        File B adds own id 21, so the later read sees three rows. The counts
+        differ and the call must refuse. Refusing only when the second read has
+        fewer rows than the first accepts this switch and returns a document,
+        so no limit would produce the required refusal. Sweep limits 1 through
+        8 without assuming how many __fspath__ calls each open makes. Successful
+        documents must equal the parsed result A, keeping its one ancestor.
+        """
+        result_a = result_of(
+            [make_row(7, "ok", 1.0, "B")],
+            [make_row(20, "ok", 2.0, "A")],
+        )
+        result_b = result_of(
+            [make_row(7, "ok", 1.0, "B")],
+            [make_row(20, "ok", 2.0, "A"), make_row(21, "ok", 1.5, "B")],
+        )
+        selection = [make_row(0, "ok", 3.0, "A")]
+        options = {"metric": "objective", "direction": "maximize", "k": 1, "space": S1}
+        expected = holdout_compare(selection, result_a, **options)
+        errors = []
+        documents = []
+        with tempfile.TemporaryDirectory() as directory:
+            path_a = Path(directory) / "a.json"
+            path_b = Path(directory) / "b.json"
+            path_a.write_text(
+                json.dumps(result_a, separators=(",", ":")), encoding="utf-8"
+            )
+            path_b.write_text(
+                json.dumps(result_b, separators=(",", ":")), encoding="utf-8"
+            )
+
+            class _Flaky(os.PathLike):
+                def __init__(self, limit):
+                    self.limit = limit
+                    self.calls = 0
+
+                def __fspath__(self):
+                    self.calls += 1
+                    if self.calls <= self.limit:
+                        return str(path_a)
+                    return str(path_b)
+
+            for limit in range(1, 9):
+                try:
+                    document = holdout_compare(selection, _Flaky(limit), **options)
+                except HoldoutError as error:
+                    errors.append(error)
+                else:
+                    documents.append(document)
 
         for error in errors:
             self.assertRefused(error, "holdout_input_invalid")

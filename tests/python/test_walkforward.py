@@ -955,6 +955,50 @@ class MinimizeTests(ContractCase):
 
 
 class RecordedMetricTests(ContractCase):
+    def test_named_metric_known_across_windows_with_unrecorded_window(self):
+        """E records PROFIT; two added ok rows in w4 record no metric cell.
+
+        A name is unknown only if no supplied row records it. Both w4 rows are
+        metric_not_recorded, so its counts are 2,0,2 and selected is null.
+        E contributes 12 rows and 6 eligible; totals are 14,6,8. Its three
+        windows each contribute one ranking pair, and target eligible counts
+        are 2+2+0, so work=14+3+4=21. w4 id0 carries w3's selected vector,
+        giving an absent pair with metric_not_recorded and no chain break.
+        Catches refusing a known name when any individual window lacks it.
+        """
+        sources = fixture_e()
+        sources["w4"] = [
+            row(0, "ok", 8.0, 3, 0.5, True),
+            row(1, "ok", 9.0, 1, 0.0, True),
+        ]
+        report = analyse(sources, ["w1", "w2", "w3", "w4"], metric=PROFIT)
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(
+            (report["rows_read"], report["rows_eligible"], report["rows_excluded"]),
+            (14, 6, 8),
+        )
+        self.assertEqual(
+            report["per_window"][3],
+            {
+                "window": "w4",
+                "rows_read": 2,
+                "rows_eligible": 0,
+                "rows_excluded": 2,
+                "excluded": {"metric_not_recorded": {"count": 2, "ids": [0, 1]}},
+                "selected": None,
+                "no_eligible_rows": True,
+            },
+        )
+        self.assertEqual(report["stability"]["windows_without_selection"], ["w4"])
+        self.assertEqual(len(report["carry_over"]), 3)
+        self.assertEqual(
+            (report["carry_over"][2]["from"], report["carry_over"][2]["to"]),
+            ("w3", "w4"),
+        )
+        self.absent_pair(report["carry_over"][2], "metric_not_recorded")
+        self.assertEqual(report["chain_breaks"], [])
+        self.assertEqual(report["work"], 21)
+
     def test_e_exclusions_selection_and_carry_reasons(self):
         """E eligible2,2,2: winners1=3,3=5,0=3, A=3,5,3; work19.
 
@@ -1447,6 +1491,17 @@ class RefusalTests(ContractCase):
         sources = fixture_d()
         sources["w1"][2]["parameters"]["A"] = True
         self.refusal("input_invalid", sources, ids=[2], names=["w1", "A"])
+
+    def test_resource_bound_one_below_work_refuses(self):
+        """D has 12 rows and three windows with 3 eligible rows each.
+
+        Ranking pairs total 3*(3*2/2)=9; two carry-over targets contribute
+        3+3=6. Thus work=12+9+6=27, above max_work=26, and the call refuses
+        walkforward_resource_exceeded. Catches refusing only when work is
+        greater than max_work+1, which would admit this same fixture at 26.
+        """
+        error = self.refusal("resource_exceeded", max_work=26)
+        self.assertEqual(error.detail, "the admission figure 27 is above max_work 26")
 
     def test_resource_boundary_and_wrong_term_controls(self):
         """D work12+9+6=27: max25 refuses, max27/30 admit.

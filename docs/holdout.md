@@ -15,6 +15,7 @@ correlation and the share whose holdout value lies in the better half of the poo
 trial, writes no file, keeps no state and changes no native result or trials file: the only side
 effect is reading the two files named. It is a library function; there is no command-line flag and
 no field in a native result.
+v1 analyses finished studies; native in-loop walk-forward comes later.
 
 ```python
 from pineforge_hpo.holdout import HoldoutError, holdout_compare
@@ -151,9 +152,10 @@ direction; vectors with equal values share a MID-RANK: a tie group at positions 
 `(p + q) / 2`, an exact integer or half-integer.
 
 For each matched followed vector: the selection value and rank, the holdout trial id, value and
-mid-rank, the difference `holdout - selection` (one IEEE-754 subtraction), and `improved` (whether
-the holdout value is strictly better in the direction). An unmatched vector carries none of the
-three holdout keys at all — no key, never a zero — and is listed with its reason instead.
+mid-rank, the difference `holdout - selection` (one IEEE-754 subtraction), and `improved`,
+whether the holdout value is strictly better in the direction (a comparison of two recorded
+values, not a judgement of the strategy). An unmatched vector carries none of the three
+holdout keys at all — no key, never a zero — and is listed with its reason instead.
 
 Over the matched followed vectors, rank the matched vectors twice more, within the matched set
 alone, by their selection values and by their holdout values, each time giving equal values the
@@ -193,7 +195,7 @@ kind. A difference that is not finite refuses the call (see [Refusals](#refusals
 | `k_followed` | `min(k, n_sel)` |
 | `n_sel`, `n_hol` | the eligible vectors of each source |
 | `selection`, `holdout` | per source: `index`, `rows`, `ancestor_rows`, `rows_eligible`, `vectors_eligible`, `rows_excluded`, `excluded` (per reason `{count, ids}`, ids ascending), `space_hash` |
-| `followed` | one entry per matched followed vector, ascending selection rank: selection trial id, vector key, selection value and rank, holdout trial id, holdout value, holdout rank (mid-rank), difference, improved |
+| `followed` | one entry per matched followed vector, ascending selection rank: selection trial id, vector key, selection value and rank, holdout trial id, holdout value, holdout rank (mid-rank), difference, improved (a comparison of two recorded values, not a judgement of the strategy) |
 | `unmatched` | one entry per unmatched followed vector, ascending selection rank: selection trial id, vector key, selection value and rank, reason, the holdout ids that hold the vector |
 | `n_matched` | the number of matched followed vectors |
 | `pool` | `size`, `median_rank_cut`, and `holdout_only` (`count` and ascending ids of the eligible holdout vectors whose vector matches no eligible selection vector) |
@@ -354,5 +356,6 @@ ASCII-only parts of the digest recipe, which no fixture exercises; and the wordi
 interpretation text. Its controls are a reordered tie, a value nudged by one unit in the
 last place, an edited key, a one-sided reordering of the selection values and a two-unit
 shift of the computed rank correlation, each applied to the oracle's own copy only, and
-each of which the comparison must detect; the invariance test that
-must agree — the two sources' backtest counters swapped — is a test of the module, not a control.
+each of which the comparison must detect. Different backtest counters in the two sources
+are accepted; the unit test `test_context_metric_and_value_refusals` checks this,
+and the oracle does not.

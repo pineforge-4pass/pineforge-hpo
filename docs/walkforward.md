@@ -17,6 +17,7 @@ Version 1 is post hoc. It **runs no window and evaluates nothing**: it starts no
 strategy, writes no file, keeps no state and changes no native result or trials file. The only side
 effect is reading the files named. It is a library function; there is no command-line flag and no
 field in a native result.
+v1 analyses finished studies; native in-loop walk-forward comes later.
 
 ```python
 from pineforge_hpo.walkforward import WalkforwardError, walkforward
@@ -27,7 +28,7 @@ try:
         {
             "2024-01": "result-2024-01.json",
             "2024-02": "result-2024-02.json",
-            # "2024-03" was never run: it is reported as never_run
+            # no source for "2024-03": it is listed in never_run
         },
         metric="objective",
         direction="maximize",
@@ -48,7 +49,7 @@ all with no default: leaving one out raises Python's `TypeError`, and a `None` p
 | Argument | Meaning |
 | --- | --- |
 | `windows` | The plan: a list (or tuple) of at least one distinct, non-empty text label, in plan order. The caller declares the expected windows; no label is derived from a file name, a path, a row field, a trial id or a time value. |
-| `sources` | A mapping label → source. A source is a path to a complete result JSON or a rows JSONL file, a parsed result, or a parsed list of rows. A key not in `windows` is refused; a plan label with no key is `never_run`. |
+| `sources` | A mapping label → source. A source is a path to a complete result JSON or a rows JSONL file, a parsed result, or a parsed list of rows. A key not in `windows` is refused; `never_run` lists the plan labels with no source, in plan order (the module cannot tell whether such a window's study was run). |
 | `metric` | `"objective"` or a metric name spelled as recorded in the rows' `metrics` object. |
 | `direction` | `maximize` or `minimize`. Required, no default. |
 | `space` | A recorded-space dict or a `StudySpec`, used only when no row or result records a space. |
@@ -69,7 +70,7 @@ The reference hash is the `space_hash` of the row with the lowest (plan position
 every window holding a row whose `space_hash` differs from it. `ids` are the trial ids of those
 differing rows, ascending: one id per differing row, so an id that occurs in several windows is
 listed once for each. Bar and timeframe counters are compared inside one window
-only, never across windows: windows cover different bars by construction, and their timeframes are
+only, never across windows: windows normally cover different bars, and their timeframes are
 properties of each window's own study, so nothing here claims the windows overlap, touch or were run
 over the data their labels suggest. For `metric="objective"` the passed direction must equal every
 recorded direction, checked in this order: the common space's recorded objective direction first
@@ -121,7 +122,8 @@ has a selected row — including when the next window has no eligible row at all
 the target window that carry the key and record **different** values refuse the call
 (`walkforward_duplicate_vector`), because the value and the rank would then depend on an arbitrary
 pick; equal values are not a refusal. A vector with no eligible row is never counted as zero and never
-dropped. A `never_run` window between two supplied windows breaks the chain: the gap is listed in
+dropped. A plan label with no source between two supplied windows breaks the chain:
+the gap is listed in
 `chain_breaks`, never skipped silently. A supplied window with no selected row is the source of no
 pair and is **not** a break: its own block says `no_eligible_rows` and it is named in
 `stability.windows_without_selection`. The module evaluates nothing.
@@ -145,7 +147,7 @@ comparison of the recorded values: `minimum != maximum` with `distinct == 1` is 
 | `metric`, `direction` | the caller's values |
 | `windows` | the plan as a list, in plan order, including when a tuple was passed |
 | `supplied` | the plan labels with a source, in plan order |
-| `never_run` | the plan labels with no source, in plan order |
+| `never_run` | the plan labels with no source, in plan order (the module cannot tell whether such a window's study was run) |
 | `rows_read`, `rows_eligible`, `rows_excluded` | counts over the supplied windows |
 | `per_window` | one entry per supplied window: label, the three counts, `excluded` by reason with ids, `selected` (`trial_id`, `value`, `parameters`) or `null`, `no_eligible_rows` |
 | `carry_over` | one entry per pair: labels, the vector key and parameters, `row_found`, `trial_id`, `value`, `better`, `equal`, `rank_mid`, `reason` |
@@ -220,12 +222,12 @@ built-in cap. Neither time nor memory has been measured.
 | ID | Choice |
 | --- | --- |
 | W1 | The window plan is the caller's ordered list of distinct non-empty text labels; every label in the result is the caller's key. |
-| W2 | A `sources` key not in the plan is refused; a plan label with no source is `never_run`, in plan order, never an error. |
+| W2 | A `sources` key not in the plan is refused; `never_run` lists the plan labels with no source, in plan order (the module cannot tell whether such a window's study was run). A missing source is never an error. |
 | W3 | A plan with no supplied source is refused; a plan of one window is allowed. |
 | W4 | Each window is read on its own, with its own context check; the recorded spaces must be equal across the supplied windows, and every row that records a `space_hash` must record the same one (a result's own top-level `space_hash` is not read); the bar and timeframe counters are compared inside a window only. |
 | W5 | The metric is `"objective"` or a recorded name; the direction is required, and for `"objective"` it must agree with every recorded direction (the common space's own checked first, then each source's). |
 | W6 | Per window one selected row, ties by ascending trial id; no eligible row is listed, not an error; none anywhere refuses the call. |
-| W7 | Carry-over only between two supplied windows adjacent in the plan whose first window has a selected row; a never-run window breaks the chain and the gap is listed; a window with no selected row is the source of no pair and is not a break. |
+| W7 | Carry-over only between two supplied windows adjacent in the plan whose first window has a selected row; a plan label with no source breaks the chain and the gap is listed; a window with no selected row is the source of no pair and is not a break. |
 | W8 | The carry-over is a lookup by the exact parameter key; it reports a row (`row_found` true) or reports no row with a reason (`row_found` false), never a zero; the module evaluates nothing. |
 | W9 | Two eligible rows of a target window that carry the carried vector and record different values refuse the call, naming the ids; equal values report the lowest id. |
 | W10 | Stability gives the selected values in plan order as the rows record them, the distinct count and, for integer and real dimensions, the exact minimum and maximum; no averaging. |
@@ -236,6 +238,7 @@ Not part of this contract: a native runner change, a multi-dataset runner, runni
 study, evaluating a parameter vector, an out-of-sample measure, a threshold, a verdict, a robustness
 score, a command-line flag, a field in a native result, several sources per window, and any
 clustering or averaging of parameters.
+v1 analyses finished studies; native in-loop walk-forward comes later.
 
 ## What is not claimed
 
@@ -261,4 +264,5 @@ counts and the admission figure. It is NOT evidence for the wording of `interpre
 in which the refusals are checked, for which of the two direction names the product maps to "better",
 for the selection formula itself (an error in both routes at once would not be caught), for a recorded
 metric beyond the cases the oracle's own eligibility table exercises, or for the digest of a row whose
-status is not `ok` and whose cell is a string, an array or an object (no test input writes one).
+status is not `ok` and whose cell is a string, an array or an object
+(no oracle input writes one; a unit test pins it).

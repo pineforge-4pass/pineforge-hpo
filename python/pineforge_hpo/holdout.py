@@ -9,6 +9,7 @@ holdout source recorded for the same vectors. Nothing here splits data, runs a t
 writes a file, keeps state or touches a native result: the only side effect is reading
 the two sources named. It is a library function; there is no command-line flag and no
 field in a native result.
+v1 analyses finished studies; native in-loop walk-forward comes later.
 
 Contract ``pineforge-hpo-holdout/v1``, algorithm ``exact_join_midrank_v1``:
 
@@ -45,8 +46,10 @@ Contract ``pineforge-hpo-holdout/v1``, algorithm ``exact_join_midrank_v1``:
   on each side within the matched set alone, and the share of matched vectors whose
   pool mid-rank is at most ``(M + 1) / 2`` with ``M`` the pool size. Every rank,
   mid-rank, term and cut is computed in exact rationals and reported as a
-  ``[numerator, denominator]`` pair of integers in lowest terms; ``difference``, the
-  share and ``spearman`` are single correctly rounded binary64 operations.
+  ``[numerator, denominator]`` pair of integers in lowest terms.
+  ``difference`` and the share are single correctly rounded binary64 operations;
+  ``spearman`` is one correctly rounded conversion of the exact ratio followed by
+  one correctly rounded square root.
 * ``spearman`` is ``null``, with a reason in ``spearman_undefined``, when fewer than
   three vectors are matched or when one of the two rank vectors is constant. No
   significance test, no p-value, no threshold and no verdict accompanies it.
