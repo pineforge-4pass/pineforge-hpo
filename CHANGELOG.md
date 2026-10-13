@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add a synthetic proof route for the native `--pbo-blocks` moments (tests and examples only; the
+  production binary, its options and its result bytes are unchanged). `examples/pbo_proof/` holds a
+  deterministic 2,048-bar series with its generator and a 25-trial grid. A separate test-only
+  executable, `pineforge-hpo-native-proof`, writes each trial's original full-window equity curve; an
+  independent exact-rational checker re-derives every block's count, sum and centred moment from those
+  curves and compares them with the emitted values, seven controls each reach their own named
+  refusal, and the PBO module is then run on the same native rows against the exact oracle. It proves
+  mechanics on synthetic data only, not market behaviour. PBO on real data remains unproven.
+
 ## 0.15.0 (2026-10-13)
 
 - Add `pineforge_hpo.walkforward.walkforward`, a post hoc analysis of finished per-window studies
