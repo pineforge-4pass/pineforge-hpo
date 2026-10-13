@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.15.0 (2026-10-14)
+## 0.15.0 (2026-10-13)
 
 - Add `pineforge_hpo.walkforward.walkforward`, a post hoc analysis of finished per-window studies
   (contract `pineforge-hpo-walkforward/v1`, algorithm `exact_per_window_v1`): it selects the best row
