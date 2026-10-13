@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.15.0 (2026-10-14)
+
 - Add `pineforge_hpo.walkforward.walkforward`, a post hoc analysis of finished per-window studies
   (contract `pineforge-hpo-walkforward/v1`, algorithm `exact_per_window_v1`): it selects the best row
   of each supplied window, reports the previous window's selected parameter vector in the next
