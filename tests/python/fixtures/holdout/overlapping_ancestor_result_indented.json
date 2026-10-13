@@ -1,0 +1,24 @@
+{
+  "warm_start_trials": [
+    {
+      "trial_id": 0,
+      "status": "ok",
+      "feasible": true,
+      "objective": 9.0,
+      "parameters": {
+        "arm": "A"
+      }
+    }
+  ],
+  "trials": [
+    {
+      "trial_id": 20,
+      "status": "ok",
+      "feasible": true,
+      "objective": 2.0,
+      "parameters": {
+        "arm": "B"
+      }
+    }
+  ]
+}
