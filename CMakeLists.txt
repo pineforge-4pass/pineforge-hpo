@@ -8,9 +8,12 @@ file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION"
     PINEFORGE_HPO_VERSION
     LIMIT_COUNT 1
 )
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PineForgeHpoVersion.cmake")
+pineforge_hpo_parse_version("${PINEFORGE_HPO_VERSION}"
+    PINEFORGE_HPO_VERSION_CORE PINEFORGE_HPO_VERSION_SUFFIX)
 
 project(PineForgeHPO
-    VERSION ${PINEFORGE_HPO_VERSION}
+    VERSION ${PINEFORGE_HPO_VERSION_CORE}
     DESCRIPTION "Native hyperparameter optimization for PineForge strategies"
     LANGUAGES C CXX
 )
@@ -198,7 +201,7 @@ if(PINEFORGE_HPO_BUILD_NATIVE_CLI)
     find_package(Threads REQUIRED)
     add_executable(pineforge-hpo-native src/cli/main.cpp)
     target_compile_definitions(pineforge-hpo-native PRIVATE
-        PINEFORGE_HPO_VERSION="${PROJECT_VERSION}")
+        PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
     target_include_directories(pineforge-hpo-native PRIVATE
         "${PINEFORGE_ENGINE_SOURCE_INCLUDE}"
         "${PINEFORGE_ENGINE_BUILD_INCLUDE}")

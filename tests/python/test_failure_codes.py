@@ -7,8 +7,11 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import subprocess
+import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -414,6 +417,259 @@ class FailureCodeTests(unittest.TestCase):
             self.assertNotEqual(unmerged.returncode, 0)
             self.assertIn(b"baseline tag v999.0.1 is not an ancestor", unmerged.stderr)
             self.assertNotIn(b"Command '[", unmerged.stderr)
+
+
+INVALID_RELEASE_VERSIONS = (
+    "1.6.0-rc.1",
+    "1.6",
+    "1.6.0rc",
+    "1.6.0rc0",
+    "1.6.0rc01",
+    "1.6.0RC1",
+    "1.6.0a1",
+    "1.6.0b1",
+    "1.6.0.post1",
+    "01.6.0",
+    "1.06.0",
+    "1.6.00",
+    "01.6.0rc1",
+    "1.06.0rc1",
+    "1.6.00rc1",
+    "1.6.0rc-1",
+    "1.6.0rc1.0",
+    "1.6.0+local",
+    "1.6.0 ",
+    "1.6.0 trailing text",
+    " 1.6.0",
+    "1.6.0\n",
+    "1.6０.0",
+    "",
+)
+
+
+class ReleaseVersionTests(unittest.TestCase):
+    def test_version_keys_accept_exact_final_and_rc_forms(self):
+        for version, expected in (
+            ("0.0.0", (0, 0, 0, 1, 0)),
+            ("0.15.0", (0, 15, 0, 1, 0)),
+            ("1.6.0", (1, 6, 0, 1, 0)),
+            ("0.0.0rc1", (0, 0, 0, 0, 1)),
+            ("1.6.0rc1", (1, 6, 0, 0, 1)),
+            ("1.6.0rc2", (1, 6, 0, 0, 2)),
+            ("1.6.0rc10", (1, 6, 0, 0, 10)),
+            ("12.34.56rc789", (12, 34, 56, 0, 789)),
+        ):
+            for prefix in ("", "v"):
+                with self.subTest(version=prefix + version):
+                    self.assertEqual(DIFF.version_key(prefix + version), expected)
+
+    def test_version_keys_reject_malformed_forms(self):
+        for version in INVALID_RELEASE_VERSIONS:
+            for prefix in ("", "v"):
+                with self.subTest(version=prefix + version):
+                    with self.assertRaisesRegex(ValueError, "N[.]N[.]N"):
+                        DIFF.version_key(prefix + version)
+        with self.assertRaises(ValueError):
+            DIFF.version_key("vv1.6.0")
+
+    def test_version_keys_order_rcs_before_the_final_release(self):
+        expected = [
+            "1.5.9",
+            "1.6.0rc1",
+            "1.6.0rc2",
+            "1.6.0rc10",
+            "1.6.0",
+            "1.6.1",
+        ]
+        for prefix in ("", "v"):
+            with self.subTest(prefix=prefix):
+                versions = [prefix + version for version in reversed(expected)]
+                self.assertEqual(
+                    sorted(versions, key=DIFF.version_key),
+                    [prefix + version for version in expected],
+                )
+
+    def test_catalog_since_accepts_rc1(self):
+        catalog = copy.deepcopy(CATALOG)
+        catalog["codes"]["hpo_cli_usage"]["since"] = "1.6.0rc1"
+        self.assertIsNone(DIFF.validate_catalog(catalog))
+
+    def test_catalog_since_rejects_malformed_versions(self):
+        for version in (*INVALID_RELEASE_VERSIONS, "v1.6.0", "v1.6.0rc1"):
+            with self.subTest(version=version):
+                catalog = copy.deepcopy(CATALOG)
+                catalog["codes"]["hpo_cli_usage"]["since"] = version
+                with self.assertRaises(ValueError):
+                    DIFF.validate_catalog(catalog)
+
+
+class CatalogReleaseTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.repo = Path(temporary.name)
+        self.git("init", "-q")
+        (self.repo / "catalog.json").write_bytes(CATALOG_BYTES)
+        self.git("add", "catalog.json")
+        self.git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "final catalog",
+        )
+        self.git("tag", "v0.15.0")
+        (self.repo / "VERSION").write_text("1.6.0rc1\n", encoding="utf-8")
+        self.output = self.repo / "diff.json"
+        self.command = [
+            sys.executable,
+            str(ROOT / "scripts/gen_catalog_diff.py"),
+            "--repo",
+            str(self.repo),
+            "--catalog",
+            "catalog.json",
+            "--output",
+            "diff.json",
+        ]
+
+    def git(self, *arguments):
+        subprocess.run(
+            ["git", "-C", str(self.repo), *arguments],
+            check=True,
+            capture_output=True,
+        )
+
+    def invoke(self, *arguments):
+        return subprocess.run(
+            [*self.command, *arguments], text=True, capture_output=True
+        )
+
+    def stamp(self, version):
+        completed = self.invoke("--from-tag", "v0.15.0", "--release-version", version)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return json.loads(self.output.read_bytes())
+
+    def check_stamp(self, version):
+        stamped = self.output.read_bytes()
+        for arguments in (("--check",), ("--check", "--release-version", version)):
+            with self.subTest(arguments=arguments):
+                checked = self.invoke(*arguments)
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                self.assertEqual(self.output.read_bytes(), stamped)
+
+    def test_rc1_version_file_stamps_full_version_and_checks(self):
+        version = (self.repo / "VERSION").read_text().splitlines()[0]
+        document = self.stamp(version)
+        self.assertEqual(document["from"]["tag"], "v0.15.0")
+        self.assertEqual(document["to"]["version"], "1.6.0rc1")
+        self.assertNotIn("unreleased", document["to"])
+        self.check_stamp("1.6.0rc1")
+
+    def test_rc2_keeps_final_baseline_and_refuses_explicit_rc_baseline(self):
+        self.git("tag", "v1.6.0rc1")
+        document = self.stamp("1.6.0rc2")
+        self.assertEqual(document["from"]["tag"], "v0.15.0")
+        self.assertEqual(document["to"]["version"], "1.6.0rc2")
+        self.check_stamp("1.6.0rc2")
+        stamped = self.output.read_bytes()
+        refused = self.invoke(
+            "--from-tag", "v1.6.0rc1", "--release-version", "1.6.0rc2"
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("baselines are final releases", refused.stderr)
+        self.assertEqual(self.output.read_bytes(), stamped)
+
+    def test_stored_rc_baseline_is_refused(self):
+        self.git("tag", "v1.6.0rc1")
+        document = self.stamp("1.6.0rc2")
+        document["from"]["tag"] = "v1.6.0rc1"
+        document["from"]["version"] = "1.6.0rc1"
+        self.output.write_bytes(DIFF.dump(document))
+        stored = self.output.read_bytes()
+        for arguments in (("--check",), ("--release-version", "1.6.0rc2")):
+            with self.subTest(arguments=arguments):
+                refused = self.invoke(*arguments)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("baselines are final releases", refused.stderr)
+                self.assertEqual(self.output.read_bytes(), stored)
+
+    def test_final_after_rc_tags_stamps_and_checks_against_last_final(self):
+        self.git("tag", "v1.6.0rc1")
+        self.git("tag", "v1.6.0rc2")
+        self.git("tag", "v1.6.0")
+        document = self.stamp("1.6.0")
+        self.assertEqual(document["from"]["tag"], "v0.15.0")
+        self.assertEqual(document["to"]["version"], "1.6.0")
+        self.check_stamp("1.6.0")
+
+    def test_rc_ignores_final_tags_at_or_after_its_core(self):
+        self.git("tag", "v1.6.0")
+        self.git("tag", "v1.6.1")
+        document = self.stamp("1.6.0rc1")
+        self.assertEqual(document["from"]["tag"], "v0.15.0")
+        self.assertEqual(document["to"]["version"], "1.6.0rc1")
+        self.check_stamp("1.6.0rc1")
+
+    def test_unreleased_baseline_does_not_advance_to_rc_tags(self):
+        self.git("tag", "v1.6.0rc1")
+        self.git("tag", "v1.6.0rc2")
+        completed = self.invoke("--from-tag", "v0.15.0")
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        document = json.loads(self.output.read_bytes())
+        self.assertEqual(document["from"]["tag"], "v0.15.0")
+        self.assertIsNone(document["to"]["version"])
+        self.assertTrue(document["to"]["unreleased"])
+        checked = self.invoke("--check")
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_rc_still_requires_latest_older_final_baseline(self):
+        self.git("tag", "v0.14.0")
+        refused = self.invoke("--from-tag", "v0.14.0", "--release-version", "1.6.0rc1")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("requires baseline v0.15.0, not v0.14.0", refused.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_target_must_be_newer_than_final_baseline(self):
+        for version in ("0.14.9", "0.15.0rc1", "0.15.0", "0.15.0rc2"):
+            with self.subTest(version=version):
+                refused = self.invoke(
+                    "--from-tag", "v0.15.0", "--release-version", version
+                )
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("target version must be newer", refused.stderr)
+                self.assertFalse(self.output.exists())
+
+    def test_release_option_rejects_malformed_and_prefixed_versions(self):
+        for version in (*INVALID_RELEASE_VERSIONS, "v1.6.0", "v1.6.0rc1"):
+            with self.subTest(version=version):
+                refused = self.invoke(
+                    "--from-tag", "v0.15.0", "--release-version", version
+                )
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("N.N.N", refused.stderr)
+                self.assertFalse(self.output.exists())
+
+
+class WheelReleaseVersionTests(unittest.TestCase):
+    def test_hatch_version_pattern_preserves_pep440_rc1(self):
+        try:
+            from packaging.version import Version
+        except ImportError:
+            self.fail("Install packaging with 'python -m pip install packaging'")
+        configuration = tomllib.loads((ROOT / "pyproject.toml").read_text())
+        version_configuration = configuration["tool"]["hatch"]["version"]
+        self.assertEqual(version_configuration["path"], "VERSION")
+        with tempfile.TemporaryDirectory() as temporary:
+            version_file = Path(temporary) / version_configuration["path"]
+            version_file.write_text("1.6.0rc1\n", encoding="utf-8")
+            match = re.search(
+                version_configuration["pattern"], version_file.read_text()
+            )
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group("version"), "1.6.0rc1")
+        self.assertEqual(str(Version(match.group("version"))), "1.6.0rc1")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,9 @@
   curves and compares them with the emitted values, seven controls each reach their own named
   refusal, and the PBO module is then run on the same native rows against the exact oracle. It proves
   mechanics on synthetic data only, not market behaviour. PBO on real data remains unproven.
+- Accept release candidates in the form `1.6.0rcN` in `VERSION`, the CMake project
+  version, and the failure-catalog diff, taken against the last final release.
+  The wheel and sdist keep the full pre-release version string.
 
 ## 0.15.0 (2026-10-13)
 
