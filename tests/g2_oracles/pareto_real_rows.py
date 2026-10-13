@@ -79,11 +79,16 @@ def run_native(args, axes: list) -> dict:
     from pineforge_hpo import prepare_run
 
     command, _artifact = prepare_run(
-        STUDY, args.engine_root, args.cache_dir, native=args.native
+        Path(args.study) if args.study else STUDY,
+        args.engine_root, args.cache_dir, native=args.native
     )
     command = [str(part) for part in command]
     for axis in axes:
         command += ["--record-metric", axis["name"]]
+    if args.pbo_blocks is not None:
+        command += ["--pbo-blocks", str(args.pbo_blocks)]
+    if args.proof_curves is not None:
+        command += ["--proof-curves", str(args.proof_curves)]
     print("native command:", " ".join(command))
     completed = subprocess.run(command, text=True, capture_output=True, check=False)
     print(f"native exit code {completed.returncode}")
@@ -92,6 +97,12 @@ def run_native(args, axes: list) -> dict:
         raise SystemExit(7)
     result = json.loads(completed.stdout)
     Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.proof_curves is not None:
+        Path(args.out).with_suffix(".artifact.json").write_text(
+            json.dumps({"command": command, "artifact": _artifact,
+                        "native_exit_code": completed.returncode}, indent=2, sort_keys=True)
+            + "\n", encoding="utf-8"
+        )
     return result
 
 
@@ -151,6 +162,11 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--engine-root", help="pineforge-engine tree (with --run)")
     parser.add_argument("--native", help="pineforge-hpo-native executable (with --run)")
+    parser.add_argument("--study", help="alternate study with --run and --other-study")
+    parser.add_argument("--pbo-blocks", type=int, help="request native full-window return blocks")
+    parser.add_argument(
+        "--proof-curves", help="write original equity bits using pineforge-hpo-native-proof"
+    )
     parser.add_argument(
         "--cache-dir",
         help="artifact cache directory, required with --run: the native artifacts and their locks "
@@ -182,6 +198,10 @@ def main(argv=None) -> int:
             "--run needs --engine-root, --native, --out and --cache-dir (the last two in a "
             "scratch directory)"
         )
+    if args.study and not (args.run and args.other_study):
+        parser.error("--study needs --run and --other-study")
+    if not args.run and (args.pbo_blocks is not None or args.proof_curves is not None):
+        parser.error("--pbo-blocks and --proof-curves need --run")
     axes = args.axis
     if args.run:
         result = run_native(args, axes)

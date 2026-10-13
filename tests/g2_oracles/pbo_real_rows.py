@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 """Real-rows end to end for ``pineforge_hpo.pbo``: the module on the rows of a finished study.
 
-The PBO pin names no input for this proof ("one real study to a PBO report"), and the native runner
-of the tree this script was written against does not write the block payload (``block_returns``)
-that the module reads. The script therefore takes the rows as an argument, makes none up, and
-stops with exit code 3 and the word BLOCKED when no row carries a ``block_returns`` object. It is
-meant for the day the native payload exists. The PBO fixture files carry ``block_returns`` but not
-the ``backtest`` object that marks native output, so the script refuses them with exit code 5.
+The native runner writes ``block_returns`` and ``return_blocks`` on request with
+``--pbo-blocks S``. This script takes those native rows, makes none up, and exits 3 with
+BLOCKED when no payload was requested. The small PBO fixtures lack the native ``backtest``
+bar counters and are refused with exit 5.
+
+With ``--curves FILE``, every native row and block is first compared against the original
+full-window curves dumped by the separate ``pineforge-hpo-native-proof`` executable. Equity
+bits are decoded to exact Fractions; returns use explicitly rounded division and subtraction.
+Grouping comes from the documented floor rule, independently of the wire moments. Exact Q
+and M, an independent pairwise M identity, binary64 replay at each operation, both error
+bounds, K, n_b and boundary times must agree. Empty comparisons, missing files, duplicate
+ids or a curve roster different from the rows fail. ``--check-curves-only`` requires the
+same comparisons and the module's moment-table validation without computing PBO.
+
+``pbo_native_proof.py`` also checks the independently admitted 25-trial grid and exercises
+named mutations before invoking the full comparison on the unchanged rows. This route
+proves mechanics only, not market behaviour. PBO on real data is not proven.
 
 With real rows it
 1. refuses input that does not look like native output: every row must carry a ``backtest`` object
@@ -47,10 +58,11 @@ disagreement. One tie therefore cannot hide a difference at any other split, and
 is reported whatever else is open.
 
 Usage: ``python3 tests/g2_oracles/pbo_real_rows.py --rows PATH --S 16 --sampler grid
---dataset-identity TEXT``
+--dataset-identity TEXT --curves CURVES``
 ``PATH`` is a result JSON (``trials`` and optional ``warm_start_trials``) that carries the
 declarations above, or a rows JSON list or a rows JSONL file that carries none. Exit codes: 0
-module and oracle agree; 1 they disagree; 2 a refusal, the module's (printed as ``MODULE
+module and oracle agree; 1 a curve check or oracle comparison disagrees; 2 a refusal, the
+module's (printed as ``MODULE
 REFUSED``) or the script's own for a result that keeps only some of its trials (``REFUSED BY THE
 SCRIPT``), and also a usage error; 3 BLOCKED, no ``block_returns`` in the rows; 4 oracle skipped
 as too large (``--oracle-limit``); 5 the rows do not look like native output; 6 inconclusive
@@ -65,6 +77,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import struct
 import sys
 
 # Write nothing: no bytecode cache for the oracle module imported below or for the package.
@@ -73,6 +86,268 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pbo_oracle  # noqa: E402  (this directory; imports nothing of pineforge_hpo)
+
+
+class CurveCheckError(ValueError):
+    """A named curve comparison failure, independent of the PBO module's refusals."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+        self.detail = detail
+
+
+U = Fraction(1, 1 << 53)
+
+
+def curve_require(condition: bool, code: str, detail: str) -> None:
+    if not condition:
+        raise CurveCheckError(code, detail)
+
+
+def power_two(exponent: int) -> Fraction:
+    return Fraction(1 << exponent) if exponent >= 0 else Fraction(1, 1 << -exponent)
+
+
+def fraction_from_bits(bits: int) -> Fraction:
+    """Decode finite binary64 bits exactly, without decimal or floating-point arithmetic."""
+    exponent = (bits >> 52) & 0x7ff
+    significand = bits & ((1 << 52) - 1)
+    curve_require(exponent != 0x7ff, "curve_non_finite", "equity or replay is not finite")
+    if exponent:
+        significand += 1 << 52
+        scale = exponent - 1023 - 52
+    else:
+        scale = -1074
+    value = significand * power_two(scale)
+    return -value if bits >> 63 else value
+
+
+def round_binary64_bits(value: Fraction) -> int:
+    """Explicit nearest-even rounding, including subnormals, using integers only."""
+    if value == 0:
+        return 0
+    sign = (1 << 63) if value < 0 else 0
+    magnitude = abs(value)
+    exponent = magnitude.numerator.bit_length() - magnitude.denominator.bit_length()
+    if magnitude < power_two(exponent):
+        exponent -= 1
+    scale = max(exponent - 52, -1074)
+    scaled = magnitude / power_two(scale)
+    significand, remainder = divmod(scaled.numerator, scaled.denominator)
+    twice = 2 * remainder
+    if twice > scaled.denominator or (
+        twice == scaled.denominator and significand % 2
+    ):
+        significand += 1
+    if exponent < -1022:
+        # Rounding the largest subnormal up naturally gives the smallest normal's bits.
+        return sign | significand
+    if significand == 1 << 53:
+        significand >>= 1
+        exponent += 1
+    curve_require(exponent <= 1023, "curve_non_finite", "binary64 replay overflow")
+    return sign | ((exponent + 1023) << 52) | (significand - (1 << 52))
+
+
+def rn(value: Fraction) -> Fraction:
+    return fraction_from_bits(round_binary64_bits(value))
+
+
+def wire_bits(value) -> int:
+    curve_require(type(value) in (int, float), "curve_wire_invalid", "moment is not numeric")
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise CurveCheckError("curve_wire_invalid", "moment overflows binary64") from error
+    curve_require(math.isfinite(number), "curve_wire_invalid", "moment is not finite")
+    return struct.unpack(">Q", struct.pack(">d", number))[0]
+
+
+def load_curves(path: Path) -> dict:
+    """Read every original curve; missing files, duplicate ids and empty files fail."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise CurveCheckError("curve_file_missing", str(error)) from error
+    curves = {}
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError as error:
+            raise CurveCheckError("curve_file_invalid", f"line {line_number}: {error}") from error
+        curve_require(
+            isinstance(record, dict) and set(record) == {"trial_id", "curve"},
+            "curve_file_invalid", f"line {line_number}: expected trial_id and curve",
+        )
+        trial_id = record["trial_id"]
+        curve_require(
+            type(trial_id) is int and trial_id >= 0, "curve_id_invalid",
+            f"line {line_number}: trial id must be a non-negative integer",
+        )
+        curve_require(
+            trial_id not in curves, "curve_id_duplicate", f"duplicate curve id {trial_id}",
+        )
+        points = record["curve"]
+        curve_require(
+            isinstance(points, list) and len(points) >= 3,
+            "curve_points_invalid", f"trial {trial_id}: fewer than three original points",
+        )
+        decoded = []
+        for point in points:
+            curve_require(
+                isinstance(point, list) and len(point) == 2 and type(point[0]) is int,
+                "curve_points_invalid", f"trial {trial_id}: expected integer time and equity bits",
+            )
+            bits = point[1]
+            curve_require(
+                isinstance(bits, str) and len(bits) == 16
+                and all(char in "0123456789abcdef" for char in bits),
+                "curve_bits_invalid", f"trial {trial_id}: expected 16 lowercase hex digits",
+            )
+            decoded.append((point[0], fraction_from_bits(int(bits, 16))))
+        curves[trial_id] = decoded
+    curve_require(bool(curves), "curve_zero_comparisons", "the curves file holds no trials")
+    return curves
+
+
+def exact_block(returns: list) -> dict:
+    """Exact Q/M and a separately rounded replay, from interval returns only."""
+    count = len(returns)
+    curve_require(count > 0, "curve_count", "a block has no intervals")
+    total = sum(returns, Fraction(0))
+    mean = total / count
+    centred = sum(((value - mean) ** 2 for value in returns), Fraction(0))
+    pairwise = sum(
+        ((left - right) ** 2
+         for index, left in enumerate(returns) for right in returns[index + 1:]),
+        Fraction(0),
+    ) / count
+    curve_require(
+        centred == pairwise, "curve_m2_identity", "centred and pairwise exact M disagree",
+    )
+    replay_sum = Fraction(0)
+    for value in returns:
+        replay_sum = rn(replay_sum + value)
+    replay_mean = rn(replay_sum / count)
+    replay_m2 = Fraction(0)
+    if count > 1:
+        for value in returns:
+            difference = rn(value - replay_mean)
+            square = rn(difference * difference)
+            replay_m2 = rn(replay_m2 + square)
+    absolute = sum((abs(value) for value in returns), Fraction(0))
+    return {
+        "count": count, "Q": total, "M": centred, "pairwise_M": pairwise, "A": absolute,
+        "sum_bits": round_binary64_bits(replay_sum),
+        "m2_bits": round_binary64_bits(replay_m2),
+        "sum_bound": 8 * count * U * absolute,
+        "m2_bound": 16 * count * U * centred + 4 * count * (U * absolute) ** 2,
+    }
+
+
+def derive_curve(points: list, size: int) -> dict:
+    """Apply the documented floor grouping to the dumped points, without reading wire moments."""
+    curve_require(type(size) is int and size >= 2 and size % 2 == 0,
+                  "curve_layout", "S must be even and at least two")
+    intervals = len(points) - 1
+    curve_require(intervals >= size, "curve_layout", "fewer curve intervals than blocks")
+    curve_require(
+        all(type(time) is int for time, _value in points)
+        and all(left[0] <= right[0] for left, right in zip(points, points[1:])),
+        "curve_time_order", "original curve times are not non-decreasing integers",
+    )
+    starts = [(block * intervals + size - 1) // size for block in range(size + 1)]
+    counts = [right - left for left, right in zip(starts, starts[1:])]
+    curve_require(
+        min(counts) >= 1 and sum(sorted(counts)[:size // 2]) >= 2,
+        "curve_layout", "a block or the smallest half is too short",
+    )
+    groups = [[] for _ in range(size)]
+    for index, ((_time, prior), (_next_time, current)) in enumerate(zip(points, points[1:])):
+        curve_require(prior > 0, "curve_non_positive_equity", "a prior equity is not positive")
+        value = rn(rn(current / prior) - 1)
+        groups[index * size // intervals].append(value)
+    return {
+        "K": intervals, "n_b": counts,
+        "boundary_time_ms": [points[start][0] for start in starts],
+        "blocks": [exact_block(group) for group in groups],
+    }
+
+
+def compare_block(payload: dict, index: int, expected: dict, label: str) -> None:
+    """Count, independent rational bounds, then bit identity, each with its own failure code."""
+    count = payload["count"][index]
+    curve_require(type(count) is int and count == expected["count"],
+                  "curve_count", f"{label}: count {count}, expected {expected['count']}")
+    total_bits = wire_bits(payload["sum"][index])
+    centred_bits = wire_bits(payload["m2"][index])
+    total = fraction_from_bits(total_bits)
+    centred = fraction_from_bits(centred_bits)
+    curve_require(abs(total - expected["Q"]) <= expected["sum_bound"],
+                  "curve_sum_bound", f"{label}: sum residual exceeds the rational bound")
+    curve_require(abs(centred - expected["M"]) <= expected["m2_bound"],
+                  "curve_m2_bound", f"{label}: m2 residual exceeds the two-term rational bound")
+    curve_require(total_bits == expected["sum_bits"], "curve_sum_bits",
+                  f"{label}: sum bits {total_bits:016x}, expected {expected['sum_bits']:016x}")
+    curve_require(centred_bits == expected["m2_bits"], "curve_m2_bits",
+                  f"{label}: m2 bits {centred_bits:016x}, expected {expected['m2_bits']:016x}")
+
+
+def check_curves(result: dict, rows: list, curves: dict, size: int, *, roster=None) -> dict:
+    """Compare every row and block, and all layout fields, with original curves only."""
+    curve_require(bool(rows), "curve_zero_comparisons", "no rows were supplied")
+    ids = [row.get("trial_id") if isinstance(row, dict) else None for row in rows]
+    curve_require(all(type(item) is int and item >= 0 for item in ids),
+                  "curve_id_invalid", "rows need non-negative integer trial ids")
+    curve_require(len(set(ids)) == len(ids), "curve_row_duplicate", "duplicate native trial id")
+    curve_require(set(ids) == set(curves), "curve_id_mismatch",
+                  "curve ids must equal all native row ids")
+    if roster is not None:
+        curve_require(len(roster) == len(set(roster)) and set(ids) == set(roster),
+                      "curve_roster_mismatch", "native rows do not match the admitted roster")
+    declared = result.get("return_blocks") if isinstance(result, dict) else None
+    curve_require(isinstance(declared, dict), "curve_layout", "no result-level return_blocks")
+    curve_require(declared.get("S") == size, "curve_layout", "the requested and declared S differ")
+    comparisons = 0
+    derived = {}
+    for row in rows:
+        trial_id = row["trial_id"]
+        payload = row.get("block_returns")
+        curve_require(
+            row.get("status") in ("ok", "constraint_violation")
+            and isinstance(payload, dict) and payload.get("status") == "ok",
+            "curve_payload", f"trial {trial_id}: no usable full-window payload",
+        )
+        curve_require(
+            all(isinstance(payload.get(name), list) and len(payload[name]) == size
+                for name in ("count", "sum", "m2")),
+            "curve_payload", f"trial {trial_id}: moment arrays do not have S entries",
+        )
+        expected = derive_curve(curves[trial_id], size)
+        derived[trial_id] = expected
+        # Count comes first so a self-consistent forged count reaches the exact count check.
+        for index, block in enumerate(expected["blocks"]):
+            compare_block(payload, index, block, f"trial {trial_id}, block {index}")
+            comparisons += 1
+        curve_require(type(declared.get("K")) is int and declared["K"] == expected["K"],
+                      "curve_K", f"trial {trial_id}: K differs from original point count minus one")
+        curve_require(
+            declared.get("n_b") == expected["n_b"]
+            and all(type(count) is int for count in declared["n_b"]),
+            "curve_n_b", f"trial {trial_id}: n_b differs from floor grouping",
+        )
+        curve_require(
+            declared.get("boundary_time_ms") == expected["boundary_time_ms"]
+            and all(type(time) is int for time in declared["boundary_time_ms"]),
+            "curve_boundary", f"trial {trial_id}: boundary set differs from original times",
+        )
+    curve_require(comparisons > 0 and comparisons == len(rows) * size,
+                  "curve_zero_comparisons", "not every row and block was compared")
+    return {"rows": len(rows), "blocks": comparisons, "derived": derived}
+
 
 def load_rows(path: Path) -> tuple:
     """Return (rows, result object or None) from a result, a rows list or a rows JSONL file."""
@@ -126,7 +401,7 @@ def counts_add_up(document: dict) -> bool:
 
 
 class RealLedger(pbo_oracle.Ledger):
-    """The oracle's ledger plus a third verdict (finding P2-2): a comparison that exact ties leave
+    """The oracle's ledger plus a third verdict: a comparison that exact ties leave
     open. An open comparison is counted as made; it is never a failure and never an agreement."""
 
     def __init__(self) -> None:
@@ -326,6 +601,11 @@ def main(argv=None) -> int:
         "--sampler", required=True, help="the sampler of the study (default D6 label)"
     )
     parser.add_argument("--max-work", type=int, default=None, help="admission bound for the module")
+    parser.add_argument("--curves", type=Path, help="original equity JSONL from the proof executable")
+    parser.add_argument(
+        "--check-curves-only", action="store_true",
+        help="require curve comparisons and module input validation, without computing PBO",
+    )
     parser.add_argument(
         "--dataset-identity",
         default=None,
@@ -339,11 +619,16 @@ def main(argv=None) -> int:
         help="skip the exact oracle above this many ordered splits times trials (default 2000000)",
     )
     args = parser.parse_args(argv)
+    if args.check_curves_only and args.curves is None:
+        parser.error("--check-curves-only needs --curves")
     pbo_oracle.harness_self_test()
     path = Path(args.rows)
     data = path.read_bytes()
     print(f"input: {path} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()})")
     rows, result = load_rows(path)
+    if not rows:
+        print("CURVE CHECK REFUSED: curve_zero_comparisons: no rows were supplied")
+        return 1
     if result is not None and result.get("trials_out", "all") != "all":
         print(
             "REFUSED BY THE SCRIPT: the result keeps only some of its trials "
@@ -356,11 +641,8 @@ def main(argv=None) -> int:
     print(f"rows read: {len(rows)}; rows carrying block_returns: {carrying}")
     if carrying == 0:
         print(
-            "BLOCKED: no row carries a block_returns payload. The native runner of this tree "
-            "does not\n"
-            "write one (docs/pbo.md: the native block payload is a later piece of work), "
-            "so there are\n"
-            "no real rows to run the module on. Nothing was run and nothing is claimed."
+            "BLOCKED: no row carries block_returns. Request --pbo-blocks S when producing "
+            "native rows. No PBO comparison was made."
         )
         return 3
     missing = looks_native(rows)
@@ -373,6 +655,13 @@ def main(argv=None) -> int:
 
     parts, roster, declared_keywords = lineage_of(result, rows, args.dataset_identity)
     try:
+        if args.curves is not None:
+            curves = load_curves(args.curves)
+            pbo.load_moment_table(parts, S=args.S, roster=roster)
+            checked = check_curves(result, rows, curves, args.S)
+            print(f"CURVES: AGREE rows={checked['rows']} blocks={checked['blocks']}")
+            if args.check_curves_only:
+                return 0
         document = pbo.pbo(
             parts,
             S=args.S,
@@ -385,6 +674,9 @@ def main(argv=None) -> int:
     except pbo.PboError as error:
         print(f"MODULE REFUSED: {error.code}: {error.detail}; trial ids {list(error.ids)[:20]}")
         return 2
+    except CurveCheckError as error:
+        print(f"CURVE CHECK REFUSED: {error.code}: {error.detail}")
+        return 1
     print(
         "module result (the lambdas and their tie sizes, one per tied winner of each split, "
         "are not printed):"

@@ -460,21 +460,25 @@ Coverage limits of `neighbourhood_real_rows.py`:
 4. Only native result files are accepted (recorded space, `trials_out` all, a bar counter in
    every row).
 
-### `pbo_real_rows.py`: the PBO pin names no input, and the native payload does not exist yet
+### `pbo_real_rows.py`: native blocks, original curves and PBO comparison
 
 ```
 python3 tests/g2_oracles/pbo_real_rows.py --rows /path/to/result.json --S 16 --sampler grid \
-    --dataset-identity TEXT
+    --dataset-identity TEXT --curves /path/to/curves.jsonl
 ```
 
-The PBO pin names no input for "one real study to a PBO report", and no row that the native runner
-of this tree writes carries a `block_returns` payload (the runner does not write one; `docs/pbo.md`
-says so). With rows that carry none the script prints `BLOCKED`, exits 3 and claims nothing; it
-never builds rows. The three PBO fixture files do carry `block_returns`, but not the `backtest`
+The native runner writes `block_returns` and `return_blocks` when asked with `--pbo-blocks S`.
+With rows that carry none the script prints `BLOCKED`, exits 3 and compares nothing; it never
+builds rows. The PBO fixture files do carry `block_returns`, but not the `backtest`
 object that marks native output, so the script refuses them (exit 5). With real rows it prints
 the module's report as the pin describes it (`calibrated: false`, no threshold, both rates, the
 roster label, the work figure) and compares the counts (by the count rule above) and the rates
-with the exact oracle.
+with the exact oracle. With `--curves`, it first requires exact curve-to-moment comparisons
+on every native row and block. The expected values come only from the original full-window
+curves dumped by the separate proof executable. Equity bits, returns, exact Q/M and the
+pairwise M identity use rational arithmetic. Explicit nearest-even rounding replays each
+binary64 operation; counts, sum/m2 bits, both error bounds, K, n_b and boundary times must
+match. Missing files, empty comparisons, duplicate ids and mismatched curve rosters fail.
 
 The module takes its rows in parts, with the declared roster and the early stop of the study. The
 script reads them from the result and fills in none of them: one part, the rows with the result's
@@ -520,10 +524,9 @@ Coverage limits of `pbo_real_rows.py`:
    explain is `OPEN` and counts neither as an agreement nor as a disagreement. The tie analysis
    assumes that two distinct exact statistics never collide in binary64 (a near-tie); a
    collision of that kind would not be recognised as a tie and would show as a disagreement.
-4. Today no row that the native runner of this tree writes carries `block_returns`, so with its
-   output the script exits 3 (`BLOCKED`) and compares nothing, and the fixture files that do carry
-   it stop at exit 5 (no `backtest` object). Everything above is untested on real data until the
-   native payload exists.
+4. Blocks must be requested while producing native rows. Without that request the script exits
+   3 (`BLOCKED`); fixtures without native bar counters stop at exit 5. Curve comparisons are
+   required by the synthetic proof driver. PBO on real data is not proven.
 5. The roster is the distinct trial ids of the rows, not an id set that the result declares (a
    result of this tree declares counters, such as `trials_completed`, and no id set), so the
    module's checks for a gap or an unknown trial in the lineage cannot fire here; a repeated id
@@ -536,3 +539,76 @@ Coverage limits of `pbo_real_rows.py`:
    result with an `early_stop` object is expected to be `diagnostic_adaptive_roster` whatever the
    sampler. A sampler outside the six has no entry and the module refuses it first (exit 2). The
    `early_stop` flag that the module echoes is not compared by this script.
+
+### Synthetic block/PBO mechanics route
+
+This route proves mechanics only, not market behaviour. Its execution still needs validation.
+It uses the 2,048 committed minute bars and 25-vector threshold grid in
+`examples/pbo_proof/`. The integer-arithmetic generator records its seed and formulas.
+The first 256 closes are flat below every entry level; the subsequent wave supplies
+strategy activity. The controls select eligible blocks from the original curves.
+The original single-strategy example and its golden digest are unchanged.
+
+Build the separate test targets, then provide the threshold plugin produced by the ordinary
+artifact compilation route. The plugin needs its adjacent `manifest.json`; its source hash
+must match `examples/single_strategy/threshold.pine`, its plugin hash must match and its
+compile flags must retain `-ffp-contract=off`. The plugin location below is an example:
+substitute the path of the built artifact.
+
+```bash
+cmake --build build --target pineforge-hpo-native-proof pineforge_hpo_pbo_curve_reference
+python3 -B tests/g2_oracles/pbo_native_proof.py \
+    --native build/bin/pineforge-hpo-native-proof \
+    --plugin build/cache/threshold/strategy.so \
+    --harness build/bin/pineforge_hpo_pbo_curve_reference \
+    --engine-root external/pineforge-engine --out build/pbo-proof --S 16
+```
+
+The driver uses the native producer function in `pareto_real_rows.py` with the synthetic
+study and precompiled plugin. That function forwards `--pbo-blocks` and `--proof-curves`
+after `prepare_run`, next to the metric flags. The original command is unchanged without
+these options. Standalone alternate-study production uses `--study` with `--other-study`,
+so it cannot be confused with the nine-trial Pareto example.
+
+The driver independently admits the grid from the committed spec, requires every trial id
+and parameter vector and checks that the original curves are distinct. Each execution writes
+its own original full-window snapshot before releasing it; the fixed-candidate C-ABI probe
+is a separate reconciliation and never supplies expected block moments.
+
+The curve checker computes exact Q and M from rounded interval returns, checks the pairwise
+M identity and requires exact counts and binary64 replay bits. It also requires
+`abs(sum-Q) <= 8*n*u*A` and
+`abs(m2-M) <= 16*n*u*M + 4*n*(u*A)^2`, where `u=2^-53` and `A=sum(abs(r))`.
+These are sampled numerical error checks. The checker unit tests include the named
+constant-series and tiny-spread regimes that require the second term.
+
+Every mutation starts from a passing result copy and keeps the original curves:
+
+| Mutation | Required observed check |
+| --- | --- |
+| Change one count with n_b fixed | module `pbo_block_mismatch`, for the changed trial |
+| Change one sum by one ulp in a zero-return block | module input accepted, then `curve_sum_bound` |
+| Change one declared block count, linked row counts and K together | module input accepted, then `curve_count` |
+| Change one boundary time without decreasing the order | module input accepted, then `curve_boundary` |
+| Force `non_positive_equity` | module `pbo_non_positive_equity`, for the changed trial |
+| Change one finite m2 by one ulp in a block with count > 1 | module input accepted, then `curve_m2_bits` |
+| Null one payload while other payloads remain | module `pbo_rows_incomplete`, for the changed trial |
+
+For the one-ulp sum control, the original curve must supply a block with A=Q=0. Its bound
+is zero, so the next binary64 value above the zero wire sum violates the exact bound.
+The checker applies the same bound formula to every block; no block index is hard-coded.
+A missing eligible block, acceptance, an unrelated refusal, a missing control or a bypassed
+named check fails.
+
+The last comparison runs `pbo_real_rows.py` on the unmodified rows with `--curves`. Only
+exit 0 plus its actual `RESULT: AGREE` line passes; exits 1 through 6 all fail. The driver
+prints the code and verdict it read. A fresh subdirectory retains original curves, native
+rows, mutated copies, stdout/stderr logs and `metadata.json` with input and artifact
+hashes, command arguments, the reducing build identity and observed verdicts.
+
+CTest registers `pineforge_hpo_pbo_native_proof` whenever the native test targets are
+available. Configure `PINEFORGE_HPO_PBO_PROOF_PLUGIN` with the built plugin path.
+The fixture builds the proof executable and C-ABI probe; missing inputs fail with no skip.
+`pineforge_hpo_pbo_curve_checker` runs the hand-derived Python checks without a native
+binary. `pineforge_hpo_pbo_proof_cli` uses a separate invocation-count fixture to catch
+rerun dumps, wrong equity bits and prefix curves, and checks production option isolation.

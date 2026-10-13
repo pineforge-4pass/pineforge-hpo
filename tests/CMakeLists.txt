@@ -180,6 +180,9 @@ if(PINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY)
 endif()
 
 if(Python3_Interpreter_FOUND AND UNIX)
+    add_test(NAME pineforge_hpo_pbo_curve_checker
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_pbo_curve_checker.py" -v)
     # Independent 64-bit oracle (big integers, imports nothing from src/), then the engine test.
     add_test(NAME pineforge_hpo_sobol_oracle64_generate
         COMMAND "${Python3_EXECUTABLE}" -I
@@ -366,6 +369,51 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     add_test(NAME pineforge_hpo_signal_macro
         COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
             --target pineforge_hpo_test_signal_macro)
+
+    # A separate translation of the CLI, built only for proof tests. The production target
+    # receives no proof definition, dependency or installation change.
+    find_package(Threads REQUIRED)
+    add_executable(pineforge-hpo-native-proof EXCLUDE_FROM_ALL
+        "${PROJECT_SOURCE_DIR}/src/cli/main.cpp")
+    target_compile_definitions(pineforge-hpo-native-proof PRIVATE
+        PINEFORGE_HPO_PROOF_CURVES=1 PINEFORGE_HPO_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(pineforge-hpo-native-proof PRIVATE
+        PineForgeHPO::engine_adapter Threads::Threads)
+    add_dependencies(pineforge-hpo-native-proof ${PFH_RETURN_STATS_IDENTITY_TARGET})
+    target_include_directories(pineforge-hpo-native-proof PRIVATE
+        "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}"
+        "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
+    target_compile_options(pineforge-hpo-native-proof PRIVATE -Wall -Wextra -Wpedantic)
+    add_executable(pineforge_hpo_pbo_curve_reference EXCLUDE_FROM_ALL real_strategy_curve.cpp)
+    target_compile_definitions(pineforge_hpo_pbo_curve_reference PRIVATE PINEFORGE_HPO_PBO_PROBE=1)
+    target_link_libraries(pineforge_hpo_pbo_curve_reference PRIVATE PineForgeHPO::engine_adapter)
+    target_compile_options(pineforge_hpo_pbo_curve_reference PRIVATE -Wall -Wextra -Wpedantic)
+    add_library(pineforge_hpo_pbo_proof_strategy SHARED EXCLUDE_FROM_ALL pbo_proof_strategy.cpp)
+    target_include_directories(pineforge_hpo_pbo_proof_strategy PRIVATE
+        "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+    target_compile_options(pineforge_hpo_pbo_proof_strategy PRIVATE -Wall -Wextra -Wpedantic)
+    set_target_properties(pineforge_hpo_pbo_proof_strategy PROPERTIES PREFIX "")
+    if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+        target_compile_options(pineforge_hpo_pbo_proof_strategy PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_pbo_proof_strategy PRIVATE -fsanitize=address,undefined)
+        target_compile_options(pineforge-hpo-native-proof PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(pineforge-hpo-native-proof PRIVATE -fsanitize=address,undefined)
+        target_compile_options(pineforge_hpo_pbo_curve_reference PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_pbo_curve_reference PRIVATE -fsanitize=address,undefined)
+    elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+        target_compile_options(pineforge_hpo_pbo_proof_strategy PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_pbo_proof_strategy PRIVATE -fsanitize=thread)
+        target_compile_options(pineforge-hpo-native-proof PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(pineforge-hpo-native-proof PRIVATE -fsanitize=thread)
+        target_compile_options(pineforge_hpo_pbo_curve_reference PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_pbo_curve_reference PRIVATE -fsanitize=thread)
+    endif()
     add_dependencies(pineforge_hpo_test_engine_adapter
         pineforge_hpo_fake_strategy
         pineforge_hpo_fake_strategy_no_timezone
@@ -418,6 +466,36 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
+        add_test(NAME pineforge_hpo_pbo_proof_build
+            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --config $<CONFIG>
+                --target pineforge-hpo-native-proof pineforge_hpo_pbo_proof_strategy
+                    pineforge_hpo_pbo_curve_reference)
+        set_tests_properties(pineforge_hpo_pbo_proof_build PROPERTIES
+            FIXTURES_SETUP pbo_proof_executables RUN_SERIAL TRUE)
+        add_test(NAME pineforge_hpo_pbo_proof_cli
+            COMMAND "${Python3_EXECUTABLE}" -I
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_pbo_proof_cli.py"
+                $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge-hpo-native-proof>
+                $<TARGET_FILE:pineforge_hpo_pbo_proof_strategy> -v)
+        set_tests_properties(pineforge_hpo_pbo_proof_cli PROPERTIES
+            FIXTURES_REQUIRED pbo_proof_executables)
+        set(PINEFORGE_HPO_PBO_PROOF_PLUGIN "" CACHE FILEPATH
+            "Compiled threshold strategy plugin for the synthetic PBO proof")
+        # The end-to-end proof needs a plugin compiled from the ordinary artifact route, which an
+        # ordinary build does not have. It is registered only when that plugin is configured, and
+        # the driver then fails (never skips) if the plugin, its manifest or any input is missing.
+        if(PINEFORGE_HPO_PBO_PROOF_PLUGIN)
+            add_test(NAME pineforge_hpo_pbo_native_proof
+                COMMAND "${Python3_EXECUTABLE}" -I
+                    "${CMAKE_CURRENT_SOURCE_DIR}/g2_oracles/pbo_native_proof.py"
+                    --native $<TARGET_FILE:pineforge-hpo-native-proof>
+                    --plugin "${PINEFORGE_HPO_PBO_PROOF_PLUGIN}"
+                    --harness $<TARGET_FILE:pineforge_hpo_pbo_curve_reference>
+                    --engine-root "${PINEFORGE_ENGINE_ROOT}"
+                    --out "${CMAKE_CURRENT_BINARY_DIR}/pbo-proof" --S 16)
+            set_tests_properties(pineforge_hpo_pbo_native_proof PROPERTIES
+                FIXTURES_REQUIRED pbo_proof_executables)
+        endif()
         add_test(NAME pineforge_hpo_failure_codes
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_failure_codes.py"
                 $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>

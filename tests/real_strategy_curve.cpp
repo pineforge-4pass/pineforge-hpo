@@ -72,6 +72,12 @@ int main(int argc, char** argv) {
                   << ",\"input_bars_processed\":" << report.input_bars_processed
                   << ",\"script_bars_processed\":" << report.script_bars_processed
                   << ",\"total_trades\":" << report.total_trades
+#ifdef PINEFORGE_HPO_PBO_PROBE
+                  << ",\"report_net_profit\":\"" << hex(report.net_profit) << '"'
+                  << ",\"metric_net_profit\":\"" << hex(report.metrics.all.net_profit) << '"'
+                  << ",\"max_equity_drawdown\":\""
+                  << hex(report.metrics.equity.max_equity_drawdown) << '"'
+#endif
                   << ",\"sharpe_bar\":\"" << hex(report.metrics.equity.sharpe_bar) << '"'
                   << ",\"sharpe_monthly\":\"" << hex(report.metrics.equity.sharpe_monthly) << '"'
                   << ",\"curve\":[";

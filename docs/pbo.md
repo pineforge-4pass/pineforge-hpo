@@ -1,14 +1,13 @@
 # Probability of backtest overfitting (PBO) from block moments
 
-**Status: the module `python/pineforge_hpo/pbo.py`, its tests and its fixtures are committed
-but have never been executed.** Every execution claim in this page is deferred to the proof
-phase. The module is a pure, standard-library-only reference: any faster implementation must
-reproduce its results bit for bit.
+**Status:** the module, native block producer and a synthetic curve-checking route are
+implemented. Execution of the new route still needs validation. The module is a pure,
+standard-library-only reference: any faster implementation must reproduce its results bit for bit.
 
 **Native input.** The native runner accepts `--pbo-blocks S` to publish a table of block moments
 (count, sum and centred second moment per block, one record per completed trial) and its
-result-level layout. This integration still needs execution verification. Publishing the
-payload does not prove PBO on real data or validate a market interpretation.
+result-level layout. The proof route checks mechanics on a deterministic synthetic dataset.
+It proves mechanics only, not market behaviour. PBO on real data is not proven.
 
 The method is combinatorially symmetric cross-validation (CSCV) and the probability of backtest
 overfitting of Bailey, Borwein, Lopez de Prado and Zhu, "The Probability of Backtest
@@ -431,7 +430,62 @@ catalog (see [Stable failure codes](failure-codes.md)). The tests are in
 `tests/python/test_pbo.py`; their fixtures are the small JSON files in
 `tests/python/fixtures/pbo/`, each with its hand count written in the test that uses it. The
 native wire tests are in `tests/test_pbo_blocks_cli.py`, using supplied synthetic equity curves
-and hand-derived moment literals. These contracts remain subject to execution verification.
+and hand-derived moment literals. `tests/test_pbo_curve_checker.py` checks rational replay,
+the error bounds and named mutation controls without a native executable.
+
+## Synthetic mechanics proof route
+
+`examples/pbo_proof/` contains 2,048 deterministic minute bars, their integer-arithmetic
+generator and a 25-vector grid using the existing threshold strategy. Its seed and price,
+volume and timestamp formulas are committed with the data. The route requires the complete
+grid, distinct original trial curves and an admissible layout for `S = 16`.
+The first 256 closes are flat below every entry level; later bars follow the deterministic
+wave. This supplies zero-return blocks for the one-ulp sum-bound control.
+
+The test-only `pineforge-hpo-native-proof` target accepts `--proof-curves FILE`. It writes
+one JSONL record per completed full-window trial while the original snapshot is still held:
+the trial id and pairs of integer timestamps and 16-digit hexadecimal binary64 equity bits.
+The production executable has no curve-dump option. Prefix executions never supply a
+full-window curve record.
+
+`tests/g2_oracles/pbo_real_rows.py --curves FILE` derives expectations from those curves,
+without using emitted moments or the native reducer. It represents each
+`r_k = RN(RN(E[k+1]/E[k]) - 1)` exactly as a `Fraction`, where RN is binary64 nearest-even
+rounding. It computes `Q = sum(r_k)` and `M = sum((r_k - Q/n)^2)` and checks M separately
+as `sum_{i<j}(r_i-r_j)^2/n`. A rational replay rounds every sum, division, deviation,
+square and m2 addition separately; count and the resulting sum/m2 bits must match the wire.
+The checker also derives K, block sizes and boundary times from the original points.
+Every row and block must be compared, and missing, duplicate or mismatched curve ids fail.
+
+With `u = 2^-53` and `A = sum(abs(r_k))`, the wire must also satisfy
+
+```
+abs(sum - Q) <= 8*n*u*A
+abs(m2 - M) <= 16*n*u*M + 4*n*(u*A)^2
+```
+
+These constants are sampled error checks, not a general numerical proof. The second m2
+term covers rounded-mean error when M is tiny or zero. Hand-derived tests named
+"tiny spread around a large mean" and "constant series" require the two-term bound to accept
+the correct replay and show that the M-only bound would reject it.
+
+`tests/g2_oracles/pbo_native_proof.py` runs the native producer through
+`pareto_real_rows.py`, checks every curve block, runs seven named mutations, reconciles one
+candidate with the built C-ABI curve probe and finally invokes the unchanged-row PBO
+comparison. Its one-ulp sum mutation selects a block whose exact A and Q are zero from the
+original curves. The sum bound is then zero, so changing the wire sum to the next binary64
+value must reach `curve_sum_bound`; the module's input validator still accepts it.
+Success requires exit 0
+and the actual `RESULT: AGREE` line. Refusal, missing evidence, skipped work, disagreement
+and inconclusive results all fail. Hashes, identities, commands, original curves, rows,
+control copies and comparison logs are retained with a metadata sidecar.
+
+The route is registered as `pineforge_hpo_pbo_native_proof` when
+`PINEFORGE_HPO_PBO_PROOF_PLUGIN` is configured with a built threshold plugin and its adjacent
+artifact manifest; an ordinary build does not register it. The proof executable and C-ABI
+curve probe are separate targets built by the test fixture; once registered, a missing plugin,
+manifest, executable or probe fails instead of skipping. See
+`tests/g2_oracles/README.md` for the invocation.
 
 ## What an independent oracle confirms
 
