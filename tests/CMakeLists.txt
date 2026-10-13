@@ -125,6 +125,9 @@ add_test(NAME pineforge_hpo_candidate_list COMMAND pineforge_hpo_test_candidate_
 # fixture is copied at configure time and the generated reference is written by a setup test.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME pineforge_hpo_release_version
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_release_version.py" -v)
     add_test(NAME pineforge_hpo_no_time_limits
         COMMAND "${Python3_EXECUTABLE}" -I
             "${CMAKE_CURRENT_SOURCE_DIR}/test_no_time_limits.py" -v)
@@ -376,7 +379,7 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     add_executable(pineforge-hpo-native-proof EXCLUDE_FROM_ALL
         "${PROJECT_SOURCE_DIR}/src/cli/main.cpp")
     target_compile_definitions(pineforge-hpo-native-proof PRIVATE
-        PINEFORGE_HPO_PROOF_CURVES=1 PINEFORGE_HPO_VERSION="${PROJECT_VERSION}")
+        PINEFORGE_HPO_PROOF_CURVES=1 PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
     target_link_libraries(pineforge-hpo-native-proof PRIVATE
         PineForgeHPO::engine_adapter Threads::Threads)
     add_dependencies(pineforge-hpo-native-proof ${PFH_RETURN_STATS_IDENTITY_TARGET})
@@ -515,6 +518,13 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                     $<TARGET_FILE:pineforge_hpo_libm_identity_shim>)
         endif()
         if(dlib_SOURCE_DIR)
+            add_test(NAME pineforge_hpo_release_version_integration
+                COMMAND "${Python3_EXECUTABLE}" -I
+                    "${CMAKE_CURRENT_SOURCE_DIR}/test_release_version_integration.py"
+                    "${PINEFORGE_ENGINE_ROOT}" "${dlib_SOURCE_DIR}"
+                    $<TARGET_FILE:pineforge_hpo_fake_strategy> -v)
+            set_tests_properties(pineforge_hpo_release_version_integration PROPERTIES
+                RUN_SERIAL TRUE)
             add_test(NAME pineforge_hpo_numeric_flags
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_numeric_flags.py"
                     "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
