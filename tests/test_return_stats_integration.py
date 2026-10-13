@@ -274,10 +274,12 @@ class UnboundTreeTests(Base):
         # A requested run is refused before the plugin, the dataset or any output file.
         never = self.directory / "never-created.ndjson"
         for plugin in (PLUGIN, self.directory / "no-such-plugin"):
-            for metric in ("returns.bar.count", "returns.monthly.status"):
-                with self.subTest(plugin=plugin.name, metric=metric):
-                    refused = run(self.argv(unbound, "--max-trials", "2", "--record-metric",
-                                            metric, "--trials-file", never, plugin=plugin))
+            for request in (("--record-metric", "returns.bar.count"),
+                            ("--record-metric", "returns.monthly.status"),
+                            ("--pbo-blocks", "2")):
+                with self.subTest(plugin=plugin.name, request=request):
+                    refused = run(self.argv(unbound, "--max-trials", "2", *request,
+                                            "--trials-file", never, plugin=plugin))
                     self.assertEqual(refused.returncode, 1, refused.stderr)
                     failure = json.loads(refused.stdout)["failure"]
                     self.assertEqual(failure["code"], "hpo_toolchain_unavailable")

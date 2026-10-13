@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <pineforge/hpo/dataset.hpp>
+#include <pineforge/hpo/return_stats.hpp>
 #include <pineforge/hpo/strategy_plugin.hpp>
 
 namespace pineforge {
@@ -51,6 +52,15 @@ struct BacktestConfiguration {
     /// calendar (only UTC is defined) and is read from this configuration, never from the
     /// process environment.
     bool return_stats_monthly = false;
+    /// Number of blocks S of the `bar` series to reduce per completed trial, and 0, the default,
+    /// means the blocks are not requested.
+    ///
+    /// Blocks are reduced from the full-window equity curve before the report is released, on the
+    /// full window only: a pruned prefix is a different, shorter series and is never reduced
+    /// against the S of the full window. A request that cannot be served, an odd S, a curve with
+    /// fewer intervals than S and the like, is reported through the snapshot's block status and
+    /// never as a trial error, so requesting blocks cannot move the optimizer's history.
+    std::uint32_t pbo_blocks = 0;
     /// Optional instrument metadata, applied after inputs and overrides.
     std::optional<SymbolInfo> symbol_info;
     /// Fixed other-symbol bars loaded once, validated before trials, and shared read-only.
@@ -132,6 +142,12 @@ struct ReportSnapshot {
     ReturnStatsFields return_bar;
     /// Monthly-return statistics, computed before the report was released when requested.
     ReturnStatsFields return_monthly;
+    /// Block layout of the full-window equity curve, computed before the report was released when
+    /// blocks were requested; the default, not usable, layout when they were not.
+    ReturnBlockLayout return_block_layout;
+    /// Per-block moments of the full-window equity curve; status NotRequested when blocks were
+    /// not requested.
+    ReturnBlockMoments return_blocks;
 
     /// Resolves a canonical objective path without allocating a string map.
     ///

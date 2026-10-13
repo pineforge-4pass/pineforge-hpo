@@ -87,6 +87,14 @@ target_compile_options(pineforge_hpo_test_return_stats PRIVATE
     -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_return_stats COMMAND pineforge_hpo_test_return_stats)
 
+# The block reducer lives in the same strict translation unit as the statistics reducer, and this
+# test freezes exact dyadic literals, so it needs the same two flags.
+add_executable(pineforge_hpo_test_return_blocks test_return_blocks.cpp)
+target_link_libraries(pineforge_hpo_test_return_blocks PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_return_blocks PRIVATE
+    -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_return_blocks COMMAND pineforge_hpo_test_return_blocks)
+
 # Both public headers in one translation unit, and the real build's generated identity read back
 # against its own descriptor. The generation target is an unconditional build dependency.
 add_executable(pineforge_hpo_test_return_stats_headers test_return_stats_headers.cpp)
@@ -376,6 +384,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_property(TEST pineforge_hpo_engine_adapter APPEND PROPERTY
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
 
     add_executable(pineforge_hpo_test_symbol_feeds test_symbol_feeds.cpp)
     target_include_directories(pineforge_hpo_test_symbol_feeds PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
@@ -517,6 +529,15 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
             set_property(TEST pineforge_hpo_return_stats_cli APPEND PROPERTY
+                ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+        endif()
+        add_test(NAME pineforge_hpo_pbo_blocks_cli
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_pbo_blocks_cli.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+            set_property(TEST pineforge_hpo_pbo_blocks_cli APPEND PROPERTY
                 ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
         endif()
         add_test(NAME pineforge_hpo_trial_outputs
