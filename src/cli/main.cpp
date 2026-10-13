@@ -53,6 +53,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+#include <cstring>
+#endif
+
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <poll.h>
@@ -73,6 +77,49 @@ static_assert(pfh::return_stats_contract() == pfh::kReturnStatsContract,
 namespace {
 
 enum class Direction { kMaximize, kMinimize };
+
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+// Owns only the proof artifact. Each call receives the original full-window snapshot while
+// evaluate_candidate still holds it; no execution or reduction is performed by this writer.
+class ProofCurveWriter {
+public:
+    explicit ProofCurveWriter(const std::filesystem::path& path)
+        : output_(path, std::ios::binary | std::ios::trunc) {
+        if (!output_)
+            throw std::runtime_error("cannot open proof curves file: " + path.string());
+    }
+
+    void write(std::uint64_t trial_id, const std::vector<pf_equity_point_t>& curve) {
+        if (curve.empty())
+            throw std::runtime_error("completed proof trial has no original equity curve");
+        std::ostringstream line;
+        line << "{\"trial_id\":" << trial_id << ",\"curve\":[";
+        for (std::size_t index = 0; index < curve.size(); ++index) {
+            if (index != 0)
+                line << ',';
+            const auto& point = curve[index];
+            std::uint64_t bits = 0;
+            static_assert(sizeof(bits) == sizeof(point.equity), "binary64 equity required");
+            static_assert(std::numeric_limits<double>::is_iec559 &&
+                          std::numeric_limits<double>::digits == 53,
+                          "IEEE 754 binary64 equity required");
+            std::memcpy(&bits, &point.equity, sizeof(bits));
+            line << '[' << std::dec << point.time_ms << ",\"" << std::hex
+                 << std::setfill('0') << std::setw(16) << bits << "\"]";
+        }
+        line << "]}\n";
+        std::lock_guard<std::mutex> lock(mutex_);
+        output_ << line.str();
+        output_.flush();
+        if (!output_)
+            throw std::runtime_error("cannot write original proof equity curve");
+    }
+
+private:
+    std::ofstream output_;
+    std::mutex mutex_;
+};
+#endif
 
 struct Options {
     std::filesystem::path strategy;
@@ -126,6 +173,10 @@ struct Options {
     bool return_stats_bar = false;
     bool return_stats_monthly = false;
     std::uint32_t pbo_blocks = 0;
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+    std::filesystem::path proof_curves;
+    std::shared_ptr<ProofCurveWriter> proof_curve_writer;
+#endif
     std::uint64_t no_improvement_trials = 0;
     unsigned workers = 1;
     int progress_fd = -1;
@@ -350,6 +401,9 @@ void print_help() {
               << "  --scheduler-stats FILE      nondeterministic timing sidecar\n"
               << "  --trials-out all|best-k|none final trial retention; default: all\n"
               << "  --pbo-blocks S              full-window bar-return blocks; even S >= 2\n"
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+              << "  --proof-curves FILE         original full-window equity bits (proof only)\n"
+#endif
               << "  --best-k N                  retained feasible winners; default: 10\n"
               << "  --trials-file FILE          flushed full terminal-trial NDJSON\n"
               << "  --pruner none|median|halving default: none\n"
@@ -482,6 +536,10 @@ Options parse_options(int argc, char** argv) {
                 usage_error("--trials-out must be all, best-k, or none");
         } else if (option == "--pbo-blocks") {
             out.pbo_blocks = parse_pbo_blocks(i + 1 < argc ? argv[++i] : "");
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+        } else if (option == "--proof-curves") {
+            out.proof_curves = require_value(argc, argv, i, option);
+#endif
         } else if (option == "--best-k") {
             out.best_k = parse_u64(require_value(argc, argv, i, option), option);
             if (out.best_k == 0 || out.best_k > 1'000'000)
@@ -1612,6 +1670,10 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
                 record.return_block_layout = std::make_shared<const pfh::ReturnBlockLayout>(
                     execution.report.return_block_layout);
             }
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+            if (options.proof_curve_writer && completed_trial(record))
+                options.proof_curve_writer->write(record.trial_id, execution.report.equity_curve);
+#endif
         }
     } catch (const std::exception& error) {
         record.status = "trial_error";
@@ -2423,6 +2485,11 @@ int run(Options options) {
     if (options.return_stats_bar || options.return_stats_monthly || options.pbo_blocks != 0)
         pfh::require_return_stats_identity();
 
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+    if (!options.proof_curves.empty())
+        options.proof_curve_writer = std::make_shared<ProofCurveWriter>(options.proof_curves);
+#endif
+
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
     auto dataset = std::make_shared<pfh::Dataset>(pfh::Dataset::load_csv(options.ohlcv));
     pfh::BacktestConfiguration configuration;
@@ -2433,6 +2500,10 @@ int run(Options options) {
     configuration.magnifier_samples = options.magnifier_samples;
     configuration.magnifier_distribution = options.magnifier_distribution;
     configuration.capture_equity_curve = false;
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+    if (options.proof_curve_writer)
+        configuration.capture_equity_curve = true;
+#endif
     configuration.return_stats_bar = options.return_stats_bar;
     configuration.return_stats_monthly = options.return_stats_monthly;
     configuration.pbo_blocks = options.pbo_blocks;
