@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 0.15.0 (2026-10-13)
+
+- Add `pineforge_hpo.walkforward.walkforward`, a post hoc analysis of finished per-window studies
+  (contract `pineforge-hpo-walkforward/v1`, algorithm `exact_per_window_v1`): it selects the best row
+  of each supplied window, reports the previous window's selected parameter vector in the next
+  window's rows with its rank or the reason it is absent, and lists the selected values per dimension;
+  it runs no window, evaluates nothing and writes no file. v1 analyses finished studies; native
+  in-loop walk-forward comes later.
+
+- Add the post hoc `dsr` module (`pineforge_hpo.dsr`, contract `pineforge-hpo-dsr/v1`): a library
+  function that reads the recorded `returns.<series>.{sharpe_per_period,count,skew,kurt_raw,status}`
+  statistics of a finished study and returns the deflated Sharpe ratio of one selected trial under
+  a trial count the caller states (at least the number of rows read) or, by default, the number of
+  rows read (every trial in the record, warm-start ancestors included), with module-local `dsr_*`
+  refusal codes, no command-line flag and no native field.
+  v1 analyses finished studies; native in-loop walk-forward comes later.
+
+- Add `pineforge_hpo.holdout` (`holdout_compare`), a post hoc module that joins the
+  finished rows of a selection study with those of a second finished study by exact
+  parameter vector and reports, for the best selection vectors, what the second study
+  recorded (contract `pineforge-hpo-holdout/v1`); it splits no data, runs no trial and
+  makes no claim about the data either study used.
+  v1 analyses finished studies; native in-loop walk-forward comes later.
+
 - Add the native-only `--pbo-blocks S` flag for full-window bar-return moments. Completed `ok`
   and `constraint_violation` trials carry `block_returns`, and the result declares their shared
   `return_blocks` layout and numeric build identity. Bad-data payloads publish status only;

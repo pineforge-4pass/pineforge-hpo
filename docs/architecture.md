@@ -456,7 +456,9 @@ objective, and constraint inputs.
 - distributed execution or process-worker recovery;
 - CMA-ES, evolutionary, or other additional Optuna-style samplers;
 - conditional/hierarchical spaces and multi-objective Pareto studies;
-- walk-forward and multi-dataset executable studies;
+- walk-forward and multi-dataset executable studies (a post hoc analysis of finished per-window
+  studies exists outside the runner: v1 analyses finished studies; native in-loop walk-forward comes
+  later);
 - StudySpec timeout/fail-fast settings and process-worker recovery.
 
 ## Licensing boundary

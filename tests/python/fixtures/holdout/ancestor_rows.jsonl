@@ -1,0 +1,2 @@
+{"trial_id": 7, "status": "ok", "feasible": true, "objective": 1.0, "parameters": {"arm": "B"}}
+{"trial_id": 20, "status": "ok", "feasible": true, "objective": 2.0, "parameters": {"arm": "A"}}
