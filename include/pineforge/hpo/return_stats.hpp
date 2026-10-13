@@ -5,11 +5,16 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace pineforge::hpo {
 
 /// Contract string of the result-level `return_stats` object (legacy mode, version 1).
 inline constexpr std::string_view kReturnStatsContract = "pineforge-hpo-return-stats/v1";
+
+/// Contract string of the per-row `block_returns` object and of the result-level `return_blocks`
+/// object that declares the layout its rows were reduced under (version 1, bar series).
+inline constexpr std::string_view kReturnBlocksContract = "pineforge-hpo-return-blocks/v1";
 
 /// Fixed annual risk-free rate. The per-period rate is this value divided by the series'
 /// periods per year; it is not configurable in contract version 1.
@@ -199,5 +204,107 @@ std::optional<ReturnStatsMetric> parse_return_stats_metric(std::string_view name
 /// fail-closed check, not an attestation of the whole translation unit and not a proof of
 /// cross-architecture equality.
 bool return_stats_contraction_free() noexcept;
+
+// ---------------------------------------------------------------------------------------------
+// Return blocks (contract pineforge-hpo-return-blocks/v1)
+//
+// Per trial, the block object reports how many intervals every block of the bar-return series
+// holds and their sum and centred second moment; the result-level object declares the layout all
+// of its rows were reduced under. Only three of the statuses below are wire texts: the others are
+// library outcomes that are never published as a payload status.
+// ---------------------------------------------------------------------------------------------
+
+/// Status of one row's block moments.
+///
+/// A payload carrying moment arrays is published only with status Ok. The other two wire statuses,
+/// NonPositiveEquity and Nonfinite, are published status-only so the module refuses the row by
+/// name. That is what the executor needs: requesting blocks must never turn a successful trial
+/// into a failed one, because that would move the optimizer's history.
+enum class ReturnBlocksStatus : std::uint8_t {
+    NotRequested = 0,  ///< No blocks were requested: no layout and no payload.
+    Ok = 1,            ///< Every interval of every block was usable; wire text `ok`.
+    /// An interval was skipped because a prior equity is not positive; wire text
+    /// `non_positive_equity`.
+    NonPositiveEquity = 2,
+    /// An equity, a return or a moment is not finite; wire text `non_finite`.
+    Nonfinite = 3,
+    /// The borrowed view cannot be read; no reduction was attempted.
+    UnusableCurve = 4,
+    /// No layout can be formed for this curve: S is odd or below 2, K is below S, a block-size
+    /// rule of the module fails, an opening timestamp is below the one before it, or the layout
+    /// handed to the reducer is not the one the rule gives for this curve and its block count.
+    UnusableLayout = 5,
+};
+
+/// Returns the wire text of a status: `ok`, `non_positive_equity`, `non_finite`, and empty for
+/// the statuses that are never published as a payload status.
+std::string_view return_blocks_status_text(ReturnBlocksStatus status) noexcept;
+
+/// Block layout of one bar-return series: how many intervals each block holds and which curve
+/// point opens it.
+///
+/// Interval k is the pair of adjacent curve points `(k, k + 1)` of a curve of `intervals + 1`
+/// points and belongs to block `floor(k * S / K)`; block b opens at the point
+/// `a_b = ceil(b * K / S)`, so `n_b[b] = a_(b+1) - a_b`, `sum(n_b) = K`, and
+/// `boundary_time_ms[b]` is that opening point's timestamp copied unchanged from the curve, for
+/// b = 0..S (the last entry is the curve's final point). The sizes depend on the curve length and
+/// S only, never on the equities; the times are the curve's own.
+///
+/// `usable` is true exactly when the request can be served and every rule the module checks
+/// holds: S is even and at least 2, K is at least S, the smallest half of the blocks holds at
+/// least two intervals, and the opening timestamps are non-decreasing (equal times are allowed).
+/// A layout that is not usable carries no sizes and no times.
+struct ReturnBlockLayout {
+    std::uint32_t blocks = 0;    ///< S, the block count; 0 when the layout is not usable.
+    std::int64_t intervals = 0;  ///< K, the interval count; 0 when the layout is not usable.
+    bool usable = false;         ///< True when the sizes and the times below are populated.
+    std::vector<std::int64_t> n_b;               ///< S block sizes, ascending block.
+    std::vector<std::int64_t> boundary_time_ms;  ///< S + 1 opening timestamps, in milliseconds.
+};
+
+/// Moments of every block of one bar-return series, ascending block.
+///
+/// `count[b]` is the number of usable returns of block b, `sum[b]` their sum, and `m2[b]` their
+/// centred second moment: the sum of the squared deviations from the mean of that same block. The
+/// three vectors hold S entries each as soon as a reduction ran, and are empty otherwise. A block
+/// whose intervals were all unusable has count 0, sum 0 and m2 0. A value that is not finite is
+/// stored as computed: it accompanies status Nonfinite, which is published status-only with the
+/// wire text `non_finite`, and the module refuses that row by name.
+struct ReturnBlockMoments {
+    /// Outcome of the reduction; NotRequested until a requested reduction runs.
+    ReturnBlocksStatus status = ReturnBlocksStatus::NotRequested;
+    std::vector<std::int64_t> count;  ///< Usable returns per block.
+    std::vector<double> sum;          ///< Sum of the usable returns per block.
+    std::vector<double> m2;           ///< Centred second moment per block.
+};
+
+/// Cuts the adjacent intervals of a curve into `blocks` (S) blocks, and reads the opening
+/// timestamp of every one of them from the borrowed curve.
+///
+/// A pure function of the immutable curve view and S: it keeps no state, retains no pointer and
+/// reads the view only for its point count and its timestamps. An unusable view gives a layout
+/// that is not usable. No interval is ever dropped from K. An accepted request allocates S and
+/// S + 1 entries, which cannot exceed the point count of a curve the caller already holds.
+ReturnBlockLayout compute_block_layout(const EquityPointsView& points,
+                                       std::uint32_t blocks);
+
+/// Reduces the bar returns of a curve into the blocks of its own layout.
+///
+/// A pure function of the immutable curve view and the layout: no worker, global or random state
+/// is read and nothing is retained except the returned vectors. The layout is accepted only when
+/// it equals the one `compute_block_layout` returns for the same curve and `layout.blocks`;
+/// anything else (including a layout marked usable that the rule would refuse) gives status
+/// UnusableLayout and no arrays. If both a skipped interval and a non-finite value occur, the
+/// status is Nonfinite. An interval whose prior equity is not positive is skipped, while
+/// a current equity at or below zero is allowed; a non-finite equity, return or moment gives
+/// status Nonfinite instead of an error, so a request never fails the trial it describes.
+///
+/// Within a block the order is fixed and sequential and matches the return-statistics reducer:
+/// sum the usable returns in ascending interval k, divide that sum by the count, then add the
+/// separately rounded `(r - mean) * (r - mean)` in ascending interval k, forcing m2 = 0 for a
+/// block of one interval. This translation unit must therefore be built with floating-point
+/// contraction and fast-math disabled, like the statistics reducer it sits beside.
+ReturnBlockMoments reduce_return_blocks(const EquityPointsView& points,
+                                        const ReturnBlockLayout& layout);
 
 }  // namespace pineforge::hpo

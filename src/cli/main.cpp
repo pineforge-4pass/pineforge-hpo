@@ -125,6 +125,7 @@ struct Options {
     // Return-statistics series named by an objective, constraint or recorded metric.
     bool return_stats_bar = false;
     bool return_stats_monthly = false;
+    std::uint32_t pbo_blocks = 0;
     std::uint64_t no_improvement_trials = 0;
     unsigned workers = 1;
     int progress_fd = -1;
@@ -181,6 +182,9 @@ struct TrialRecord {
     std::int64_t magnifier_ticks_total = 0;
     std::optional<double> pruning_cut;
     bool pruning_enabled = false;
+    // Moment vectors are constructed only for a requested completed full window.
+    std::optional<pfh::ReturnBlockMoments> return_blocks;
+    std::shared_ptr<const pfh::ReturnBlockLayout> return_block_layout;
 };
 
 static_assert(std::atomic<bool>::is_always_lock_free);
@@ -228,6 +232,28 @@ std::uint64_t parse_u64(const std::string& text, const std::string& where) {
     } catch (const std::exception&) {
         usage_error(where + " requires a non-negative integer, got `" + text + "`");
     }
+}
+
+std::uint32_t parse_pbo_blocks(const std::string& text) {
+    const auto invalid = [] {
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "study"}},
+            "--pbo-blocks requires an even integer from 2 to 4294967294");
+    };
+    if (text.empty())
+        invalid();
+    std::uint32_t value = 0;
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9')
+            invalid();
+        const auto digit = static_cast<std::uint32_t>(ch - '0');
+        if (value > (std::numeric_limits<std::uint32_t>::max() - digit) / 10)
+            invalid();
+        value = value * 10 + digit;
+    }
+    if (value < 2 || value % 2 != 0)
+        invalid();
+    return value;
 }
 
 double parse_double(const std::string& text, const std::string& where) {
@@ -323,6 +349,7 @@ void print_help() {
               << "  --batch-lag 0|1             fixed feedback lag; default: 0\n"
               << "  --scheduler-stats FILE      nondeterministic timing sidecar\n"
               << "  --trials-out all|best-k|none final trial retention; default: all\n"
+              << "  --pbo-blocks S              full-window bar-return blocks; even S >= 2\n"
               << "  --best-k N                  retained feasible winners; default: 10\n"
               << "  --trials-file FILE          flushed full terminal-trial NDJSON\n"
               << "  --pruner none|median|halving default: none\n"
@@ -453,6 +480,8 @@ Options parse_options(int argc, char** argv) {
             out.trials_out = require_value(argc, argv, i, option);
             if (out.trials_out != "all" && out.trials_out != "best-k" && out.trials_out != "none")
                 usage_error("--trials-out must be all, best-k, or none");
+        } else if (option == "--pbo-blocks") {
+            out.pbo_blocks = parse_pbo_blocks(i + 1 < argc ? argv[++i] : "");
         } else if (option == "--best-k") {
             out.best_k = parse_u64(require_value(argc, argv, i, option), option);
             if (out.best_k == 0 || out.best_k > 1'000'000)
@@ -744,6 +773,26 @@ std::string json_number(double value) {
     return out.str();
 }
 
+void render_integer_array(std::ostream& out, const std::vector<std::int64_t>& values) {
+    out << '[';
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index)
+            out << ", ";
+        out << values[index];
+    }
+    out << ']';
+}
+
+void render_real_array(std::ostream& out, const std::vector<double>& values) {
+    out << '[';
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        if (index)
+            out << ", ";
+        out << json_number(values[index]);
+    }
+    out << ']';
+}
+
 std::string parameter_json(const pfh::ParameterValue& value) {
     return std::visit(
         [](const auto& item) -> std::string {
@@ -869,6 +918,31 @@ void reset_pruning_report(TrialRecord& record) {
         value = std::numeric_limits<double>::quiet_NaN();
 }
 
+bool completed_trial(const TrialRecord& trial) {
+    return trial.status == "ok" || trial.status == "constraint_violation";
+}
+
+void validate_trial_return_blocks(const TrialRecord& trial,
+                                  const pfh::ReturnBlockLayout& layout) {
+    if (!completed_trial(trial) || !trial.return_block_layout ||
+        !trial.return_block_layout->usable)
+        return;
+    const auto& own = *trial.return_block_layout;
+    if (own.blocks != layout.blocks || own.intervals != layout.intervals ||
+        own.n_b != layout.n_b || own.boundary_time_ms != layout.boundary_time_ms)
+        throw pfh::TypedHpoError<std::runtime_error>(
+            "hpo_report_invalid", {}, "completed trials disagree on the return-block layout");
+    if (!trial.return_blocks)
+        throw pfh::TypedHpoError<std::runtime_error>(
+            "hpo_report_invalid", {}, "completed trial has no return-block moments");
+    const auto& moments = *trial.return_blocks;
+    if (moments.status == pfh::ReturnBlocksStatus::Ok &&
+        (moments.count != layout.n_b || moments.sum.size() != layout.n_b.size() ||
+         moments.m2.size() != layout.n_b.size()))
+        throw pfh::TypedHpoError<std::runtime_error>(
+            "hpo_report_invalid", {}, "return-block moments do not match the declared layout");
+}
+
 std::string render_trial(const TrialRecord& trial) {
     std::ostringstream out;
     if (trial.tpe_enabled)
@@ -937,6 +1011,23 @@ std::string render_trial(const TrialRecord& trial) {
         }
         out << "]}";
     }
+    if (trial.return_blocks && trial.return_block_layout && trial.return_block_layout->usable &&
+        completed_trial(trial)) {
+        const auto status = pfh::return_blocks_status_text(trial.return_blocks->status);
+        if (status.empty())
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_report_invalid", {}, "return-block payload has no wire status");
+        out << ", \"block_returns\": {\"status\": \"" << status << '"';
+        if (trial.return_blocks->status == pfh::ReturnBlocksStatus::Ok) {
+            out << ", \"count\": ";
+            render_integer_array(out, trial.return_blocks->count);
+            out << ", \"sum\": ";
+            render_real_array(out, trial.return_blocks->sum);
+            out << ", \"m2\": ";
+            render_real_array(out, trial.return_blocks->m2);
+        }
+        out << '}';
+    }
     if (trial.space_json)
         out << ", \"space_hash_version\": " << pfh::detail::space_hash_version
             << ", \"space_hash\": \"" << trial.space_hash << "\", \"space\": "
@@ -970,6 +1061,8 @@ public:
     // coverage and the Sobol part accounting need no lock of their own and a position is never
     // recorded twice. Every terminal trial feeds them, whether or not its row is retained.
     void add(const TrialRecord& record) {
+        if (options_.pbo_blocks != 0 && completed_trial(record))
+            observe_return_blocks(record);
         if (sobol_part_)
             sobol_part_->observe(record.trial_id);
         if (coverage_)
@@ -982,8 +1075,11 @@ public:
         if (finite_ && (options_.warm_history || (options_.sampler != "grid" &&
             options_.candidate_policy == pfh::CandidatePolicy::SamplerDefault)))
             ordinals_.insert(space_.candidate_ordinal(record.candidate));
-        if (options_.trials_out == "all")
+        if (options_.trials_out == "all") {
             all_.push_back(record);
+            if (record.return_block_layout && record.return_block_layout->usable)
+                all_.back().return_block_layout = return_block_layout_;
+        }
         if (!record.feasible || !record.objective || !std::isfinite(*record.objective))
             return;
         const auto compare = [&](const TrialRecord& left, const TrialRecord& right) {
@@ -999,6 +1095,8 @@ public:
             best_.pop_back();
         }
         best_.push_back(record);
+        if (record.return_block_layout && record.return_block_layout->usable)
+            best_.back().return_block_layout = return_block_layout_;
         std::push_heap(best_.begin(), best_.end(), compare);
     }
 
@@ -1030,11 +1128,41 @@ public:
         return sobol_part_ ? &*sobol_part_ : nullptr;
     }
 
+    const pfh::ReturnBlockLayout* return_block_layout() const {
+        return return_block_layout_.get();
+    }
+
     std::uint64_t completed = 0;
     std::map<std::string, std::uint64_t> counts;
     bool objective_coverage = true;
 
 private:
+    void observe_return_blocks(const TrialRecord& record) {
+        if (!record.return_blocks)
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_report_invalid", {}, "completed trial has no requested return-block moments");
+        const auto status = record.return_blocks->status;
+        if (status == pfh::ReturnBlocksStatus::UnusableLayout)
+            throw pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "study"}},
+                "--pbo-blocks cannot form a usable layout for the full-window curve");
+        if (status == pfh::ReturnBlocksStatus::UnusableCurve)
+            return;
+        if (!record.return_block_layout || !record.return_block_layout->usable ||
+            record.return_block_layout->blocks != options_.pbo_blocks ||
+            pfh::return_blocks_status_text(status).empty())
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_report_invalid", {}, "completed trial has no requested return-block layout");
+        validate_trial_return_blocks(record, return_block_layout_ ? *return_block_layout_ :
+                                                                   *record.return_block_layout);
+        // Completion order can differ from trial-ID order, and feasibility does not choose the
+        // layout. Retention may discard its source row; the archive keeps the real snapshot.
+        if (!return_block_layout_ || record.trial_id < *return_block_layout_trial_id_) {
+            return_block_layout_ = record.return_block_layout;
+            return_block_layout_trial_id_ = record.trial_id;
+        }
+    }
+
     const Options& options_;
     const pfh::SearchSpace& space_;
     bool finite_;
@@ -1043,6 +1171,8 @@ private:
     std::vector<TrialRecord> best_;
     std::optional<pfh::detail::CandidateCoverage> coverage_;
     std::optional<pfh::detail::SobolPartAccumulator> sobol_part_;
+    std::shared_ptr<const pfh::ReturnBlockLayout> return_block_layout_;
+    std::optional<std::uint64_t> return_block_layout_trial_id_;
 };
 
 class RunState final {
@@ -1126,7 +1256,19 @@ public:
         }
         if (timed_out_)
             return;
-        archive_.add(record);
+        try {
+            archive_.add(record);
+        } catch (...) {
+            if (options_.pbo_blocks != 0) {
+                // A block-layout refusal can leave a gap in the ordered stream. Release any
+                // workers waiting for stream capacity before propagating the result refusal.
+                progress_failed_ = true;
+                pending_.clear();
+                reason_.store(StopReason::kCancelled);
+                changed_.notify_all();
+            }
+            throw;
+        }
         if (streaming && !progress_failed_) {
             const auto begin = Clock::now();
             pending_.emplace(record.trial_id, render_trial(record) + "\n");
@@ -1464,6 +1606,12 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
             }
             if (record.status == "pending")
                 record.status = record.feasible ? "ok" : "constraint_violation";
+            // Prefix rungs returned or continued above; only a completed full window gets blocks.
+            if (options.pbo_blocks != 0 && completed_trial(record)) {
+                record.return_blocks = execution.report.return_blocks;
+                record.return_block_layout = std::make_shared<const pfh::ReturnBlockLayout>(
+                    execution.report.return_block_layout);
+            }
         }
     } catch (const std::exception& error) {
         record.status = "trial_error";
@@ -1541,6 +1689,12 @@ std::string render_results(const Options& options,
                            const TrialArchive* archive = nullptr,
                            const pfh::detail::NoImprovementSnapshot& early_stop = {},
                            const CompletionLog* rolling_log = nullptr) {
+    const auto* block_layout = options.pbo_blocks != 0 && archive
+        ? archive->return_block_layout() : nullptr;
+    if (block_layout) {
+        for (const auto& trial : trials)
+            validate_trial_return_blocks(trial, *block_layout);
+    }
     const bool finite_space = std::all_of(space.dimensions().begin(), space.dimensions().end(),
         [](const pfh::Dimension& dimension) {
             return std::visit([](const auto& item) {
@@ -1830,6 +1984,21 @@ std::string render_results(const Options& options,
         out << "], \"chart_timezone\": \"" << json_escape(options.chart_timezone)
             << "\", \"risk_free_annual\": " << json_number(pfh::kReturnStatsRiskFreeAnnual)
             << ", \"numeric_build_identity\": \""
+            << json_escape(std::string(pfh::return_stats_numeric_build_identity())) << "\"}";
+    }
+    if (block_layout) {
+        if (!pfh::return_stats_identity_bound() ||
+            pfh::return_stats_numeric_build_identity().empty())
+            throw pfh::TypedHpoError<std::logic_error>(
+                "hpo_invariant", {}, "return blocks need a bound build identity");
+        out << ",\n  \"return_blocks\": {\"contract\": \""
+            << json_escape(std::string(pfh::kReturnBlocksContract)) << "\", \"series\": \"bar\""
+            << ", \"S\": " << block_layout->blocks << ", \"K\": " << block_layout->intervals
+            << ", \"n_b\": ";
+        render_integer_array(out, block_layout->n_b);
+        out << ", \"boundary_time_ms\": ";
+        render_integer_array(out, block_layout->boundary_time_ms);
+        out << ", \"numeric_build_identity\": \""
             << json_escape(std::string(pfh::return_stats_numeric_build_identity())) << "\"}";
     }
     if (options.sobol_descriptor && archive && archive->sobol_part())
@@ -2251,7 +2420,7 @@ int run(Options options) {
     // Fail closed before the plugin, the dataset, the progress files or any trial: statistics
     // from a build with an unbound identity would carry no claim-bearing identity. A run that
     // requests none never reaches this line's body.
-    if (options.return_stats_bar || options.return_stats_monthly)
+    if (options.return_stats_bar || options.return_stats_monthly || options.pbo_blocks != 0)
         pfh::require_return_stats_identity();
 
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
@@ -2266,6 +2435,7 @@ int run(Options options) {
     configuration.capture_equity_curve = false;
     configuration.return_stats_bar = options.return_stats_bar;
     configuration.return_stats_monthly = options.return_stats_monthly;
+    configuration.pbo_blocks = options.pbo_blocks;
     configuration.symbol_feeds = options.symbol_feeds;
     if (!options.syminfo.empty())
         configuration.symbol_info = read_symbol_info(options.syminfo);
