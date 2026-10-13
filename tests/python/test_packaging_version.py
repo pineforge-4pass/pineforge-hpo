@@ -18,7 +18,9 @@ class PackagingVersionTests(unittest.TestCase):
         try:
             importlib.import_module("build")
         except ImportError:
-            self.fail("Install build with 'python -m pip install build' to run this test")
+            self.fail(
+                "Install build with 'python -m pip install build' to run this test"
+            )
         try:
             from packaging.version import Version
         except ImportError:

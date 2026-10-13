@@ -626,9 +626,7 @@ class CatalogReleaseTests(unittest.TestCase):
 
     def test_rc_still_requires_latest_older_final_baseline(self):
         self.git("tag", "v0.14.0")
-        refused = self.invoke(
-            "--from-tag", "v0.14.0", "--release-version", "1.6.0rc1"
-        )
+        refused = self.invoke("--from-tag", "v0.14.0", "--release-version", "1.6.0rc1")
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("requires baseline v0.15.0, not v0.14.0", refused.stderr)
         self.assertFalse(self.output.exists())
