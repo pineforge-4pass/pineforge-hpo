@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 1.6.0rc1 (__DATE__)
+
+- Re-pin to engine and codegen v1.6.0-rc.1 (gitlinks), HPO version 1.6.0rc1 (PEP 440; the engine and codegen tags are spelled v1.6.0-rc.1). The transpile extra keeps pineforge-codegen>=1.1.0,<2: a pre-release is not selected by default, so install the lockstep codegen with --pre or pineforge-codegen==1.6.0rc1.
 - Add a synthetic proof route for the native `--pbo-blocks` moments (tests and examples only; the
   production binary, its options and its result bytes are unchanged). `examples/pbo_proof/` holds a
   deterministic 2,048-bar series with its generator and a 25-trial grid. A separate test-only
