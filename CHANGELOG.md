@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 1.6.0rc1 (__DATE__)
+## 1.6.0rc1 (2026-10-14)
 
 - Re-pin to engine and codegen v1.6.0-rc.1 (gitlinks), HPO version 1.6.0rc1 (PEP 440; the engine and codegen tags are spelled v1.6.0-rc.1). The transpile extra keeps pineforge-codegen>=1.1.0,<2: a pre-release is not selected by default, so install the lockstep codegen with --pre or pineforge-codegen==1.6.0rc1.
 - Add a synthetic proof route for the native `--pbo-blocks` moments (tests and examples only; the
