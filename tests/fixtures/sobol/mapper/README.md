@@ -36,4 +36,4 @@ be reviewed; it is never hand-edited. The test compares bit patterns, so a one-u
 the CORE-MATH wrappers and the decimal reference is a real finding (report it; do not loosen the
 comparison). A mismatch can be the oracle's fault, so investigate both sides.
 
-The test needs the compile definition `PFH_SOBOL_MAPPER_FIXTURES` set to this directory.
+tests/CMakeLists.txt sets the compile definition `PFH_SOBOL_MAPPER_FIXTURES` to a build-tree directory that holds a copy of `high64-boundaries.tsv` and the generated `float-reference.tsv`.

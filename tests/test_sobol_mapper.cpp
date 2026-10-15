@@ -13,7 +13,8 @@
 //   - link PineForgeHPO::core (which must contain sobol_mapper.cpp, sobol_sampler.cpp and the
 //     engine's sobol_engine.cpp);
 //   - compile options -ffp-contract=off -fno-fast-math, like test_portable_math.cpp;
-//   - compile definition PFH_SOBOL_MAPPER_FIXTURES="<repo>/tests/fixtures/sobol/mapper".
+//   - compile definition PFH_SOBOL_MAPPER_FIXTURES set to the build-tree fixture directory, which
+//     holds a copy of high64-boundaries.tsv and the generated float-reference.tsv.
 //
 // Coverage: the high word of the exact 128-bit product, the 53-bit unit, Boolean/categorical splits,
 // signed and extreme integer lattices, stepped reals, linear/log real and log-integer mapping with

@@ -6,7 +6,8 @@
 // Doubles are printed as C99 hexadecimal floats (exact, parsed by float.fromhex), times as
 // integers. It uses only the adapter's plugin and dataset loaders, like real_strategy_trades.cpp.
 // The sealed 48-stage legacy return-statistics proof documented in docs/internal/methods-cx-wire.md
-// covers the header/identity and canonical-curve probe routes on its recorded builds and controls,
+// covers the header/identity route on its recorded builds and controls (the by-hand canonical-curve
+// probe route has no recorded result in this tree),
 // with numerical comparisons subject to their stated domain and bounds and no validation of later
 // numeric identities, the added PBO-only probe branch or unmeasured cross-build equality.
 

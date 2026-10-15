@@ -5,8 +5,9 @@ hand on a spot box, like test_candidate_list_e2e.py:
     python3 tests/test_sobol_e2e.py --native build/bin/pineforge-hpo-native --output <dir> \\
         [--pinned-reference BINARY --pinned-sha256 HEX]
 
-The documented sealed 48-stage Sobol proof covers the native CLI, Python schema/argv/relay and
-compiled-strategy controls on its recorded builds, with bound numeric identity required for
+The documented sealed 48-stage Sobol proof covers the native CLI and Python schema/argv/relay
+controls on its recorded builds (the by-hand compiled-strategy gate tests/test_sobol_e2e.py has no
+recorded result in this tree), with bound numeric identity required for
 floating-point spaces, logarithmic CLI checks limited to range and a relative bound, continuation
 exactness limited to the parameter stream, and no quality, cost or equality claim for unmeasured
 build pairs.

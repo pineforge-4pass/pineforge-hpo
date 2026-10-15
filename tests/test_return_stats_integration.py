@@ -5,8 +5,9 @@ Usage: test_return_stats_integration.py NATIVE PLUGIN BUILD_DIR SOURCE_DIR ENGIN
        [unittest arguments]
 
 The sealed 48-stage legacy return-statistics proof recorded in CHANGELOG.md and
-docs/internal/methods-cx-wire.md covers the Python forwarding, fake-plugin CLI, reducer-identity
-integration and canonical-curve controls on its recorded builds, with numerical comparisons limited
+docs/internal/methods-cx-wire.md covers the Python forwarding, fake-plugin CLI and
+reducer-identity integration controls on its recorded builds (the by-hand canonical-curve gate
+tests/test_return_stats_e2e.py has no recorded result in this tree), with numerical comparisons limited
 to their stated domain, scale and bounds, launcher/response-file/old-CMake cases limited to
 synthetic-database checks, pinned references required for OFF-byte claims, no cost or unmeasured
 cross-build equality claim, and later numeric identities requiring separate validation.

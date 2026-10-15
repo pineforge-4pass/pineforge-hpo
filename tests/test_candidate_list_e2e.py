@@ -4,11 +4,11 @@ directory. Run by hand on a spot box, like test_warm_start_e2e.py:
 
     python3 tests/test_candidate_list_e2e.py --native build/pineforge-hpo-native --output <dir>
 
-The documented sealed 48-stage candidates proof covers native admission, ordering and digests,
-Python schema/argv/relay, and compiled-strategy trade counts and aggregate metrics for its recorded
-controls and builds, while literal OFF-byte comparison requires the pinned reference binary and no
-per-trade equality, universal warm-import behavior, cost, whole-process memory bound or unmeasured
-cross-build equality is claimed.
+The documented sealed 48-stage candidates proof covers native admission, ordering and digests and
+Python schema/argv/relay for its recorded controls and builds (the manual compiled-strategy gate
+tests/test_candidate_list_e2e.py has no recorded result in this tree), while literal OFF-byte
+comparison requires the pinned reference binary and no per-trade equality, universal warm-import
+behavior, cost, whole-process memory bound or unmeasured cross-build equality is claimed.
 HPO captures no trades, so the proof is the trade count and the
 trade-derived aggregate metrics of every row against the harness, value for value; no per-trade
 data is fabricated here (the per-trade bit comparison of the C ABI against the harness is the

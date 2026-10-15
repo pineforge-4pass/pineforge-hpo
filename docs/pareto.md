@@ -1,6 +1,6 @@
 # Post-hoc Pareto front
 
-**Status: the native-proof PBO run uses synthetic data only; PBO on real data is not yet proven.**
+**Status: no recorded proof run names the Pareto module `python/pineforge_hpo/pareto.py` or its tests; the native-proof PBO run uses synthetic data only; PBO on real data is not yet proven.**
 Every statement about behaviour below is a statement of what the
 source is meant to do; the proof on real study output is deferred. The contract id is
 `pineforge-hpo-pareto-front/v1`, the algorithm name is `exact_all_pairs_v1`.
