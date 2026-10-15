@@ -17,7 +17,16 @@ administrator applies and keeps these settings:
    issue forms, or update those forms to match the organization label policy.
 6. Protect `main` with required pull requests and the `CI` and
    `API documentation / Build API reference` checks after their first runs.
+7. Make the existing org App's `PINEFORGE_APP_ID` and
+   `PINEFORGE_APP_PRIVATE_KEY` Actions secrets available to this repository.
+   Its installation must include `pineforge-release` with `Contents: write`.
+   The notification job mints a short-lived token scoped only to that target.
+   Allow the pinned official `actions/create-github-app-token` action under
+   Actions policy. See [release notification and replay](release-chain.md).
+8. Add `Release notification contract` to the required checks on `main` after
+   its first CI run. Keep the existing native, Python and documentation checks.
 
-No Pages, deployment, package-registry, or cloud credential is required. Pages
-uses GitHub's OIDC-backed deployment action and the repository-scoped
-`GITHUB_TOKEN` permissions declared in the workflow.
+Pages uses GitHub's OIDC-backed deployment action and the repository-scoped
+`GITHUB_TOKEN` permissions declared in the workflow. It needs no additional
+credential. Release-hub notification uses the existing org App credentials above;
+no PAT, package-registry credential, cloud credential or new variable is required.
