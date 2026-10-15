@@ -4,7 +4,13 @@
 Usage: test_return_stats_integration.py NATIVE PLUGIN BUILD_DIR SOURCE_DIR ENGINE_ROOT DLIB_SOURCE
        [unittest arguments]
 
-UNEXECUTED until the proof phase. It is slow and serial: it rebuilds the real reducer object with
+The sealed 48-stage legacy return-statistics proof recorded in CHANGELOG.md and
+docs/internal/methods-cx-wire.md covers the Python forwarding, fake-plugin CLI, reducer-identity
+integration and canonical-curve controls on its recorded builds, with numerical comparisons limited
+to their stated domain, scale and bounds, launcher/response-file/old-CMake cases limited to
+synthetic-database checks, pinned references required for OFF-byte claims, no cost or unmeasured
+cross-build equality claim, and later numeric identities requiring separate validation.
+It is slow and serial: it rebuilds the real reducer object with
 a verbose build and configures (and for the first case builds) fresh trees of the whole project.
 With PFH_REQUIRE_RETURN_STATS_IDENTITY=1 (the proof configuration) an unbound main build is a
 failure instead of a skip.

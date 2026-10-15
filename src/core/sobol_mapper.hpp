@@ -2,8 +2,12 @@
 
 // Maps one 64-bit Sobol coordinate X' onto one search-space dimension (contract N6).
 //
-// STATUS: UNEXECUTED source preparation (methods-sobol-mapper leaf, base d2f83326). Nothing here has
-// been compiled or run; the first compile and every test belong to the spot proof.
+// The Sobol engine, mapper, indexed sampler and continuation are covered by the sealed 48-stage
+// proof recorded in CHANGELOG.md and docs/internal/methods-g1-wire.md, with arithmetic and
+// parameter-stream claims limited to its recorded builds and controls, the independent engine
+// oracle required for the full 64-bit proof, and no quality, cost or unmeasured cross-build
+// equality claim.
+// Source preparation: methods-sobol-mapper leaf, base d2f83326.
 //
 // Rules, from methods-sobol-contract.pin.md and methods-sobol-contract.revised.md N5/N6:
 //   - discrete dimensions take idx = floor(X' * count / 2^64), the high word of the exact 128-bit

@@ -1,10 +1,14 @@
 // Sobol descriptor, part accounting and parent admission: unit tests (src/cli/sobol_continuation.hpp).
 //
-// STATUS: UNEXECUTED. Written test-first by the methods-sobol-native leaf (base 1ed3402d) under a rule
-// that forbids compiling or running anything on the preparing machine. The first compile and run
-// belong to the spot proof; until then nothing here is evidence of behaviour.
+// The Sobol engine, mapper, indexed sampler and continuation are covered by the sealed 48-stage
+// proof recorded in CHANGELOG.md and docs/internal/methods-g1-wire.md, with arithmetic and
+// parameter-stream claims limited to its recorded builds and controls, the independent engine
+// oracle required for the full 64-bit proof, and no quality, cost or unmeasured cross-build
+// equality claim.
+// Written test-first by the methods-sobol-native leaf (base 1ed3402d) under a rule
+// that forbade compiling or running anything on the preparing machine.
 //
-// Build notes for the integrator (this file is not registered in tests/CMakeLists.txt):
+// Build notes for the integrator (registered in tests/CMakeLists.txt):
 //   - include directories: <repo>/src/cli, <repo>/src/core and <repo>/include (like test_warm_binary);
 //   - link PineForgeHPO::core (sobol_engine.cpp, sobol_mapper.cpp, sobol_sampler.cpp must be in it);
 //   - compile options -Wall -Wextra -Wpedantic -ffp-contract=off -fno-fast-math;

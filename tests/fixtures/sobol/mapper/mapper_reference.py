@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Independent reference for the Sobol mapper's floating-point cases (mapper revision 2).
 
-STATUS: UNEXECUTED. Written under a rule that forbids running any generator on the Mac; the first
-run belongs to the spot proof. Run it there as:
+This generator supplies the build-host revision-2 floating reference for the documented sealed
+48-stage Sobol proof, using the stated binary64 operation order and 900-digit Decimal
+transcendentals rounded to binary64 for the sampled cases, with no claim of equality across
+unmeasured builds.
+Written under a rule that forbade running any generator on the Mac. Run it on the build host as:
 
     python3 -I mapper_reference.py > float-reference.tsv
 

@@ -3,8 +3,13 @@
 `pineforge_candidates_v1`), driven only through the native binary and the fake strategy
 plugin. Usage: test_candidate_list_cli.py NATIVE PLUGIN [unittest arguments].
 
-Written from the AR pin (methods-c-contract.pin.md) before the wiring existed. These tests
-are UNEXECUTED until the spot phase. Independent oracles: Python recomputes the list digest
+Written from the AR pin (methods-c-contract.pin.md) before the wiring existed.
+The documented sealed 48-stage candidates proof covers native admission, ordering and digests,
+Python schema/argv/relay, and compiled-strategy trade counts and aggregate metrics for its recorded
+controls and builds, while literal OFF-byte comparison requires the pinned reference binary and no
+per-trade equality, universal warm-import behavior, cost, whole-process memory bound or unmeasured
+cross-build equality is claimed.
+Independent oracles: Python recomputes the list digest
 and the canonical identity from the documented byte layout, and compares row bytes across
 worker counts; nothing imports the product.
 

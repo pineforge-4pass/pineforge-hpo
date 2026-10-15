@@ -1,4 +1,9 @@
-// UNEXECUTED: written on the Mac without a compiler or test run; first execution is on a spot box.
+// The Sobol engine, mapper, indexed sampler and continuation are covered by the sealed 48-stage
+// proof recorded in CHANGELOG.md and docs/internal/methods-g1-wire.md, with arithmetic and
+// parameter-stream claims limited to its recorded builds and controls, the independent engine
+// oracle required for the full 64-bit proof, and no quality, cost or unmeasured cross-build
+// equality claim.
+// Originally written on the Mac without a compiler or test run.
 //
 // Checks of the 64-bit Sobol engine (src/core/sobol_engine.hpp):
 //   1. the vendored Joe-Kuo bytes, and the compiled and generated tables against them;

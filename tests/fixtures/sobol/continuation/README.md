@@ -1,6 +1,10 @@
 # Sobol continuation fixtures
 
-Static, hand-written inputs for `tests/test_sobol_continuation.cpp`. UNEXECUTED source preparation.
+Static, hand-written inputs for `tests/test_sobol_continuation.cpp`.
+These handwritten canonical-space, identity and parent fixtures are exercised by
+tests/test_sobol_continuation.cpp in the documented sealed 48-stage Sobol proof, including
+exact-prefix admission and forged-row refusal, with continuation exactness limited to the parameter
+stream on the recorded builds.
 None of these files was produced by the code under test: the texts were typed by hand from the
 documented canonical forms and hashed with `shasum -a 256`.
 

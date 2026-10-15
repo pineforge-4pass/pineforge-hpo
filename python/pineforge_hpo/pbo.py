@@ -19,8 +19,8 @@ complementary blocks.
 Every number is plain binary64 arithmetic in a fixed operation order, with no fused
 operations and no tolerance. Counts and the sign of the logit are exact integer arithmetic; only
 the logarithm of a logit value depends on the platform math library. Contract text and defaults:
-``docs/pbo.md``. UNEXECUTED until the proof phase: neither this module nor its tests have been
-run.
+``docs/pbo.md``.
+Status: the native-proof PBO run uses synthetic data only; PBO on real data is not yet proven.
 """
 
 from __future__ import annotations

@@ -1,7 +1,11 @@
 // Both public return-statistics headers in one translation unit, and the real build's generated
 // identity read back against its own descriptor.
 //
-// UNEXECUTED until the proof phase. The identity header is included first here; main.cpp and the
+// The sealed 48-stage legacy return-statistics proof documented in docs/internal/methods-cx-wire.md
+// covers the header/identity and canonical-curve probe routes on its recorded builds and controls,
+// with numerical comparisons subject to their stated domain and bounds and no validation of later
+// numeric identities, the added PBO-only probe branch or unmeasured cross-build equality.
+// The identity header is included first here; main.cpp and the
 // executor include the reducer header first, so both orders are compiled by the product. If either
 // header defined a name of the other again (the old duplicate `kReturnStatsContract`), this file
 // would not compile.

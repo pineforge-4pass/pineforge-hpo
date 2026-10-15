@@ -3,7 +3,12 @@
 Python validates the schema, forwards the native flags and relays the native result and failure
 documents. It never generates, reads, validates or re-serializes a Sobol stream or a parent
 history: the native runner is the single authority for the sampler, the descriptor and the parent
-admission. UNEXECUTED until the proof phase.
+admission.
+The documented sealed 48-stage Sobol proof covers the native CLI, Python schema/argv/relay and
+compiled-strategy controls on its recorded builds, with bound numeric identity required for
+floating-point spaces, logarithmic CLI checks limited to range and a relative bound, continuation
+exactness limited to the parameter stream, and no quality, cost or equality claim for unmeasured
+build pairs.
 """
 
 from __future__ import annotations

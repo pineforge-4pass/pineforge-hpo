@@ -2,10 +2,13 @@
 
 // Sobol descriptor, part accounting and parent admission (contract N9, N10, N12).
 //
-// STATUS: UNEXECUTED source preparation (methods-sobol-native leaf, base 1ed3402d). Nothing here has
-// been compiled or run; the first compile and every test belong to the spot proof. The component is
-// header-only and is NOT wired into main.cpp, CMake or the Python route: the final integrator owns
-// the call sites listed in docs/internal/methods-sobol-native.md.
+// The Sobol engine, mapper, indexed sampler and continuation are covered by the sealed 48-stage
+// proof recorded in CHANGELOG.md and docs/internal/methods-g1-wire.md, with arithmetic and
+// parameter-stream claims limited to its recorded builds and controls, the independent engine
+// oracle required for the full 64-bit proof, and no quality, cost or unmeasured cross-build
+// equality claim.
+// Originally prepared by the methods-sobol-native leaf (base 1ed3402d) as a header-only component;
+// see docs/internal/methods-sobol-native.md for the call sites.
 //
 // What it owns
 //   * SobolDescriptor: contract, table, word bits, scramble, seed, ordered columns, space hash,
