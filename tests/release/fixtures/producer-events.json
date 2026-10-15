@@ -1,0 +1,36 @@
+[
+  {
+    "release": {
+      "id": 160,
+      "tag_name": "v1.6.0",
+      "draft": false,
+      "prerelease": false,
+      "published_at": "2026-10-16T00:00:00Z"
+    },
+    "expected_dispatch": {
+      "event_type": "hpo-release",
+      "client_payload": {
+        "version": "1.6.0",
+        "prerelease": false,
+        "run_id": 123456
+      }
+    }
+  },
+  {
+    "release": {
+      "id": 161,
+      "tag_name": "v1.6.0rc1",
+      "draft": false,
+      "prerelease": true,
+      "published_at": "2026-10-16T00:00:00Z"
+    },
+    "expected_dispatch": {
+      "event_type": "hpo-release",
+      "client_payload": {
+        "version": "1.6.0rc1",
+        "prerelease": true,
+        "run_id": 123456
+      }
+    }
+  }
+]
