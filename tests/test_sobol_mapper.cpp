@@ -1,15 +1,20 @@
 // Sobol coordinate mapper and indexed sampler: unit tests.
 //
-// STATUS: UNEXECUTED. Written test-first by the methods-sobol-mapper leaf (base d2f83326) under a
-// rule that forbids compiling or running anything on the preparing machine. The first compile and
-// run belong to the spot proof; until then nothing here is evidence of behaviour.
+// The Sobol engine, mapper, indexed sampler and continuation are covered by the sealed 48-stage
+// proof recorded in CHANGELOG.md and docs/internal/methods-g1-wire.md, with arithmetic and
+// parameter-stream claims limited to its recorded builds and controls, the independent engine
+// oracle required for the full 64-bit proof, and no quality, cost or unmeasured cross-build
+// equality claim.
+// Written test-first by the methods-sobol-mapper leaf (base d2f83326) under a
+// rule that forbade compiling or running anything on the preparing machine.
 //
-// Build notes for the integrator (this file is not registered in tests/CMakeLists.txt):
+// Build notes for the integrator (registered in tests/CMakeLists.txt):
 //   - include directories: <repo>/src/core and <repo>/include;
 //   - link PineForgeHPO::core (which must contain sobol_mapper.cpp, sobol_sampler.cpp and the
 //     engine's sobol_engine.cpp);
 //   - compile options -ffp-contract=off -fno-fast-math, like test_portable_math.cpp;
-//   - compile definition PFH_SOBOL_MAPPER_FIXTURES="<repo>/tests/fixtures/sobol/mapper".
+//   - compile definition PFH_SOBOL_MAPPER_FIXTURES set to the build-tree fixture directory, which
+//     holds a copy of high64-boundaries.tsv and the generated float-reference.tsv.
 //
 // Coverage: the high word of the exact 128-bit product, the 53-bit unit, Boolean/categorical splits,
 // signed and extreme integer lattices, stepped reals, linear/log real and log-integer mapping with

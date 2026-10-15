@@ -3,7 +3,14 @@
 `pineforge-hpo-return-stats/v1`), driven only through the native binary and the fake plugin.
 Usage: test_return_stats_cli.py NATIVE PLUGIN [unittest arguments].
 
-UNEXECUTED until the spot phase. The fake plugin reports a two-point curve (equity `E` then
+The sealed 48-stage legacy return-statistics proof recorded in CHANGELOG.md and
+docs/internal/methods-cx-wire.md covers the Python forwarding, fake-plugin CLI and
+reducer-identity integration controls on its recorded builds (the by-hand canonical-curve gate
+tests/test_return_stats_e2e.py has no recorded result in this tree), with numerical comparisons limited
+to their stated domain, scale and bounds, launcher/response-file/old-CMake cases limited to
+synthetic-database checks, pinned references required for OFF-byte claims, no cost or unmeasured
+cross-build equality claim, and later numeric identities requiring separate validation.
+The fake plugin reports a two-point curve (equity `E` then
 `E + 1`, one minute apart, `E` = 100000 unless overridden), so every expectation below is closed
 form: one bar interval gives T = 1, no period (fewer than three points, status 6); the monthly
 series of the same curve is one UTC bucket, hence T = 0 and P = 12 (status 1), and any chart

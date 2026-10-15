@@ -8,7 +8,14 @@
 The 2,000,000-bar case is the long one: run it as its own invocation (--timing-case 2000000
 --only-timing) so a heavy proof can be sharded and harvested separately.
 
-UNEXECUTED until the spot phase. What it proves, and what it does not:
+The sealed 48-stage legacy return-statistics proof recorded in CHANGELOG.md and
+docs/internal/methods-cx-wire.md covers the Python forwarding, fake-plugin CLI and
+reducer-identity integration controls on its recorded builds (the by-hand canonical-curve gate
+tests/test_return_stats_e2e.py has no recorded result in this tree), with numerical comparisons limited
+to their stated domain, scale and bounds, launcher/response-file/old-CMake cases limited to
+synthetic-database checks, pinned references required for OFF-byte claims, no cost or unmeasured
+cross-build equality claim, and later numeric identities requiring separate validation.
+What it proves, and what it does not:
 
 1. Reconciliation on a real canonical curve (8,760 hourly script bars, about one UTC year). The
    probe `tests/real_strategy_curve.cpp` prints the engine-owned curve and the engine's own

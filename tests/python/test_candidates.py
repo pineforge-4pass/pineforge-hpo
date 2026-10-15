@@ -2,7 +2,12 @@
 
 Python never reads, validates or rewrites the list: native admission is the single authority and
 its failure documents are relayed unchanged. These tests cover only the schema, the native argv
-and the Python-side refusals. UNEXECUTED until the spot phase.
+and the Python-side refusals.
+The documented sealed 48-stage candidates proof covers native admission, ordering and digests and
+Python schema/argv/relay for its recorded controls and builds (the manual compiled-strategy gate
+tests/test_candidate_list_e2e.py has no recorded result in this tree), while literal OFF-byte
+comparison requires the pinned reference binary and no per-trade equality, universal warm-import
+behavior, cost, whole-process memory bound or unmeasured cross-build equality is claimed.
 """
 
 from __future__ import annotations

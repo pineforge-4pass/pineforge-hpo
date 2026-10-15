@@ -4,7 +4,14 @@ through the native binary and the fake strategy plugin.
 Usage: test_sobol_cli.py NATIVE PLUGIN [unittest arguments].
 
 Written from the AR pin (methods-sobol-contract.pin.md) and the amendment before the wiring
-existed. UNEXECUTED until the proof phase. Independent oracle: this file implements the Gray-code
+existed.
+The documented sealed 48-stage Sobol proof covers the native CLI and Python schema/argv/relay
+controls on its recorded builds (the by-hand compiled-strategy gate tests/test_sobol_e2e.py has no
+recorded result in this tree), with bound numeric identity required for
+floating-point spaces, logarithmic CLI checks limited to range and a relative bound, continuation
+exactness limited to the parameter stream, and no quality, cost or equality claim for unmeasured
+build pairs.
+Independent oracle: this file implements the Gray-code
 Sobol recurrence, the Joe-Kuo table recurrence (equation 2), the SplitMix64 digital shift and the
 discrete and linear-real mappings with Python integers and IEEE floats, importing nothing from the
 product; the direction-number table is read from the vendored bytes. The published 32-bit prefix

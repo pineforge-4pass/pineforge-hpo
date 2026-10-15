@@ -5,7 +5,8 @@ reader can check it without running code. A docstring names the dossier clause (
 pinned default (D1-D7) that the test controls. Two values cannot be derived by hand and are
 re-derived inside the test instead: the SHA-256 digest (rebuilt from the documented construction
 with hashlib) and the logarithms (the odds are exact ratios written in the docstring; the
-logarithm is `math.log` of that ratio). UNEXECUTED until the proof phase.
+logarithm is `math.log` of that ratio).
+Status: the native-proof PBO run uses synthetic data only; PBO on real data is not yet proven.
 """
 
 from __future__ import annotations

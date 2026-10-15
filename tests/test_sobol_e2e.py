@@ -5,7 +5,13 @@ hand on a spot box, like test_candidate_list_e2e.py:
     python3 tests/test_sobol_e2e.py --native build/bin/pineforge-hpo-native --output <dir> \\
         [--pinned-reference BINARY --pinned-sha256 HEX]
 
-UNEXECUTED until the proof phase. It uses a real compiled strategy with two continuous real
+The documented sealed 48-stage Sobol proof covers the native CLI and Python schema/argv/relay
+controls on its recorded builds (the by-hand compiled-strategy gate tests/test_sobol_e2e.py has no
+recorded result in this tree), with bound numeric identity required for
+floating-point spaces, logarithmic CLI checks limited to range and a relative bound, continuation
+exactness limited to the parameter stream, and no quality, cost or equality claim for unmeasured
+build pairs.
+It uses a real compiled strategy with two continuous real
 columns, so it needs a build whose Sobol numeric identity is bound (an unbound build refuses the
 study before any trial; the test then fails with that refusal, which is the correct result of a
 proof build that is not bound). Proves: the Python route builds exactly the native argv; the rows

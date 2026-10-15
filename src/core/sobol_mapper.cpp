@@ -1,4 +1,9 @@
-// UNEXECUTED source preparation (methods-sobol-mapper leaf, base d2f83326); see sobol_mapper.hpp.
+// The Sobol engine, mapper, indexed sampler and continuation are covered by the sealed 48-stage
+// proof recorded in CHANGELOG.md and docs/internal/methods-g1-wire.md, with arithmetic and
+// parameter-stream claims limited to its recorded builds and controls, the independent engine
+// oracle required for the full 64-bit proof, and no quality, cost or unmeasured cross-build
+// equality claim.
+// Source preparation: methods-sobol-mapper leaf, base d2f83326; see sobol_mapper.hpp.
 //
 // The per-dimension count and lattice decoders below replicate, line for line, the anonymous-namespace
 // authority in search_space.cpp (integer_count, integer_at, real_grid_count, real_at). They cannot be

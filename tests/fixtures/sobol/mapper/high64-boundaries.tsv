@@ -1,7 +1,9 @@
 # High word of the exact 128-bit product floor(x * count / 2^64), hand-derived.
 # Columns: x (hex, 16 digits) <TAB> count (decimal) <TAB> expected index (decimal) <TAB> derivation.
 # Every row is exact integer arithmetic done by hand from the identities in the last column; none
-# was produced by running the mapper, the engine or any generator. UNEXECUTED until the spot run.
+# was produced by running the mapper, the engine or any generator.
+# These hand-derived integer cases are checked by tests/test_sobol_mapper.cpp in the documented
+# sealed 48-stage Sobol proof, with coverage limited to the recorded cases and builds.
 0x0000000000000000	2	0	x=0
 0x7fffffffffffffff	2	0	x*2 = 2^64-2 < 2^64
 0x8000000000000000	2	1	x*2 = 2^64
