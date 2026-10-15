@@ -142,7 +142,7 @@ if selected <= open
     require({trial["parameters"]["Side"] for trial in trials} == {0, 1}, trials)
     (directory / "input-kinds-result.json").write_bytes(result.stdout)
     print(
-        "PASS input.source/input.enum: real v1.2.0 artifact, Python + native, 12 trials",
+        "PASS input.source/input.enum: real v1.6.0-rc.1 artifact, Python + native, 12 trials",
         flush=True,
     )
 
