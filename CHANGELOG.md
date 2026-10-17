@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.6.1rc1 (2026-10-17)
+
+- Re-pin to engine and codegen v1.6.1-rc.1 (gitlinks: `external/pineforge-engine` `196592d`,
+  `external/pineforge-codegen-oss` `74fe4cd`; the C ABI version `PF_ABI_VERSION` remains 4), HPO
+  version 1.6.1rc1 (PEP 440; the engine and codegen tags are spelled v1.6.1-rc.1). The `transpile`
+  extra keeps `pineforge-codegen>=1.1.0,<2`: a pre-release is not selected by default, so install
+  the lockstep codegen with `--pre` or `pineforge-codegen==1.6.1rc1`. The pinned pair carries the
+  engine's selected-window contract revision `1.3-parity` (parity with the 1.4.0 reference, no
+  completeness claim), and codegen's timezone-only calendar built-ins and `array.from` element
+  types; HPO's own code and behaviour are unchanged since 1.6.0.
+
 ## 1.6.0 (2026-10-17)
 
 - Final 1.6.0 release (PEP 440 `1.6.0`, tag `v1.6.0`), paired with `pineforge-engine` v1.6.0 and
