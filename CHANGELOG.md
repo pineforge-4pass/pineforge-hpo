@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## 1.6.0 (2026-10-17)
+
+- Final 1.6.0 release (PEP 440 `1.6.0`, tag `v1.6.0`), paired with `pineforge-engine` v1.6.0 and
+  `pineforge-codegen` 1.6.0 (tags `v1.6.0`; the C ABI version `PF_ABI_VERSION` remains 4). The
+  `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.6.0` (a pre-release is not selected by default, so `1.6.0rc1` needed
+  `--pre` or `pineforge-codegen==1.6.0rc1`). The optional submodule gitlinks in
+  `external/pineforge-engine` (`04607c1`) and `external/pineforge-codegen-oss` (`5aaca61`) remain at
+  the `v1.6.0-rc.1` candidate commits, whose engine and codegen product trees are unchanged in
+  `v1.6.0`.
+- Add a synthetic proof route for the native `--pbo-blocks` moments (tests and examples only; the
+  production binary, its options and its result bytes are unchanged). `examples/pbo_proof/` holds a
+  deterministic 2,048-bar series with its generator and a 25-trial grid. A separate test-only
+  executable, `pineforge-hpo-native-proof`, writes each trial's original full-window equity curve; an
+  independent exact-rational checker re-derives every block's count, sum and centred moment from those
+  curves and compares them with the emitted values, seven controls each reach their own named
+  refusal, and the PBO module is then run on the same native rows against the exact oracle. It proves
+  mechanics on synthetic data only, not market behaviour. PBO on real data remains unproven.
+- Accept release candidates in the form `1.6.0rcN` in `VERSION`, the CMake project
+  version, and the failure-catalog diff, taken against the last final release.
+  The wheel and sdist keep the full pre-release version string.
+- Replace stale `UNEXECUTED` test-first status notes across comments, docstrings, Markdown and
+  TSV headers with what the sealed 48-stage proof recorded in `CHANGELOG.md` and the internal
+  wire notes covers, keeping its limits (recorded builds and controls only; no quality, cost or
+  unmeasured cross-build equality claim; no recorded proof result for the by-hand
+  compiled-strategy / canonical-curve routes; `docs/pareto.md` and its tests remain unnamed by any
+  recorded proof run; the native-proof PBO run uses synthetic data only and PBO on real data
+  remains unproven), and update one stale `v1.2.0` artifact label in
+  `tests/test_symbol_feeds_e2e.py` to `v1.6.0-rc.1` (comments, docstrings, documentation and one
+  test print string only; product code is unchanged).
+- Add the `notify-hub` release-workflow job, `scripts/notify_release_hub.py`,
+  `docs/release-chain.md`, `docs/repository-setup.md` updates and the `tests/release/` contract
+  suite: after the `package` job uploads the wheel, sdist, `hpo_failure_codes.json` and
+  `hpo_failure_codes_diff.json` (or on a `workflow_dispatch` replay of an existing published tag),
+  verify the tagged `VERSION`, release flags and all four public assets before sending
+  `repository_dispatch` `hpo-release` (`{version, prerelease, run_id}`, canonical PEP 440
+  spelling) to `pineforge-4pass/pineforge-release` with a scoped GitHub App token.
+
 ## 1.6.0rc1 (2026-10-14)
 
 - Re-pin to engine and codegen v1.6.0-rc.1 (gitlinks), HPO version 1.6.0rc1 (PEP 440; the engine and codegen tags are spelled v1.6.0-rc.1). The transpile extra keeps pineforge-codegen>=1.1.0,<2: a pre-release is not selected by default, so install the lockstep codegen with --pre or pineforge-codegen==1.6.0rc1.
