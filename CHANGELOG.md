@@ -9,9 +9,11 @@
   `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
   `pineforge-codegen==1.6.0` (a pre-release is not selected by default, so `1.6.0rc1` needed
   `--pre` or `pineforge-codegen==1.6.0rc1`). The optional submodule gitlinks in
-  `external/pineforge-engine` (`04607c1`) and `external/pineforge-codegen-oss` (`5aaca61`) remain at
-  the `v1.6.0-rc.1` candidate commits, whose engine and codegen product trees are unchanged in
-  `v1.6.0`.
+  `external/pineforge-engine` (`1e48cfd`) and `external/pineforge-codegen-oss` (`7300166`) pin
+  the `v1.6.0` release commits. As an approved exception to "the release-candidate tree plus
+  documentation", HPO 1.6.0 also ships #48 (comments, docstrings and docs only) and #49 (release
+  plumbing: the `notify-hub` job, `scripts/notify_release_hub.py`, `tests/release`; no product
+  code).
 - Add a synthetic proof route for the native `--pbo-blocks` moments (tests and examples only; the
   production binary, its options and its result bytes are unchanged). `examples/pbo_proof/` holds a
   deterministic 2,048-bar series with its generator and a 25-trial grid. A separate test-only
@@ -30,8 +32,8 @@
   compiled-strategy / canonical-curve routes; `docs/pareto.md` and its tests remain unnamed by any
   recorded proof run; the native-proof PBO run uses synthetic data only and PBO on real data
   remains unproven), and update one stale `v1.2.0` artifact label in
-  `tests/test_symbol_feeds_e2e.py` to `v1.6.0-rc.1` (comments, docstrings, documentation and one
-  test print string only; product code is unchanged).
+  `tests/test_symbol_feeds_e2e.py` to `v1.6.0` (`v1.6.0-rc.1` in #48, then `v1.6.0`; comments,
+  docstrings, documentation and one test print string only; product code is unchanged).
 - Add the `notify-hub` release-workflow job, `scripts/notify_release_hub.py`,
   `docs/release-chain.md`, `docs/repository-setup.md` updates and the `tests/release/` contract
   suite: after the `package` job uploads the wheel, sdist, `hpo_failure_codes.json` and
