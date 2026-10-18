@@ -19,6 +19,7 @@ jobs:
     name: Release notification contract
     runs-on: >-
       ${{ github.event_name != 'pull_request_target' &&
+          github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
           contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
@@ -58,6 +59,7 @@ jobs:
           - os: ubuntu-latest
             runner: >-
               ${{ github.event_name != 'pull_request_target' &&
+                  github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
                   contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
                   (github.event_name != 'pull_request' ||
                    (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
@@ -234,6 +236,7 @@ jobs:
     name: Python ${{ matrix.python }}
     runs-on: >-
       ${{ github.event_name != 'pull_request_target' &&
+          github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
           contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&

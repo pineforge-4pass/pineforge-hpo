@@ -77,3 +77,46 @@ or CI jobs were run locally or dispatched. The AGENTS.md execution gates were th
 not run. Local commits are separated by workflow file, with this report and `DONE` included
 in the final workflow group. Commit hooks and signing are disabled for these invocations.
 Nothing is pushed.
+
+## Fix round 1
+
+Re-read `git -C ~/code/pf-ci-spot show origin/main:workflows/public.yml` at revision
+`1fe46216757d3f2733272f61320981f9fb215e42` for bulletins #614/#615. All eight Linux x64
+runner expressions now match that fragment verbatim, allowing only the surrounding YAML
+indentation to differ:
+
+```yaml
+runs-on: >-
+  ${{ github.event_name != 'pull_request_target' &&
+      github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
+      contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
+      (github.event_name != 'pull_request' ||
+       (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
+      fromJSON('["self-hosted","pf-ci","pf-ci-x64"]') || 'ubuntu-latest' }}
+env:
+  PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
+```
+
+Updated jobs:
+
+- `ci.yml`: `release-notification`, `native` Linux matrix entry, and `python`.
+- `benchmark-smoke.yml`: `optuna`.
+- `docs-pages.yml`: `build` and `deploy`.
+- `release.yml`: `package` and `notify-hub`.
+
+Before -> after: each job used the original public fragment without an actor predicate;
+each now uses the new public fragment with both actor checks. If either `github.actor` or
+`github.triggering_actor` is `dependabot[bot]`, the expression selects `ubuntu-latest`.
+This supersedes the earlier report's statement that the fragment had no actor predicate
+and would leave Dependabot subject to dispatcher rejection.
+
+The native macOS leg still selects `macos-latest`. All existing `PF_CI_LABELS` keys and
+values, steps, timeouts, matrix values, and other workflow settings remain unchanged.
+All existing files and the original completion marker are retained.
+
+Verification is limited to reading the upstream fragment, reviewing the eight expression
+bodies and Git diff, and inspecting Git whitespace/status output. No repository code,
+tests, builds, linters, benchmarks, documentation generators, workflows, or CI jobs were
+run or dispatched. This fix is recorded in one local commit named
+`ci: track pf-ci-spot fragment 1fe46216 (dependabot stays hosted)`, with commit hooks and
+signing disabled for that invocation. Nothing is pushed.
