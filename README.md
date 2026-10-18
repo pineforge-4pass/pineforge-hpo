@@ -753,7 +753,7 @@ Additional design and validation material:
 ## License
 
 Starting with v0.11.0, original code in this repository is source-available under the
-[PineForge Source License 1.2](LICENSE); the `LICENSE` file is the controlling text.
+[Tunaxis Source License 1.2](LICENSE); the `LICENSE` file is the controlling text.
 The licensor is pineforge, LLC. Releases up to and including v0.10.0 were released
 under Apache-2.0 and remain available under that license.
 

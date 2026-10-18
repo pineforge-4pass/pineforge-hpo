@@ -11,6 +11,7 @@
   imports and the `ghcr.io/pineforge-4pass/tunaxis-release` release hub image. The
   `pineforge_codegen` import still works with a deprecation warning, and the old
   `ghcr.io/pineforge-4pass/pineforge-release` image still works.
+- The license is now the Tunaxis Source License 1.2; its terms are unchanged.
 
 ## 1.6.1 (2026-10-18)
 
