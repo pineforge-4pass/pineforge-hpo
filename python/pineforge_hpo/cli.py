@@ -1335,7 +1335,7 @@ def _uint64_argument(value: str) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = _FailureArgumentParser(
         prog="pineforge-hpo",
-        description="Compile PineScript strategies and run native PineForge HPO studies.",
+        description="Compile PineScript strategies and run native Tunaxis HPO studies.",
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"

@@ -1,4 +1,4 @@
-"""Python initialization path for PineForge HPO."""
+"""Python initialization path for Tunaxis HPO."""
 
 from importlib import metadata
 from pathlib import Path

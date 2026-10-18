@@ -1,6 +1,6 @@
-# Contributing to PineForge HPO
+# Contributing to Tunaxis HPO
 
-Thank you for improving PineForge HPO. The project accepts focused bug fixes,
+Thank you for improving Tunaxis HPO. The project accepts focused bug fixes,
 tests, documentation, benchmark improvements, and proposals for new optimizer
 or execution capabilities.
 
@@ -39,8 +39,10 @@ python -m pip install -e '.[dev]'
 python -m unittest discover -s tests/python -v
 ```
 
-Tests of the optional PineScript bridge also need
-`external/pineforge-codegen-oss` importable as `pineforge_codegen`.
+Tests of the optional PineScript bridge also need `tunaxis-codegen` from
+`external/pineforge-codegen-oss` (previously `pineforge-codegen`).
+Use `tunaxis_codegen` for new imports (`pineforge_codegen` still works with a
+deprecation warning); the current HPO bridge and its tests retain the compatibility import.
 
 Build the API reference with Doxygen 1.9.8 or newer:
 
@@ -62,7 +64,7 @@ Any change to TPE numerical arithmetic or RNG consumption must bump
 `kTpeAlgorithmRevision` in `src/core/tpe_sampler.cpp`. Revalidate the numerical
 identity keyed serial goldens and checkpoint compatibility after such a change.
 
-- HPO is a consumer of strategy plugins and the public PineForge C ABI; it is
+- HPO is a consumer of Tunaxis strategy plugins and the public Tunaxis C ABI; it is
   not a `BacktestEngine` subclass.
 - Transpilation happens once during artifact initialization, outside the native
   trial loop.

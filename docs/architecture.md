@@ -12,12 +12,15 @@ account aggregator or portfolio CLI has been implemented.
 
 ## Product boundary
 
-`pineforge-hpo` composes two separately distributed products:
+Tunaxis hyperparameter optimization composes two separately distributed products:
 
-- `pineforge-codegen-oss` provides the `pineforge-codegen` Python distribution
-  and its `pineforge_codegen` module. `transpile_full()` emits generated C++, an
+- The `pineforge-codegen-oss` repository provides the `tunaxis-codegen` Python
+  distribution (previously `pineforge-codegen`). Use
+  `tunaxis_codegen` for new imports (`pineforge_codegen` still works with a
+  deprecation warning). `transpile_full()` emits generated C++, an
   input manifest, and literal `strategy(...)` parameters.
-- `pineforge-engine` executes a compiled strategy through its public C ABI.
+- The Tunaxis engine (`pineforge-engine`) executes a compiled strategy through the
+  public Tunaxis C ABI.
 
 The HPO repository does not subclass or link against `BacktestEngine` internals.
 The native adapter loads a generated strategy plugin with local symbol scope and
@@ -54,7 +57,7 @@ loop.
 ### Transpiler bridge
 
 `python/pineforge_hpo/transpile.py` imports
-`pineforge_codegen.transpile_full` and normalizes its response:
+the compatibility alias `pineforge_codegen.transpile_full` and normalizes its response:
 
 ```text
 TranspileResult
@@ -311,7 +314,7 @@ identifiers resolve before any backtest. Constraints always reject division by
 zero and non-finite operands. Objective policies are explicit, and a non-finite
 final score is never ranked or treated as feasible.
 
-The generic library boundary remains independent of PineForge reports:
+The generic library boundary remains independent of Tunaxis reports:
 
 ```cpp
 struct ObjectiveResult {
@@ -467,7 +470,7 @@ Starting with v0.11.0, original `pineforge-hpo` code is licensed under the
 [PineForge Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
 Releases up to and including v0.10.0
 were released under Apache-2.0 and remain available under that license.
-`pineforge-engine` is a separate Apache-2.0 runtime dependency. `pineforge-codegen`, from
+`pineforge-engine` is a separate Apache-2.0 runtime dependency. `tunaxis-codegen`, from
 `pineforge-codegen-oss`, is a separate source-available dependency with its own
 terms. The direct-PineScript convenience path does not relicense codegen under
 Apache-2.0. Precompiled plugin users can run the native HPO layer without

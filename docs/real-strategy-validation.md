@@ -45,7 +45,7 @@ needs_aggregation     = true
 
 At the selected candidate, a one-trial control against the pre-derived 15-minute
 corpus file produced bit-for-bit equal objective and selected metric JSON. This
-confirms that the real HPO run used PineForge engine timeframe aggregation.
+confirms that the real HPO run used Tunaxis engine timeframe aggregation.
 
 ## Study
 

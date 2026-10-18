@@ -1,7 +1,7 @@
 # Native product-TPE validation
 
 This document records the deterministic nonlinear test suites used to decide
-whether PineForge's clean-room C++ product-TPE is usable. It does not claim
+whether Tunaxis's clean-room C++ product-TPE is usable. It does not claim
 proposal-sequence compatibility with Optuna, and it does not treat one lucky
 seed as evidence.
 
@@ -80,7 +80,7 @@ Across 25 paired runs, native won 16 and Optuna won 9; the bounded geometric
 paired-regret ratio was `0.664`. Native therefore compares credibly with the
 official implementation on this suite, but it does not dominate it. In
 particular, Optuna won the rotated Rastrigin median, consistent with this being
-a hostile correlated surface for PineForge's product-density model.
+a hostile correlated surface for Tunaxis's product-density model.
 
 The suite also includes a six-integer-dimension space with exactly `10^6`
 candidates and a coupled, rugged objective whose unique optimum and second-best

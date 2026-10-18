@@ -351,7 +351,7 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
     }
     if (dataset_->size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw TypedHpoError<std::invalid_argument>(
-            "hpo_dataset_invalid", {}, "dataset exceeds the PineForge C ABI bar-count limit");
+            "hpo_dataset_invalid", {}, "dataset exceeds the Tunaxis C ABI bar-count limit");
     }
     if (configuration_.magnifier_samples <= 0) {
         throw TypedHpoError<std::invalid_argument>("hpo_study_spec_invalid",

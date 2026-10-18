@@ -1,4 +1,4 @@
-# Security policy
+# Tunaxis HPO security policy
 
 ## Supported versions
 

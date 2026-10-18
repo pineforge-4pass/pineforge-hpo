@@ -44,8 +44,10 @@ Implemented:
 - `StrategyArtifact` manifest/provenance schema v1;
 - reusable `PineForgeHPO::core` and `PineForgeHPO::engine_adapter` targets;
 - repository-local Python bridge to the separately distributed transpiler:
-  repository `pineforge-codegen-oss`, distribution `pineforge-codegen`, module
-  `pineforge_codegen`.
+  repository `pineforge-codegen-oss`, distribution `tunaxis-codegen`
+  (previously `pineforge-codegen`), module `tunaxis_codegen`
+  (`pineforge_codegen` still works with a deprecation warning; the HPO bridge retains
+  that compatibility import).
 
 The native layer does not depend on `BacktestEngine` internals or a third-party
 storage library. Its dlib optimizer dependency is isolated behind a PIMPL.

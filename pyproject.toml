@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pineforge-hpo"
 dynamic = ["version"]
-description = "Native hyperparameter optimization for PineForge strategies"
+description = "Native hyperparameter optimization for Tunaxis strategies"
 readme = "PYPI_README.md"
 requires-python = ">=3.11"
 # PineForge Source License 1.2 (source-available); see LICENSE.
@@ -15,7 +15,7 @@ license-files = [
     "NOTICE",
     "THIRD_PARTY_LICENSES/sobol_joe_kuo.txt",
 ]
-authors = [{ name = "PineForge contributors" }]
+authors = [{ name = "Tunaxis contributors" }]
 keywords = ["pinescript", "backtesting", "hyperparameter-optimization", "portfolio"]
 classifiers = [
     "Development Status :: 3 - Alpha",
