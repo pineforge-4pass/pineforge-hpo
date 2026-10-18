@@ -4,10 +4,10 @@ Starting with v0.11.0, the original source code in this repository is licensed
 under the Tunaxis Source License 1.2. See [LICENSE](LICENSE) for the controlling
 text. Releases up to and including v0.10.0 were released under Apache-2.0 and
 remain available under that license. For commercial licensing of HPO and codegen,
-see <https://license.pineforge.dev>.
+see <https://license.tunaxis.com>.
 
 `pineforge-hpo` is designed to operate on compiled strategy plugins through the
-public PineForge C ABI. That compiled-plugin path does not require redistributing a
+public Tunaxis C ABI. That compiled-plugin path does not require redistributing a
 PineScript transpiler.
 
 The optional direct-PineScript workflow may invoke the separately licensed
@@ -27,7 +27,7 @@ upstream project and full license text are available at
 <https://github.com/davisking/dlib> and
 [THIRD_PARTY_LICENSES/dlib.txt](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/THIRD_PARTY_LICENSES/dlib.txt).
 
-Pine Script is a trademark of TradingView, Inc. PineForge is not affiliated
+Pine Script is a trademark of TradingView, Inc. Tunaxis is not affiliated
 with, endorsed by, or sponsored by TradingView.
 
 The TPE sampler includes the MIT-licensed CORE-MATH binary64 kernels for `log`,
