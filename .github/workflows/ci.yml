@@ -11,12 +11,77 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: Check out PR history
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed paths
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          docs_only=false
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            paths_file="$RUNNER_TEMP/ci-changed-paths"
+            # Include both sides of renames; NUL delimiters preserve unusual filenames.
+            git diff --name-only --no-renames -z "$PR_BASE_SHA...$PR_HEAD_SHA" -- > "$paths_file"
+            if [[ -s "$paths_file" ]]; then
+              docs_only=true
+              while IFS= read -r -d '' path; do
+                case "$path" in
+                  # Test notes, executable docs tooling, and package metadata are code inputs.
+                  docs/internal|docs/internal/*|docs/pages/filter_public_python.py|\
+                  docs/pages/validate_generated_site.py|docs/pages/pineforge.css|PYPI_README.md)
+                    docs_only=false
+                    break
+                    ;;
+                  docs/*)
+                    # The licence test rejects this basename anywhere in the source tree.
+                    if [[ "${path##*/}" == [sS][oO][bB][oO][lL].[cC][cC] ]]; then
+                      docs_only=false
+                      break
+                    fi
+                    ;;
+                  */*)
+                    docs_only=false
+                    break
+                    ;;
+                  # All remaining paths have no slash: only root Markdown/README is allowed.
+                  *.md|README*) ;;
+                  *)
+                    docs_only=false
+                    break
+                    ;;
+                esac
+              done < "$paths_file"
+            fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$docs_only"
+
   release-notification:
     name: Release notification contract
+    needs: changes
+    if: >-
+      ${{ !cancelled() &&
+          (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
+           needs.changes.outputs.docs_only != 'true') }}
     runs-on: >-
       ${{ github.event_name != 'pull_request_target' &&
           github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
@@ -48,6 +113,11 @@ jobs:
 
   native:
     name: Native (${{ matrix.os }})
+    needs: changes
+    if: >-
+      ${{ !cancelled() &&
+          (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
+           needs.changes.outputs.docs_only != 'true') }}
     runs-on: ${{ matrix.runner }}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
@@ -234,6 +304,11 @@ jobs:
 
   python:
     name: Python ${{ matrix.python }}
+    needs: changes
+    if: >-
+      ${{ !cancelled() &&
+          (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
+           needs.changes.outputs.docs_only != 'true') }}
     runs-on: >-
       ${{ github.event_name != 'pull_request_target' &&
           github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
@@ -280,3 +355,34 @@ jobs:
           python -m pip install ruff==0.15.20
           ruff check python tests/python benchmarks
           ruff format --check python tests/python benchmarks
+
+  build-gate:
+    name: CI verification gate
+    needs: [changes, release-notification, native, python]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require successful verification or a docs-only skip
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          RELEASE_RESULT: ${{ needs.release-notification.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          PYTHON_RESULT: ${{ needs.python.result }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "changes: $CHANGES_RESULT, docs_only: $DOCS_ONLY" \
+            "release-notification: $RELEASE_RESULT" "native: $NATIVE_RESULT" \
+            "python: $PYTHON_RESULT"
+          [[ "$CHANGES_RESULT" == "success" ]]
+          case "$DOCS_ONLY" in
+            true) [[ "$EVENT_NAME" == "pull_request" ]] ;;
+            false) ;;
+            *) exit 1 ;;
+          esac
+          for result in "$RELEASE_RESULT" "$NATIVE_RESULT" "$PYTHON_RESULT"; do
+            if [[ "$result" == "success" ]]; then continue; fi
+            [[ "$DOCS_ONLY" == "true" && "$result" == "skipped" ]]
+          done
