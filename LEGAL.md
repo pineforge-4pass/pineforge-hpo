@@ -1,7 +1,7 @@
 # Legal and dependency boundary
 
 Starting with v0.11.0, the original source code in this repository is licensed
-under the Tunaxis Source License 1.2 (formerly named the PineForge Source License).
+under the Tunaxis Source License 1.3 (formerly named the PineForge Source License).
 See [LICENSE](LICENSE) for the controlling text. Releases up to and including v0.10.0
 were released under Apache-2.0 and remain available under that license. For commercial
 licensing of HPO and codegen, see <https://license.tunaxis.com>.
@@ -51,5 +51,5 @@ is an unchanged copy of it that accompanies source and binary distributions
 The names of the copyright holders and of the University of New South Wales and
 the University of Waikato are not used to endorse or promote this product. The
 authors' example program `sobol.cc` is not used. The licence of the table does
-not change the Tunaxis Source License 1.2 (formerly named the PineForge Source License)
+not change the Tunaxis Source License 1.3 (formerly named the PineForge Source License)
 that governs the original source code of this repository.

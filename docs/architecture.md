@@ -468,7 +468,7 @@ objective, and constraint inputs.
 ## Licensing boundary
 
 Starting with v0.11.0, original `pineforge-hpo` code is licensed under the
-[Tunaxis Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
+[Tunaxis Source License 1.3](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
 Releases up to and including v0.10.0
 were released under Apache-2.0 and remain available under that license.
 `pineforge-engine` is a separate Apache-2.0 runtime dependency. `pineforge-codegen`
