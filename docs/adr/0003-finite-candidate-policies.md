@@ -3,12 +3,14 @@
 - Status: accepted
 - Date: 2026-07-18
 
+> **Name status (2026-10-19).** PineForge is now Tunaxis; historical names are retained below.
+
 ## Context
 
 Adaptive samplers may propose the same parameter vector more than once. That is
 valid for an unconstrained continuous optimizer, but an expensive deterministic
 backtest often benefits from spending each trial on a previously unseen point.
-Tunaxis also needs a precise answer to when an adaptive run with as many
+PineForge also needs a precise answer to when an adaptive run with as many
 trials as legal parameter combinations is equivalent to exhaustive grid search.
 
 The guarantee cannot be inferred from `trials` alone. Continuous real dimensions

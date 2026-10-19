@@ -39,10 +39,11 @@ python -m pip install -e '.[dev]'
 python -m unittest discover -s tests/python -v
 ```
 
-Tests of the optional PineScript bridge also need `tunaxis-codegen` from
-`external/pineforge-codegen-oss` (previously `pineforge-codegen`).
-Use `tunaxis_codegen` for new imports (`pineforge_codegen` still works with a
-deprecation warning); the current HPO bridge and its tests retain the compatibility import.
+Tests of the optional PineScript bridge also need the pinned `external/pineforge-codegen-oss`
+checkout, which installs `pineforge-codegen` and its `pineforge_codegen` module.
+From the next codegen release on, the distribution is `tunaxis-codegen` and new imports
+use `tunaxis_codegen`; `pineforge_codegen` remains available with a deprecation warning.
+The HPO bridge and its tests import `pineforge_codegen`.
 
 Build the API reference with Doxygen 1.9.8 or newer:
 

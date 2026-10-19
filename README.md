@@ -1,4 +1,4 @@
-<picture><source media="(prefers-color-scheme: dark)" srcset="https://tunaxis.com/brand/v1/lockup-dark.png"><img alt="Tunaxis" src="https://tunaxis.com/brand/v1/lockup-light.png" height="40"></picture>
+<img alt="Tunaxis" src="https://tunaxis.com/brand/v1/lockup-light.png" height="40">
 
 # Tunaxis hyperparameter optimization
 
@@ -37,7 +37,7 @@ The HPO package is not published on PyPI.
 ```text
 PineScript
     |
-    | tunaxis-codegen (once)
+    | pineforge-codegen (once; tunaxis-codegen from the next release)
     v
 generated C++ + input manifest
     |
@@ -74,10 +74,11 @@ git submodule update --init \
   external/pineforge-codegen-oss
 ```
 
-The Python distribution from the `pineforge-codegen-oss` repository is now named
-`tunaxis-codegen` (previously `pineforge-codegen`). Use
-`tunaxis_codegen` for new imports (`pineforge_codegen` still works with a deprecation
-warning). The HPO bridge retains the compatibility import for now.
+The pinned source checkout from the `pineforge-codegen-oss` repository installs
+`pineforge-codegen` and its `pineforge_codegen` module
+(`tunaxis-codegen` from the next codegen release). Starting with that release, use
+`tunaxis_codegen` for new imports; `pineforge_codegen` remains available with a deprecation
+warning. The HPO bridge calls `pineforge_codegen.transpile_full()`.
 
 The gitlinks pin the releases this HPO revision targets: engine v1.6.1 (`f37c8b5`,
 C ABI 4) and codegen v1.6.1 (`52d74d6`). Linux CI gates the nine-trial example, real
@@ -88,11 +89,10 @@ but equal `PF_ABI_VERSION` values do not guarantee a compatible C++ source layou
 same behavior. An enum input's categorical choice is accepted in either form a StudySpec
 may carry: the manifest tag (for example `Side.long`) or the member's ordinal, so a study
 written for either form runs against a codegen 1.4.0 or later artifact. The optional
-`transpile` extra still declares the compatibility dependency `pineforge-codegen` >= 1.1.0
-and < 2. Install the codegen release that matches your engine
-(`tunaxis-codegen==1.6.1` for the gitlinks). The native adapter reads the equity statistics
-by their engine 1.0 names, so
-it needs engine headers >= 1.1.0 (including the checked-settings API). Regenerate a
+`transpile` extra requires `pineforge-codegen` >= 1.1.0 and < 2. Install the codegen release
+that matches your engine (`pineforge-codegen==1.6.1` for the gitlinks). The native adapter
+reads the equity statistics by their engine 1.0 names, so it needs engine headers >= 1.1.0
+(including the checked-settings API). Regenerate a
 precompiled plugin referenced from a StudySpec with codegen 1.6.1 and rebuild it
 against engine v1.6.1: plugins from engine v0.13.x or earlier (ABI 3 or lower) are
 refused with an ABI mismatch, while plugins from 1.0 prereleases or development builds also
@@ -135,7 +135,7 @@ cmake --build "$PINEFORGE_ENGINE_ROOT/build" -j4
 
 python3 -m venv .venv
 source .venv/bin/activate
-# Install tunaxis-codegen from the pinned source checkout.
+# The pinned source checkout installs pineforge-codegen.
 python -m pip install -e external/pineforge-codegen-oss
 python -m pip install -e . --no-deps
 
@@ -578,7 +578,7 @@ report; the executable CLI currently resolves expression objectives only.
 
 For an optimizer-only embedding with no Tunaxis engine checkout, configure with
 `PINEFORGE_HPO_BUILD_ENGINE_ADAPTER=OFF` and
-`PINEFORGE_HPO_BUILD_NATIVE_CLI=OFF`. Tunaxis HPO 0.1.x currently exposes CMake
+`PINEFORGE_HPO_BUILD_NATIVE_CLI=OFF`. PineForge HPO 0.1.x currently exposes CMake
 build-tree targets; an installed CMake package is not published yet. Both adapter targets
 default to off when Tunaxis HPO is included with `add_subdirectory()`. Core-only users
 may leave both `external/` submodules uninitialized.
@@ -800,8 +800,9 @@ the MIT license. Third-party notices are recorded in [NOTICE](NOTICE),
 [LEGAL.md](LEGAL.md) and
 [THIRD_PARTY_LICENSES](https://github.com/pineforge-4pass/pineforge-hpo/tree/main/THIRD_PARTY_LICENSES/).
 
-The optional PineScript bridge invokes the `tunaxis-codegen` distribution from the
-`pineforge-codegen-oss` repository. That separately distributed project has its own
-source-available license and commercial-use terms; it is not relicensed by this repository.
+The optional PineScript bridge invokes `pineforge-codegen` (`tunaxis-codegen` from the
+next codegen release), distributed by the `pineforge-codegen-oss` repository. That project
+has its own source-available license and commercial-use terms; it is not relicensed by
+this repository.
 Running `pineforge-hpo-native` with an already compiled strategy plugin does not require
 the transpiler. See [LEGAL.md](LEGAL.md) for the dependency boundary.

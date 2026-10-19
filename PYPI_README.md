@@ -4,6 +4,8 @@
 
 Native hyperparameter optimization for Tunaxis strategies.
 
+formerly PineForge
+
 This Python distribution provides StudySpec validation, PineScript artifact
 initialization, and the `pineforge-hpo` command. Sampling, backtesting,
 objective evaluation, and trial scheduling run in the separately built native
@@ -22,12 +24,13 @@ the HPO package is not published on PyPI.
 - [Benchmark protocol](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/benchmarks/README.md)
 - [License and dependency boundary](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LEGAL.md)
 
-The optional direct-PineScript bridge uses the separately distributed
-`tunaxis-codegen` package from the `pineforge-codegen-oss` repository
-(previously `pineforge-codegen`). Use `tunaxis_codegen` for new
-imports (`pineforge_codegen` still works with a deprecation warning). The
-`transpile` extra admits codegen 1.1 to 1.3 (below 1.4); install the one whose version matches
-your Tunaxis engine (for example `tunaxis-codegen==1.0.0` with engine v1.0.0).
+The optional direct-PineScript bridge uses `pineforge-codegen` from the
+`pineforge-codegen-oss` repository (`tunaxis-codegen` from the next codegen release).
+The pinned source checkout installs `pineforge-codegen` and its `pineforge_codegen`
+module. From the next release on, new imports use `tunaxis_codegen`;
+`pineforge_codegen` remains available with a deprecation warning. The `transpile`
+extra admits codegen >= 1.1.0 and < 2; install the release that matches your Tunaxis
+engine (`pineforge-codegen==1.6.1` with engine v1.6.1 for the gitlinks).
 A precompiled Tunaxis strategy plugin can be optimized without installing that
 transpiler.
 

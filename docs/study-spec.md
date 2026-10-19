@@ -213,7 +213,7 @@ or:
 `source` uses the direct PineScript path:
 
 ```text
-tunaxis-codegen / tunaxis_codegen.transpile_full()
+pineforge-codegen-oss / pineforge_codegen.transpile_full()
   -> generated.cpp
   -> cached native plugin
 ```
@@ -222,10 +222,8 @@ tunaxis-codegen / tunaxis_codegen.transpile_full()
 validated plugin. It must remain beside its ArtifactBuilder `manifest.json`;
 the runner verifies the plugin hash and uses the manifest to validate every
 input name, type, bound, and option before execution. The Python distribution
-is called `tunaxis-codegen` (previously `pineforge-codegen`);
-the repository is `pineforge-codegen-oss`. Use `tunaxis_codegen` for new imports
-(`pineforge_codegen` still works with a deprecation warning). The HPO bridge retains
-the compatibility import for now.
+is `pineforge-codegen` (`tunaxis-codegen` from the next codegen release);
+the repository is `pineforge-codegen-oss` and the HPO bridge imports `pineforge_codegen`.
 
 Other strategy fields:
 

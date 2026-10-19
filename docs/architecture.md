@@ -14,11 +14,12 @@ account aggregator or portfolio CLI has been implemented.
 
 Tunaxis hyperparameter optimization composes two separately distributed products:
 
-- The `pineforge-codegen-oss` repository provides the `tunaxis-codegen` Python
-  distribution (previously `pineforge-codegen`). Use
-  `tunaxis_codegen` for new imports (`pineforge_codegen` still works with a
-  deprecation warning). `transpile_full()` emits generated C++, an
-  input manifest, and literal `strategy(...)` parameters.
+- The pinned `pineforge-codegen-oss` checkout provides the `pineforge-codegen` Python
+  distribution and its `pineforge_codegen` module. From the next codegen release on,
+  the distribution is `tunaxis-codegen`; new imports use `tunaxis_codegen`, while
+  `pineforge_codegen` remains available with a deprecation warning.
+  `transpile_full()` emits generated C++, an input manifest, and literal
+  `strategy(...)` parameters.
 - The Tunaxis engine (`pineforge-engine`) executes a compiled strategy through the
   public Tunaxis C ABI.
 
@@ -57,7 +58,7 @@ loop.
 ### Transpiler bridge
 
 `python/pineforge_hpo/transpile.py` imports
-the compatibility alias `pineforge_codegen.transpile_full` and normalizes its response:
+`pineforge_codegen.transpile_full` and normalizes its response:
 
 ```text
 TranspileResult
@@ -470,8 +471,9 @@ Starting with v0.11.0, original `pineforge-hpo` code is licensed under the
 [Tunaxis Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
 Releases up to and including v0.10.0
 were released under Apache-2.0 and remain available under that license.
-`pineforge-engine` is a separate Apache-2.0 runtime dependency. `tunaxis-codegen`, from
-`pineforge-codegen-oss`, is a separate source-available dependency with its own
+`pineforge-engine` is a separate Apache-2.0 runtime dependency. `pineforge-codegen`
+(`tunaxis-codegen` from the next codegen release), from `pineforge-codegen-oss`,
+is a separate source-available dependency with its own
 terms. The direct-PineScript convenience path does not relicense codegen under
 Apache-2.0. Precompiled plugin users can run the native HPO layer without
 installing codegen.

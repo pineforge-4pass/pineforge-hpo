@@ -6,6 +6,8 @@ repository. Releases up to and including v0.10.0 remain available under Apache-2
 starting with v0.11.0, original HPO code uses the
 [Tunaxis Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
 
+> **Name status (2026-10-19).** PineForge is now Tunaxis; historical names are retained below.
+
 > **Historical snapshot.** This run was recorded during `0.1.0` development
 > with sampler identity `pineforge_product_tpe_v1`, before the finite-candidate
 > policy work introduced the current `v2` identities. The source revision and
@@ -45,7 +47,7 @@ needs_aggregation     = true
 
 At the selected candidate, a one-trial control against the pre-derived 15-minute
 corpus file produced bit-for-bit equal objective and selected metric JSON. This
-confirms that the real HPO run used Tunaxis engine timeframe aggregation.
+confirms that the real HPO run used PineForge engine timeframe aggregation.
 
 ## Study
 

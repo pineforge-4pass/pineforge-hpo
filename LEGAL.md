@@ -1,22 +1,23 @@
 # Legal and dependency boundary
 
 Starting with v0.11.0, the original source code in this repository is licensed
-under the Tunaxis Source License 1.2. See [LICENSE](LICENSE) for the controlling
-text. Releases up to and including v0.10.0 were released under Apache-2.0 and
-remain available under that license. For commercial licensing of HPO and codegen,
-see <https://license.tunaxis.com>.
+under the Tunaxis Source License 1.2 (formerly named the PineForge Source License).
+See [LICENSE](LICENSE) for the controlling text. Releases up to and including v0.10.0
+were released under Apache-2.0 and remain available under that license. For commercial
+licensing of HPO and codegen, see <https://license.tunaxis.com>.
 
 `pineforge-hpo` is designed to operate on compiled strategy plugins through the
 public Tunaxis C ABI. That compiled-plugin path does not require redistributing a
 PineScript transpiler.
 
 The optional direct-PineScript workflow may invoke the separately licensed
-`pineforge_codegen` Python module through the pinned
-`external/pineforge-codegen-oss` git submodule. It is not relicensed by this
-repository, and users are responsible for complying with its terms. The
-submodule need not be initialized when running an already compiled strategy
-plugin. Git submodules preserve independent copyright and license boundaries;
-their contents are not bundled into the HPO core.
+`pineforge_codegen` Python module (distributed as `tunaxis-codegen`, formerly `pineforge-codegen`)
+through the pinned `external/pineforge-codegen-oss` git submodule. That checkout installs
+`pineforge-codegen`; the rename starts with the next codegen release. It is not relicensed by
+this repository, and users are responsible for complying with its terms. The submodule
+need not be initialized when running an already compiled strategy plugin. Git submodules
+preserve independent copyright and license boundaries; their contents are not bundled
+into the HPO core.
 
 The native optimizer integrates dlib's global function search. CMake downloads
 the pinned dlib v20.0.1 source archive from its official repository by default;
@@ -50,5 +51,5 @@ is an unchanged copy of it that accompanies source and binary distributions
 The names of the copyright holders and of the University of New South Wales and
 the University of Waikato are not used to endorse or promote this product. The
 authors' example program `sobol.cc` is not used. The licence of the table does
-not change the Tunaxis Source License 1.2 that governs the original source
-code of this repository.
+not change the Tunaxis Source License 1.2 (formerly named the PineForge Source License)
+that governs the original source code of this repository.

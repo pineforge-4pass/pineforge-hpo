@@ -3,9 +3,11 @@
 - Status: accepted
 - Date: 2026-07-18
 
+> **Name status (2026-10-19).** PineForge is now Tunaxis; historical names are retained below.
+
 ## Context
 
-Tunaxis needs an adaptive single-objective sampler that can remain inside the
+PineForge needs an adaptive single-objective sampler that can remain inside the
 native trial loop. Backtests are expensive enough that completed observations
 should inform later proposals, while the optimizer itself must not introduce a
 Python callback, database round trip, or additional runtime dependency for each
@@ -45,7 +47,7 @@ instead of silently returning the first EI draw.
 Each proposal draws `ei_candidates` factorized joint samples from the good
 model and selects the first sample with the maximum summed per-dimension
 `log(l(x)) - log(g(x))`. Startup proposals use the sampler's fixed-seed random
-path. With the Tunaxis default `constant_liar=true`, outstanding candidates
+path. With the PineForge default `constant_liar=true`, outstanding candidates
 enter only the bad estimator and do not count as completed or receive a
 fabricated objective.
 
@@ -64,7 +66,7 @@ a documented limitation until a constraint-aware observation contract exists.
 
 ## Compatibility boundary
 
-This is a native Tunaxis product-TPE, not an Optuna proposal-sequence clone.
+This is a native PineForge product-TPE, not an Optuna proposal-sequence clone.
 Intentional differences from Optuna's default univariate TPE include:
 
 - joint factorized candidates are ranked by their summed log-density ratio;
