@@ -1,3 +1,5 @@
+<img alt="Tunaxis" src="https://tunaxis.com/brand/v1/lockup-light.png" height="40">
+
 # Tunaxis hyperparameter optimization
 
 Native hyperparameter optimization for Tunaxis strategies.
