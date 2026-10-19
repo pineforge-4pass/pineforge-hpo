@@ -460,7 +460,7 @@ class WorkflowWiringTests(unittest.TestCase):
         ]
         self.assertEqual(len(token_steps), 1)
         settings = token_steps[0]["with"]
-        self.assertEqual(settings["owner"], "pineforge-4pass")
+        self.assertEqual(settings["owner"], "${{ github.repository_owner }}")
         self.assertEqual(settings["repositories"], "pineforge-release")
         self.assertEqual(settings["permission-contents"], "write")
         self.assertTrue(any(s.get("if") == "failure()" for s in job["steps"]))
