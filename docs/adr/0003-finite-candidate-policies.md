@@ -3,6 +3,8 @@
 - Status: accepted
 - Date: 2026-07-18
 
+> **Name status (2026-10-19).** PineForge is now Tunaxis; historical names are retained below.
+
 ## Context
 
 Adaptive samplers may propose the same parameter vector more than once. That is

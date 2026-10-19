@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Renamed to Tunaxis
+
+- Renamed the product to Tunaxis in documentation, CLI help, and user-visible messages.
+- Kept interface names unchanged for now, including commands, modules, flags, environment
+  variables, schemas, failure codes, and artifact/cache identities.
+- Use `tunaxis-codegen` (previously `pineforge-codegen`) with `tunaxis_codegen`
+  imports and the `ghcr.io/pineforge-4pass/tunaxis-release` release hub image. The
+  `pineforge_codegen` import still works with a deprecation warning, and the old
+  `ghcr.io/pineforge-4pass/pineforge-release` image still works.
+- The license is now the Tunaxis Source License 1.3 (the PineForge Source License 1.2, renamed); its terms are unchanged.
+
 ## 1.6.1 (2026-10-18)
 
 - Final 1.6.1 release (PEP 440 `1.6.1`, tag `v1.6.1`), paired with `pineforge-engine` v1.6.1 and

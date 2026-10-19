@@ -37,15 +37,17 @@ Implemented:
 - Apache-2.0 repository license at the initial release and an explicit
   separate-codegen boundary; releases up to and including v0.10.0 remain available
   under Apache-2.0. Starting with v0.11.0, original HPO code uses the
-  [PineForge Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE);
+  [Tunaxis Source License](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE);
 - dependency-free JSON StudySpec loader for `single_strategy`;
 - `Candidate`, `TrialContext`, `ObjectiveResult`, expression policy, and status
   contracts;
 - `StrategyArtifact` manifest/provenance schema v1;
 - reusable `PineForgeHPO::core` and `PineForgeHPO::engine_adapter` targets;
 - repository-local Python bridge to the separately distributed transpiler:
-  repository `pineforge-codegen-oss`, distribution `pineforge-codegen`, module
-  `pineforge_codegen`.
+  the pinned `pineforge-codegen-oss` checkout installs distribution `pineforge-codegen`
+  and module `pineforge_codegen`. From the next codegen release on, the distribution is
+  `tunaxis-codegen` and new imports use `tunaxis_codegen`; `pineforge_codegen` remains
+  available with a deprecation warning. The HPO bridge imports `pineforge_codegen`.
 
 The native layer does not depend on `BacktestEngine` internals or a third-party
 storage library. Its dlib optimizer dependency is isolated behind a PIMPL.

@@ -142,7 +142,7 @@ StrategyPlugin::StrategyPlugin(std::filesystem::path path) : path_(std::move(pat
         if (abi_version_value_ != PF_ABI_VERSION) {
             throw TypedHpoError<std::runtime_error>(
                 "hpo_plugin_invalid", {{"reason", "abi"}},
-                "strategy plugin '" + path_.string() + "' has PineForge ABI version " +
+                "strategy plugin '" + path_.string() + "' has Tunaxis ABI version " +
                     std::to_string(abi_version_value_) + ", expected " +
                     std::to_string(PF_ABI_VERSION));
         }

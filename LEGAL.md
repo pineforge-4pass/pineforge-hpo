@@ -1,22 +1,23 @@
 # Legal and dependency boundary
 
 Starting with v0.11.0, the original source code in this repository is licensed
-under the PineForge Source License 1.2. See [LICENSE](LICENSE) for the controlling
-text. Releases up to and including v0.10.0 were released under Apache-2.0 and
-remain available under that license. For commercial licensing of HPO and codegen,
-see <https://license.pineforge.dev>.
+under the Tunaxis Source License 1.3 (formerly named the PineForge Source License).
+See [LICENSE](LICENSE) for the controlling text. Releases up to and including v0.10.0
+were released under Apache-2.0 and remain available under that license. For commercial
+licensing of HPO and codegen, see <https://license.tunaxis.com>.
 
 `pineforge-hpo` is designed to operate on compiled strategy plugins through the
-public PineForge C ABI. That compiled-plugin path does not require redistributing a
+public Tunaxis C ABI. That compiled-plugin path does not require redistributing a
 PineScript transpiler.
 
 The optional direct-PineScript workflow may invoke the separately licensed
-`pineforge_codegen` Python module through the pinned
-`external/pineforge-codegen-oss` git submodule. It is not relicensed by this
-repository, and users are responsible for complying with its terms. The
-submodule need not be initialized when running an already compiled strategy
-plugin. Git submodules preserve independent copyright and license boundaries;
-their contents are not bundled into the HPO core.
+`pineforge_codegen` Python module (distributed as `tunaxis-codegen`, formerly `pineforge-codegen`)
+through the pinned `external/pineforge-codegen-oss` git submodule. That checkout installs
+`pineforge-codegen`; the rename starts with the next codegen release. It is not relicensed by
+this repository, and users are responsible for complying with its terms. The submodule
+need not be initialized when running an already compiled strategy plugin. Git submodules
+preserve independent copyright and license boundaries; their contents are not bundled
+into the HPO core.
 
 The native optimizer integrates dlib's global function search. CMake downloads
 the pinned dlib v20.0.1 source archive from its official repository by default;
@@ -27,7 +28,7 @@ upstream project and full license text are available at
 <https://github.com/davisking/dlib> and
 [THIRD_PARTY_LICENSES/dlib.txt](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/THIRD_PARTY_LICENSES/dlib.txt).
 
-Pine Script is a trademark of TradingView, Inc. PineForge is not affiliated
+Pine Script is a trademark of TradingView, Inc. Tunaxis is not affiliated
 with, endorsed by, or sponsored by TradingView.
 
 The TPE sampler includes the MIT-licensed CORE-MATH binary64 kernels for `log`,
@@ -50,5 +51,5 @@ is an unchanged copy of it that accompanies source and binary distributions
 The names of the copyright holders and of the University of New South Wales and
 the University of Waikato are not used to endorse or promote this product. The
 authors' example program `sobol.cc` is not used. The licence of the table does
-not change the PineForge Source License 1.2 that governs the original source
-code of this repository.
+not change the Tunaxis Source License 1.3 (formerly named the PineForge Source License)
+that governs the original source code of this repository.

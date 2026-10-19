@@ -356,7 +356,7 @@ pfh::CandidatePolicy parse_candidate_policy(const std::string& text) {
 }
 
 void print_help() {
-    std::cout << "pineforge-hpo-native — native PineForge HPO runner\n\n"
+    std::cout << "pineforge-hpo-native — native Tunaxis HPO runner\n\n"
               << "Usage:\n"
               << "  pineforge-hpo-native run --strategy FILE --ohlcv FILE "
                  "--objective EXPR [options]\n"

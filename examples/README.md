@@ -7,7 +7,7 @@ two public entry points without requiring benchmark datasets.
 
 [`single_strategy/`](single_strategy/) contains a PineScript strategy, a tiny
 synthetic one-minute OHLCV fixture covered by this repository's
-[PineForge Source License 1.2](../LICENSE) starting with v0.11.0, and a complete
+[Tunaxis Source License](../LICENSE) starting with v0.11.0, and a complete
 StudySpec. Releases up to and including v0.10.0 remain available under Apache-2.0.
 It exercises the normal command-line path:
 

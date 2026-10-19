@@ -222,8 +222,8 @@ pineforge-codegen-oss / pineforge_codegen.transpile_full()
 validated plugin. It must remain beside its ArtifactBuilder `manifest.json`;
 the runner verifies the plugin hash and uses the manifest to validate every
 input name, type, bound, and option before execution. The Python distribution
-is called `pineforge-codegen`; the repository is `pineforge-codegen-oss`; the
-module is `pineforge_codegen`.
+is `pineforge-codegen` (`tunaxis-codegen` from the next codegen release);
+the repository is `pineforge-codegen-oss` and the HPO bridge imports `pineforge_codegen`.
 
 Other strategy fields:
 
@@ -365,7 +365,7 @@ requests participate in duplicate prevention.
 ```
 
 The current run command accepts one dataset. The CSV loader expects normalized
-OHLCV rows with timestamps compatible with PineForge's public bar contract.
+OHLCV rows with timestamps compatible with Tunaxis's public bar contract.
 
 - `id`: unique non-empty ID referenced by the strategy;
 - `ohlcv`: CSV path relative to the StudySpec;

@@ -1,6 +1,6 @@
-# Contributing to PineForge HPO
+# Contributing to Tunaxis HPO
 
-Thank you for improving PineForge HPO. The project accepts focused bug fixes,
+Thank you for improving Tunaxis HPO. The project accepts focused bug fixes,
 tests, documentation, benchmark improvements, and proposals for new optimizer
 or execution capabilities.
 
@@ -39,8 +39,11 @@ python -m pip install -e '.[dev]'
 python -m unittest discover -s tests/python -v
 ```
 
-Tests of the optional PineScript bridge also need
-`external/pineforge-codegen-oss` importable as `pineforge_codegen`.
+Tests of the optional PineScript bridge also need the pinned `external/pineforge-codegen-oss`
+checkout, which installs `pineforge-codegen` and its `pineforge_codegen` module.
+From the next codegen release on, the distribution is `tunaxis-codegen` and new imports
+use `tunaxis_codegen`; `pineforge_codegen` remains available with a deprecation warning.
+The HPO bridge and its tests import `pineforge_codegen`.
 
 Build the API reference with Doxygen 1.9.8 or newer:
 
@@ -62,7 +65,7 @@ Any change to TPE numerical arithmetic or RNG consumption must bump
 `kTpeAlgorithmRevision` in `src/core/tpe_sampler.cpp`. Revalidate the numerical
 identity keyed serial goldens and checkpoint compatibility after such a change.
 
-- HPO is a consumer of strategy plugins and the public PineForge C ABI; it is
+- HPO is a consumer of Tunaxis strategy plugins and the public Tunaxis C ABI; it is
   not a `BacktestEngine` subclass.
 - Transpilation happens once during artifact initialization, outside the native
   trial loop.
@@ -102,6 +105,6 @@ ruff format --check python tests/python benchmarks
 
 Pull requests should explain the user-visible behavior, compatibility impact,
 verification performed, and any benchmark claims. By contributing, you agree
-that your contribution is licensed under the [PineForge Source License 1.2](LICENSE)
+that your contribution is licensed under the [Tunaxis Source License 1.3](LICENSE)
 starting with v0.11.0. Releases up to and including v0.10.0 were released under
 Apache-2.0 and remain available under that license.

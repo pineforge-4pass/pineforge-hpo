@@ -1,6 +1,6 @@
-# PineForge HPO API Reference
+# Tunaxis HPO API Reference
 
-PineForge HPO is a C++17 optimization engine with a dependency-free Python
+Tunaxis HPO is a C++17 optimization engine with a dependency-free Python
 configuration and artifact-build bridge. This site documents the public API,
 the executable StudySpec contract, and the design decisions behind the native
 samplers.
@@ -48,7 +48,7 @@ The `pineforge_hpo` package provides the control-plane API:
   "build_strategy_artifact()" transpile and compile each unique strategy
   artifact once and publish it into a content-addressed cache.
 - \ref pineforge_hpo::transpile::transpile_source "transpile_source()" exposes
-  the one-pass `pineforge-codegen-oss` bridge with structured diagnostics.
+  the one-pass Tunaxis codegen bridge with structured diagnostics.
 - `pineforge_hpo.prepare_run(study_path, engine_root, cache_dir)` returns
   `(native_argv, artifact_json)` after the same artifact and manifest validation
   used by the CLI, without starting a native child. Optional keyword-only
@@ -417,9 +417,9 @@ a separately gated 0.4.x follow-up; Python `prepare_run()` remains unchanged.
 
 ## Compatibility boundaries
 
-- PineForge HPO consumes compiled PineForge strategy plugins and the public
-  engine C ABI; it is not a `BacktestEngine` subclass.
-- The direct PineScript flow calls `pineforge-codegen-oss` once before the
+- Tunaxis HPO consumes compiled Tunaxis strategy plugins and the public
+  Tunaxis C ABI; it is not a `BacktestEngine` subclass.
+- The direct PineScript flow calls `tunaxis-codegen` once before the
   native trial loop. The transpiler is optional when a compiled plugin is
   supplied.
 - A fresh strategy handle is created for every trial. Plugins and immutable
@@ -428,7 +428,7 @@ a separately gated 0.4.x follow-up; Python `prepare_run()` remains unchanged.
   aggregating independent completed reports is not a shared-account
   simulation.
 
-See [LEGAL.md](../LEGAL.md) for the PineForge Source License 1.2 project boundary
+See [LEGAL.md](../LEGAL.md) for the Tunaxis Source License 1.3 project boundary
 starting with v0.11.0 and optional dependency licenses. Releases up to and including
 v0.10.0 remain available under Apache-2.0.
 

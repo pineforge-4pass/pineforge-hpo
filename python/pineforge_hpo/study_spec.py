@@ -61,7 +61,7 @@ class StrategySpec:
 
 @dataclass(frozen=True)
 class DatasetSpec:
-    """One OHLCV source and its PineForge timeframe interpretation."""
+    """One OHLCV source and its Tunaxis timeframe interpretation."""
 
     id: str
     ohlcv: Path

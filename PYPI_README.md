@@ -1,6 +1,10 @@
-# pineforge-hpo
+<img alt="Tunaxis" src="https://tunaxis.com/brand/v1/lockup-light.png" height="40">
 
-Native hyperparameter optimization for PineForge strategies.
+# Tunaxis hyperparameter optimization
+
+Native hyperparameter optimization for Tunaxis strategies.
+
+formerly PineForge
 
 This Python distribution provides StudySpec validation, PineScript artifact
 initialization, and the `pineforge-hpo` command. Sampling, backtesting,
@@ -9,7 +13,10 @@ C++ executable.
 
 The project is currently an alpha release. Its implemented executable path
 optimizes one strategy over one OHLCV dataset; multiple-strategy shared-account
-execution is not implemented yet.
+execution is not implemented yet. Get HPO from source or the release hub image
+`ghcr.io/pineforge-4pass/tunaxis-release`
+(the old `ghcr.io/pineforge-4pass/pineforge-release` image still works);
+the HPO package is not published on PyPI.
 
 - [Complete Quick Start](https://github.com/pineforge-4pass/pineforge-hpo#quick-start)
 - [StudySpec reference](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/docs/study-spec.md)
@@ -17,17 +24,20 @@ execution is not implemented yet.
 - [Benchmark protocol](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/benchmarks/README.md)
 - [License and dependency boundary](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LEGAL.md)
 
-The optional direct-PineScript bridge uses the separately distributed
-`pineforge-codegen` package from the `pineforge-codegen-oss` repository. The
-`transpile` extra admits codegen 1.1 to 1.3 (below 1.4); install the one whose version matches
-your PineForge engine (for example `pineforge-codegen==1.0.0` with engine v1.0.0).
-A precompiled PineForge strategy plugin can be optimized without installing that
+The optional direct-PineScript bridge uses `pineforge-codegen` from the
+`pineforge-codegen-oss` repository (`tunaxis-codegen` from the next codegen release).
+The pinned source checkout installs `pineforge-codegen` and its `pineforge_codegen`
+module. From the next release on, new imports use `tunaxis_codegen`;
+`pineforge_codegen` remains available with a deprecation warning. The `transpile`
+extra admits codegen >= 1.1.0 and < 2; install the release that matches your Tunaxis
+engine (`pineforge-codegen==1.6.1` with engine v1.6.1 for the gitlinks).
+A precompiled Tunaxis strategy plugin can be optimized without installing that
 transpiler.
 
 ## License
 
 Starting with v0.11.0, original code is source-available under the
-[PineForge Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
+[Tunaxis Source License 1.3](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
 The `LICENSE` file is the controlling text; the licensor is pineforge, LLC.
 Noncommercial use and Personal Trading are free. Investment management (except
 Personal Trading) and other Commercial Use require a commercial license from
