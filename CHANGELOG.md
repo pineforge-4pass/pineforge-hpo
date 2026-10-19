@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.6.2rc1 (2026-10-20)
+
+- Re-pin to engine and codegen v1.6.2-rc.1 (gitlinks: `external/pineforge-engine` `7bd065c`,
+  `external/pineforge-codegen-oss` `9fbf5e6`; the C ABI version `PF_ABI_VERSION` remains 4), HPO
+  version 1.6.2rc1 (PEP 440; the engine and codegen tags are spelled v1.6.2-rc.1). The `transpile`
+  extra keeps `pineforge-codegen>=1.1.0,<2`: a pre-release is not selected by default, so install
+  the lockstep codegen with `--pre` or `pineforge-codegen==1.6.2rc1`. The pinned pair carries the
+  engine's selected-window contract revision `1.3` declared with the EN-115 completeness proof
+  (#412), EN-115 ownership probe fixes (#446) and the ownership manifest-controls test sharded
+  (#445), and codegen's generated-C++ allowlist checker `pf-cpp-allowlist` (CR-164 S1, #210), plus
+  CI-only changes in both; HPO's own code and behaviour are unchanged since 1.6.1.
+
 ## 1.6.1 (2026-10-18)
 
 - Final 1.6.1 release (PEP 440 `1.6.1`, tag `v1.6.1`), paired with `pineforge-engine` v1.6.1 and
