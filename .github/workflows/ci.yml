@@ -83,11 +83,10 @@ jobs:
           (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
            needs.changes.outputs.docs_only != 'true') }}
     runs-on: >-
-      ${{ github.event_name != 'pull_request_target' &&
+      ${{ github.event_name != 'pull_request' &&
+          github.event_name != 'pull_request_target' &&
           github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
-          contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
-          (github.event_name != 'pull_request' ||
-           (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
+          contains(fromJSON('["push","workflow_dispatch","schedule","release"]'), github.event_name) &&
           fromJSON('["self-hosted","pf-ci","pf-ci-x64"]') || 'ubuntu-24.04' }}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
@@ -128,11 +127,10 @@ jobs:
         include:
           - os: ubuntu-latest
             runner: >-
-              ${{ github.event_name != 'pull_request_target' &&
+              ${{ github.event_name != 'pull_request' &&
+                  github.event_name != 'pull_request_target' &&
                   github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
-                  contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
-                  (github.event_name != 'pull_request' ||
-                   (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
+                  contains(fromJSON('["push","workflow_dispatch","schedule","release"]'), github.event_name) &&
                   fromJSON('["self-hosted","pf-ci","pf-ci-x64"]') || 'ubuntu-24.04' }}
           - os: macos-latest
             runner: macos-latest
@@ -141,7 +139,7 @@ jobs:
       - name: Check out PineForge HPO
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          submodules: true
+          submodules: ${{ github.event_name != 'pull_request' }}
           fetch-depth: 0
 
       - name: Install native dependencies (Linux)
@@ -155,6 +153,7 @@ jobs:
         run: brew install eigen mpfr ninja
 
       - name: Configure PineForge Engine headers
+        if: github.event_name != 'pull_request'
         run: >-
           cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
@@ -165,6 +164,7 @@ jobs:
           -DPINEFORGE_BUILD_SPEED_BENCH=OFF
 
       - name: Configure PineForge HPO
+        if: github.event_name != 'pull_request'
         run: |
           prefix_args=()
           if [ "${{ runner.os }}" = macOS ]; then
@@ -178,20 +178,56 @@ jobs:
             -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
             -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
 
+      # The complete build/proof suite stays on main and dispatch. PRs configure the
+      # core-only tree (no engine adapter, no native CLI, no submodules), build its
+      # default target and run every CTest test that tree registers. The engine tests
+      # sit behind `if(UNIX AND TARGET PineForgeHPO::engine_adapter)` in
+      # tests/CMakeLists.txt, so they, the compilation of src/cli/main.cpp and
+      # src/engine_adapter, and the engine and historical baseline builds stay on main
+      # and dispatch.
+      - name: Configure PR native core
+        if: github.event_name == 'pull_request'
+        run: |
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=OFF \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=OFF \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
+            -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
+
+      - name: Build PR native core
+        if: github.event_name == 'pull_request'
+        run: cmake --build build -j4
+
       - name: Build
+        if: github.event_name != 'pull_request'
         run: cmake --build build -j4
 
       - name: Check failure catalog diff
         run: python3 scripts/gen_catalog_diff.py --check
 
+      - name: Test PR native core
+        if: github.event_name == 'pull_request'
+        run: |
+          ctest --test-dir build -V --no-tests=error \
+            -R '^pineforge_hpo_(serial_golden|portable_math_accuracy|portable_math_contraction)$'
+          ctest --test-dir build --output-on-failure --no-tests=error
+
       - name: Test
+        if: github.event_name != 'pull_request'
         run: |
           ctest --test-dir build -V \
             -R '^pineforge_hpo_(serial_golden|portable_math_accuracy|portable_math_contraction)$'
           ctest --test-dir build --output-on-failure
 
       - name: Report patience capability and skips
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -210,6 +246,7 @@ jobs:
           PY
 
       - name: Cross-vendor reproducibility and Intel checkpoint restore
+        if: github.event_name != 'pull_request'
         run: |
           uname -m
           if [ "${{ runner.os }}" = macOS ]; then test "$(uname -m)" = arm64; fi
@@ -220,6 +257,7 @@ jobs:
             tests/fixtures/portable-math-intel
 
       - name: Upload cross-vendor evidence
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: portable-proof-${{ runner.os }}-${{ runner.arch }}
@@ -229,23 +267,23 @@ jobs:
         run: ./build/bin/pineforge_hpo_example_ask_tell
 
       - name: Set up Python for end-to-end test
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
 
       - name: Build PineForge Engine runtime
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: cmake --build external/pineforge-engine/build --target pineforge -j4
 
       - name: Install end-to-end Python packages
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
           python -m pip install -e external/pineforge-codegen-oss
           python -m pip install -e . --no-deps
 
       - name: Run README Quick Start study
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
           pineforge-hpo run examples/single_strategy/study.json \
             --engine-root "${{ github.workspace }}/external/pineforge-engine" \
@@ -262,7 +300,7 @@ jobs:
           PY
 
       - name: Real symbol-feed and D7 equality gate
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
           python tests/test_symbol_feeds_e2e.py \
             --native build/bin/pineforge-hpo-native \
@@ -271,7 +309,7 @@ jobs:
             --output build/feeds-e2e
 
       - name: v0.8.0 no-feed and canonical harness contract gate
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
           git worktree add --detach build/baseline-source 50a995c9c0c0ae04956442e9d2c604baf274b058
           cmake -S build/baseline-source -B build/baseline \
@@ -284,7 +322,7 @@ jobs:
             --harness external/pineforge-engine/docker/run_json.py
 
       - name: v0.9.0 valid-study and silent-failure contract gate
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
         run: |
           git worktree add --detach build/failure-baseline-source ab2cd2ecdc00933195a81a98488ab09016b77970
           cmake -S build/failure-baseline-source -B build/failure-baseline \
@@ -310,11 +348,10 @@ jobs:
           (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
            needs.changes.outputs.docs_only != 'true') }}
     runs-on: >-
-      ${{ github.event_name != 'pull_request_target' &&
+      ${{ github.event_name != 'pull_request' &&
+          github.event_name != 'pull_request_target' &&
           github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
-          contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
-          (github.event_name != 'pull_request' ||
-           (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
+          contains(fromJSON('["push","workflow_dispatch","schedule","release"]'), github.event_name) &&
           fromJSON('["self-hosted","pf-ci","pf-ci-x64"]') || 'ubuntu-24.04' }}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
