@@ -27,6 +27,9 @@ def main() -> int:
             [str(args.native.resolve()), "run", "--strategy", str(args.plugin.resolve()),
              "--ohlcv-bin", str(args.fixtures / name), "--objective", "metrics.all.net_profit",
              "--sampler", "grid", "--seed", "170905", "--workers", "1", "--max-trials", "1",
+             "--input-tf", "1", "--script-tf", "5", "--bar-magnifier", "true",
+             "--magnifier-samples", "6", "--magnifier-distribution", "triangle",
+             "--fixed-input", "BatchPrefixTest", "1", "--fixed-input", "BatchPrefixJitter", "0",
              "--fixed-input", "ChartBarsTest", "1", *extra],
             text=True, capture_output=True, timeout=10, check=False,
         )
