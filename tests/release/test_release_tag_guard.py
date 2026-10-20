@@ -380,12 +380,6 @@ class RealGitGuardTests(unittest.TestCase):
     def assert_case(self, text, tag, expected, sha=None, **context):
         result, output = self.invoke(text, tag, **context)
         detail = result.stdout + result.stderr
-        actual = "PASS" if result.returncode == 0 else "FAIL"
-        expectation = "PASS" if expected else "FAIL"
-        print(
-            f"tag-guard tag={tag!r} expected={expectation} actual={actual} "
-            f"sha-output={output.strip()!r} context={context!r}"
-        )
         if expected:
             self.assertEqual(result.returncode, 0, detail)
             self.assertEqual(output, f"sha={sha}\n")
