@@ -5,6 +5,19 @@ Its existing `package` job builds and uploads the Python wheel, sdist and two
 failure catalogs. `notify-hub` depends on that job succeeding. A failed,
 cancelled or skipped package job cannot send the producer event on this path.
 
+Both `package` and `notify-hub` use
+`runs-on: ["self-hosted","pf-ci","pf-ci-release"]` without a hosted fallback.
+The isolated class has its own runner group restricted to selected workflows at
+protected refs, its own service account with no roles, and one job per runner;
+it shares nothing with PR classes. This includes the job that builds release
+artifacts, as well as the job that holds the App token. Neither `pull_request`
+nor `pull_request_target` may trigger this release workflow.
+
+LB-435 prepares this routing before rollout. Push only after laneboss posts
+"pf-ci-release live"; until then jobs on that label wait. The Pages `build`
+and `deploy` jobs stay on `ubuntu-24.04` because `docs-pages.yml` includes a
+`pull_request` trigger, even though deployment has an event guard.
+
 The notification helper rechecks the published release and downloads these
 four public assets before making any dispatch request:
 

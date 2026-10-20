@@ -404,6 +404,43 @@ class WorkflowWiringTests(unittest.TestCase):
             (ROOT / ".github/workflows/release.yml").read_text(), Loader=yaml.BaseLoader
         )
 
+    def assert_release_runners(self, workflow):
+        for event in ("pull_request", "pull_request_target"):
+            self.assertNotIn(event, workflow["on"])
+        for job_id in ("package", "notify-hub"):
+            self.assertEqual(
+                workflow["jobs"][job_id]["runs-on"],
+                ["self-hosted", "pf-ci", "pf-ci-release"],
+            )
+
+    def test_release_jobs_use_isolated_runners_without_pr_triggers(self):
+        self.assert_release_runners(self.workflow)
+
+    def test_hosted_labels_and_release_runner_fallbacks_are_rejected(self):
+        bad_runners = (
+            "ubuntu-24.04",
+            "ubuntu-latest",
+            ["self-hosted", "pf-ci", "pf-ci-x64"],
+            "${{ fromJSON('[\"self-hosted\",\"pf-ci\",\"pf-ci-release\"]') "
+            "|| 'ubuntu-24.04' }}",
+        )
+        for job_id in ("package", "notify-hub"):
+            for runner in bad_runners:
+                with self.subTest(job=job_id, runner=runner):
+                    mutated = copy.deepcopy(self.workflow)
+                    mutated["jobs"][job_id]["runs-on"] = runner
+                    with self.assertRaises(AssertionError):
+                        self.assert_release_runners(mutated)
+
+    def test_release_runners_reject_pr_triggers_even_with_branch_filters(self):
+        for event in ("pull_request", "pull_request_target"):
+            for trigger in ("", {"branches": ["main"]}):
+                with self.subTest(event=event, trigger=trigger):
+                    mutated = copy.deepcopy(self.workflow)
+                    mutated["on"][event] = trigger
+                    with self.assertRaises(AssertionError):
+                        self.assert_release_runners(mutated)
+
     def test_release_and_replay_use_one_notifier_after_the_correct_prerequisite(self):
         self.assertEqual(self.workflow["on"]["release"]["types"], ["published"])
         self.assertEqual(
