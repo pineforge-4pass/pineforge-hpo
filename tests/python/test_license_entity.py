@@ -19,7 +19,9 @@ class LicenseEntityTests(unittest.TestCase):
                 text = (ROOT / filename).read_text(encoding="utf-8")
                 self.assertIn(EXPECTED_ENTITY, text)
                 self.assertNotRegex(text, OLD_ENTITY_PATTERN)
-                self.assertEqual(ENTITY_PATTERN.findall(text), [EXPECTED_ENTITY] * count)
+                self.assertEqual(
+                    ENTITY_PATTERN.findall(text), [EXPECTED_ENTITY] * count
+                )
 
 
 if __name__ == "__main__":
