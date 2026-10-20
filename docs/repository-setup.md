@@ -32,7 +32,7 @@ administrator applies and keeps these settings:
    Leave `package=false` for notification-only replay. The required tag guard
    checks canonical spelling, commit existence and main ancestry before the
    tagged source or release credentials can be used. Follow the
-   [operator steps](release-chain.md#operator-step-for-a-release).
+   [operator steps](release-chain.md) ("Operator step for a release").
 
 Pages uses GitHub's OIDC-backed deployment action and the repository-scoped
 `GITHUB_TOKEN` permissions declared in the workflow. It needs no additional
