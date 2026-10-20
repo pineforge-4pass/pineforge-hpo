@@ -1,7 +1,13 @@
 """Python route for the return-statistics metrics: names are ordinary metric identifiers inside
 objective and constraint expressions; Python forwards them verbatim and relays the native result,
 including its result-level `return_stats` object, without reading or recomputing anything.
-UNEXECUTED until the spot phase."""
+The sealed 48-stage legacy return-statistics proof recorded in CHANGELOG.md and
+docs/internal/methods-cx-wire.md covers the Python forwarding, fake-plugin CLI and
+reducer-identity integration controls on its recorded builds (the by-hand canonical-curve gate
+tests/test_return_stats_e2e.py has no recorded result in this tree), with numerical comparisons limited
+to their stated domain, scale and bounds, launcher/response-file/old-CMake cases limited to
+synthetic-database checks, pinned references required for OFF-byte claims, no cost or unmeasured
+cross-build equality claim, and later numeric identities requiring separate validation."""
 
 from __future__ import annotations
 

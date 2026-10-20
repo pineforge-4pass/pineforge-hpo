@@ -4,7 +4,12 @@ directory. Run by hand on a spot box, like test_warm_start_e2e.py:
 
     python3 tests/test_candidate_list_e2e.py --native build/pineforge-hpo-native --output <dir>
 
-UNEXECUTED until the spot phase. HPO captures no trades, so the proof is the trade count and the
+The documented sealed 48-stage candidates proof covers native admission, ordering and digests and
+Python schema/argv/relay for its recorded controls and builds (the manual compiled-strategy gate
+tests/test_candidate_list_e2e.py has no recorded result in this tree), while literal OFF-byte
+comparison requires the pinned reference binary and no per-trade equality, universal warm-import
+behavior, cost, whole-process memory bound or unmeasured cross-build equality is claimed.
+HPO captures no trades, so the proof is the trade count and the
 trade-derived aggregate metrics of every row against the harness, value for value; no per-trade
 data is fabricated here (the per-trade bit comparison of the C ABI against the harness is the
 existing test_warm_start_e2e.py gate).
@@ -128,7 +133,7 @@ def main():
     reference = None
     for workers in (1, 2, 4, 8):
         process = subprocess.run(base + ["--workers", str(workers)] + recorded,
-                                 capture_output=True, timeout=300)
+                                 capture_output=True)
         require(process.returncode == 0, process.stderr.decode())
         if reference is None:
             reference = process.stdout
@@ -170,7 +175,6 @@ def main():
                 "--script-tf", "1",
             ],
             capture_output=True,
-            timeout=60,
         )
         require(canonical_process.returncode == 0,
                 f"canonical harness: {canonical_process.stderr.decode()}")
@@ -190,7 +194,7 @@ def main():
 
     # The Python route runs the same list: identity, order and coverage must agree. Its argv
     # states the study's dataset timezone explicitly, so only that is compared, not the bytes.
-    routed = subprocess.run(command + recorded, capture_output=True, timeout=300)
+    routed = subprocess.run(command + recorded, capture_output=True)
     require(routed.returncode == 0, f"routed run: {routed.stderr.decode()}")
     (directory / "native-routed.json").write_bytes(routed.stdout)
     routed_result = json.loads(routed.stdout)

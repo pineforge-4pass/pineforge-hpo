@@ -1,6 +1,6 @@
 // Native tests of the X return-statistics reducer (contract pineforge-hpo-return-stats/v1,
 // legacy mode). This file was written without compiling or running anything: no claim of
-// execution is made here. All native execution is scheduled on spot machines.
+// execution is made here.
 //
 // Build this test, and src/core/return_stats.cpp, with -fno-fast-math -ffp-contract=off: the
 // frozen bit patterns below assume two rounded operations for every multiply followed by an add.

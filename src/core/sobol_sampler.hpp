@@ -1,7 +1,13 @@
 #pragma once
 
-// Indexed Sobol sampler (contract N1, N5-N9). UNEXECUTED source preparation (methods-sobol-mapper
-// leaf, base d2f83326); see sobol_mapper.hpp for the status and build requirements.
+// Indexed Sobol sampler (contract N1, N5-N9).
+// The Sobol engine, mapper, indexed sampler and continuation are covered by the sealed 48-stage
+// proof recorded in CHANGELOG.md and docs/internal/methods-g1-wire.md, with arithmetic and
+// parameter-stream claims limited to its recorded builds and controls, the independent engine
+// oracle required for the full 64-bit proof, and no quality, cost or unmeasured cross-build
+// equality claim.
+// Source preparation: methods-sobol-mapper leaf, base d2f83326; see sobol_mapper.hpp
+// for the build requirements.
 //
 // Depends on the separate engine lane for detail::SobolScramble and detail::sobol_coordinate64
 // (src/core/sobol_engine.hpp); nothing of the engine is stubbed or reimplemented here.

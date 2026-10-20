@@ -2,10 +2,12 @@
 
 Status: leaf code and native tests only, written 2026-10-09 against base `d2f83326`. Nothing is
 wired into the CLI. The header was checked with `clang++ -std=c++17 -fsyntax-only -Wall -Wextra
--Wpedantic` (no object produced, nothing run). The tests in `tests/test_candidate_list.cpp` have
-**not been executed**; the first build and run is the proof phase. Binding semantics are the AR
+-Wpedantic` (no object produced, nothing run). The tests in `tests/test_candidate_list.cpp` had
+not been executed; the first build and run was the proof phase. Binding semantics are the AR
 pin `methods-c-contract.pin.md`; the proposal is support only. This note is internal: it is not
 product documentation and promises nothing about cost, whole-process memory or warm import.
+A sealed 48-stage run has since executed the candidates sampler (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 ## What the leaf owns
 
@@ -211,7 +213,7 @@ buffer that is a small multiple of the file size, because the in-tree SHA-256 is
 that a wide result is importable or that warm import is universally cheap. `std::stod` is
 locale-sensitive in the importer and here alike.
 
-## Tests pending (all unexecuted)
+## Tests
 
 `tests/test_candidate_list.cpp`, run in the proof phase: golden digests (order, duplicates, spelling, CRLF,
 no final LF); positional ids and cursor; canonical spellings (`5`/`5.0`/`5e0`, zero spellings,

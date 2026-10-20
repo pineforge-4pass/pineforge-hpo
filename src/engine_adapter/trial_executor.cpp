@@ -150,11 +150,9 @@ void store_series(ReturnStatsFields* target, const ReturnSeriesStats& stats) noe
         target->values[index] = stats.value(static_cast<ReturnStatistic>(index));
 }
 
-// Reads the engine-owned canonical curve in place, for the requested series only. It runs while
-// the C-ABI report is still alive; only the resulting numbers are kept in the snapshot.
-void compute_report_return_stats(const pf_report_t& report,
-                                 const BacktestConfiguration& configuration,
-                                 ReportSnapshot* snapshot) {
+// Borrowed view of the engine-owned canonical curve. The curve stays engine-owned and is read in
+// place; the caller keeps only the numbers reduced out of it.
+EquityPointsView report_curve_view(const pf_report_t& report) noexcept {
     static_assert(std::is_same<decltype(pf_equity_point_t::equity), double>::value,
                   "the reducer reads the curve equity as binary64");
     static_assert(std::is_integral<decltype(pf_equity_point_t::time_ms)>::value &&
@@ -167,6 +165,15 @@ void compute_report_return_stats(const pf_report_t& report,
     view.stride = sizeof(pf_equity_point_t);
     view.time_offset = offsetof(pf_equity_point_t, time_ms);
     view.equity_offset = offsetof(pf_equity_point_t, equity);
+    return view;
+}
+
+// Reads the engine-owned canonical curve in place, for the requested series only. It runs while
+// the C-ABI report is still alive; only the resulting numbers are kept in the snapshot.
+void compute_report_return_stats(const pf_report_t& report,
+                                 const BacktestConfiguration& configuration,
+                                 ReportSnapshot* snapshot) {
+    const EquityPointsView view = report_curve_view(report);
     ReturnStatsRequest request;
     request.bar = configuration.return_stats_bar;
     request.monthly = configuration.return_stats_monthly;
@@ -178,7 +185,22 @@ void compute_report_return_stats(const pf_report_t& report,
         store_series(&snapshot->return_monthly, *result.monthly);
 }
 
-ReportSnapshot copy_report(const pf_report_t& report, const BacktestConfiguration& configuration) {
+// Reads the engine-owned canonical curve in place for the requested block moments. It runs while
+// the C-ABI report is still alive, before the report is released; the layout and the reduced
+// numbers are copied into the snapshot and the curve is not. A request that cannot be served
+// leaves a status in the snapshot instead of throwing: it must not turn a successful trial into a
+// failed one, because the trial's outcome reaches the optimizer.
+void compute_report_return_blocks(const pf_report_t& report,
+                                  std::uint32_t blocks,
+                                  ReportSnapshot* snapshot) {
+    const EquityPointsView view = report_curve_view(report);
+    snapshot->return_block_layout = compute_block_layout(view, blocks);
+    snapshot->return_blocks = reduce_return_blocks(view, snapshot->return_block_layout);
+}
+
+ReportSnapshot copy_report(const pf_report_t& report,
+                           const BacktestConfiguration& configuration,
+                           bool reduce_blocks) {
     const bool capture_equity_curve = configuration.capture_equity_curve;
     const bool capture_trades = configuration.capture_trades;
     if (report.total_trades < 0) {
@@ -231,6 +253,8 @@ ReportSnapshot copy_report(const pf_report_t& report, const BacktestConfiguratio
     }
     if (configuration.return_stats_bar || configuration.return_stats_monthly)
         compute_report_return_stats(report, configuration, &snapshot);
+    if (reduce_blocks)
+        compute_report_return_blocks(report, configuration.pbo_blocks, &snapshot);
     return snapshot;
 }
 
@@ -338,8 +362,11 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
         throw TypedHpoError<std::invalid_argument>(
             "hpo_study_spec_invalid", {{"reason", "backtest"}}, "invalid magnifier distribution");
     }
-    if (configuration_.return_stats_bar || configuration_.return_stats_monthly) {
+    if (configuration_.return_stats_bar || configuration_.return_stats_monthly ||
+        configuration_.pbo_blocks != 0) {
         // Fail closed before any strategy handle exists: no claim-bearing identity, no statistics.
+        // The block moments are reduced by the same identity-bound translation unit, so a block
+        // request needs the same bound build and the same contraction probe.
         require_return_stats_identity();
         // Fail-closed sanity probe of the reducer's own build (multiply-add not contracted). It
         // is not an attestation; the statistics identity and the proof runs bind the build.
@@ -419,9 +446,14 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
         return failed;
     }
 
+    // Blocks describe one curve: the full window. A prefix rung is a different, shorter series, so
+    // it is never reduced against the S of the full window, and the request is local to this call.
+    const bool reduce_blocks =
+        configuration_.pbo_blocks != 0 && bar_count == dataset_->size();
+
     TrialExecutionResult succeeded;
     succeeded.status = TrialExecutionStatus::kSucceeded;
-    succeeded.report = copy_report(resources.report, configuration_);
+    succeeded.report = copy_report(resources.report, configuration_, reduce_blocks);
     return succeeded;
 }
 

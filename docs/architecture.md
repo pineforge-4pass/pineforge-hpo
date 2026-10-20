@@ -113,6 +113,19 @@ requires `pf_abi_version`, `strategy_create`, `strategy_free`,
 `run_backtest_full`, and `report_free`, then checks that `pf_abi_version()`
 matches the selected engine ABI.
 
+That load happens while a fresh artifact is published. A study whose enum input
+carries an `options` list and whose search gives that dimension ordinal choices
+also loads the plugin in the HPO process, and only then, cached and precompiled
+artifacts included, with the same user rights as the native runner that later
+loads and runs it: it reads the strategy's settings receipt to learn the
+declaration index of each enum member, because the manifest lists an enum
+input's `options` as their tags only. A tag choice needs no load; it is matched
+exactly as the manifest lists it (a bare member name or a tag of another case is
+refused), checked against the manifest options alone, and reaches the runner
+unchanged. A plugin whose receipt cannot be read is refused rather than checked
+against the positions in `options`, which are the declaration indices only for a
+fully listed enum.
+
 ### Search spaces and samplers
 
 The native search-space model implements:
@@ -168,7 +181,11 @@ logical batch (`--batch-size`, defaulting to workers), runs its backtests on a
 persistent FIFO thread pool, and commits results in trial-id order. Only the
 coordinator touches samplers and pruning history. An explicit batch size makes
 the same seed repeatable across worker counts without letting completion timing
-alter either proposals or pruning cuts.
+alter either proposals or pruning cuts. This describes the default `batches`
+schedule. The opt-in `rolling` schedule (`--schedule rolling`, since 0.14.0) instead
+refills a free worker slot at once from whatever has finished; the coordinator is
+still the only thread that touches samplers and pruning history, and the result
+records what each proposal saw. See [batching](batching.md).
 
 The default `--batch-lag 0` commits batch b before proposing b+1, preserving the
 0.1.x adaptive sequence at the default batch size. Opt-in lag one keeps two
@@ -177,7 +194,8 @@ pending. TPE includes those parameters in its constant-liar bad estimator;
 lag-one TPE rejects `constant_liar=false`. Even an already-finished future is
 not visible to the coordinator until its whole batch is committed. Pruning
 cuts use the same frozen history. The lag is persisted replay provenance,
-not a timing-dependent optimization. See [batching](batching.md).
+not a timing-dependent optimization. Batch size and lag belong to the `batches`
+schedule; `--schedule rolling` takes neither. See [batching](batching.md).
 
 For a finite candidate policy, the coordinator reserves a full vector in the
 seen set before returning it from `ask()`. The reservation is therefore visible
@@ -438,7 +456,9 @@ objective, and constraint inputs.
 - distributed execution or process-worker recovery;
 - CMA-ES, evolutionary, or other additional Optuna-style samplers;
 - conditional/hierarchical spaces and multi-objective Pareto studies;
-- walk-forward and multi-dataset executable studies;
+- walk-forward and multi-dataset executable studies (a post hoc analysis of finished per-window
+  studies exists outside the runner: v1 analyses finished studies; native in-loop walk-forward comes
+  later);
 - StudySpec timeout/fail-fast settings and process-worker recovery.
 
 ## Licensing boundary

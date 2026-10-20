@@ -118,7 +118,6 @@ def main():
             "1",
         ],
         capture_output=True,
-        timeout=60,
     )
     require(
         canonical_process.returncode == 0,
@@ -140,7 +139,6 @@ def main():
         + ["--sampler", "grid", "--max-trials", "1"]
         + [argument for metric in metrics for argument in ("--record-metric", metric)],
         capture_output=True,
-        timeout=60,
     )
     require(fixed_process.returncode == 0, fixed_process.stderr.decode())
     (directory / "native-fixed.json").write_bytes(fixed_process.stdout)
@@ -162,10 +160,10 @@ def main():
          str(ROOT / "tests/real_strategy_trades.cpp"),
          str(ROOT / "src/engine_adapter/strategy_plugin.cpp"),
          str(ROOT / "src/engine_adapter/dataset.cpp"), "-ldl", "-o", str(trade_probe)],
-        check=True, timeout=120,
+        check=True,
     )
     trade_process = subprocess.run(
-        [str(trade_probe), plugin, str(csv)], capture_output=True, check=True, timeout=60,
+        [str(trade_probe), plugin, str(csv)], capture_output=True, check=True,
     )
     (directory / "native-trades.json").write_bytes(trade_process.stdout)
     actual_trades = json.loads(trade_process.stdout)
@@ -207,7 +205,6 @@ def main():
                 argv + ["--progress-fd", str(progress.fileno())],
                 capture_output=True,
                 pass_fds=(progress.fileno(),),
-                timeout=180,
             )
         require(
             process.returncode == expected,
@@ -317,7 +314,6 @@ def main():
                         str(warm),
                     ],
                     capture_output=True,
-                    timeout=15,
                 )
                 require(
                     info.returncode == 0

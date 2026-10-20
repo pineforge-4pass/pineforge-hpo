@@ -1,13 +1,16 @@
 # Sobol mapper fixtures
 
-All files here are UNEXECUTED source preparation (mapper revision 2, base `d2f83326`).
+The documented sealed 48-stage Sobol proof covers the handwritten integer fixtures and build-host
+generation of the revision-2 floating reference followed by bitwise mapper checks on its recorded
+builds, without establishing equality for unmeasured build pairs.
+Source preparation: mapper revision 2, base `d2f83326`.
 Nothing was compiled or run on the preparing machine.
 
 | File | Origin | Read by |
 |---|---|---|
 | `high64-boundaries.tsv` | Hand-derived exact integer cases of `floor(x * count / 2^64)` (derivation in each row). | `tests/test_sobol_mapper.cpp` |
-| `mapper_reference.py` | Independent generator for the floating cases: Python IEEE floats plus `decimal` (900 digits) rounded once for log, log1p, exp, expm1. No project code is imported. Implements the revision 2 log-real rule in the pinned operation order. | run once on spot |
-| `float-reference.tsv` | NOT YET PRESENT. Output of `python3 -I mapper_reference.py > float-reference.tsv`. | `tests/test_sobol_mapper.cpp` |
+| `mapper_reference.py` | Independent generator for the floating cases: Python IEEE floats plus `decimal` (900 digits) rounded once for log, log1p, exp, expm1. No project code is imported. Implements the revision 2 log-real rule in the pinned operation order. | build-host reference generation |
+| `float-reference.tsv` | Generated in the build tree by `python3 -I mapper_reference.py > float-reference.tsv`; not checked in here. | `tests/test_sobol_mapper.cpp` |
 
 ## Revision 2 (AR amendment, 2026-10-09 14:10)
 
@@ -27,10 +30,10 @@ point. Each log-real row carries a `literal` or `quartered` tag.
 The script emits 1180 rows (22 fixed + 24 drawn coordinates for 8 linear, 10 log-real and 7
 log-integer ranges, plus 5 boundary coordinates for each of the 6 log-real ranges that overflow).
 `test_sobol_mapper.cpp` fails with an explicit message while `float-reference.tsv` is missing, has
-fewer than 1100 rows, is not six-column, or lacks 60 witnesses of each branch. The file must come from
-a spot run of the script, be reviewed, and be committed by the integrator; it is never hand-edited. The
-test compares bit patterns, so a one-ulp difference between the CORE-MATH wrappers and the decimal
-reference is a real finding (report it; do not loosen the comparison). The bisection and the generator
-are unrun: a mismatch can be the oracle's fault, so investigate both sides.
+fewer than 1100 rows, is not six-column, or lacks 60 witnesses of each branch. The build-host
+reference generator writes the file in the build tree through tests/CMakeLists.txt. The output must
+be reviewed; it is never hand-edited. The test compares bit patterns, so a one-ulp difference between
+the CORE-MATH wrappers and the decimal reference is a real finding (report it; do not loosen the
+comparison). A mismatch can be the oracle's fault, so investigate both sides.
 
-The test needs the compile definition `PFH_SOBOL_MAPPER_FIXTURES` set to this directory.
+tests/CMakeLists.txt sets the compile definition `PFH_SOBOL_MAPPER_FIXTURES` to a build-tree directory that holds a copy of `high64-boundaries.tsv` and the generated `float-reference.tsv`.

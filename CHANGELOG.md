@@ -8,6 +8,181 @@
   Refuse non-regular sidecars before reading. Publish mapped files by rename/`os.replace`,
   never by rewriting or truncating them in place.
 
+## 1.6.2rc1 (2026-10-20)
+
+- Re-pin to engine and codegen v1.6.2-rc.1 (gitlinks: `external/pineforge-engine` `7bd065c`,
+  `external/pineforge-codegen-oss` `9fbf5e6`; the C ABI version `PF_ABI_VERSION` remains 4), HPO
+  version 1.6.2rc1 (PEP 440; the engine and codegen tags are spelled v1.6.2-rc.1). The `transpile`
+  extra keeps `pineforge-codegen>=1.1.0,<2`: a pre-release is not selected by default, so install
+  the lockstep codegen with `--pre` or `pineforge-codegen==1.6.2rc1`. The pinned pair carries the
+  engine's selected-window contract revision `1.3` declared with the EN-115 completeness proof
+  (#412), EN-115 ownership probe fixes (#446) and the ownership manifest-controls test sharded
+  (#445), and codegen's generated-C++ allowlist checker `pf-cpp-allowlist` (CR-164 S1, #210), plus
+  CI-only changes in both; HPO's own code and behaviour are unchanged since 1.6.1.
+
+## 1.6.1 (2026-10-18)
+
+- Final 1.6.1 release (PEP 440 `1.6.1`, tag `v1.6.1`), paired with `pineforge-engine` v1.6.1 and
+  `pineforge-codegen` 1.6.1 (tags `v1.6.1`; the C ABI version `PF_ABI_VERSION` remains 4). The
+  `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.6.1` (a pre-release is not selected by default, so `1.6.1rc1` needed
+  `--pre` or `pineforge-codegen==1.6.1rc1`). The optional submodule gitlinks in
+  `external/pineforge-engine` (`f37c8b5`) and `external/pineforge-codegen-oss` (`52d74d6`) pin
+  the `v1.6.1` release commits.
+- The pinned pair carries the engine's selected-window contract revision `1.3-parity` (parity
+  with the 1.4.0 reference, no completeness claim) and codegen's timezone-only calendar built-ins
+  and `array.from` element types; HPO's own code and behaviour are unchanged since 1.6.0.
+
+## 1.6.1rc1 (2026-10-17)
+
+- Re-pin to engine and codegen v1.6.1-rc.1 (gitlinks: `external/pineforge-engine` `196592d`,
+  `external/pineforge-codegen-oss` `74fe4cd`; the C ABI version `PF_ABI_VERSION` remains 4), HPO
+  version 1.6.1rc1 (PEP 440; the engine and codegen tags are spelled v1.6.1-rc.1). The `transpile`
+  extra keeps `pineforge-codegen>=1.1.0,<2`: a pre-release is not selected by default, so install
+  the lockstep codegen with `--pre` or `pineforge-codegen==1.6.1rc1`. The pinned pair carries the
+  engine's selected-window contract revision `1.3-parity` (parity with the 1.4.0 reference, no
+  completeness claim), and codegen's timezone-only calendar built-ins and `array.from` element
+  types; HPO's own code and behaviour are unchanged since 1.6.0.
+
+## 1.6.0 (2026-10-17)
+
+- Final 1.6.0 release (PEP 440 `1.6.0`, tag `v1.6.0`), paired with `pineforge-engine` v1.6.0 and
+  `pineforge-codegen` 1.6.0 (tags `v1.6.0`; the C ABI version `PF_ABI_VERSION` remains 4). The
+  `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.6.0` (a pre-release is not selected by default, so `1.6.0rc1` needed
+  `--pre` or `pineforge-codegen==1.6.0rc1`). The optional submodule gitlinks in
+  `external/pineforge-engine` (`1e48cfd`) and `external/pineforge-codegen-oss` (`7300166`) pin
+  the `v1.6.0` release commits. As an approved exception to "the release-candidate tree plus
+  documentation", HPO 1.6.0 also ships #48 (comments, docstrings and docs only) and #49 (release
+  plumbing: the `notify-hub` job, `scripts/notify_release_hub.py`, `tests/release`; no product
+  code).
+- Add a synthetic proof route for the native `--pbo-blocks` moments (tests and examples only; the
+  production binary, its options and its result bytes are unchanged). `examples/pbo_proof/` holds a
+  deterministic 2,048-bar series with its generator and a 25-trial grid. A separate test-only
+  executable, `pineforge-hpo-native-proof`, writes each trial's original full-window equity curve; an
+  independent exact-rational checker re-derives every block's count, sum and centred moment from those
+  curves and compares them with the emitted values, seven controls each reach their own named
+  refusal, and the PBO module is then run on the same native rows against the exact oracle. It proves
+  mechanics on synthetic data only, not market behaviour. PBO on real data remains unproven.
+- Accept release candidates in the form `1.6.0rcN` in `VERSION`, the CMake project
+  version, and the failure-catalog diff, taken against the last final release.
+  The wheel and sdist keep the full pre-release version string.
+- Replace stale `UNEXECUTED` test-first status notes across comments, docstrings, Markdown and
+  TSV headers with what the sealed 48-stage proof recorded in `CHANGELOG.md` and the internal
+  wire notes covers, keeping its limits (recorded builds and controls only; no quality, cost or
+  unmeasured cross-build equality claim; no recorded proof result for the by-hand
+  compiled-strategy / canonical-curve routes; `docs/pareto.md` and its tests remain unnamed by any
+  recorded proof run; the native-proof PBO run uses synthetic data only and PBO on real data
+  remains unproven), and update one stale `v1.2.0` artifact label in
+  `tests/test_symbol_feeds_e2e.py` to `v1.6.0` (`v1.6.0-rc.1` in #48, then `v1.6.0`; comments,
+  docstrings, documentation and one test print string only; product code is unchanged).
+- Add the `notify-hub` release-workflow job, `scripts/notify_release_hub.py`,
+  `docs/release-chain.md`, `docs/repository-setup.md` updates and the `tests/release/` contract
+  suite: after the `package` job uploads the wheel, sdist, `hpo_failure_codes.json` and
+  `hpo_failure_codes_diff.json` (or on a `workflow_dispatch` replay of an existing published tag),
+  verify the tagged `VERSION`, release flags and all four public assets before sending
+  `repository_dispatch` `hpo-release` (`{version, prerelease, run_id}`, canonical PEP 440
+  spelling) to `pineforge-4pass/pineforge-release` with a scoped GitHub App token.
+
+## 1.6.0rc1 (2026-10-14)
+
+- Re-pin to engine and codegen v1.6.0-rc.1 (gitlinks), HPO version 1.6.0rc1 (PEP 440; the engine and codegen tags are spelled v1.6.0-rc.1). The transpile extra keeps pineforge-codegen>=1.1.0,<2: a pre-release is not selected by default, so install the lockstep codegen with --pre or pineforge-codegen==1.6.0rc1.
+- Add a synthetic proof route for the native `--pbo-blocks` moments (tests and examples only; the
+  production binary, its options and its result bytes are unchanged). `examples/pbo_proof/` holds a
+  deterministic 2,048-bar series with its generator and a 25-trial grid. A separate test-only
+  executable, `pineforge-hpo-native-proof`, writes each trial's original full-window equity curve; an
+  independent exact-rational checker re-derives every block's count, sum and centred moment from those
+  curves and compares them with the emitted values, seven controls each reach their own named
+  refusal, and the PBO module is then run on the same native rows against the exact oracle. It proves
+  mechanics on synthetic data only, not market behaviour. PBO on real data remains unproven.
+- Accept release candidates in the form `1.6.0rcN` in `VERSION`, the CMake project
+  version, and the failure-catalog diff, taken against the last final release.
+  The wheel and sdist keep the full pre-release version string.
+
+## 0.15.0 (2026-10-13)
+
+- Add `pineforge_hpo.walkforward.walkforward`, a post hoc analysis of finished per-window studies
+  (contract `pineforge-hpo-walkforward/v1`, algorithm `exact_per_window_v1`): it selects the best row
+  of each supplied window, reports the previous window's selected parameter vector in the next
+  window's rows with its rank or the reason it is absent, and lists the selected values per dimension;
+  it runs no window, evaluates nothing and writes no file. v1 analyses finished studies; native
+  in-loop walk-forward comes later.
+
+- Add the post hoc `dsr` module (`pineforge_hpo.dsr`, contract `pineforge-hpo-dsr/v1`): a library
+  function that reads the recorded `returns.<series>.{sharpe_per_period,count,skew,kurt_raw,status}`
+  statistics of a finished study and returns the deflated Sharpe ratio of one selected trial under
+  a trial count the caller states (at least the number of rows read) or, by default, the number of
+  rows read (every trial in the record, warm-start ancestors included), with module-local `dsr_*`
+  refusal codes, no command-line flag and no native field.
+  v1 analyses finished studies; native in-loop walk-forward comes later.
+
+- Add `pineforge_hpo.holdout` (`holdout_compare`), a post hoc module that joins the
+  finished rows of a selection study with those of a second finished study by exact
+  parameter vector and reports, for the best selection vectors, what the second study
+  recorded (contract `pineforge-hpo-holdout/v1`); it splits no data, runs no trial and
+  makes no claim about the data either study used.
+  v1 analyses finished studies; native in-loop walk-forward comes later.
+
+- Add the native-only `--pbo-blocks S` flag for full-window bar-return moments. Completed `ok`
+  and `constraint_violation` trials carry `block_returns`, and the result declares their shared
+  `return_blocks` layout and numeric build identity. Bad-data payloads publish status only;
+  failed and pruned trials carry none. Runs that request neither the flag nor return statistics
+  keep their existing result bytes.
+  PBO on real data remains unproven.
+- The return-statistics numeric build identity value changed because its hashed reducer source
+  grew to include return blocks. Evidence bound to the old value applies to its own version;
+  the new value requires its own validation.
+
+## 0.14.0 (2026-10-13)
+
+- Strategy compilation has no time limit by default; `compile_timeout_seconds` still
+  sets an explicit limit. The artifact lock wait still stops after 120 seconds with an
+  error that names the stuck lock and identifies a lock that never frees as a deadlock
+  to report.
+- Remove test and CI time limits; only the CI platform bound applies. Product behavior is unchanged.
+- Add the opt-in `rolling` schedule (StudySpec `execution.schedule: "rolling"`, native
+  `--schedule rolling`). Whenever a trial finishes, the runner feeds its result back and at once
+  proposes a new trial into the freed worker slot, instead of waiting for a batch to end, so every
+  worker stays busy. A rolling result is not byte-replayable: it names
+  `replay_contract: "rolling_completion_v1"` (never `ordered_batches_v1`) and carries the study-level
+  `completion_order` and `completed_before`, a log of what each proposal saw, from which every
+  proposal can be audited and re-derived. Pruner cuts and the patience count follow the same order,
+  and a patience stop feeds back at most `workers - 1` further trials. A rolling result carries no
+  TPE checkpoint, so a continuation rebuilds its history from the rows. `batch_size` and
+  `batch_lag` are refused together with `rolling`, and TPE needs `constant_liar` enabled. The default
+  `batches` schedule is unchanged and keeps the bytes of 0.12.0; the byte-replay rules of
+  `docs/batching.md` do not apply to a rolling study.
+- Move the pinned gitlinks to engine v1.5.0 (`b802cee`) and codegen v1.5.0
+  (`52101f9`); the C ABI version `PF_ABI_VERSION` remains 4.
+- Accept an enum input's categorical choice in either of two forms: the member's tag (for
+  example `Side.long`) or the member's ordinal, the index of that member in the enum
+  declaration. The rule applies when the manifest lists an enum input's `options`, which
+  codegen 1.4.0 and later write as the members' string tags. A tag is accepted when it is
+  exactly one of the manifest options and reaches the engine unchanged, as it did before;
+  a bare member name, a tag that is not in `options` and any other string are refused. An
+  ordinal is accepted when the receipt's `option_values` declares it. An enum input whose
+  manifest lists no `options` (codegen before 1.4.0) is unchanged. When the receipt cannot
+  be read, an ordinal choice is refused rather than checked against the positions in
+  `options`, which are the declaration indices only for a fully listed enum.
+- Load the compiled strategy plugin inside the HPO process only for an enum input whose
+  manifest lists `options` and for which the study gives ordinal choices, to read the
+  settings receipt's `option_values` with the same user rights as the native runner that
+  later loads and runs it. A cached or precompiled artifact was not loaded in-process
+  before, so this is a new in-process load on those paths; a tag choice needs no load.
+- Lift the cap of the `transpile` extra that 0.13.2 set below codegen 1.4: the extra now
+  requires `pineforge-codegen` >= 1.1.0 and < 2, because both enum choice forms are
+  accepted with codegen 1.4 and later.
+
+## 0.13.2 (2026-10-12)
+
+The `transpile` extra is capped below codegen 1.4 until HPO supports the `Enum.member` enum options of codegen 1.4 and 1.5; no code change.
+
+## 0.13.1 (2026-10-12)
+
+Re-release of 0.13.0 with the version file corrected; no code change.
+
+## 0.13.0 (2026-10-11)
+
 - Add the `sobol` sampler (native `--sampler sobol [--sobol-scramble digital_shift|none]`; StudySpec
   `sampler.kind: "sobol"` with `sampler.config.scramble`). It issues the 64-bit Gray-code Sobol
   sequence (Joe-Kuo criterion-6 direction numbers for dimensions 2 to 1024, vendored verbatim with
@@ -19,8 +194,9 @@
   complete Sobol result with a matching identity and verifies every parent row against the
   generator; other histories are refused with exit 4. Spaces with a floating-point column need a
   build whose Sobol numeric identity is bound and are refused before any trial otherwise. Runs
-  without the new options keep their bytes. No quality advantage is claimed. Execution proof is
-  pending.
+  without the new options keep their bytes. No quality advantage is claimed. A sealed 48-stage run
+  has executed the sampler (manifest
+  sha256 ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 - Add the `returns.{bar,monthly}.{count,skipped,periods_per_year,mean,std,sharpe_per_period,
   skew,kurt_raw,status}` metrics (contract `pineforge-hpo-return-stats/v1`, legacy mode). They are
@@ -34,7 +210,8 @@
   builds and runs every ordinary study unchanged, and refuses a request for these metrics before
   any trial with `hpo_toolchain_unavailable` (reason `native_runner`) naming the exact unbound
   reason. The default build now also writes `compile_commands.json` into the build directory (one
-  extra file). Execution proof is pending.
+  extra file). A sealed 48-stage run has executed these metrics (manifest
+  sha256 ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 - `--sampler candidates`: an explicitly given `--max-trials 0` is refused (N is at least 1); the
   budget may still be omitted, and zero keeps its "no cap" meaning for every other sampler.
 
@@ -47,7 +224,8 @@
   `complete` (every position terminal, not every score valid) and missing ranges. A candidate
   result can seed TPE as rebuilt history through the existing loader. Candidate policy other
   than `sampler_default`, a pruner, positive patience and warm start are refused. Runs that do
-  not use the new flags keep their bytes. Execution proof is pending.
+  not use the new flags keep their bytes. A sealed 48-stage run has executed the sampler (manifest
+  sha256 ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 ## 0.12.0 (2026-10-08)
 

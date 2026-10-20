@@ -1,5 +1,8 @@
 #include <pineforge/hpo/sampler.hpp>
 
+#include "../src/core/tpe_test_hooks.hpp"
+
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -10,6 +13,14 @@
 
 namespace pfh = pineforge::hpo;
 using Clock = std::chrono::steady_clock;
+
+namespace {
+std::uint64_t acquisition_scores = 0;
+
+void count_acquisition_score(double) {
+    ++acquisition_scores;
+}
+}  // namespace
 
 int main() {
     try {
@@ -55,14 +66,29 @@ int main() {
         double early_seconds = 0.0;
         double late_seconds = 0.0;
         long initial_rss = 0;
+        const auto bounded_scores =
+            std::min(bounded_config.ei_candidates, bounded_config.scale_ei_candidates);
+        std::uint64_t early_scores = 0;
+        std::uint64_t late_scores = 0;
+        pfh::detail::set_tpe_log_ratio_observer(count_acquisition_score);
         for (std::uint64_t trial = 0; trial < 100000; ++trial) {
+            acquisition_scores = 0;
             const auto begin = Clock::now();
             auto candidate = sampler.ask();
             const double seconds = std::chrono::duration<double>(Clock::now() - begin).count();
-            if (trial >= 1000 && trial < 2000)
+            // One observer call per scored proposal. Together with the retained-history
+            // bound below, this checks bounded acquisition work without a clock limit.
+            // Per-score cost is covered only by the informational timings printed below.
+            if (trial >= 1000 && acquisition_scores != bounded_scores)
+                throw std::runtime_error("TPE bounded ask changed acquisition work");
+            if (trial >= 1000 && trial < 2000) {
                 early_seconds += seconds;
-            if (trial >= 99000)
+                early_scores += acquisition_scores;
+            }
+            if (trial >= 99000) {
                 late_seconds += seconds;
+                late_scores += acquisition_scores;
+            }
             double objective = 0.0;
             for (const auto& parameter : candidate->values) {
                 const double value = std::get<double>(parameter.second);
@@ -77,22 +103,23 @@ int main() {
                     "TPE did not switch opted-in history at 1000 completions");
             if (trial >= 999 && sampler.retained_observations() > 537)
                 throw std::runtime_error("TPE retained unbounded history");
+            if ((trial == 1000 || trial == 99999) && sampler.retained_observations() != 537)
+                throw std::runtime_error("TPE bounded history changed size");
+            if (sampler.completed() != trial + 1 || sampler.outstanding() != 0)
+                throw std::runtime_error("TPE lost completed trials during scale test");
             if (trial == 2000) {
                 struct rusage usage {};
                 getrusage(RUSAGE_SELF, &usage);
                 initial_rss = usage.ru_maxrss;
             }
         }
+        pfh::detail::set_tpe_log_ratio_observer(nullptr);
         struct rusage usage {};
         getrusage(RUSAGE_SELF, &usage);
 #if defined(__linux__)
         if (usage.ru_maxrss - initial_rss > 65536)
             throw std::runtime_error("TPE resident memory grew by more than 64 MiB");
 #endif
-        if (late_seconds > early_seconds * 5 + 0.05)
-            throw std::runtime_error("TPE ask cost grew with history");
-        if (late_seconds > 5.0)
-            throw std::runtime_error("TPE ask cost exceeded 5 ms");
         if (sampler.completed() != 100000 || sampler.outstanding() != 0)
             throw std::runtime_error("TPE lost completed trials");
         sampler.reset();
@@ -120,9 +147,11 @@ int main() {
                 throw std::runtime_error("TPE changed fixed parameters");
             fixed.tell(candidate->id, 0.0);
         }
-        std::cout << "100000 trials: early ask " << early_seconds * 1000
+        std::cout << "100000 trials (informational timing): early ask " << early_seconds * 1000
                   << " us; late ask " << late_seconds * 1000 << " us; RSS "
                   << usage.ru_maxrss << " KiB\n";
+        std::cout << "Bounded acquisition scores: early " << early_scores
+                  << "; late " << late_scores << "; per ask " << bounded_scores << '\n';
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

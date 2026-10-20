@@ -4,10 +4,11 @@ Status: source only, written 2026-10-09 on `ar/methods-g1-integrated`. The Sobol
 sampler, continuation code and the numeric identity helper were written by their own lanes; this
 note records the places where they meet the shared files (the command line, the root and test build
 files, the Python route, the licence inputs) and the decisions taken there. Nothing was compiled,
-configured, run, imported or syntax-checked; every change and every test named below is unexecuted
+configured, run, imported or syntax-checked; every change and every test named below was unexecuted
 and confirmed only by the proof listed at the end. This note is internal and public-safe. It makes
 no quality claim for the sampler, promises no cost outcome and claims no cross-architecture
-equality.
+equality. A sealed 48-stage run has since executed the Sobol sampler (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
 The sampler itself is described in `docs/internal/methods-sobol-native.md`; the numeric identity,
 its binding and its limits are in `docs/internal/sobol-identity.md`. This note does not repeat
@@ -106,7 +107,8 @@ provider list complete and the limits are in `docs/internal/sobol-identity.md`.
    compilation database is what CMake intends to run. `scenario_real_core` in
    `tests/test_sobol_identity.py` deletes the object of `sobol_mapper.cpp`, of both providers and of
    one math C unit, rebuilds the real target verbosely and requires the normalized executed command
-   to equal the database entry that the descriptor was built from. It has not run; the other units
+   to equal the database entry that the descriptor was built from. It has run (stages
+   `I-sobol-real-nj` and `I-sobol-real-mk`, both exit 0); the other units
    rest on their database entry alone, and no identity claim stands before this comparison has
    passed on the supported build.
 2. **Blast radius.** The generation target runs `cmake -P` before every build of the core library,
@@ -126,10 +128,11 @@ provider list complete and the limits are in `docs/internal/sobol-identity.md`.
    finite space (a bitmap up to 1e8 points, the existing disk-backed set above that): unchanged
    behaviour, not measured for 2^64-index runs.
 6. **Doxygen.** `docs/internal`, the touched public headers and the identity header (which
-   includes a header that exists only after a build) are swept by the zero-warning API build,
-   which has not run.
+   includes a header that exists only after a build) are swept by the zero-warning API build;
+   the sealed 48-stage run ran it (stage `T-docs`, 0 warning bytes; manifest sha256
+   ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 
-## Proof routes (all unexecuted)
+## Proof routes
 
 Configure the proof build with `-DPINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY=ON` and
 `-DPINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY=ON`, so that an unbound main build fails the tests

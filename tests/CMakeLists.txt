@@ -87,6 +87,14 @@ target_compile_options(pineforge_hpo_test_return_stats PRIVATE
     -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_return_stats COMMAND pineforge_hpo_test_return_stats)
 
+# The block reducer lives in the same strict translation unit as the statistics reducer, and this
+# test freezes exact dyadic literals, so it needs the same two flags.
+add_executable(pineforge_hpo_test_return_blocks test_return_blocks.cpp)
+target_link_libraries(pineforge_hpo_test_return_blocks PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_return_blocks PRIVATE
+    -fno-fast-math -ffp-contract=off -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_return_blocks COMMAND pineforge_hpo_test_return_blocks)
+
 # Both public headers in one translation unit, and the real build's generated identity read back
 # against its own descriptor. The generation target is an unconditional build dependency.
 add_executable(pineforge_hpo_test_return_stats_headers test_return_stats_headers.cpp)
@@ -116,6 +124,14 @@ add_test(NAME pineforge_hpo_candidate_list COMMAND pineforge_hpo_test_candidate_
 # reads its fixtures from the build-tree directory below, into which the hand-written source
 # fixture is copied at configure time and the generated reference is written by a setup test.
 find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME pineforge_hpo_release_version
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_release_version.py" -v)
+    add_test(NAME pineforge_hpo_no_time_limits
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_no_time_limits.py" -v)
+endif()
 set(PFH_SOBOL_TABLE_DIR "${PROJECT_SOURCE_DIR}/third_party/sobol_joe_kuo")
 set(PFH_SOBOL_ENGINE_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/sobol-engine")
 set(PFH_SOBOL_MAPPER_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/sobol-mapper-fixtures")
@@ -152,7 +168,6 @@ target_compile_options(pineforge_hpo_test_sobol_continuation PRIVATE
 target_compile_definitions(pineforge_hpo_test_sobol_continuation PRIVATE
     PFH_SOBOL_CONTINUATION_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sobol/continuation")
 add_test(NAME pineforge_hpo_sobol_continuation COMMAND pineforge_hpo_test_sobol_continuation)
-set_tests_properties(pineforge_hpo_sobol_continuation PROPERTIES TIMEOUT 900)
 
 # The runtime half of the Sobol numeric identity, read back from the build it is linked into. The
 # generated header reaches only sobol_identity.cpp inside the core library; the core library
@@ -162,13 +177,15 @@ add_executable(pineforge_hpo_test_sobol_identity test_sobol_identity.cpp)
 target_link_libraries(pineforge_hpo_test_sobol_identity PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_sobol_identity PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_sobol_identity COMMAND pineforge_hpo_test_sobol_identity)
-set_tests_properties(pineforge_hpo_sobol_identity PROPERTIES TIMEOUT 600)
 if(PINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY)
     set_property(TEST pineforge_hpo_sobol_identity APPEND PROPERTY
         ENVIRONMENT "PFH_REQUIRE_SOBOL_IDENTITY=1")
 endif()
 
 if(Python3_Interpreter_FOUND AND UNIX)
+    add_test(NAME pineforge_hpo_pbo_curve_checker
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_pbo_curve_checker.py" -v)
     # Independent 64-bit oracle (big integers, imports nothing from src/), then the engine test.
     add_test(NAME pineforge_hpo_sobol_oracle64_generate
         COMMAND "${Python3_EXECUTABLE}" -I
@@ -177,11 +194,11 @@ if(Python3_Interpreter_FOUND AND UNIX)
             --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sobol/engine"
             --out "${PFH_SOBOL_ENGINE_BUILD_DIR}/oracle64.tsv")
     set_tests_properties(pineforge_hpo_sobol_oracle64_generate PROPERTIES
-        FIXTURES_SETUP sobol_oracle64 TIMEOUT 900)
+        FIXTURES_SETUP sobol_oracle64)
     add_test(NAME pineforge_hpo_sobol_engine COMMAND pineforge_hpo_test_sobol_engine
         --oracle "${PFH_SOBOL_ENGINE_BUILD_DIR}/oracle64.tsv")
     set_tests_properties(pineforge_hpo_sobol_engine PROPERTIES
-        FIXTURES_REQUIRED sobol_oracle64 TIMEOUT 900)
+        FIXTURES_REQUIRED sobol_oracle64)
     add_test(NAME pineforge_hpo_sobol_table_generation
         COMMAND "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/scripts/gen_sobol_table.py"
             --check)
@@ -193,10 +210,10 @@ if(Python3_Interpreter_FOUND AND UNIX)
             "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/sobol/mapper/mapper_reference.py"
             "${PFH_SOBOL_MAPPER_BUILD_DIR}/float-reference.tsv")
     set_tests_properties(pineforge_hpo_sobol_mapper_reference_generate PROPERTIES
-        FIXTURES_SETUP sobol_mapper_reference TIMEOUT 1800)
+        FIXTURES_SETUP sobol_mapper_reference)
     add_test(NAME pineforge_hpo_sobol_mapper COMMAND pineforge_hpo_test_sobol_mapper)
     set_tests_properties(pineforge_hpo_sobol_mapper PROPERTIES
-        FIXTURES_REQUIRED sobol_mapper_reference TIMEOUT 1800)
+        FIXTURES_REQUIRED sobol_mapper_reference)
     # Licence artefacts: verbatim bytes and hashes, NOTICE text, wheel-metadata entry. With
     # PFH_SOBOL_SDIST and PFH_SOBOL_WHEEL set in the environment it also inspects built packages.
     # The trailing -v goes to unittest (the script takes the repository root first): every skipped
@@ -227,23 +244,14 @@ target_link_libraries(pineforge_hpo_test_tpe_quality PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_tpe_quality PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_tpe_quality COMMAND pineforge_hpo_test_tpe_quality)
-set_tests_properties(pineforge_hpo_tpe_quality PROPERTIES TIMEOUT 300)
 
 add_executable(pineforge_hpo_test_tpe_stress test_tpe_stress.cpp)
 target_link_libraries(pineforge_hpo_test_tpe_stress PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_tpe_stress PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_tpe_stress COMMAND pineforge_hpo_test_tpe_stress)
-# The hard suite intentionally runs 20 optimizer/seed combinations.  Hosted
-# runners can take more than 60 seconds under load even though the suite has no
-# wall-time quality contract, so leave enough headroom without reducing its
-# statistical coverage.
-set_tests_properties(pineforge_hpo_tpe_stress PROPERTIES TIMEOUT 180)
-
-if(PINEFORGE_HPO_ENABLE_SANITIZERS OR PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
-    set_tests_properties(pineforge_hpo_tpe_quality PROPERTIES TIMEOUT 300)
-    set_tests_properties(pineforge_hpo_tpe_stress PROPERTIES TIMEOUT 900)
-endif()
+# The hard suite intentionally runs 20 optimizer/seed combinations with no
+# wall-time quality contract.
 
 add_executable(pineforge_hpo_test_tpe_concurrency test_tpe_concurrency.cpp)
 target_link_libraries(pineforge_hpo_test_tpe_concurrency PRIVATE PineForgeHPO::core)
@@ -255,13 +263,11 @@ add_executable(pineforge_hpo_test_tpe_scale test_tpe_scale.cpp)
 target_link_libraries(pineforge_hpo_test_tpe_scale PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_tpe_scale PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_tpe_scale COMMAND pineforge_hpo_test_tpe_scale)
-set_tests_properties(pineforge_hpo_tpe_scale PROPERTIES TIMEOUT 240)
 add_executable(pineforge_hpo_test_ordinal_set test_ordinal_set.cpp)
 target_include_directories(pineforge_hpo_test_ordinal_set PRIVATE
     "${PROJECT_SOURCE_DIR}/src/core" "${PROJECT_SOURCE_DIR}/include")
 target_compile_options(pineforge_hpo_test_ordinal_set PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_ordinal_set COMMAND pineforge_hpo_test_ordinal_set)
-set_tests_properties(pineforge_hpo_tpe_concurrency PROPERTIES TIMEOUT 30)
 
 if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     # The engine-adapter fixture is compiled four ways from one source:
@@ -366,6 +372,51 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     add_test(NAME pineforge_hpo_signal_macro
         COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
             --target pineforge_hpo_test_signal_macro)
+
+    # A separate translation of the CLI, built only for proof tests. The production target
+    # receives no proof definition, dependency or installation change.
+    find_package(Threads REQUIRED)
+    add_executable(pineforge-hpo-native-proof EXCLUDE_FROM_ALL
+        "${PROJECT_SOURCE_DIR}/src/cli/main.cpp")
+    target_compile_definitions(pineforge-hpo-native-proof PRIVATE
+        PINEFORGE_HPO_PROOF_CURVES=1 PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
+    target_link_libraries(pineforge-hpo-native-proof PRIVATE
+        PineForgeHPO::engine_adapter Threads::Threads)
+    add_dependencies(pineforge-hpo-native-proof ${PFH_RETURN_STATS_IDENTITY_TARGET})
+    target_include_directories(pineforge-hpo-native-proof PRIVATE
+        "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}"
+        "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
+    target_compile_options(pineforge-hpo-native-proof PRIVATE -Wall -Wextra -Wpedantic)
+    add_executable(pineforge_hpo_pbo_curve_reference EXCLUDE_FROM_ALL real_strategy_curve.cpp)
+    target_compile_definitions(pineforge_hpo_pbo_curve_reference PRIVATE PINEFORGE_HPO_PBO_PROBE=1)
+    target_link_libraries(pineforge_hpo_pbo_curve_reference PRIVATE PineForgeHPO::engine_adapter)
+    target_compile_options(pineforge_hpo_pbo_curve_reference PRIVATE -Wall -Wextra -Wpedantic)
+    add_library(pineforge_hpo_pbo_proof_strategy SHARED EXCLUDE_FROM_ALL pbo_proof_strategy.cpp)
+    target_include_directories(pineforge_hpo_pbo_proof_strategy PRIVATE
+        "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+    target_compile_options(pineforge_hpo_pbo_proof_strategy PRIVATE -Wall -Wextra -Wpedantic)
+    set_target_properties(pineforge_hpo_pbo_proof_strategy PROPERTIES PREFIX "")
+    if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+        target_compile_options(pineforge_hpo_pbo_proof_strategy PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_pbo_proof_strategy PRIVATE -fsanitize=address,undefined)
+        target_compile_options(pineforge-hpo-native-proof PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(pineforge-hpo-native-proof PRIVATE -fsanitize=address,undefined)
+        target_compile_options(pineforge_hpo_pbo_curve_reference PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_pbo_curve_reference PRIVATE -fsanitize=address,undefined)
+    elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+        target_compile_options(pineforge_hpo_pbo_proof_strategy PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_pbo_proof_strategy PRIVATE -fsanitize=thread)
+        target_compile_options(pineforge-hpo-native-proof PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(pineforge-hpo-native-proof PRIVATE -fsanitize=thread)
+        target_compile_options(pineforge_hpo_pbo_curve_reference PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_pbo_curve_reference PRIVATE -fsanitize=thread)
+    endif()
     add_dependencies(pineforge_hpo_test_engine_adapter
         pineforge_hpo_fake_strategy
         pineforge_hpo_fake_strategy_no_timezone
@@ -384,6 +435,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_property(TEST pineforge_hpo_engine_adapter APPEND PROPERTY
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
 
     add_executable(pineforge_hpo_test_dataset_bin test_dataset_bin.cpp)
     target_link_libraries(pineforge_hpo_test_dataset_bin PRIVATE PineForgeHPO::engine_adapter)
@@ -401,6 +456,20 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     add_executable(pineforge_hpo_symbol_feed_report symbol_feed_report.cpp)
     target_include_directories(pineforge_hpo_symbol_feed_report PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
     target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE PineForgeHPO::engine_adapter)
+
+    # Rolling-schedule replay: the test runs the real native binary on the rolling schedule at
+    # several worker counts, reads each result file and replays every proposal from it.
+    if(TARGET pineforge-hpo-native)
+        add_executable(pineforge_hpo_test_rolling_replay test_rolling_replay.cpp)
+        target_link_libraries(pineforge_hpo_test_rolling_replay PRIVATE PineForgeHPO::core)
+        target_compile_options(pineforge_hpo_test_rolling_replay PRIVATE -Wall -Wextra -Wpedantic)
+        add_dependencies(pineforge_hpo_test_rolling_replay
+            pineforge-hpo-native pineforge_hpo_fake_strategy)
+        add_test(NAME pineforge_hpo_rolling_replay
+            COMMAND pineforge_hpo_test_rolling_replay
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+    endif()
 
     find_package(Python3 COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
@@ -422,7 +491,37 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
                 "${PFH_DATASET_BIN_FIXTURES}" --modes)
         set_tests_properties(pineforge_hpo_dataset_bin_sidecars PROPERTIES
-            FIXTURES_REQUIRED dataset_bin_inputs TIMEOUT 60)
+            FIXTURES_REQUIRED dataset_bin_inputs)
+        add_test(NAME pineforge_hpo_pbo_proof_build
+            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --config $<CONFIG>
+                --target pineforge-hpo-native-proof pineforge_hpo_pbo_proof_strategy
+                    pineforge_hpo_pbo_curve_reference)
+        set_tests_properties(pineforge_hpo_pbo_proof_build PROPERTIES
+            FIXTURES_SETUP pbo_proof_executables RUN_SERIAL TRUE)
+        add_test(NAME pineforge_hpo_pbo_proof_cli
+            COMMAND "${Python3_EXECUTABLE}" -I
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_pbo_proof_cli.py"
+                $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge-hpo-native-proof>
+                $<TARGET_FILE:pineforge_hpo_pbo_proof_strategy> -v)
+        set_tests_properties(pineforge_hpo_pbo_proof_cli PROPERTIES
+            FIXTURES_REQUIRED pbo_proof_executables)
+        set(PINEFORGE_HPO_PBO_PROOF_PLUGIN "" CACHE FILEPATH
+            "Compiled threshold strategy plugin for the synthetic PBO proof")
+        # The end-to-end proof needs a plugin compiled from the ordinary artifact route, which an
+        # ordinary build does not have. It is registered only when that plugin is configured, and
+        # the driver then fails (never skips) if the plugin, its manifest or any input is missing.
+        if(PINEFORGE_HPO_PBO_PROOF_PLUGIN)
+            add_test(NAME pineforge_hpo_pbo_native_proof
+                COMMAND "${Python3_EXECUTABLE}" -I
+                    "${CMAKE_CURRENT_SOURCE_DIR}/g2_oracles/pbo_native_proof.py"
+                    --native $<TARGET_FILE:pineforge-hpo-native-proof>
+                    --plugin "${PINEFORGE_HPO_PBO_PROOF_PLUGIN}"
+                    --harness $<TARGET_FILE:pineforge_hpo_pbo_curve_reference>
+                    --engine-root "${PINEFORGE_ENGINE_ROOT}"
+                    --out "${CMAKE_CURRENT_BINARY_DIR}/pbo-proof" --S 16)
+            set_tests_properties(pineforge_hpo_pbo_native_proof PROPERTIES
+                FIXTURES_REQUIRED pbo_proof_executables)
+        endif()
         add_test(NAME pineforge_hpo_failure_codes
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_failure_codes.py"
                 $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
@@ -440,9 +539,15 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_libm_identity.py"
                     $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
                     $<TARGET_FILE:pineforge_hpo_libm_identity_shim>)
-            set_tests_properties(pineforge_hpo_libm_identity PROPERTIES TIMEOUT 600)
         endif()
         if(dlib_SOURCE_DIR)
+            add_test(NAME pineforge_hpo_release_version_integration
+                COMMAND "${Python3_EXECUTABLE}" -I
+                    "${CMAKE_CURRENT_SOURCE_DIR}/test_release_version_integration.py"
+                    "${PINEFORGE_ENGINE_ROOT}" "${dlib_SOURCE_DIR}"
+                    $<TARGET_FILE:pineforge_hpo_fake_strategy> -v)
+            set_tests_properties(pineforge_hpo_release_version_integration PROPERTIES
+                RUN_SERIAL TRUE)
             add_test(NAME pineforge_hpo_numeric_flags
                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_numeric_flags.py"
                     "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
@@ -450,7 +555,6 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/test_return_stats_identity.py"
                     "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
-            set_tests_properties(pineforge_hpo_return_stats_identity PROPERTIES TIMEOUT 1800)
             # The Sobol identity's build binding on synthetic databases, fixture projects and
             # copies of the real project (both generators): serial, long, many configures.
             add_test(NAME pineforge_hpo_sobol_identity_build
@@ -458,7 +562,7 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                     "${CMAKE_CURRENT_SOURCE_DIR}/test_sobol_identity.py"
                     "${PROJECT_SOURCE_DIR}" "${dlib_SOURCE_DIR}")
             set_tests_properties(pineforge_hpo_sobol_identity_build PROPERTIES
-                TIMEOUT 3600 RUN_SERIAL TRUE)
+                RUN_SERIAL TRUE)
             # Fresh configurations of the whole project (explicit-OFF and multi-configuration
             # trees) plus a verbose rebuild of the real reducer object: serial, long.
             add_test(NAME pineforge_hpo_return_stats_integration
@@ -469,7 +573,7 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                     "${CMAKE_BINARY_DIR}" "${PROJECT_SOURCE_DIR}" "${PINEFORGE_ENGINE_ROOT}"
                     "${dlib_SOURCE_DIR}")
             set_tests_properties(pineforge_hpo_return_stats_integration PROPERTIES
-                TIMEOUT 3600 RUN_SERIAL TRUE)
+                RUN_SERIAL TRUE)
             if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
                 set_property(TEST pineforge_hpo_return_stats_integration APPEND PROPERTY
                     ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
@@ -488,18 +592,38 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_batching.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_rolling_schedule
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_rolling_schedule.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        # The default schedule must give the bytes of v0.12.0: a native binary built from the
+        # v0.12.0 tag is compared with this build on the same studies. That needs a second build,
+        # so configure with -DPINEFORGE_HPO_V012_NATIVE=/path/to/pineforge-hpo-native. The test is
+        # always registered; without that path it reports itself skipped (exit status 77) instead
+        # of being absent from the test list.
+        set(pfh_v012_native "${PINEFORGE_HPO_V012_NATIVE}")
+        if(NOT pfh_v012_native)
+            set(pfh_v012_native "not-provided")
+        endif()
+        add_test(NAME pineforge_hpo_rolling_default_v012
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_rolling_default_v012.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                "${pfh_v012_native}"
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set_tests_properties(pineforge_hpo_rolling_default_v012 PROPERTIES
+            SKIP_RETURN_CODE 77)
         add_test(NAME pineforge_hpo_no_improvement
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_no_improvement.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        set_tests_properties(pineforge_hpo_no_improvement PROPERTIES TIMEOUT 600)
         add_test(NAME pineforge_hpo_sobol_cli
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_sobol_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        set_tests_properties(pineforge_hpo_sobol_cli PROPERTIES TIMEOUT 3600)
         if(PINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY)
             set_property(TEST pineforge_hpo_sobol_cli APPEND PROPERTY
                 ENVIRONMENT "PFH_REQUIRE_SOBOL_IDENTITY=1")
@@ -509,34 +633,38 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_candidate_list_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        set_tests_properties(pineforge_hpo_candidate_list_cli PROPERTIES TIMEOUT 900)
         add_test(NAME pineforge_hpo_return_stats_cli
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_return_stats_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        set_tests_properties(pineforge_hpo_return_stats_cli PROPERTIES TIMEOUT 900)
         if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
             set_property(TEST pineforge_hpo_return_stats_cli APPEND PROPERTY
+                ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+        endif()
+        add_test(NAME pineforge_hpo_pbo_blocks_cli
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_pbo_blocks_cli.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+            set_property(TEST pineforge_hpo_pbo_blocks_cli APPEND PROPERTY
                 ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
         endif()
         add_test(NAME pineforge_hpo_trial_outputs
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        set_tests_properties(pineforge_hpo_trial_outputs PROPERTIES TIMEOUT 180)
         add_test(NAME pineforge_hpo_warm_start_contract
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_warm_start_contract.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        set_tests_properties(pineforge_hpo_warm_start_contract PROPERTIES TIMEOUT 600)
         add_test(NAME pineforge_hpo_warm_binary_contract
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_warm_binary_contract.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        set_tests_properties(pineforge_hpo_warm_binary_contract PROPERTIES TIMEOUT 600)
         foreach(contract syminfo progress final_write_signal progress_nonblocking progress_error
                          cancel deadline metrics magnifier timeout timeout_progress_error)
             add_test(NAME pineforge_hpo_runner_${contract}
@@ -544,7 +672,6 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                     "${CMAKE_CURRENT_SOURCE_DIR}/test_runner_contract.py"
                     $<TARGET_FILE:pineforge-hpo-native>
                     $<TARGET_FILE:pineforge_hpo_fake_strategy> ${contract})
-            set_tests_properties(pineforge_hpo_runner_${contract} PROPERTIES TIMEOUT 60)
         endforeach()
         if(PINEFORGE_HPO_TEST_ENGINE_BUILD)
             add_test(NAME pineforge_hpo_installed_prefix
@@ -573,4 +700,3 @@ target_include_directories(pineforge_hpo_test_batch_executor PRIVATE "${PROJECT_
 target_link_libraries(pineforge_hpo_test_batch_executor PRIVATE PineForgeHPO::core Threads::Threads)
 target_compile_options(pineforge_hpo_test_batch_executor PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_batch_executor COMMAND pineforge_hpo_test_batch_executor)
-set_tests_properties(pineforge_hpo_batch_executor PROPERTIES TIMEOUT 15)

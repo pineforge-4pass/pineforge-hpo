@@ -124,6 +124,9 @@ class ExecutionSpec:
     fail_fast: bool = False
     batch_size: int | None = None
     batch_lag: int = 0
+    # Schedule selector. "batches" is the default and stays byte-identical to 0.12.0;
+    # "rolling" refills a free worker slot at once from whatever has finished.
+    schedule: str = "batches"
     pruner: str = "none"
     pruner_rungs: tuple[float, ...] = (0.25, 0.5)
     pruner_eta: int = 2
@@ -1013,6 +1016,7 @@ def _parse_execution(value: Any, issues: list[ValidationIssue]) -> ExecutionSpec
             "fail_fast",
             "batch_size",
             "batch_lag",
+            "schedule",
             "pruner",
             "pruner_rungs",
             "pruner_eta",
@@ -1053,6 +1057,23 @@ def _parse_execution(value: Any, issues: list[ValidationIssue]) -> ExecutionSpec
     if not _is_int(batch_lag) or batch_lag not in (0, 1):
         issues.append(ValidationIssue(f"{path}.batch_lag", "must be 0 or 1"))
         batch_lag = 0
+    schedule = raw.get("schedule", "batches")
+    if schedule not in ("batches", "rolling"):
+        issues.append(ValidationIssue(f"{path}.schedule", "must be batches or rolling"))
+        schedule = "batches"
+    if schedule == "rolling":
+        # A key counts as set when it is present in the study file with any value, so an
+        # explicit batch_lag: 0 or a batch_size alongside rolling is refused too. The native
+        # forwarder sends --batch-lag only when it is truthy, so an explicit batch_lag: 0 is
+        # caught here rather than by the native runner.
+        for key in ("batch_size", "batch_lag"):
+            if key in raw:
+                issues.append(
+                    ValidationIssue(
+                        f"{path}.{key}",
+                        f"schedule=rolling takes neither batch_size nor batch_lag; remove {key}",
+                    )
+                )
     pruner = raw.get("pruner", "none")
     if pruner not in ("none", "median", "halving"):
         issues.append(
@@ -1085,6 +1106,7 @@ def _parse_execution(value: Any, issues: list[ValidationIssue]) -> ExecutionSpec
         fail_fast=fail_fast,
         batch_size=batch_size,
         batch_lag=batch_lag,
+        schedule=schedule,
         pruner=pruner,
         pruner_rungs=tuple(float(rung) for rung in rungs),
         pruner_eta=eta,
@@ -1214,6 +1236,21 @@ def load_study_spec(
             ValidationIssue(
                 "$.execution.batch_lag",
                 "lag-one TPE requires sampler.config.constant_liar=true",
+            )
+        )
+
+    if (
+        sampler.kind == "tpe"
+        and execution.schedule == "rolling"
+        and sampler.config is not None
+        and not sampler.config.constant_liar
+    ):
+        # Every rolling proposal is made while other trials are still running, and constant liar
+        # is what lets TPE use those outstanding candidates.
+        issues.append(
+            ValidationIssue(
+                "$.execution.schedule",
+                "rolling TPE requires sampler.config.constant_liar=true",
             )
         )
 

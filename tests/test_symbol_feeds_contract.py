@@ -127,7 +127,7 @@ def main():
             if feeds:
                 command += ["--symbol-feeds", str(index)]
             process = subprocess.run(
-                command + list(extra), capture_output=True, timeout=30
+                command + list(extra), capture_output=True
             )
             if refused:
                 expected_exit = (
@@ -299,7 +299,6 @@ def main():
                 str(native_binary),
             ],
             capture_output=True,
-            timeout=30,
         )
         require(encoded.returncode == 0, encoded.stderr.decode())
         run("--warm-start", str(native_binary))
@@ -322,7 +321,6 @@ def main():
                 str(override_binary),
             ],
             capture_output=True,
-            timeout=30,
         )
         require(override_encoded.returncode == 0, override_encoded.stderr.decode())
         require(
@@ -341,7 +339,6 @@ def main():
                 str(parent_path),
             ],
             capture_output=True,
-            timeout=30,
         )
         require(info.returncode == 0, info.stderr.decode())
         require(
@@ -406,7 +403,6 @@ def main():
                 str(tpe_binary),
             ],
             capture_output=True,
-            timeout=30,
         )
         require(tpe_encoded.returncode == 0, tpe_encoded.stderr.decode())
         binary_process, _ = run("--sampler", "tpe", "--warm-start", str(tpe_binary))

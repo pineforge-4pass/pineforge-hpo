@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "space": {"parameters": {"Lr": {"kind": "real", "low": 0.125, "high": 8.0, "step": null, "log": true}, "Mult": {"kind": "real", "low": 0.5, "high": 2.0, "step": 0.5, "log": false}, "Thr": {"kind": "real", "low": 0.0, "high": 1.0, "step": null, "log": false}}, "objective": {"expression": "metrics.all.net_profit_pct", "direction": "maximize", "constraints": []}},
+  "direction": "maximize",
+  "trials_completed": 4,
+  "trials_out": "all",
+  "trials": [
+    {"trial_id": 0, "status": "ok", "feasible": true, "objective": 5.0, "parameters": {"Lr": 8.0, "Mult": 2.0, "Thr": 0.875}},
+    {"trial_id": 1, "status": "ok", "feasible": true, "objective": 4.0, "parameters": {"Lr": 8.0, "Mult": 1.5, "Thr": 0.875}},
+    {"trial_id": 2, "status": "ok", "feasible": true, "objective": 5.0, "parameters": {"Lr": 8.0, "Mult": 2.0, "Thr": 0.625}},
+    {"trial_id": 3, "status": "ok", "feasible": true, "objective": 5.0, "parameters": {"Lr": 8.0, "Mult": 2.0, "Thr": 0.75}}
+  ]
+}

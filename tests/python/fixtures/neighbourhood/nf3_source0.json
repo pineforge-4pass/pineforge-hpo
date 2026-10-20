@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "space": {"parameters": {"Fast": {"kind": "integer", "low": 2, "high": 8, "step": 2, "log": false}, "Mode": {"kind": "categorical", "choices": ["ema", "sma"]}}, "objective": {"expression": "metrics.all.net_profit_pct", "direction": "maximize", "constraints": []}},
+  "direction": "maximize",
+  "trials_completed": 4,
+  "trials_out": "all",
+  "trials": [
+    {"trial_id": 0, "status": "ok", "feasible": true, "objective": 6.0, "parameters": {"Fast": 4, "Mode": "ema"}},
+    {"trial_id": 1, "status": "ok", "feasible": true, "objective": 5.0, "parameters": {"Fast": 2, "Mode": "ema"}},
+    {"trial_id": 2, "status": "ok", "feasible": true, "objective": 6.0, "parameters": {"Fast": 4, "Mode": "ema"}},
+    {"trial_id": 3, "status": "ok", "feasible": true, "objective": 7.0, "parameters": {"Fast": 6, "Mode": "sma"}}
+  ]
+}

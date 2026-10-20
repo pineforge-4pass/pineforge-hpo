@@ -224,7 +224,9 @@ Potential work, driven by profiling and real study requirements:
 - shared-memory datasets across process workers;
 - additional Bayesian/CMA-ES/evolutionary sampler adapters;
 - multi-fidelity evaluation and pruning;
-- walk-forward and cross-market robustness objectives;
+- walk-forward and cross-market robustness objectives (a post hoc analysis of finished per-window
+  studies exists and is not a robustness objective: v1 analyses finished studies; native in-loop
+  walk-forward comes later);
 - multi-objective directions and Pareto-front reporting;
 - conditional/hierarchical spaces.
 

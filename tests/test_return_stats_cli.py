@@ -3,7 +3,14 @@
 `pineforge-hpo-return-stats/v1`), driven only through the native binary and the fake plugin.
 Usage: test_return_stats_cli.py NATIVE PLUGIN [unittest arguments].
 
-UNEXECUTED until the spot phase. The fake plugin reports a two-point curve (equity `E` then
+The sealed 48-stage legacy return-statistics proof recorded in CHANGELOG.md and
+docs/internal/methods-cx-wire.md covers the Python forwarding, fake-plugin CLI and
+reducer-identity integration controls on its recorded builds (the by-hand canonical-curve gate
+tests/test_return_stats_e2e.py has no recorded result in this tree), with numerical comparisons limited
+to their stated domain, scale and bounds, launcher/response-file/old-CMake cases limited to
+synthetic-database checks, pinned references required for OFF-byte claims, no cost or unmeasured
+cross-build equality claim, and later numeric identities requiring separate validation.
+The fake plugin reports a two-point curve (equity `E` then
 `E + 1`, one minute apart, `E` = 100000 unless overridden), so every expectation below is closed
 form: one bar interval gives T = 1, no period (fewer than three points, status 6); the monthly
 series of the same curve is one UTC bucket, hence T = 0 and P = 12 (status 1), and any chart
@@ -102,7 +109,7 @@ def setUpModule() -> None:
              "--bar-magnifier", "true", "--magnifier-samples", "6",
              "--magnifier-distribution", "triangle",
              "--max-trials", "1", "--record-metric", "returns.bar.count"],
-            text=True, capture_output=True, check=False, timeout=120)
+            text=True, capture_output=True, check=False)
     try:
         failure = json.loads(probe.stdout).get("failure")
     except ValueError:
@@ -150,7 +157,7 @@ class ReturnStatsCliTests(unittest.TestCase):
             extra = (*extra, "--max-trials", "4")
         completed = subprocess.run(
             self.argv(*extra, **options), text=True, capture_output=True, check=False,
-            env={**os.environ, **(env or {})}, pass_fds=pass_fds, timeout=600)
+            env={**os.environ, **(env or {})}, pass_fds=pass_fds)
         if expected is not None:
             self.assertEqual(completed.returncode, expected, completed.stderr)
         return completed
@@ -373,12 +380,12 @@ class ReturnStatsCliTests(unittest.TestCase):
         os.close(entered_write)
         os.close(release_read)
         try:
-            self.assertTrue(select.select([entered_read], [], [], 30)[0], "gate never entered")
+            self.assertTrue(select.select([entered_read], [], [])[0], "gate never entered")
             self.assertEqual(os.read(entered_read, 1), b"G")
             child.send_signal(signal.SIGTERM)
             time.sleep(0.4)
             os.write(release_write, b"R")
-            stdout, stderr = child.communicate(timeout=60)
+            stdout, stderr = child.communicate()
         finally:
             if child.poll() is None:
                 child.kill()

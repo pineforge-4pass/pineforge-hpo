@@ -4,7 +4,14 @@ through the native binary and the fake strategy plugin.
 Usage: test_sobol_cli.py NATIVE PLUGIN [unittest arguments].
 
 Written from the AR pin (methods-sobol-contract.pin.md) and the amendment before the wiring
-existed. UNEXECUTED until the proof phase. Independent oracle: this file implements the Gray-code
+existed.
+The documented sealed 48-stage Sobol proof covers the native CLI and Python schema/argv/relay
+controls on its recorded builds (the by-hand compiled-strategy gate tests/test_sobol_e2e.py has no
+recorded result in this tree), with bound numeric identity required for
+floating-point spaces, logarithmic CLI checks limited to range and a relative bound, continuation
+exactness limited to the parameter stream, and no quality, cost or equality claim for unmeasured
+build pairs.
+Independent oracle: this file implements the Gray-code
 Sobol recurrence, the Joe-Kuo table recurrence (equation 2), the SplitMix64 digital shift and the
 discrete and linear-real mappings with Python integers and IEEE floats, importing nothing from the
 product; the direction-number table is read from the vendored bytes. The published 32-bit prefix
@@ -245,7 +252,7 @@ def identity_bound() -> bool:
                  "--bar-magnifier", "true", "--magnifier-samples", "6",
                  "--magnifier-distribution", "triangle",
                  "--real-dim", "Level", "0", "1", "continuous", "--sampler", "sobol",
-                 "--max-trials", "1"], text=True, capture_output=True, check=False, timeout=120)
+                 "--max-trials", "1"], text=True, capture_output=True, check=False)
         try:
             failure = json.loads(probe.stdout).get("failure") or {}
         except ValueError:
@@ -292,8 +299,7 @@ class SobolCliTests(unittest.TestCase):
 
     def run_cli(self, space, *extra, expected=0, pass_fds=(), **options):
         completed = subprocess.run(self.argv(space, *extra, **options), text=True,
-                                   capture_output=True, check=False, pass_fds=pass_fds,
-                                   timeout=1800)
+                                   capture_output=True, check=False, pass_fds=pass_fds)
         if expected is not None:
             self.assertEqual(completed.returncode, expected, completed.stderr)
         return completed
@@ -427,7 +433,7 @@ class SobolCliTests(unittest.TestCase):
         # The same dimensions declared in the opposite order give the same stream.
         backward = json.loads(subprocess.run(
             self._reversed_command("--seed", 5, "--max-trials", 16),
-            text=True, capture_output=True, check=False, timeout=600).stdout)
+            text=True, capture_output=True, check=False).stdout)
         self.assertEqual(forward["trials"], backward["trials"])
         self.assertEqual(forward["sobol"]["identity"], backward["sobol"]["identity"])
         constant = self.result(DISCRETE, "--seed", 5, "--max-trials", 16,
@@ -443,6 +449,20 @@ class SobolCliTests(unittest.TestCase):
         flags_end = command.index("--sampler")
         flags = [flag for dim in reversed(DISCRETE.dims) for flag in dim.flags()]
         return command[:flags_start] + flags + command[flags_end:]
+
+    def test_the_reversed_command_declares_the_dimensions_in_the_opposite_order(self) -> None:
+        # The order test above compares two runs; this pins that the second run's argv really
+        # is the first one reversed, so that comparison is never a command against itself.
+        def declared(command):
+            return sorted(DISCRETE.dims, key=lambda dim: command.index(dim.name))
+
+        extra = ("--seed", 5, "--max-trials", 16)
+        forward = self.argv(DISCRETE, *extra)
+        backward = self._reversed_command(*extra)
+        self.assertNotEqual(backward, forward)
+        self.assertEqual(sorted(backward), sorted(forward))  # same tokens, only reordered
+        self.assertEqual(declared(forward), DISCRETE.dims)
+        self.assertEqual(declared(backward), DISCRETE.dims[::-1])
 
     def test_floating_columns_match_the_oracle_where_it_is_exact(self) -> None:
         for scramble in ("digital_shift", "none"):
@@ -495,7 +515,7 @@ class SobolCliTests(unittest.TestCase):
                                      pass_fds=(write_fd,))
         finally:
             os.close(write_fd)
-            reader.join(timeout=60)
+            reader.join()
         result = json.loads(completed.stdout)
         lines = [json.loads(item) for item in b"".join(chunks).decode().splitlines()]
         self.assertEqual(lines, result["trials"])
@@ -869,8 +889,7 @@ class SobolCliTests(unittest.TestCase):
                             strategy=self.directory / "no-such-plugin")
         at = command.index("--sampler")
         command[at:at] = list(space_flags)
-        completed = subprocess.run(command, text=True, capture_output=True, check=False,
-                                   timeout=600)
+        completed = subprocess.run(command, text=True, capture_output=True, check=False)
         self.assert_refusal(completed, code, exit_code, reason)
         self.assertFalse(never.exists(), "an output file was opened before the refusal")
         return completed
@@ -890,11 +909,11 @@ class SobolCliTests(unittest.TestCase):
                           "exhaustive", code="hpo_cli_usage", reason=None)
         usage = subprocess.run(self.argv(DISCRETE, "--max-trials", 4, sampler="grid") +
                                ["--sobol-scramble", "none"], text=True, capture_output=True,
-                               check=False, timeout=60)
+                               check=False)
         self.assert_refusal(usage, "hpo_cli_usage", 1)
         usage = subprocess.run(self.argv(DISCRETE, "--max-trials", 4) +
                                ["--candidates", str(self.directory / "list.jsonl")],
-                               text=True, capture_output=True, check=False, timeout=60)
+                               text=True, capture_output=True, check=False)
         self.assert_refusal(usage, "hpo_cli_usage", 1)
 
     def test_the_boundary_column_counts_are_accepted(self) -> None:
@@ -913,12 +932,62 @@ class SobolCliTests(unittest.TestCase):
                 completed = subprocess.run(
                     self.argv(NO_STRING, "--max-trials", 2) + ["--log-int-dim", "Lg", str(low),
                                                               str(high)],
-                    text=True, capture_output=True, check=False, timeout=600)
+                    text=True, capture_output=True, check=False)
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 for row in json.loads(completed.stdout)["trials"]:
                     self.assertTrue(low <= row["parameters"]["Lg"] <= high)
 
     # ---- numeric identity capability -------------------------------------------------------------
+
+    def test_a_probe_failure_other_than_the_refusal_is_raised_not_read_as_unbound(self) -> None:
+        # identity_bound() is driven with a stand-in native that always exits with `status`;
+        # only the failure code in its stdout document differs. A healthy build never gives a
+        # non-refusal probe failure, so no real run reaches the raise.
+        global NATIVE
+        status = 7
+        saved_native, saved_state = NATIVE, dict(_IDENTITY_STATE)
+
+        def stand_in(code) -> Path:
+            path = self.directory / f"stand-in-{code or 'silent'}"
+            if code is None:
+                # A probe that dies before printing anything: the document is empty.
+                script = f"#!/bin/sh\necho stand-in-stderr >&2\nexit {status}\n"
+            else:
+                document = json.dumps({"ok": False, "failure": {"code": code}})
+                script = (f"#!/bin/sh\nprintf '%s\\n' '{document}'\n"
+                          f"echo stand-in-stderr >&2\nexit {status}\n")
+            path.write_text(script, encoding="utf-8")
+            path.chmod(0o755)
+            return path
+
+        try:
+            NATIVE = stand_in("hpo_cli_usage")
+            _IDENTITY_STATE.clear()
+            with self.assertRaises(AssertionError) as raised:
+                identity_bound()
+            message = str(raised.exception)
+            self.assertIn(f"exit code {status}", message)
+            self.assertIn("hpo_cli_usage", message)
+            self.assertIn("stand-in-stderr", message)
+            self.assertNotIn("bound", _IDENTITY_STATE)
+            # The registered refusal at the same exit status is an unbound build, not an error.
+            NATIVE = stand_in("hpo_toolchain_unavailable")
+            _IDENTITY_STATE.clear()
+            self.assertFalse(identity_bound())
+            # A probe that prints nothing at all and fails must raise the same way; reading it as
+            # an unbound build would let floating-space tests skip on a build that is simply broken.
+            NATIVE = stand_in(None)
+            _IDENTITY_STATE.clear()
+            with self.assertRaises(AssertionError) as raised:
+                identity_bound()
+            silent_message = str(raised.exception)
+            self.assertIn(f"exit code {status}", silent_message)
+            self.assertIn("stand-in-stderr", silent_message)
+            self.assertNotIn("bound", _IDENTITY_STATE)
+        finally:
+            NATIVE = saved_native
+            _IDENTITY_STATE.clear()
+            _IDENTITY_STATE.update(saved_state)
 
     def test_unbound_identity_refuses_floating_spaces_only(self) -> None:
         discrete = json.loads(self.run_cli(DISCRETE, "--max-trials", 2).stdout)
@@ -979,7 +1048,7 @@ class SobolCliTests(unittest.TestCase):
 
     def test_help_documents_the_sampler_and_flag(self) -> None:
         completed = subprocess.run([str(NATIVE), "--help"], text=True, capture_output=True,
-                                   check=False, timeout=60)
+                                   check=False)
         self.assertEqual(completed.returncode, 0)
         self.assertIn("--sobol-scramble", completed.stdout)
         self.assertIn("sobol", completed.stdout.split("--sampler", 1)[1].splitlines()[0])

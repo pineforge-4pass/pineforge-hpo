@@ -167,7 +167,7 @@ def measure(native, spec, warm, result_path, cold):
         "--warm-start",
         str(warm),
     ]
-    process = subprocess.run(command, capture_output=True, text=True, timeout=240)
+    process = subprocess.run(command, capture_output=True, text=True)
     timing = result_path.read_text().splitlines()[-1].split(",")
     elapsed, peak_rss = float(timing[0]), int(timing[1])
     if process.returncode == 0:

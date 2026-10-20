@@ -44,6 +44,37 @@ class AdmissionError(AssertionError):
     """The intended process ordering was not established; never a product RED."""
 
 
+class AdmissionExpired(Exception):
+    """The feature period was consumed before the required ordering; retry, never pass."""
+
+    def __init__(self, elapsed_seconds):
+        self.elapsed_seconds = elapsed_seconds
+
+
+def retry_expired_admission(run):
+    """Only an admitted attempt can pass; retain every expired attempt's evidence.
+
+    First establish the same event without a product timeout, then give the
+    feature three seconds plus twice that admission cost. If it still prevents
+    admission, budget the next run from the entire observed attempt. There
+    is no retry count or elapsed-time limit that can fail a slow correct run.
+    """
+    @functools.wraps(run)
+    def retry(self, *args):
+        product_seconds = 3.0
+        if args[-1] in {"deadline", "watchdog", "watchdog-progress-error"}:
+            admission_seconds = run(self, *args, product_seconds=0.0, attempt=0)
+            product_seconds += 2 * admission_seconds
+        attempt = 1
+        while True:
+            try:
+                return run(self, *args, product_seconds=product_seconds, attempt=attempt)
+            except AdmissionExpired as error:
+                product_seconds = 2 * max(product_seconds, error.elapsed_seconds)
+                attempt += 1
+    return retry
+
+
 def process_threads(pid):
     tasks = Path(f"/proc/{pid}/task")
     try:
@@ -51,6 +82,12 @@ def process_threads(pid):
                 for path in tasks.iterdir()}
     except (FileNotFoundError, ProcessLookupError):
         return {}
+
+
+def wait_for_output(child, directory):
+    """Admission uses files for output so publication cannot block child exit."""
+    child.wait()
+    return (directory / "stdout").read_bytes(), (directory / "stderr").read_bytes()
 
 
 @functools.lru_cache(maxsize=1)
@@ -95,17 +132,21 @@ def late_reader_capability():
         child = subprocess.Popen([sys.executable, "-S", "-c", helper, str(write_fd)],
                                  pass_fds=(write_fd,), stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE)
-        deadline = time.monotonic() + 5
         tasks = {}
-        while time.monotonic() < deadline:
+        previous = None
+        stable_reads = 0
+        while True:
             if child.poll() is not None:
                 _, diagnostic = child.communicate()
                 report("error", "capability helper exited", returncode=child.returncode)
                 raise AdmissionError(f"capability helper failed: {diagnostic!r}")
             fcntl.ioctl(read_fd, termios.FIONREAD, queued, True)
             try:
+                paths = list(Path(f"/proc/{child.pid}/task").iterdir())
                 tasks = {int(path.name): (path / "wchan").read_text().strip()
-                         for path in Path(f"/proc/{child.pid}/task").iterdir()}
+                         for path in paths}
+                sleeping = all((path / "stat").read_text().rsplit(")", 1)[1].split()[0]
+                               in {"S", "D"} for path in paths)
             except (FileNotFoundError, PermissionError) as error:
                 if child.poll() is not None:
                     raise AdmissionError("capability helper exited before /proc read") from error
@@ -116,20 +157,26 @@ def late_reader_capability():
                     and any("pipe" in state for tid, state in tasks.items() if tid != child.pid)):
                 return report("available", "pipe controls and child wait channels observed",
                               capacity=capacity, tasks=tasks)
+            # A full, undrained pipe keeps the writer blocked. Accept unavailable
+            # symbols only on consecutive stable reads of both helper tasks;
+            # running tasks (wchan 0) must not classify a visible host as hidden.
+            states = tuple(sorted(tasks.items()))
+            if len(tasks) == 2 and queued[0] == capacity and sleeping:
+                stable_reads = stable_reads + 1 if states == previous else 1
+                previous = states
+                if stable_reads >= 3 and child.poll() is None:
+                    return report("unavailable",
+                                  "required futex/pipe wait-channel symbols unavailable",
+                                  tasks=tasks)
+            else:
+                previous = None
+                stable_reads = 0
             time.sleep(0.01)
-        hidden = all(state in {"", "0"} for state in tasks.values())
-        named = all(state and not state.isdecimal() for state in tasks.values())
-        if len(tasks) == 2 and queued[0] == capacity and (hidden or named):
-            return report("unavailable", "required futex/pipe wait-channel symbols unavailable",
-                          tasks=tasks)
-        report("error", "capability helper ordering not established", tasks=tasks,
-               queued_bytes=queued[0])
-        raise AdmissionError("capability helper ordering not established; not a capability skip")
     finally:
         if child is not None:
             if child.poll() is None:
                 child.kill()
-            child.communicate(timeout=5)
+            child.communicate()
         os.close(read_fd)
         os.close(write_fd)
 
@@ -248,7 +295,7 @@ class NoImprovementTests(unittest.TestCase):
                 descriptors.append(arrivals.fileno())
             (directory / "command.json").write_text(json.dumps(command, indent=2) + "\n")
             started = time.monotonic()
-            completed = subprocess.run(command, capture_output=True, timeout=180,
+            completed = subprocess.run(command, capture_output=True,
                                        pass_fds=tuple(descriptors))
         (directory / "stdout").write_bytes(completed.stdout)
         (directory / "stderr").write_bytes(completed.stderr)
@@ -391,7 +438,8 @@ class NoImprovementTests(unittest.TestCase):
         self.assertGreater(ordinary["best_trial_id"], ordinary["early_stop"]["trigger_trial_id"])
         for mode in ("none", "best-k"):
             result, directory = self.run_cli("--trials-out", mode, "--best-k", "1", **settings)
-            for field in ("early_stop", "stop_reason", "trials_completed", "best_value", "best_trial_id"):
+            for field in ("early_stop", "stop_reason", "trials_completed", "best_value",
+                          "best_trial_id"):
                 self.assertEqual(result[field], ordinary[field])
             self.assertEqual((original / "progress.jsonl").read_bytes(),
                              (directory / "progress.jsonl").read_bytes())
@@ -460,10 +508,12 @@ class NoImprovementTests(unittest.TestCase):
                         actual = self.run_cli(score=scores, delay=delays, budget=24,
                                               lag=lag, workers=workers, patience=3, trace=True)
                         self.assert_stopped_prefix(reference, actual, 3, 4, lag)
-                        arrivals = [int(line) for line in (actual[1] / "arrivals").read_text().splitlines()]
+                        arrivals = [int(line) for line in
+                                    (actual[1] / "arrivals").read_text().splitlines()]
                         self.assertEqual(sorted(arrivals), list(range(len(actual[0]["trials"]))))
                         if workers == 16:
-                            self.assertLess(min(arrivals.index(2), arrivals.index(3)), arrivals.index(0),
+                            self.assertLess(min(arrivals.index(2), arrivals.index(3)),
+                                            arrivals.index(0),
                                             "fixture did not deliver a higher score before ID0")
                         encoded = (actual[1] / "progress.jsonl").read_bytes()
                         if identity is None:
@@ -581,7 +631,7 @@ class NoImprovementTests(unittest.TestCase):
         binary = self.directory / "parent.pfhw"
         command = [str(NATIVE), "warm-encode", "--spec", str(spec_path),
                    "--input", str(parent_path / "final.json"), "--output", str(binary)]
-        completed = subprocess.run(command, capture_output=True, timeout=30)
+        completed = subprocess.run(command, capture_output=True)
         (self.directory / "encode-command.json").write_text(json.dumps(command) + "\n")
         (self.directory / "encode-stdout").write_bytes(completed.stdout)
         (self.directory / "encode-stderr").write_bytes(completed.stderr)
@@ -596,7 +646,25 @@ class NoImprovementTests(unittest.TestCase):
             outputs.append((path / "trial-array").read_bytes())
         self.assertEqual(*outputs)
 
-    def slow_terminal_reader(self, patience, intervention):
+    def expired_before_admission(self, child, stdout, kind, elapsed):
+        """Retry only a genuine feature expiry, never a crash or malformed result."""
+        result = json.loads(stdout)
+        if result.get("stop_reason") != kind or "failure" in result:
+            raise AdmissionError("child exited before the required admission event")
+        self.assertIn(child.returncode, (0, 2) if kind == "deadline" else (3,))
+        rows = result["trials"]
+        self.assertEqual(result["trials_completed"], len(rows))
+        self.assertEqual([row["trial_id"] for row in rows], list(range(len(rows))))
+        self.assertTrue(all(row["status"] in {"ok", "trial_timeout"} for row in rows))
+        self.assertTrue(all(row["objective"] == 10 for row in rows if row["status"] == "ok"))
+        if kind == "trial_timeout":
+            self.assertEqual(sum(row["status"] == "trial_timeout" for row in rows), 1)
+        else:
+            self.assertTrue(all(row["status"] == "ok" for row in rows))
+        raise AdmissionExpired(elapsed)
+
+    @retry_expired_admission
+    def slow_terminal_reader(self, patience, intervention, *, product_seconds, attempt):
         """Gate the actual blocking JSONL sink after evaluation, without a mock runner.
 
         --trials-file is a FIFO consumed by a reader thread held behind an Event.
@@ -606,7 +674,7 @@ class NoImprovementTests(unittest.TestCase):
         replacement clock is used. An admission failure is never product RED.
         """
         label = f"{intervention}-p{patience}"
-        directory = self.directory / label
+        directory = self.directory / f"{label}-attempt{attempt}"
         directory.mkdir()
         fifo = directory / "terminal.fifo"
         os.mkfifo(fifo)
@@ -630,8 +698,9 @@ class NoImprovementTests(unittest.TestCase):
 
         reader = threading.Thread(target=read_terminal_stream)
         reader.start()
-        deadline_seconds = 3.0
-        receipt = {"case": label, "fifo_capacity": capacity, "admitted": False}
+        deadline_seconds = product_seconds
+        receipt = {"case": label, "fifo_capacity": capacity, "admitted": False,
+                   "product_seconds": product_seconds}
         progress_path = directory / "progress.jsonl"
         arrivals_path = directory / "arrivals"
         final = directory / "final.json"
@@ -655,13 +724,15 @@ class NoImprovementTests(unittest.TestCase):
                 "--progress-fd", str(progress.fileno()), "--trials-file", str(fifo),
                 "--output", str(final),
             ]
-            if intervention == "deadline":
+            if intervention == "deadline" and product_seconds:
                 command += ["--max-wall-seconds", str(deadline_seconds)]
             (directory / "command.json").write_text(json.dumps(command) + "\n")
             try:
                 started = time.monotonic()
-                child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                         pass_fds=(progress.fileno(), arrivals.fileno()))
+                with (directory / "stdout").open("wb") as out, (
+                        directory / "stderr").open("wb") as err:
+                    child = subprocess.Popen(command, stdout=out, stderr=err,
+                                             pass_fds=(progress.fileno(), arrivals.fileno()))
                 while True:
                     queued = array.array("i", [0])
                     fcntl.ioctl(reader_fd, termios.FIONREAD, queued, True)
@@ -669,46 +740,69 @@ class NoImprovementTests(unittest.TestCase):
                     emitted = progress_path.read_bytes()
                     completed = arrivals_path.read_text().splitlines()
                     elapsed = time.monotonic() - started
-                    ready = (child.poll() is None and len(tasks) == 2
-                             and "futex" in tasks.get(child.pid, "")
-                             and any("pipe" in state for tid, state in tasks.items()
-                                     if tid != child.pid)
-                             and queued[0] == capacity and completed == ["0", "1"]
-                             and emitted.endswith(b"\n") and len(emitted) > capacity)
+                    closed_writer = (child.poll() is None and len(tasks) == 2
+                                     and "futex" in tasks.get(child.pid, "")
+                                     and any("pipe" in state for tid, state in tasks.items()
+                                             if tid != child.pid)
+                                     and queued[0] == capacity and emitted.endswith(b"\n")
+                                     and len(emitted) > capacity)
+                    ready = closed_writer and completed == ["0", "1"]
                     if ready:
                         first = json.loads(emitted)
                         if first["trial_id"] != 0 or first["status"] != "ok":
-                            raise AdmissionError("slow-reader control has no genuine first terminal")
+                            raise AdmissionError(
+                                "slow-reader control has no genuine first terminal")
                         admitted_at = time.monotonic()
                         receipt.update(admitted=True, admitted_seconds=elapsed, tasks=tasks,
                                        queued_bytes=queued[0], engine_completions=completed,
                                        first_terminal_id=first["trial_id"])
                         break
-                    if child.poll() is not None or elapsed >= deadline_seconds / 2:
+                    if closed_writer:
+                        # No workers remain to produce the missing completion.
+                        # Drain the actual sink and retry only a genuine deadline.
+                        receipt.update(tasks=tasks, engine_completions=completed,
+                                       queued_bytes=queued[0], elapsed_seconds=elapsed)
+                        release_reader.set()
+                        stdout, stderr = wait_for_output(child, directory)
+                        if intervention == "deadline" and product_seconds:
+                            self.expired_before_admission(child, stdout, "deadline", elapsed)
+                        raise AdmissionError("closed workers did not complete both trials")
+                    if child.poll() is not None:
                         receipt.update(tasks=tasks, queued_bytes=queued[0],
                                        engine_completions=completed, elapsed_seconds=elapsed)
-                        raise AdmissionError("evaluation/closed-workers/blocked-writer ordering not admitted")
+                        stdout, stderr = wait_for_output(child, directory)
+                        if intervention == "deadline" and product_seconds:
+                            self.expired_before_admission(child, stdout, "deadline", elapsed)
+                        raise AdmissionError(
+                            "evaluation/closed-workers/blocked-writer ordering not admitted")
                     time.sleep(0.005)
-                if intervention == "deadline":
+                # Admission ended on the event. If the feature's entire period
+                # was already consumed, this attempt cannot prove a late stop.
+                # Release on that same event and retry; elapsed time never fails it.
+                retry_for_budget = (intervention == "deadline" and product_seconds
+                                    and admitted_at - started >= deadline_seconds)
+                if retry_for_budget:
+                    receipt["retry_reason"] = "feature period consumed before admission"
+                if intervention == "deadline" and product_seconds and not retry_for_budget:
                     # run() necessarily started before the admitted first terminal;
                     # this crosses its deadline even if process startup was delayed.
                     remaining = admitted_at + deadline_seconds + 0.2 - time.monotonic()
                     if remaining > 0:
                         release_reader.wait(remaining)
-                else:
+                elif intervention == "signal":
                     child.send_signal(signal.SIGTERM)
                     receipt["signal_sent_seconds"] = time.monotonic() - started
                 receipt["release_seconds"] = time.monotonic() - started
                 release_reader.set()
-                stdout, stderr = child.communicate(timeout=10)
+                stdout, stderr = wait_for_output(child, directory)
             finally:
                 if child is not None and child.poll() is None:
                     child.kill()
                     child.wait()
                 release_reader.set()
-                reader.join(timeout=5)
+                reader.join()
                 if child is not None and not stdout:
-                    stdout, stderr = child.communicate(timeout=2)
+                    stdout, stderr = wait_for_output(child, directory)
                 receipt.update(returncode=child.returncode if child else None,
                                reader_errors=reader_errors, reader_finished=not reader.is_alive())
                 (directory / "stdout").write_bytes(stdout)
@@ -724,11 +818,20 @@ class NoImprovementTests(unittest.TestCase):
         self.assertEqual([json.loads(line) for line in progress_path.read_bytes().splitlines()],
                          result["trials"])
         self.assertEqual(result["trials_completed"], 2)
+        if retry_for_budget:
+            self.assertIn(result["stop_reason"], {
+                "deadline", "no_improvement" if patience == 1 else "trial_budget_reached"})
+            if patience:
+                self.assertEqual(result["early_stop"]["trigger_trial_id"],
+                                 1 if patience == 1 else None)
+            raise AdmissionExpired(time.monotonic() - started)
         self.assertEqual(result["stop_reason"],
                          "no_improvement" if patience == 1 else "trial_budget_reached",
-                         "a stop first observed during output drain relabelled completed evaluation")
+                         "a stop first observed during output drain relabelled "
+                         "completed evaluation")
         if patience:
             self.assertEqual(result["early_stop"]["trigger_trial_id"], 1 if patience == 1 else None)
+        return admitted_at - started
 
     def require_late_reader_capability(self):
         capability = late_reader_capability()
@@ -752,124 +855,190 @@ class NoImprovementTests(unittest.TestCase):
         for case in ("cancel-int", "cancel-term", "deadline", "watchdog",
                      "progress-error", "final-error", "watchdog-progress-error"):
             with self.subTest(case=case):
-                directory = self.directory / case
-                directory.mkdir()
-                final = directory / "final.json"
-                trials = directory / "trials.jsonl"
-                progress_path = directory / "progress.jsonl"
-                broken_progress = "progress-error" in case
-                watchdog = "watchdog" in case
-                read_fd = None
-                progress = progress_path.open("wb")
-                if broken_progress:
-                    read_fd, write_fd = os.pipe()
-                else:
-                    write_fd = progress.fileno()
-                entered_read, entered_write = os.pipe()
-                release_read, release_write = os.pipe()
-                command = [
-                    str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(self.csv),
-                    "--objective", "metrics.all.net_profit", "--sampler", "grid",
-                    "--max-trials", "32", "--workers", "1", "--batch-size", "2",
-                    "--batch-lag", "1", "--no-improvement-trials", "1",
-                    "--int-dim", "Length", "0", "31", "1", "--input-tf", "1",
-                    "--script-tf", "5", "--bar-magnifier", "true",
-                    "--magnifier-samples", "6", "--magnifier-distribution", "triangle",
-                    "--fixed-input", "BatchPrefixTest", "1",
-                    "--fixed-input", "BatchPrefixJitter", "0",
-                    "--fixed-input", "SequenceScore", "10",
-                    "--fixed-input", "GateAtLength", "2",
-                    "--fixed-input", "GateEnteredFd", str(entered_write),
-                    "--fixed-input", "GateReleaseFd", str(release_read),
-                    "--progress-fd", str(write_fd), "--trials-file", str(trials),
-                    "--output", "/dev/full" if case == "final-error" else str(final),
-                ]
-                if watchdog:
-                    command += ["--trial-timeout-seconds", "3"]
-                if case == "deadline":
-                    command += ["--max-wall-seconds", "3"]
-                (directory / "command.json").write_text(json.dumps(command) + "\n")
-                started = time.monotonic()
-                child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                         pass_fds=(write_fd, entered_write, release_read))
-                os.close(entered_write)
-                os.close(release_read)
-                if broken_progress:
-                    os.close(write_fd)
-                stdout = stderr = None
-                admission = {"admitted": False}
-                try:
-                    observed = b""
-                    entered = False
-                    while not entered or observed.count(b"\n") < 2:
-                        if child.poll() is not None or time.monotonic() - started >= 1.5:
-                            raise AdmissionError("active trial gate and first batch not admitted")
-                        if not entered and select.select([entered_read], [], [], 0.005)[0]:
-                            entered = os.read(entered_read, 1) == b"G"
-                        if read_fd is None:
-                            observed = progress_path.read_bytes()
-                            time.sleep(0.005)
-                        elif select.select([read_fd], [], [], 0.005)[0]:
-                            observed += os.read(read_fd, 65536)
-                    rows = [json.loads(line) for line in observed.splitlines()]
+                self.stop_and_failure_precedence(case)
+
+    @retry_expired_admission
+    def stop_and_failure_precedence(self, case, *, product_seconds, attempt):
+        directory = self.directory / f"{case}-attempt{attempt}"
+        directory.mkdir()
+        final = directory / "final.json"
+        trials = directory / "trials.jsonl"
+        progress_path = directory / "progress.jsonl"
+        broken_progress = "progress-error" in case
+        watchdog = "watchdog" in case and bool(product_seconds)
+        read_fd = None
+        progress = progress_path.open("wb")
+        if broken_progress:
+            read_fd, write_fd = os.pipe()
+        else:
+            write_fd = progress.fileno()
+        entered_read, entered_write = os.pipe()
+        release_read, release_write = os.pipe()
+        command = [
+            str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(self.csv),
+            "--objective", "metrics.all.net_profit", "--sampler", "grid",
+            "--max-trials", "32", "--workers", "1", "--batch-size", "2",
+            "--batch-lag", "1", "--no-improvement-trials", "1",
+            "--int-dim", "Length", "0", "31", "1", "--input-tf", "1",
+            "--script-tf", "5", "--bar-magnifier", "true",
+            "--magnifier-samples", "6", "--magnifier-distribution", "triangle",
+            "--fixed-input", "BatchPrefixTest", "1",
+            "--fixed-input", "BatchPrefixJitter", "0",
+            "--fixed-input", "SequenceScore", "10",
+            "--fixed-input", "GateAtLength", "2",
+            "--fixed-input", "GateEnteredFd", str(entered_write),
+            "--fixed-input", "GateReleaseFd", str(release_read),
+            "--progress-fd", str(write_fd), "--trials-file", str(trials),
+            "--output", "/dev/full" if case == "final-error" else str(final),
+        ]
+        if watchdog:
+            command += ["--trial-timeout-seconds", str(product_seconds)]
+        if case == "deadline" and product_seconds:
+            command += ["--max-wall-seconds", str(product_seconds)]
+        (directory / "command.json").write_text(json.dumps(command) + "\n")
+        started = time.monotonic()
+        with (directory / "stdout").open("wb") as out, (
+                directory / "stderr").open("wb") as err:
+            child = subprocess.Popen(command, stdout=out, stderr=err,
+                                     pass_fds=(write_fd, entered_write, release_read))
+        os.close(entered_write)
+        os.close(release_read)
+        if broken_progress:
+            os.close(write_fd)
+        stdout = stderr = None
+        admission = {"admitted": False, "product_seconds": product_seconds}
+        try:
+            observed = b""
+            entered = False
+            entered_eof = False
+            while True:
+                if not entered and not entered_eof and select.select(
+                        [entered_read], [], [], 0.005)[0]:
+                    token = os.read(entered_read, 1)
+                    if token and token != b"G":
+                        raise AdmissionError("invalid active-trial gate marker")
+                    entered = token == b"G"
+                    entered_eof = not token
+                if read_fd is None:
+                    observed = progress_path.read_bytes()
+                    time.sleep(0.005)
+                elif select.select([read_fd], [], [], 0.005)[0]:
+                    observed += os.read(read_fd, 65536)
+                if child.poll() is not None:
+                    stdout, stderr = wait_for_output(child, directory)
+                    if watchdog or (case == "deadline" and product_seconds):
+                        self.expired_before_admission(
+                            child, stdout, "trial_timeout" if watchdog else "deadline",
+                            time.monotonic() - started)
+                    raise AdmissionError("child exited before active trial and first batch")
+                if entered and observed.count(b"\n") >= 2:
+                    # The blocked trial must leave exactly two terminal rows.
+                    # A watchdog's extra row is an expiry, not successful admission.
+                    lines = observed.splitlines(keepends=True)
+                    if len(lines) > 2:
+                        if watchdog:
+                            stdout, stderr = wait_for_output(child, directory)
+                            self.expired_before_admission(
+                                child, stdout, "trial_timeout", time.monotonic() - started)
+                        raise AdmissionError("active gate emitted more than two terminal records")
+                    rows = [json.loads(line) for line in lines]
                     if [row["trial_id"] for row in rows] != [0, 1] or any(
                             row["status"] != "ok" for row in rows):
+                        if watchdog and any(row["status"] == "trial_timeout" for row in rows):
+                            stdout, stderr = wait_for_output(child, directory)
+                            self.expired_before_admission(
+                                child, stdout, "trial_timeout", time.monotonic() - started)
                         raise AdmissionError("gate control did not produce two genuine terminals")
-                    admitted_at = time.monotonic()
-                    admission.update(admitted=True, admitted_seconds=admitted_at - started,
-                                     gated_candidate=2, terminal_ids=[0, 1])
-                    if broken_progress:
-                        progress.write(observed)
-                        progress.flush()
-                        os.close(read_fd)
-                        read_fd = None
-                    elif case.startswith("cancel"):
-                        child.send_signal(signal.SIGINT if case == "cancel-int"
-                                          else signal.SIGTERM)
-                    elif case == "deadline":
-                        # The first batch predates admission; keep trial 2 active
-                        # across the actual deadline, then allow it to complete.
-                        time.sleep(max(0, admitted_at + 3.2 - time.monotonic()))
-                    if not watchdog:
-                        os.write(release_write, b"R")
-                    admission["intervention_seconds"] = time.monotonic() - started
-                    stdout, stderr = child.communicate(timeout=8)
-                finally:
-                    if child.poll() is None:
-                        child.kill()
-                        child.wait()
-                    if read_fd is not None:
-                        os.close(read_fd)
-                    os.close(entered_read)
-                    os.close(release_write)
-                    progress.close()
-                    if stdout is None:
-                        stdout, stderr = child.communicate(timeout=2)
-                    (directory / "stdout").write_bytes(stdout)
-                    (directory / "stderr").write_bytes(stderr)
-                    (directory / "process.json").write_text(json.dumps({
-                        "returncode": child.returncode, "wall_seconds": time.monotonic() - started,
-                    }) + "\n")
-                    (directory / "admission.json").write_text(json.dumps(admission) + "\n")
-                result = json.loads(stdout)
-                expected_exit = 3 if watchdog else 1 if "error" in case else 0
-                self.assertEqual(child.returncode, expected_exit, stderr)
-                if "error" in case:
-                    self.assertEqual(result["failure"]["code"], "hpo_output_io_failed")
-                    self.assertEqual(result["failure"]["exit_code"], expected_exit)
-                if case == "final-error":
-                    # The final sink failed only after all reserved trials drained.
-                    self.assertEqual(len(trials.read_bytes().splitlines()), 4)
-                    continue
-                self.assertEqual(final.read_bytes(), stdout)
-                self.assertEqual(result["early_stop"]["trigger_trial_id"], 1)
-                self.assertEqual(result["early_stop"]["reference_scope"], "part")
-                self.assertEqual(result["stop_reason"], "trial_timeout" if watchdog else
-                                 "deadline" if case == "deadline" else "cancelled")
-                if watchdog:
-                    self.assertEqual(sum(row["status"] == "trial_timeout"
-                                         for row in result["trials"]), 1)
-                    self.assertLess(time.monotonic() - started, 8)
+                    break
+            admitted_at = time.monotonic()
+            admission.update(admitted=True, admitted_seconds=admitted_at - started,
+                             gated_candidate=2, terminal_ids=[0, 1])
+            # The marker/records ended admission, without a clock cutoff. A
+            # consumed feature period only requests another attempt, never RED.
+            retry_for_budget = (product_seconds and (watchdog or case == "deadline")
+                                and admitted_at - started >= product_seconds)
+            if retry_for_budget:
+                admission["retry_reason"] = "feature period consumed before admission"
+            if broken_progress and not retry_for_budget:
+                progress.write(observed)
+                progress.flush()
+                os.close(read_fd)
+                read_fd = None
+            elif case.startswith("cancel"):
+                child.send_signal(signal.SIGINT if case == "cancel-int"
+                                  else signal.SIGTERM)
+            elif case == "deadline" and product_seconds and not retry_for_budget:
+                # The first batch predates admission; keep trial 2 active
+                # across the actual deadline, then allow it to complete.
+                time.sleep(max(0, admitted_at + product_seconds + 0.2 - time.monotonic()))
+            if not watchdog:
+                os.write(release_write, b"R")
+            admission["intervention_seconds"] = time.monotonic() - started
+            stdout, stderr = wait_for_output(child, directory)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+            if read_fd is not None:
+                os.close(read_fd)
+            os.close(entered_read)
+            os.close(release_write)
+            progress.close()
+            if stdout is None:
+                stdout, stderr = wait_for_output(child, directory)
+            (directory / "stdout").write_bytes(stdout)
+            (directory / "stderr").write_bytes(stderr)
+            (directory / "process.json").write_text(json.dumps({
+                "returncode": child.returncode, "wall_seconds": time.monotonic() - started,
+            }) + "\n")
+            (directory / "admission.json").write_text(json.dumps(admission) + "\n")
+        result = json.loads(stdout)
+        # A watchdog can expire between admission and closing the progress pipe.
+        # With no output failure, an intervention after its period proves no
+        # precedence ordering. Validate that expiry and retry instead of RED.
+        if (watchdog and broken_progress and "failure" not in result
+                and admission["intervention_seconds"] >= product_seconds):
+            retry_for_budget = True
+            admission["retry_reason"] = "feature period consumed before intervention"
+            (directory / "admission.json").write_text(json.dumps(admission) + "\n")
+        if retry_for_budget:
+            self.assertEqual(final.read_bytes(), stdout)
+            if watchdog:
+                self.expired_before_admission(
+                    child, stdout, "trial_timeout", time.monotonic() - started)
+            self.assertEqual(child.returncode, 0, stderr)
+            self.assertNotIn("failure", result)
+            self.assertIn(result["stop_reason"], {"deadline", "no_improvement"})
+            self.assertEqual(result["early_stop"]["trigger_trial_id"], 1)
+            rows = result["trials"]
+            self.assertIn(len(rows), (3, 4))
+            self.assertEqual(result["trials_completed"], len(rows))
+            self.assertEqual([row["trial_id"] for row in rows], list(range(len(rows))))
+            self.assertTrue(all(row["status"] == "ok" for row in result["trials"]))
+            raise AdmissionExpired(time.monotonic() - started)
+        expected_exit = 3 if watchdog else 1 if "error" in case else 0
+        self.assertEqual(child.returncode, expected_exit, stderr)
+        if "error" in case:
+            self.assertEqual(result["failure"]["code"], "hpo_output_io_failed")
+            self.assertEqual(result["failure"]["exit_code"], expected_exit)
+        if case == "final-error":
+            # The final sink failed only after all reserved trials drained.
+            self.assertEqual(len(trials.read_bytes().splitlines()), 4)
+            return
+        self.assertEqual(final.read_bytes(), stdout)
+        self.assertEqual(result["early_stop"]["trigger_trial_id"], 1)
+        self.assertEqual(result["early_stop"]["reference_scope"], "part")
+        expected_stop = ("trial_timeout" if watchdog else
+                         "deadline" if case == "deadline" and product_seconds else
+                         "no_improvement" if not product_seconds and not broken_progress else
+                         "cancelled")
+        self.assertEqual(result["stop_reason"], expected_stop)
+        if watchdog:
+            # Trial 2 received no release byte before the child exited.
+            # Exiting with its timeout record proves the worker was not joined.
+            self.assertEqual(sum(row["status"] == "trial_timeout"
+                                 for row in result["trials"]), 1)
+        return admitted_at - started
 
 
 if __name__ == "__main__":
@@ -878,8 +1047,8 @@ if __name__ == "__main__":
     skips = [{"test": test.id(), "reason": reason} for test, reason in program.result.skipped]
     print("NO_IMPROVEMENT_SKIP_SUMMARY " + json.dumps({
         "total": len(skips),
-        "late_reader_capability": sum(item["reason"].startswith("late-reader capability unavailable:")
-                                      for item in skips),
+        "late_reader_capability": sum(
+            item["reason"].startswith("late-reader capability unavailable:") for item in skips),
         "supplied_reference": sum(item["reason"].startswith("supplied reference unavailable:")
                                   for item in skips),
         "skips": skips,

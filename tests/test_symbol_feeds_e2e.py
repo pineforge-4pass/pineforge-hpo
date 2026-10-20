@@ -129,7 +129,7 @@ if selected <= open
     (directory / "input-kinds-manifest.json").write_text(json.dumps(manifest, indent=2))
     types = {item["title"]: item["type"] for item in manifest["inputs"]}
     require(types["Source"] == "source" and types["Side"] == "enum", types)
-    result = subprocess.run(command, capture_output=True, timeout=180)
+    result = subprocess.run(command, capture_output=True)
     require(result.returncode == 0, result.stderr.decode())
     trials = json.loads(result.stdout)["trials"]
     require(
@@ -142,7 +142,7 @@ if selected <= open
     require({trial["parameters"]["Side"] for trial in trials} == {0, 1}, trials)
     (directory / "input-kinds-result.json").write_bytes(result.stdout)
     print(
-        "PASS input.source/input.enum: real v1.2.0 artifact, Python + native, 12 trials",
+        "PASS input.source/input.enum: real v1.6.2-rc.1 artifact, Python + native, 12 trials",
         flush=True,
     )
 
@@ -155,7 +155,7 @@ if selected <= open
         directory / "cache",
         native=args.native,
     )
-    unknown = subprocess.run(unknown_command, capture_output=True, timeout=180)
+    unknown = subprocess.run(unknown_command, capture_output=True)
     require(
         unknown.returncode == 0 and unknown.stdout == result.stdout,
         unknown.stderr.decode(),
@@ -172,7 +172,7 @@ if selected <= open
         directory / "cache",
         native=args.native,
     )
-    symbol_free = subprocess.run(symbol_free_command, capture_output=True, timeout=180)
+    symbol_free = subprocess.run(symbol_free_command, capture_output=True)
     require(symbol_free.returncode == 0, symbol_free.stderr.decode())
     manifest.pop("input_kind_schema")
     manifest_path.write_text(json.dumps(manifest))
@@ -192,7 +192,7 @@ if selected <= open
         require("codegen version unknown" in str(error), str(error))
     else:
         raise AssertionError("Python accepted an unstamped manifest")
-    refused = subprocess.run(symbol_free_command, capture_output=True, timeout=30)
+    refused = subprocess.run(symbol_free_command, capture_output=True)
     require(
         refused.returncode == 1
         and b"manifest not stamped kind-capable" in refused.stderr
@@ -203,6 +203,234 @@ if selected <= open
     print(
         "PASS unknown codegen: stamped symbol-free metadata accepted; "
         "unstamped manifest refused in both frontends",
+        flush=True,
+    )
+
+
+def enum_subset_probe(args, directory, document):
+    """An enum declared with more members than it offers as input options.
+
+    `enum Side {neutral, long, short}` with `options=[Side.long, Side.short]`
+    declares the ordinals 1 and 2, so the choices are 1 and 2 and the gap index
+    0 is a member's index that no option names.
+    """
+    from pineforge_hpo.cli import CliError, prepare_run
+
+    source = directory / "enum-subset.pine"
+    source.write_text("""//@version=6
+strategy("Enum subset HPO", initial_capital=100000)
+enum Side
+    neutral
+    long
+    short
+selected = input.source(close, "Source")
+side = input.enum(Side.long, "Side", options=[Side.long, Side.short])
+mode = input.string("fast", "Mode", options=["fast", "slow"])
+other = input.symbol("BINANCE:ETHUSDT", "Other")
+if selected > open and mode == "fast"
+    if side == Side.long
+        strategy.entry("Long", strategy.long)
+    else
+        strategy.entry("Short", strategy.short)
+if selected <= open
+    strategy.close_all()
+""")
+    work = copy.deepcopy(document)
+    work.pop("symbol_feeds", None)
+    work["strategies"][0].update(
+        source=str(source),
+        fixed_inputs={"Other": "BINANCE:ETHUSDT"},
+        search_space={
+            "Source": {"kind": "categorical", "choices": ["close", "open", "hl2"]},
+            "Side": {"kind": "categorical", "choices": [1, 2]},
+            "Mode": {"kind": "categorical", "choices": ["fast", "slow"]},
+        },
+    )
+    work["sampler"].update(kind="grid", trials=12)
+    spec = directory / "enum-subset.json"
+    spec.write_text(json.dumps(work))
+    command, artifact = prepare_run(
+        spec,
+        ROOT / "external/pineforge-engine",
+        directory / "cache",
+        native=args.native,
+    )
+    (directory / "enum-subset-artifact.json").write_text(json.dumps(artifact))
+    manifest = json.loads(Path(artifact["manifest"]).read_text())
+    declared = {item["title"]: item for item in manifest["inputs"]}
+    require(
+        declared["Side"].get("type") == "enum"
+        and declared["Side"].get("options") == ["Side.long", "Side.short"],
+        declared["Side"],
+    )
+    result = subprocess.run(command, capture_output=True)
+    require(result.returncode == 0, result.stderr.decode())
+    trials = json.loads(result.stdout)["trials"]
+    require(
+        len(trials) == 12 and all(trial["status"] == "ok" for trial in trials), trials
+    )
+    require(
+        {trial["parameters"]["Source"] for trial in trials} == {"close", "open", "hl2"},
+        trials,
+    )
+    require({trial["parameters"]["Side"] for trial in trials} == {1, 2}, trials)
+    (directory / "enum-subset-result.json").write_bytes(result.stdout)
+    print(
+        "PASS input.enum options subset: real v1.6.2-rc.1 artifact, Python + native, "
+        "12 trials, ordinals 1 and 2",
+        flush=True,
+    )
+
+    # The same artifact, reached as a precompiled one, with the gap index 0 as a
+    # choice. 0 is a member's index but not one of the selected options'
+    # ordinals, so the study is refused before any trial: prepare_run launches
+    # nothing and returns no command, and the refusal names the choice, the
+    # failure code and the input.
+    work["strategies"][0].pop("source")
+    work["strategies"][0]["artifact"] = artifact["plugin"]
+    work["strategies"][0]["search_space"]["Side"] = {
+        "kind": "categorical",
+        "choices": [0, 1],
+    }
+    spec.write_text(json.dumps(work))
+    try:
+        prepare_run(
+            spec,
+            ROOT / "external/pineforge-engine",
+            directory / "cache",
+            native=args.native,
+        )
+    except CliError as error:
+        require(error.code == "setting_rejected", error.code)
+        require(
+            error.failure_args
+            == {
+                "entrypoint": "strategy_set_input",
+                "reason": "invalid_input_option",
+                "input": "Side",
+            },
+            error.failure_args,
+        )
+        require(
+            "search_space.Side.choices[0] is not one of the Pine input options"
+            in str(error),
+            str(error),
+        )
+    else:
+        raise AssertionError(
+            "Python accepted the subset enum's gap ordinal 0 as a search choice"
+        )
+    print(
+        "PASS input.enum options subset refusal: gap ordinal 0 refused for input "
+        "'Side' before any trial",
+        flush=True,
+    )
+
+
+def enum_tag_probe(args, directory, document):
+    """The manifest tag strings reach the native runner as the choices.
+
+    The artifact is the subset enum built above, reached as a precompiled one.
+    Its choices are the members' `Enum.member` tags, which the manifest lists as
+    the input's options; a tag needs no settings receipt, so the plugin is not
+    loaded and the tags pass to the native runner unchanged.
+    """
+    from pineforge_hpo.cli import prepare_run
+
+    plugin = json.loads(
+        (directory / "enum-subset-artifact.json").read_text(encoding="utf-8")
+    )["plugin"]
+    work = copy.deepcopy(document)
+    work.pop("symbol_feeds", None)
+    work["strategies"][0].pop("source")
+    work["strategies"][0].update(
+        artifact=plugin,
+        fixed_inputs={},
+        search_space={
+            "Side": {"kind": "categorical", "choices": ["Side.long", "Side.short"]},
+        },
+    )
+    work["sampler"].update(kind="grid", trials=12)
+    spec = directory / "enum-tag.json"
+    spec.write_text(json.dumps(work))
+    command, _ = prepare_run(
+        spec,
+        ROOT / "external/pineforge-engine",
+        directory / "cache",
+        native=args.native,
+    )
+    result = subprocess.run(command, capture_output=True)
+    require(result.returncode == 0, result.stderr.decode())
+    trials = json.loads(result.stdout)["trials"]
+    require(
+        len(trials) <= 12 and all(trial["status"] == "ok" for trial in trials), trials
+    )
+    require(
+        {trial["parameters"]["Side"] for trial in trials}
+        == {"Side.long", "Side.short"},
+        trials,
+    )
+    (directory / "enum-tag-result.json").write_bytes(result.stdout)
+    print(
+        "PASS input.enum tag strings: real v1.6.2-rc.1 artifact, Python + native, "
+        "tag choices reach the runner",
+        flush=True,
+    )
+
+
+def enum_bare_member_probe(args, directory, document):
+    """A bare member name is not a manifest tag, so the study is refused.
+
+    The artifact is the subset enum built above, reached as a precompiled one.
+    `long` is the member's name but not one of the input's `options`, which are
+    the `Enum.member` tags, so it is refused before any trial.
+    """
+    from pineforge_hpo.cli import CliError, prepare_run
+
+    plugin = json.loads(
+        (directory / "enum-subset-artifact.json").read_text(encoding="utf-8")
+    )["plugin"]
+    work = copy.deepcopy(document)
+    work.pop("symbol_feeds", None)
+    work["strategies"][0].pop("source")
+    work["strategies"][0].update(
+        artifact=plugin,
+        fixed_inputs={},
+        search_space={
+            "Side": {"kind": "categorical", "choices": ["long"]},
+        },
+    )
+    work["sampler"].update(kind="grid", trials=2)
+    spec = directory / "enum-bare-member.json"
+    spec.write_text(json.dumps(work))
+    try:
+        prepare_run(
+            spec,
+            ROOT / "external/pineforge-engine",
+            directory / "cache",
+            native=args.native,
+        )
+    except CliError as error:
+        require(error.code == "setting_rejected", error.code)
+        require(
+            error.failure_args
+            == {
+                "entrypoint": "strategy_set_input",
+                "reason": "invalid_input_option",
+                "input": "Side",
+            },
+            error.failure_args,
+        )
+        require(
+            "search_space.Side.choices[0] is not one of the Pine input options"
+            in str(error),
+            str(error),
+        )
+    else:
+        raise AssertionError("Python accepted a bare enum member name as a choice")
+    print(
+        "PASS input.enum bare member: 'long' refused for input 'Side' before any "
+        "trial",
         flush=True,
     )
 
@@ -249,7 +477,7 @@ if selected <= open
     (directory / "symbol-free-strings-manifest.json").write_text(
         json.dumps(manifest, indent=2)
     )
-    result = subprocess.run(command, capture_output=True, timeout=180)
+    result = subprocess.run(command, capture_output=True)
     require(result.returncode == 0, result.stderr.decode())
     trials = json.loads(result.stdout)["trials"]
     require(
@@ -263,7 +491,7 @@ if selected <= open
     )
     (directory / "symbol-free-strings-result.json").write_bytes(result.stdout)
     print(
-        "PASS symbol-free input.string/input.timeframe: real v1.2.0 artifact, "
+        "PASS symbol-free input.string/input.timeframe: real v1.6.2-rc.1 artifact, "
         "Python + native, 8 trials, no input kinds",
         flush=True,
     )
@@ -298,7 +526,7 @@ if selected <= open
             raise AssertionError(
                 "Python let an unrelated kind vouch for a string input"
             )
-        refused = subprocess.run(command, capture_output=True, timeout=30)
+        refused = subprocess.run(command, capture_output=True)
         require(
             refused.returncode == 1
             and refusal.encode() in refused.stderr
@@ -329,7 +557,7 @@ if selected <= open
         require(str(error) == message, str(error))
     else:
         raise AssertionError("Python accepted an unknown manifest input type")
-    refused = subprocess.run(command, capture_output=True, timeout=30)
+    refused = subprocess.run(command, capture_output=True)
     require(
         refused.returncode == 1
         and message.encode() in refused.stderr
@@ -455,6 +683,9 @@ if eth4 < threshold or eth4 <= ethD
         native=args.native,
     )
     input_metadata_probe(args, directory, document)
+    enum_subset_probe(args, directory, document)
+    enum_tag_probe(args, directory, document)
+    enum_bare_member_probe(args, directory, document)
     symbol_free_string_probe(args, directory, document)
     command += ["--syminfo", str(syminfo)]
     manifest = json.loads(Path(artifact["manifest"]).read_text())
@@ -502,7 +733,6 @@ if eth4 < threshold or eth4 <= ethD
             str(refused_trials),
         ],
         capture_output=True,
-        timeout=30,
     )
     require(
         refused.returncode == 1
@@ -513,10 +743,10 @@ if eth4 < threshold or eth4 <= ethD
         refused.stderr.decode(),
     )
     print(
-        "PASS D7: real codegen v1.2.0 input.symbol artifact refused by Python and native",
+        "PASS D7: real codegen v1.6.2-rc.1 input.symbol artifact refused by Python and native",
         flush=True,
     )
-    run = subprocess.run(command, capture_output=True, timeout=180)
+    run = subprocess.run(command, capture_output=True)
     require(run.returncode == 0, run.stderr.decode())
     (directory / "hpo.json").write_bytes(run.stdout)
     result = json.loads(run.stdout)
@@ -535,7 +765,6 @@ if eth4 < threshold or eth4 <= ethD
                 str(native_dir),
             ],
             capture_output=True,
-            timeout=60,
         )
         require(probe.returncode == 0, probe.stderr.decode())
         canonical = subprocess.run(
@@ -563,7 +792,6 @@ if eth4 < threshold or eth4 <= ethD
                 str(index),
             ],
             capture_output=True,
-            timeout=60,
         )
         require(canonical.returncode == 0, canonical.stderr.decode())
         (oracle_dir / "report.json").write_bytes(canonical.stdout)

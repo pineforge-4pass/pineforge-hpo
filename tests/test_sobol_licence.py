@@ -2,7 +2,10 @@
 """Licence and packaging proofs for the vendored Joe-Kuo Sobol direction numbers.
 Usage: test_sobol_licence.py REPOSITORY_ROOT [unittest arguments].
 
-UNEXECUTED until the proof phase. Static part (always): the vendored table and licence hash to the
+The documented sealed 48-stage Sobol proof includes the static vendored-table, licence and notice
+checks, while inspection of a built source distribution or wheel requires supplied artifacts and its
+own recorded package-test invocation.
+Static part (always): the vendored table and licence hash to the
 pinned values, the licence copy in THIRD_PARTY_LICENSES is byte-identical, NOTICE carries the
 attribution and the no-endorsement sentence, pyproject.toml lists the licence in license-files,
 and no `sobol.cc` file is in the tree. Package part (only when built packages are supplied):

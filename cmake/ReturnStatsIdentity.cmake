@@ -24,7 +24,9 @@
 #
 # Only per-source properties of SOURCES are written, plus the compile-commands export: the cache
 # variable CMAKE_EXPORT_COMPILE_COMMANDS when the project left it undefined, and the per-target
-# EXPORT_COMPILE_COMMANDS property of TARGET whenever the database is on. Target-wide options,
+# EXPORT_COMPILE_COMMANDS property of TARGET whenever the database is on. Each consumer also gets
+# a dependency on the generation target and the per-configuration output directory as a private
+# include directory. Target-wide options,
 # target-wide definitions, CMAKE_CXX_FLAGS and the checked-in numeric flag recipe are never
 # modified, so the TPE checkpoint identity cannot move.
 #

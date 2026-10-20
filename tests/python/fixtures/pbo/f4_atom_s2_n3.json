@@ -1,0 +1,9 @@
+{
+  "description": "F4, the lambda = 0 atom: S=2, N=3 (odd). Every block holds the 2 intervals (m-1, m+1), so count=2, sum=2m, m2=2, and the ranking statistic of a one-block half is m/sqrt(2). Block means (block 0, block 1): trial 0 = (5, 2), trial 1 = (1, 3), trial 2 = (3, 1). Hand count in tests/python/test_pbo.py.",
+  "S": 2,
+  "rows": [
+    {"trial_id": 0, "status": "ok", "block_returns": {"status": "ok", "count": [2, 2], "sum": [10.0, 4.0], "m2": [2.0, 2.0]}},
+    {"trial_id": 1, "status": "ok", "block_returns": {"status": "ok", "count": [2, 2], "sum": [2.0, 6.0], "m2": [2.0, 2.0]}},
+    {"trial_id": 2, "status": "ok", "block_returns": {"status": "ok", "count": [2, 2], "sum": [6.0, 2.0], "m2": [2.0, 2.0]}}
+  ]
+}

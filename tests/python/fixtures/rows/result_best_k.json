@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "space_hash_version": 1,
+  "space_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "space": {"parameters": {"Fast": {"kind": "integer", "low": 2, "high": 10, "step": 2, "log": false}, "Flag": {"kind": "boolean"}, "Mode": {"kind": "categorical", "choices": ["ema", "sma", "wma"]}}, "objective": {"expression": "metrics.all.net_profit_pct", "direction": "maximize", "constraints": []}},
+  "direction": "maximize",
+  "trials_completed": 1,
+  "trials_out": "best-k",
+  "best_k": 1,
+  "trials": [
+    {"trial_id": 5, "status": "ok", "feasible": true, "objective": 10.5, "backtest": {"input_bars_processed": 1000, "script_bars_processed": 1000, "input_tf_seconds": 3600, "script_tf_seconds": 3600}, "parameters": {"Fast": 8, "Flag": true, "Mode": "sma"}, "metrics": {"metrics.all.net_profit_pct": 10.5}, "space_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+  ]
+}

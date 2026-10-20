@@ -6,7 +6,9 @@ computed the statistics. This note describes how the identifier is produced, wha
 normalization rule that makes it location independent, when it is deliberately unavailable, and
 how to wire it into the root build. Contract string: `pineforge-hpo-return-stats/v1`.
 
-Status: the helper, the generator and their tests have not been configured, built or run yet.
+Status: the helper, the generator and their tests had not been configured, built or run when this
+note was written. A sealed 48-stage run has since executed the return statistics (manifest sha256
+ee8f77c684bd7c38a9231029b5a99c2cd36f9a596ddf726c5845869d4813390c).
 Every statement below describes intended behaviour; it is confirmed only by the build-and-test
 proof listed at the end of this note.
 
@@ -157,8 +159,10 @@ directory or named like the generated header, so the identity cannot hash itself
 
 The helper writes only per-source properties of `SOURCES` (`COMPILE_OPTIONS`,
 `COMPILE_DEFINITIONS`, `SKIP_UNITY_BUILD_INCLUSION`, `SKIP_PRECOMPILE_HEADERS`), the
-`CMAKE_EXPORT_COMPILE_COMMANDS` cache entry when it is undefined and, when that switch is on, the
-per-target `EXPORT_COMPILE_COMMANDS` property of `TARGET`. It never calls
+`CMAKE_EXPORT_COMPILE_COMMANDS` cache entry when it is undefined, the per-target
+`EXPORT_COMPILE_COMMANDS` property of `TARGET` when that switch is on, and each consumer gets a
+dependency on the generation target and the per-configuration output directory as a private
+include directory. It never calls
 `target_compile_options`, `target_compile_definitions` or `add_compile_options`, and it never
 assigns `CMAKE_CXX_FLAGS`, so the target-wide flags that the numeric flag recipe hashes for the
 TPE checkpoint identity stay byte-identical. With CMake 3.19 or newer the ingredients are written
@@ -243,7 +247,7 @@ if(dlib_SOURCE_DIR)
 endif()
 ```
 
-## Proof still owed
+## Proof plan
 
 The identity test checks the build binding and the normalization rule. These stay independent
 requirements and are not replaced by it:

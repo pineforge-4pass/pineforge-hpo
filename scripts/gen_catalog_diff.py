@@ -1,4 +1,12 @@
-"""Generate, check, or release-stamp the HPO failure catalog's immutable diff."""
+"""Generate, check, or release-stamp the HPO failure catalog's immutable diff.
+
+Release versions are N.N.N or N.N.NrcM, with no leading zeros and M at least 1.
+Alpha and beta versions are not supported.
+
+Baseline rule: every target uses the last final release tag merged into HEAD
+whose N.N.N core is strictly older than the target's core. Release candidates
+are never baselines, including for later candidates or the final of that version.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +23,10 @@ CATALOG = "python/pineforge_hpo/hpo_failure_codes.json"
 OUTPUT = "python/pineforge_hpo/hpo_failure_codes_diff.json"
 SCHEMA = "pineforge-hpo-failure-catalog/v1"
 DIFF_SCHEMA = "pineforge-hpo-failure-catalog-diff/v1"
-VERSION = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+VERSION = re.compile(
+    r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:rc([1-9][0-9]*))?"
+)
 CODE = re.compile(r"[a-z][a-z0-9_]{2,47}")
 
 
@@ -26,10 +37,15 @@ def git(repo: Path, *arguments: str) -> bytes:
 
 
 def version_key(tag: str) -> tuple[int, ...]:
-    match = VERSION.fullmatch(tag)
+    match = VERSION.fullmatch(tag if tag.startswith("v") else "v" + tag)
     if match is None:
-        raise ValueError(f"not a release tag: {tag}")
-    return tuple(map(int, match.groups()))
+        raise ValueError(
+            f"not a release version: {tag}; expected N.N.N or N.N.NrcM "
+            "(M >= 1; no leading zeros)"
+        )
+    major, minor, patch = map(int, match.group(1, 2, 3))
+    rc = match.group(4)
+    return major, minor, patch, 1 if rc is None else 0, int(rc) if rc else 0
 
 
 def sha256(payload: bytes | None) -> str | None:
@@ -206,7 +222,12 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 "no pinned baseline; supply --from-tag to initialize the diff"
             )
-        version_key(previous)
+        previous_key = version_key(previous)
+        if not VERSION.fullmatch(previous) or previous_key[3] != 1:
+            raise ValueError(
+                "baselines are final releases; --from-tag and stored from.tag "
+                "must be tags in the form vN.N.N"
+            )
         try:
             git(repo, "rev-parse", "--verify", f"refs/tags/{previous}^{{commit}}")
         except subprocess.CalledProcessError:
@@ -220,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"baseline tag {previous} is not an ancestor of HEAD; "
                 "choose a merged release tag"
             ) from None
-        if release is not None and version_key("v" + release) <= version_key(previous):
+        if release is not None and version_key("v" + release) <= previous_key:
             raise ValueError("target version must be newer than the previous release")
         if release is not None or not args.check:
             target = version_key("v" + release) if release is not None else None
@@ -229,7 +250,8 @@ def main(argv: list[str] | None = None) -> int:
                 tag
                 for tag in tags
                 if VERSION.fullmatch(tag)
-                and (target is None or version_key(tag) < target)
+                and version_key(tag)[3] == 1
+                and (target is None or version_key(tag)[:3] < target[:3])
             ]
             latest = max(releases, key=version_key)
             if previous != latest:

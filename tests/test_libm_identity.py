@@ -141,7 +141,7 @@ def main():
             if parent:
                 command += ["--warm-start", str(parent)]
             process = subprocess.run(
-                command, capture_output=True, text=True, env=environment, timeout=30
+                command, capture_output=True, text=True, env=environment
             )
             require(
                 process.returncode == 0, f"{dimensions}/{function}: {process.stderr}"

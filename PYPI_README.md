@@ -19,7 +19,7 @@ execution is not implemented yet.
 
 The optional direct-PineScript bridge uses the separately distributed
 `pineforge-codegen` package from the `pineforge-codegen-oss` repository. The
-`transpile` extra admits any 1.x release; install the one whose version matches
+`transpile` extra admits codegen 1.1 to 1.3 (below 1.4); install the one whose version matches
 your PineForge engine (for example `pineforge-codegen==1.0.0` with engine v1.0.0).
 A precompiled PineForge strategy plugin can be optimized without installing that
 transpiler.
@@ -28,7 +28,7 @@ transpiler.
 
 Starting with v0.11.0, original code is source-available under the
 [PineForge Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
-The `LICENSE` file is the controlling text; the licensor is pineforge, LLC.
+The `LICENSE` file is the controlling text; the licensor is PINEFORGE LLC.
 Noncommercial use and Personal Trading are free. Investment management (except
 Personal Trading) and other Commercial Use require a commercial license from
 <https://license.pineforge.dev>. One commercial license covers both codegen and HPO.

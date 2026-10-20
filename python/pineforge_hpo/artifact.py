@@ -269,7 +269,9 @@ class _KeyLock(AbstractContextManager["_KeyLock"]):
                     self._handle.close()
                     self._handle = None
                     raise ArtifactBuildError(
-                        "cache", f"timed out waiting for artifact lock: {self.path}"
+                        "cache",
+                        f"timed out waiting for artifact lock: {self.path}. "
+                        "A lock that never frees is a deadlock to report.",
                     )
                 time.sleep(0.05)
 
@@ -292,7 +294,12 @@ class _KeyLock(AbstractContextManager["_KeyLock"]):
 
 
 class ArtifactBuilder:
-    """Transpile and compile a Pine strategy once per compatible request identity."""
+    """Transpile and compile a Pine strategy once per compatible request identity.
+
+    Compilation has no time limit by default. Set ``compile_timeout_seconds`` to
+    a positive number to limit it; ``None`` means no limit. Artifact lock waits
+    default to 120 seconds; a lock that never frees is a deadlock to report.
+    """
 
     def __init__(
         self,
@@ -303,7 +310,7 @@ class ArtifactBuilder:
         eigen_include: str | os.PathLike[str] | None = None,
         plugin_validator: Callable[[Path, int], Mapping[str, Any]] | None = None,
         lock_timeout_seconds: float = 120.0,
-        compile_timeout_seconds: float = 300.0,
+        compile_timeout_seconds: float | None = None,
     ) -> None:
         self.engine_root = Path(engine_root).expanduser().resolve()
         self.cache_dir = (
@@ -324,7 +331,10 @@ class ArtifactBuilder:
     def build(self, pine_source: str, *, filename: str = "<input>") -> StrategyArtifact:
         if not isinstance(pine_source, str):
             raise TypeError("pine_source must be a string")
-        if self.lock_timeout_seconds <= 0 or self.compile_timeout_seconds <= 0:
+        if self.lock_timeout_seconds <= 0 or (
+            self.compile_timeout_seconds is not None
+            and self.compile_timeout_seconds <= 0
+        ):
             raise ArtifactBuildError("configuration", "build timeouts must be positive")
 
         engine = self._resolve_engine_layout()

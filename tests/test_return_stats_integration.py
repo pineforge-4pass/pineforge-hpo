@@ -4,7 +4,14 @@
 Usage: test_return_stats_integration.py NATIVE PLUGIN BUILD_DIR SOURCE_DIR ENGINE_ROOT DLIB_SOURCE
        [unittest arguments]
 
-UNEXECUTED until the proof phase. It is slow and serial: it rebuilds the real reducer object with
+The sealed 48-stage legacy return-statistics proof recorded in CHANGELOG.md and
+docs/internal/methods-cx-wire.md covers the Python forwarding, fake-plugin CLI and
+reducer-identity integration controls on its recorded builds (the by-hand canonical-curve gate
+tests/test_return_stats_e2e.py has no recorded result in this tree), with numerical comparisons limited
+to their stated domain, scale and bounds, launcher/response-file/old-CMake cases limited to
+synthetic-database checks, pinned references required for OFF-byte claims, no cost or unmeasured
+cross-build equality claim, and later numeric identities requiring separate validation.
+It is slow and serial: it rebuilds the real reducer object with
 a verbose build and configures (and for the first case builds) fresh trees of the whole project.
 With PFH_REQUIRE_RETURN_STATS_IDENTITY=1 (the proof configuration) an unbound main build is a
 failure instead of a skip.
@@ -209,8 +216,7 @@ class MainBuildTests(Base):
         objects = list(BUILD.rglob("return_stats.cpp.o"))
         self.assertEqual(len(objects), 1, f"expected one reducer object: {objects}")
         objects[0].unlink()  # force the real invocation to run again
-        build = run(["cmake", "--build", str(BUILD), "--target", "pineforge_hpo_core", "--verbose"],
-                    timeout=1800)
+        build = run(["cmake", "--build", str(BUILD), "--target", "pineforge_hpo_core", "--verbose"])
         self.assertEqual(build.returncode, 0, build.stderr)
         executed = None
         for line in build.stdout.splitlines():
@@ -245,7 +251,7 @@ class MainBuildTests(Base):
         self.assertIn(f"\ncompiler.sha256={digest}\n", descriptor.decode())
         # Regenerating the identity after the rebuild must give the same descriptor.
         regenerated = run(["cmake", "--build", str(BUILD), "--target",
-                           "pineforge_hpo_core_return_stats_identity"], timeout=600)
+                           "pineforge_hpo_core_return_stats_identity"])
         self.assertEqual(regenerated.returncode, 0, regenerated.stderr)
         self.assertEqual(read_identity(BUILD)[0], descriptor)
 
@@ -254,14 +260,14 @@ class UnboundTreeTests(Base):
     def configure(self, tree: Path, *options: str):
         return run(["cmake", "-S", str(SOURCE), "-B", str(tree), "-DCMAKE_BUILD_TYPE=Release",
                     "-DPINEFORGE_HPO_BUILD_TESTS=OFF", f"-DPINEFORGE_ENGINE_ROOT={ENGINE_ROOT}",
-                    f"-DFETCHCONTENT_SOURCE_DIR_DLIB={DLIB_SOURCE}", *options], timeout=900)
+                    f"-DFETCHCONTENT_SOURCE_DIR_DLIB={DLIB_SOURCE}", *options])
 
     def test_explicit_off_tree_refuses_requests_and_keeps_ordinary_runs(self) -> None:
         tree = self.directory / "unbound"
         configured = self.configure(tree, "-DCMAKE_EXPORT_COMPILE_COMMANDS=OFF")
         self.assertEqual(configured.returncode, 0, configured.stderr)
         built = run(["cmake", "--build", str(tree), "--target", "pineforge-hpo-native", "-j",
-                     str(os.cpu_count() or 2)], timeout=3000)
+                     str(os.cpu_count() or 2)])
         self.assertEqual(built.returncode, 0, built.stderr[-4000:])
         descriptor, identity, header = read_identity(tree)
         self.assertEqual(descriptor.decode(),
@@ -275,10 +281,12 @@ class UnboundTreeTests(Base):
         # A requested run is refused before the plugin, the dataset or any output file.
         never = self.directory / "never-created.ndjson"
         for plugin in (PLUGIN, self.directory / "no-such-plugin"):
-            for metric in ("returns.bar.count", "returns.monthly.status"):
-                with self.subTest(plugin=plugin.name, metric=metric):
-                    refused = run(self.argv(unbound, "--max-trials", "2", "--record-metric",
-                                            metric, "--trials-file", never, plugin=plugin))
+            for request in (("--record-metric", "returns.bar.count"),
+                            ("--record-metric", "returns.monthly.status"),
+                            ("--pbo-blocks", "2")):
+                with self.subTest(plugin=plugin.name, request=request):
+                    refused = run(self.argv(unbound, "--max-trials", "2", *request,
+                                            "--trials-file", never, plugin=plugin))
                     self.assertEqual(refused.returncode, 1, refused.stderr)
                     failure = json.loads(refused.stdout)["failure"]
                     self.assertEqual(failure["code"], "hpo_toolchain_unavailable")
@@ -313,7 +321,7 @@ class UnboundTreeTests(Base):
         self.assertEqual(configured.returncode, 0, configured.stderr)
         configuration = "Release"  # built below and read back from its own directory
         built = run(["cmake", "--build", str(tree), "--config", configuration, "--target",
-                     "pineforge_hpo_core_return_stats_identity"], timeout=600)
+                     "pineforge_hpo_core_return_stats_identity"])
         self.assertEqual(built.returncode, 0, built.stderr)
         descriptor, identity, header = read_identity(tree, configuration)
         self.assertIn("reason=multi_config_generator\n", descriptor.decode())

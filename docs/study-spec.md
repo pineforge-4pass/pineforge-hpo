@@ -160,7 +160,7 @@ strategy receives identical immutable facts/bars/closes before running. Index/CS
 errors use `--symbol-feeds:` and identify the symbol/timeframe before terminal trial output.
 Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted).
 `input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
-Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.2.0).
+Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.6.2-rc.1).
 `input.source` and `input.enum` search dimensions are supported and cannot be symbols.
 String dimensions require the manifest-level `"input_kind_schema": 1` marker. HPO's builder
 requires a valid modern codegen `requests` list and a separate cached one-line
@@ -409,7 +409,7 @@ dataset's lifetime. The CSV loader is unchanged.
 Optional `symbol_feeds` remain CSV and can accompany a binary chart.
 
 Multi-dataset train/validation/test roles and walk-forward folds are not
-executable yet.
+executable yet. A post hoc analysis of finished per-window studies exists as a library function (`pineforge_hpo.walkforward`); v1 analyses finished studies; native in-loop walk-forward comes later.
 
 ## Objective
 
@@ -846,9 +846,11 @@ TPE config fields are strict; unknown fields are rejected:
 
 When `constant_liar=true`, parameters from outstanding requests are inserted
 only into the bad estimator. This discourages duplicate concurrent proposals
-without fabricating an objective value. The scheduler still reports completed
-results in trial-id order, so reproducibility is scoped to the same seed,
-batch size/lag, pruning policy, sampler config, and native build.
+without fabricating an objective value. With the default `batches` schedule the
+scheduler still reports completed results in trial-id order, so reproducibility is
+scoped to the same seed, batch size/lag, pruning policy, sampler config, and native
+build. A `rolling` study is not reproducible by running it again; see
+[Rolling schedule](#rolling-schedule).
 
 TPE retains and refits the complete usable history. It is intended for bounded
 adaptive refinement, not `10^6`-`10^8` trial enumeration; use an external partitioned
@@ -894,26 +896,30 @@ they cannot appear to take effect without real cancellation semantics.
 
 | Execution field | Default | Contract |
 | --- | --- | --- |
-| `batch_size` | `workers` | Positive integer, at most 1,000,000. Proposal size, not thread count. |
-| `batch_lag` | `0` | `0` commits b before proposing b+1; `1` proposes b+1 from history through b-1. |
+| `schedule` | `"batches"` | `"batches"` (the default, byte-identical to 0.12.0) or `"rolling"` (a free worker slot is refilled at once from whatever has finished; the result is NOT byte-replayable and carries `replay_contract: "rolling_completion_v1"`). See [Rolling schedule](#rolling-schedule). |
+| `batch_size` | `workers` | Positive integer, at most 1,000,000. Proposal size, not thread count. Used by `batches` only; setting it with `schedule: "rolling"` is refused. |
+| `batch_lag` | `0` | `0` commits b before proposing b+1; `1` proposes b+1 from history through b-1. Used by `batches` only; setting it with `schedule: "rolling"` is refused. |
 | `pruner` | `"none"` | `none`, `median`, or `halving`. |
 | `pruner_rungs` | `[0.25, 0.5]` | Strictly increasing fractions in (0, 1); the full window is implicit. |
 | `pruner_eta` | `2` | Integer >= 2; minimum finite history at each rung. Halving retains the best ceil(n/eta); eta=2 uses the median. |
 
-The native equivalents are `--batch-size`, `--batch-lag`, `--pruner`,
+The native equivalents are `--schedule`, `--batch-size`, `--batch-lag`, `--pruner`,
 `--pruner-rungs 0.25,0.5`, and `--pruner-eta`. Median always uses the median;
 its eta only selects history warmup. `--scheduler-stats FILE` writes timing
 diagnostics outside the fingerprinted result and has no StudySpec equivalent.
 
-For fixed provenance and explicit batch size, completed `trials[]` reproduce
-byte-for-byte with 1, 2, 4, or 8 workers. Without an explicit size, changing
+With the default `batches` schedule, for fixed provenance and explicit batch size,
+completed `trials[]` reproduce byte-for-byte with 1, 2, 4, or 8 workers. Without an explicit size, changing
 workers intentionally changes the default logical size, as in 0.1.x. Lag-one
 TPE requires constant liar enabled. Cancellation/deadline/timeout truncation and
 progress-line arrival order are not deterministic replay inputs.
 
 Pruning reruns the exact engine batch path on ceil(fraction * input bars),
 deduplicating prefixes that round to the same count. Cuts are frozen from
-committed earlier batches at that rung; ties survive. Rung scoring uses the
+committed earlier batches at that rung; ties survive. Under the `rolling`
+schedule a trial's cuts are taken from the rung scores of exactly the trials in
+its logged prefix, and the pruner is fed once per fed-back trial in
+`completion_order`. Rung scoring uses the
 study objective, and constraints apply only on the full window. A `pruned`
 trial keeps partial metrics and objective, is not feasible or a best-trial
 candidate, and consumes one trial from the requested budget. It is abandoned
@@ -934,6 +940,85 @@ choosing a timeout for a pruning-enabled study.
 
 Pruning and pipelining stay opt-in: changing feedback or cutting prefixes can
 change the best found result. See [measurements and limitations](batching.md).
+
+### Rolling schedule {#rolling-schedule}
+
+Since 0.14.0, `execution.schedule` chooses how trials are scheduled. It takes
+`"batches"` or `"rolling"`, and the default is `"batches"`.
+
+- `"batches"` is the default and stays byte-identical to 0.12.0. A study that 0.12.0
+  accepts, and that leaves `schedule` unset or sets it to `"batches"`, produces the same
+  `trials[]` bytes as 0.12.0 and the same `batch_size`, `batch_lag`, `replay_contract`
+  (`ordered_batches_v1`) and `continuation_contract` values, and its result gains no
+  rolling field. The result also records the version of the build that produced it in
+  `pineforge_hpo_version`; that value names the running release and is not part of this
+  comparison.
+- `"rolling"` keeps every worker busy. The runner first proposes up to one trial per
+  worker, with nothing finished yet. Whenever a trial finishes, the coordinator feeds its
+  result back to the sampler, if the sampler takes feedback (a tell for a feasible trial
+  with a finite objective, an abandon for any other trial), and at once proposes a new
+  trial into the freed worker slot, from whatever has finished at that moment. It does not
+  wait for a batch to end and it does not wait for earlier trial ids to finish. Proposals
+  continue until the trial budget, the search space or a stop condition ends the study.
+
+A rolling study's result is NOT byte-replayable. Running the same study again can give
+different `trials[]`, a different `completion_order`, and, when a patience rule or a time
+limit stops the study, a different number of trials. The order in which trials finish
+depends on the worker count, the load on the machine and how long each trial takes, and
+that order decides what each new proposal sees. The result says so itself: its
+`replay_contract` is `rolling_completion_v1`, never `ordered_batches_v1`. A result that
+names `ordered_batches_v1` may be relied on for the byte-replay rules in this document; a
+result that names `rolling_completion_v1` may not, and nothing promised for
+`ordered_batches_v1` applies to it.
+
+A rolling result does carry a log from which every proposal can be audited and
+re-derived:
+
+- `completion_order` (study level) lists the ids of the finished trials, each once, in
+  the exact order the coordinator fed them back.
+- `completed_before` (study level) is an array indexed by trial id: `completed_before[i]`
+  is the number of entries of `completion_order` that had been fed back when trial `i` was
+  proposed. The proposal saw exactly the first `completed_before[i]` entries of
+  `completion_order`, in that order, and nothing else; a trial that was proposed earlier
+  and was still running is not in that prefix. The completion log -- `completion_order`
+  and `completed_before` -- is complete whatever `trials_out` says, and a per-trial record
+  carries neither.
+
+For example, with two workers a run might finish trials 1, 0, 3, 2, 5 and 4, in that
+order. Its `completion_order` is `[1, 0, 3, 2, 5, 4]`, and `completed_before` is
+`[0, 0, 1, 2, 3, 4]` (indexed by trial id, trials 0 to 5). Trial 3 was proposed after
+trials 1 and 0 had finished, in that order; trial 2 was still running, so trial 3 did not
+see it.
+
+The acceptance gate for `rolling` reads only the result file. It does not compare bytes
+between runs; it audits the log and replays the proposals from it:
+
+- Audit. Every id in `completion_order` appears once and is a terminal trial of this run;
+  every id in a trial's prefix is smaller than that trial's own id; and `completed_before`
+  never decreases as the trial id increases.
+- Replay from the log. Start a fresh sampler with the same seed, search space, sampler
+  configuration and candidate policy, all recorded in the result (and the same parent
+  history, for a continuation). For each trial in id order, feed back the entries of
+  `completion_order` that its prefix adds, as a tell or an abandon exactly as above, then
+  ask for the next candidate. The candidate must reproduce the `parameters` recorded for
+  that trial. Replay needs every trial's recorded outcome, so run it on a result written
+  with `trials_out` set to `all`, which is the default.
+
+Replaying the log re-derives the recorded proposals; it does not make a second run of
+the study produce the same bytes.
+
+A study that uses the `tpe` sampler with `constant_liar` set to false is refused when
+`schedule` is `"rolling"`, as it is with `batch_lag: 1`, because every rolling proposal is
+made while other trials are still running.
+
+The statement above that a rolling study does not wait for earlier trial ids to finish has
+one qualification: with `--progress-fd` or `--trials-file`, finished trials are written in
+trial-id order, and a trial that finishes while twice the worker count of finished trials
+are already waiting to be written is held back, and so is not fed back, until the earliest
+unfinished trial finishes and the backlog is written (see [batching](batching.md)).
+
+Pruning, patience and checkpoint continuation under `rolling` follow the rules in the
+rolling-schedule section of [batching](batching.md).
 
 ### Native-only execution controls (0.2.0)
 
@@ -1024,6 +1109,9 @@ key, and search-space definition:
 | `remaining_candidates` | Finite cardinality minus unique attempted vectors; absent/null for a non-finite space. |
 | `search_space_exhausted` | Whether no unattempted vector remains in a finite space. |
 | `stop_reason` | Machine-readable reason that candidate generation stopped. |
+| `replay_contract` | `ordered_batches_v1` for the default `batches` schedule. `rolling_completion_v1` for `rolling`, whose result is NOT byte-replayable. |
+| `completion_order` | Present only when `execution.schedule` is `"rolling"`: the finished trial ids, each once, in the order they were fed back. See [Rolling schedule](#rolling-schedule). |
+| `completed_before` | Present only when `execution.schedule` is `"rolling"`: a STUDY-LEVEL array indexed by trial id; `completed_before[i]` is the number of `completion_order` entries the proposal for trial `i` had seen. No per-trial record carries either key. |
 | `early_stop` | Present only when `--no-improvement-trials` is enabled; see the [patience and drain fields](batching.md). |
 | `sobol` | Present only for `sampler: "sobol"`; descriptor, identity and this part's index range, see [Sobol](#sobol). |
 | `candidate_list` | Present only for `sampler: "candidates"`; list identity and terminal-position coverage, see [Candidate list](#candidate-list). |
@@ -1386,5 +1474,5 @@ binary plus independently encoded new-trial chunks for subsequent continuation.
 - continuation or resume of a `candidates` list (its results can seed TPE history only);
 - conditional/hierarchical spaces;
 - multi-objective directions and Pareto output;
-- walk-forward folds;
+- walk-forward folds; a post hoc analysis of finished per-window studies exists outside the runner (v1 analyses finished studies; native in-loop walk-forward comes later);
 - true shared-account execution.

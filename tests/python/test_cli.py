@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import dataclasses
 import hashlib
 import io
 import json
@@ -18,14 +19,16 @@ from pineforge_hpo import __version__
 from pineforge_hpo.cli import (
     CliError,
     _artifact_input_metadata,
+    _enum_ordinals_needed,
     _precompiled_artifact,
     _parser,
     _native_command,
+    _plugin_option_values,
     _resolve_engine_root,
     _validate_manifest_inputs,
     main,
 )
-from pineforge_hpo.study_spec import StudySpecError, load_study_spec
+from pineforge_hpo.study_spec import StudySpec, StudySpecError, load_study_spec
 
 
 class CliTests(unittest.TestCase):
@@ -177,6 +180,402 @@ class CliTests(unittest.TestCase):
         inputs.append(dict(inputs[0]))
         with self.assertRaisesRegex(CliError, "duplicate title 'Length'"):
             _validate_manifest_inputs(study, inputs)
+
+    def _write_single_input_study(self, name: str, choices: list[object]) -> StudySpec:
+        document = json.loads(self.study_path.read_text(encoding="utf-8"))
+        strategy = document["strategies"][0]
+        strategy["fixed_inputs"] = {}
+        strategy["search_space"] = {name: {"kind": "categorical", "choices": choices}}
+        self.study_path.write_text(json.dumps(document), encoding="utf-8")
+        return load_study_spec(self.study_path)
+
+    def test_enum_subset_choice_follows_the_declared_ordinals(self) -> None:
+        # enum Side {neutral, long, short} with options [Side.long, Side.short]:
+        # a choice is the member's declaration index, so 1 and 2 are the valid
+        # ordinals while 0 and 3 are not. Validating against 0..len(options)-1
+        # instead would accept 0 and refuse 2.
+        options = ["Side.long", "Side.short"]
+        ordinals = ("1", "2")
+        for choice in (1, 2):
+            study = self._write_single_input_study("Side", [choice])
+            _validate_manifest_inputs(
+                study,
+                [{"title": "Side", "type": "enum", "options": options}],
+                option_values={"Side": ordinals},
+            )
+        for choice in (0, 3):
+            study = self._write_single_input_study("Side", [choice])
+            with self.assertRaisesRegex(
+                CliError,
+                r"search_space\.Side\.choices\[0\] is not one of the Pine input options",
+            ):
+                _validate_manifest_inputs(
+                    study,
+                    [{"title": "Side", "type": "enum", "options": options}],
+                    option_values={"Side": ordinals},
+                )
+
+    def test_enum_full_listing_choice_follows_the_declared_ordinals(self) -> None:
+        options = ["Side.long", "Side.short"]
+        ordinals = ("0", "1")
+        for choice in (0, 1):
+            study = self._write_single_input_study("Side", [choice])
+            _validate_manifest_inputs(
+                study,
+                [{"title": "Side", "type": "enum", "options": options}],
+                option_values={"Side": ordinals},
+            )
+        for choice in (2, -1):
+            study = self._write_single_input_study("Side", [choice])
+            with self.assertRaisesRegex(
+                CliError,
+                r"search_space\.Side\.choices\[0\] is not one of the Pine input options",
+            ):
+                _validate_manifest_inputs(
+                    study,
+                    [{"title": "Side", "type": "enum", "options": options}],
+                    option_values={"Side": ordinals},
+                )
+
+    def test_enum_tag_choice_is_accepted_and_reaches_argv(self) -> None:
+        # A manifest tag is a valid choice: the generic options-membership rule
+        # of 0.13.x, which needs no settings receipt, is restored, and the tag
+        # reaches the native runner unchanged.
+        options = ["Side.long", "Side.short"]
+        manifest = {"title": "Side", "type": "enum", "options": options}
+        study = self._write_single_input_study("Side", ["Side.long"])
+        _validate_manifest_inputs(study, [manifest], option_values={"Side": ("0", "1")})
+        command = _native_command(
+            study,
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        first = command.index("--categorical-choice")
+        self.assertEqual(
+            command[first : first + 3], ["--categorical-choice", "Side", "Side.long"]
+        )
+
+    def test_enum_string_choice_outside_the_options_is_refused(self) -> None:
+        # A string is a tag only when it is exactly one of the manifest options,
+        # so a bare member name, a wrong-case tag and a foreign tag are refused
+        # with the named setting error, which names the input.
+        options = ["Side.long", "Side.short"]
+        manifest = {"title": "Side", "type": "enum", "options": options}
+        for choice in ("long", "side.long", "Side.flat"):
+            with self.subTest(choice=choice):
+                study = self._write_single_input_study("Side", [choice])
+                with self.assertRaises(CliError) as caught:
+                    _validate_manifest_inputs(
+                        study, [manifest], option_values={"Side": ("0", "1")}
+                    )
+                self.assertEqual(caught.exception.code, "setting_rejected")
+                self.assertEqual(
+                    caught.exception.failure_args,
+                    {
+                        "entrypoint": "strategy_set_input",
+                        "reason": "invalid_input_option",
+                        "input": "Side",
+                    },
+                )
+                self.assertIn(
+                    "search_space.Side.choices[0] is not one of the Pine input options",
+                    str(caught.exception),
+                )
+
+    def test_enum_boolean_choice_is_refused(self) -> None:
+        # The choice is refused only by the boolean exclusion in the ordinal
+        # test: `isinstance(True, int)` holds. The receipt lists the bool's
+        # stringified form, "True", so a rule that dropped that exclusion would
+        # accept the choice and turn this test red, and "1" is the ordinal the
+        # bool would be accepted as by a rule that coerced it to an int.
+        study = self._write_single_input_study("Side", [True])
+        with self.assertRaisesRegex(
+            CliError,
+            r"search_space\.Side\.choices\[0\] is not one of the Pine input options",
+        ):
+            _validate_manifest_inputs(
+                study,
+                [
+                    {
+                        "title": "Side",
+                        "type": "enum",
+                        "options": ["Side.long", "Side.short"],
+                    }
+                ],
+                option_values={"Side": ("1", "True")},
+            )
+
+    def test_enum_float_choice_is_refused(self) -> None:
+        # 2.0 is refused only because the ordinal test requires an int, even
+        # though it equals the ordinal 2 numerically. The receipt lists "2.0",
+        # the float's stringified form, so a rule that dropped the integer test
+        # would accept the choice and turn this test red, and "2" is the ordinal
+        # a rule that coerced the choice to an int would accept.
+        study = self._write_single_input_study("Side", [2.0])
+        with self.assertRaisesRegex(
+            CliError,
+            r"search_space\.Side\.choices\[0\] is not one of the Pine input options",
+        ):
+            _validate_manifest_inputs(
+                study,
+                [
+                    {
+                        "title": "Side",
+                        "type": "enum",
+                        "options": ["Side.long", "Side.short"],
+                    }
+                ],
+                option_values={"Side": ("2", "2.0")},
+            )
+
+    def test_non_enum_option_membership_is_unchanged(self) -> None:
+        options = ["fast", "slow"]
+        manifest = {"title": "Mode", "type": "string", "options": options}
+        for choice in ("fast", "slow"):
+            study = self._write_single_input_study("Mode", [choice])
+            _validate_manifest_inputs(study, [manifest], input_kinds_emitted=True)
+        study = self._write_single_input_study("Mode", ["triple"])
+        with self.assertRaisesRegex(
+            CliError,
+            r"search_space\.Mode\.choices\[0\] is not one of the Pine input options",
+        ):
+            _validate_manifest_inputs(study, [manifest], input_kinds_emitted=True)
+
+    def test_enum_ordinal_reaches_native_argv_unchanged(self) -> None:
+        study = self._write_single_input_study("Side", [0, 1])
+        command = _native_command(
+            study,
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        first = command.index("--categorical-int-choice")
+        self.assertEqual(
+            command[first : first + 3], ["--categorical-int-choice", "Side", "0"]
+        )
+        second = command.index("--categorical-int-choice", first + 1)
+        self.assertEqual(
+            command[second : second + 3], ["--categorical-int-choice", "Side", "1"]
+        )
+
+    def test_enum_without_a_readable_receipt_fails_closed(self) -> None:
+        # The option positions equal the declaration indices only for a fully
+        # listed enum, so with no receipt to read the ordinals from there is
+        # nothing to check a choice against and every choice is refused.
+        manifest = {
+            "title": "Side",
+            "type": "enum",
+            "options": ["Side.long", "Side.short"],
+        }
+        for choice in (0, 1, 2):
+            with self.subTest(choice=choice):
+                study = self._write_single_input_study("Side", [choice])
+                with self.assertRaisesRegex(
+                    CliError,
+                    r"search_space\.Side\.choices\[0\]: the enum ordinals for "
+                    r"input 'Side' cannot be read from the strategy's settings "
+                    r"receipt; rebuild the strategy with codegen >= 1\.4\.0",
+                ) as caught:
+                    _validate_manifest_inputs(study, [manifest])
+                self.assertEqual(caught.exception.code, "hpo_study_spec_invalid")
+                self.assertEqual(
+                    caught.exception.failure_args, {"reason": "artifact_metadata"}
+                )
+        # A receipt that does not list this input is no receipt for it.
+        for choice in (1, 2):
+            with self.subTest(unlisted=choice):
+                study = self._write_single_input_study("Side", [choice])
+                with self.assertRaisesRegex(
+                    CliError, "the enum ordinals for input 'Side' cannot be read"
+                ):
+                    _validate_manifest_inputs(
+                        study, [manifest], option_values={"Other": ("1", "2")}
+                    )
+
+    @mock.patch("pineforge_hpo.cli._plugin_option_values")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_enum_tag_choice_needs_no_settings_receipt(
+        self, builder_type: mock.Mock, read_ordinals: mock.Mock
+    ) -> None:
+        # A tag is checked against the manifest options alone, so a study whose
+        # enum choices are all tags never loads the plugin: the loader is a
+        # recorder that fails the test if it is called at all.
+        from pineforge_hpo.cli import prepare_run
+
+        read_ordinals.side_effect = AssertionError("plugin loaded for a tag")
+        builder_type.return_value.build.return_value = dataclasses.replace(
+            self._artifact(),
+            inputs=(
+                {
+                    "title": "Side",
+                    "type": "enum",
+                    "options": ["Side.long", "Side.short"],
+                },
+            ),
+        )
+        study = self._write_single_input_study("Side", ["Side.long"])
+        command, _ = prepare_run(study.spec_path, self.root, native=self.native)
+        read_ordinals.assert_not_called()
+        first = command.index("--categorical-choice")
+        self.assertEqual(
+            command[first : first + 3], ["--categorical-choice", "Side", "Side.long"]
+        )
+
+    def test_enum_non_contiguous_ordinals_accept_only_the_declared_ones(self) -> None:
+        # enum Side {neutral, long, short} with options [Side.neutral,
+        # Side.short]: the declared ordinals are 0 and 2, so the value 1 falls
+        # in the gap no option names.
+        manifest = {
+            "title": "Side",
+            "type": "enum",
+            "options": ["Side.neutral", "Side.short"],
+        }
+        for choice in (0, 2):
+            study = self._write_single_input_study("Side", [choice])
+            _validate_manifest_inputs(
+                study, [manifest], option_values={"Side": ("0", "2")}
+            )
+        study = self._write_single_input_study("Side", [1])
+        with self.assertRaisesRegex(
+            CliError,
+            r"search_space\.Side\.choices\[0\] is not one of the Pine input options",
+        ):
+            _validate_manifest_inputs(
+                study, [manifest], option_values={"Side": ("0", "2")}
+            )
+
+    def test_plugin_option_values_rejects_a_file_that_is_not_a_library(self) -> None:
+        # A plain text file is not a loadable library, so the load fails and no
+        # ordinals are read.
+        text = self.root / "not-a-plugin.txt"
+        text.write_text("not a shared library\n", encoding="utf-8")
+        self.assertIsNone(_plugin_option_values(text))
+
+    @mock.patch("pineforge_hpo.cli._plugin_option_values")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_prepare_run_reads_enum_ordinals_only_for_enum_dimensions(
+        self, builder_type: mock.Mock, read_ordinals: mock.Mock
+    ) -> None:
+        from pineforge_hpo.cli import prepare_run
+
+        enum_artifact = dataclasses.replace(
+            self._artifact(),
+            inputs=(
+                {
+                    "title": "Side",
+                    "type": "enum",
+                    "options": ["Side.long", "Side.short"],
+                },
+            ),
+        )
+        builder_type.return_value.build.return_value = enum_artifact
+        study = self._write_single_input_study("Side", [1])
+
+        read_ordinals.return_value = {"Side": ("1", "2")}
+        command, _ = prepare_run(study.spec_path, self.root, native=self.native)
+        read_ordinals.assert_called_once_with(enum_artifact.plugin_path)
+        first = command.index("--categorical-int-choice")
+        self.assertEqual(command[first + 1 : first + 3], ["Side", "1"])
+
+        # The patched ordinals are the ones the choice is checked against.
+        read_ordinals.reset_mock()
+        read_ordinals.return_value = {"Side": ("0",)}
+        with self.assertRaisesRegex(
+            CliError,
+            r"search_space\.Side\.choices\[0\] is not one of the Pine input options",
+        ):
+            prepare_run(study.spec_path, self.root, native=self.native)
+        read_ordinals.assert_called_once_with(enum_artifact.plugin_path)
+
+        # A study whose dimensions are not enums never loads the plugin.
+        read_ordinals.reset_mock()
+        builder_type.return_value.build.return_value = self._artifact()
+        self._write_study()
+        prepare_run(self.study_path, self.root, native=self.native)
+        read_ordinals.assert_not_called()
+
+    def test_enum_ordinals_gate_admits_only_an_enum_with_options(self) -> None:
+        # The loader is worth its in-process load only for a categorical search
+        # dimension whose manifest entry is an enum with an `options` list and
+        # whose choices include an ordinal. Each False case below is not that
+        # shape, so widening the gate to any categorical dimension, or to any
+        # enum dimension including a tag-only one, turns it red. The last case
+        # has no categorical dimension, so it turns red instead if the gate
+        # drops the search-space scan and keys on the manifest alone: its inputs
+        # carry an enum with options that no dimension asks for.
+        enum = {
+            "title": "Side",
+            "type": "enum",
+            "options": ["Side.long", "Side.short"],
+        }
+        study = self._write_single_input_study("Side", [1])
+        self.assertIs(_enum_ordinals_needed(study, [enum]), True)
+        tagged = self._write_single_input_study("Side", ["Side.long", "Side.short"])
+        self.assertIs(_enum_ordinals_needed(tagged, [enum]), False)
+        self.assertIs(
+            _enum_ordinals_needed(study, [{"title": "Side", "type": "enum"}]), False
+        )
+        string = self._write_single_input_study("Mode", ["fast", "slow"])
+        self.assertIs(
+            _enum_ordinals_needed(
+                string,
+                [{"title": "Mode", "type": "string", "options": ["fast", "slow"]}],
+            ),
+            False,
+        )
+        source = self._write_single_input_study("Source", ["close", "open"])
+        self.assertIs(
+            _enum_ordinals_needed(source, [{"title": "Source", "type": "source"}]),
+            False,
+        )
+        boolean = self._write_single_input_study("Enabled", [0, 1])
+        self.assertIs(
+            _enum_ordinals_needed(boolean, [{"title": "Enabled", "type": "bool"}]),
+            False,
+        )
+        self._write_study()
+        numeric = load_study_spec(self.study_path)
+        self.assertIs(_enum_ordinals_needed(numeric, [enum]), False)
+
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_prepare_run_refuses_an_enum_study_when_the_plugin_cannot_be_loaded(
+        self, builder_type: mock.Mock
+    ) -> None:
+        # The loader is not patched here: the artifact's plugin path is a text
+        # file, so the real load fails, no ordinals are read, and every choice
+        # is refused before a trial — 0 and 1 included, which the deleted
+        # position-based fallback accepted. A rule that guessed the ordinals
+        # from the manifest instead of failing closed would accept them and turn
+        # this test red.
+        from pineforge_hpo.cli import prepare_run
+
+        plugin = self.root / "not-a-plugin.txt"
+        plugin.write_text("not a shared library\n", encoding="utf-8")
+        builder_type.return_value.build.return_value = dataclasses.replace(
+            self._artifact(),
+            plugin_path=plugin,
+            inputs=(
+                {
+                    "title": "Side",
+                    "type": "enum",
+                    "options": ["Side.long", "Side.short"],
+                },
+            ),
+        )
+        for choice in (0, 1, 2):
+            with self.subTest(choice=choice):
+                study = self._write_single_input_study("Side", [choice])
+                with self.assertRaises(CliError) as caught:
+                    prepare_run(study.spec_path, self.root, native=self.native)
+                self.assertIn(
+                    "the enum ordinals for input 'Side' cannot be read",
+                    str(caught.exception),
+                )
+                self.assertEqual(caught.exception.code, "hpo_study_spec_invalid")
+                self.assertEqual(
+                    caught.exception.failure_args, {"reason": "artifact_metadata"}
+                )
 
     def test_input_metadata_capability_marker_and_malformed_identity(self) -> None:
         manifest = self.root / "manifest.json"
@@ -467,6 +866,28 @@ class CliTests(unittest.TestCase):
             ("--pruner-rungs", "0.125,0.5"),
         ):
             self.assertEqual(command[command.index(name) + 1], value)
+
+    def test_native_command_forwards_rolling_schedule_only_when_set(self) -> None:
+        # Rolling forwards --schedule; the default batches must not add the flag, so a study
+        # without schedule keeps its argv (and bytes) as before.
+        self._write_study(
+            execution={"workers": 2, "isolation": "threads", "schedule": "rolling"}
+        )
+        rolling = _native_command(
+            load_study_spec(self.study_path),
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        self.assertEqual(rolling[rolling.index("--schedule") + 1], "rolling")
+        self._write_study(execution={"workers": 2, "isolation": "threads"})
+        default = _native_command(
+            load_study_spec(self.study_path),
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        self.assertNotIn("--schedule", default)
 
     def test_candidate_policy_maps_to_native(self) -> None:
         document = json.loads(self.study_path.read_text(encoding="utf-8"))

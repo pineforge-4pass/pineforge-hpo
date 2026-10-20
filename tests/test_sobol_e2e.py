@@ -5,7 +5,13 @@ hand on a spot box, like test_candidate_list_e2e.py:
     python3 tests/test_sobol_e2e.py --native build/bin/pineforge-hpo-native --output <dir> \\
         [--pinned-reference BINARY --pinned-sha256 HEX]
 
-UNEXECUTED until the proof phase. It uses a real compiled strategy with two continuous real
+The documented sealed 48-stage Sobol proof covers the native CLI and Python schema/argv/relay
+controls on its recorded builds (the by-hand compiled-strategy gate tests/test_sobol_e2e.py has no
+recorded result in this tree), with bound numeric identity required for
+floating-point spaces, logarithmic CLI checks limited to range and a relative bound, continuation
+exactness limited to the parameter stream, and no quality, cost or equality claim for unmeasured
+build pairs.
+It uses a real compiled strategy with two continuous real
 columns, so it needs a build whose Sobol numeric identity is bound (an unbound build refuses the
 study before any trial; the test then fails with that refusal, which is the correct result of a
 proof build that is not bound). Proves: the Python route builds exactly the native argv; the rows
@@ -87,8 +93,7 @@ def candidate(index, seed, scramble):
 
 
 def run(command, **kwargs):
-    return subprocess.run(command, capture_output=True,
-                          timeout=kwargs.pop("timeout", 3600), **kwargs)
+    return subprocess.run(command, capture_output=True, **kwargs)
 
 
 def stripped(document):
@@ -224,7 +229,7 @@ def main():
         inputs = {name: "%.17g" % trial["parameters"][name] for name in COLUMNS}
         harness = run([sys.executable, str(ROOT / "external/pineforge-engine/docker/run_json.py"),
                        "--so", plugin, "--ohlcv", str(csv), "--inputs", json.dumps(inputs),
-                       "--input-tf", "1", "--script-tf", "1"], timeout=120)
+                       "--input-tf", "1", "--script-tf", "1"])
         require(harness.returncode == 0, harness.stderr.decode())
         canonical = json.loads(harness.stdout)
         require(trial["total_trades"] == len(canonical["trades"]), "trade count differs")

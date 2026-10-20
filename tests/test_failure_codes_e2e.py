@@ -94,7 +94,7 @@ def main():
             "1",
             *extra,
         ]
-        completed = subprocess.run(command, capture_output=True, timeout=180)
+        completed = subprocess.run(command, capture_output=True)
         (output / (label + ".stdout.json")).write_bytes(completed.stdout)
         (output / (label + ".stderr.txt")).write_bytes(completed.stderr)
         require(
