@@ -385,6 +385,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
 
+    add_executable(pineforge_hpo_test_dataset_bin test_dataset_bin.cpp)
+    target_link_libraries(pineforge_hpo_test_dataset_bin PRIVATE PineForgeHPO::engine_adapter)
+    target_compile_options(pineforge_hpo_test_dataset_bin PRIVATE -Wall -Wextra -Wpedantic)
+
     add_executable(pineforge_hpo_test_symbol_feeds test_symbol_feeds.cpp)
     target_include_directories(pineforge_hpo_test_symbol_feeds PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
     target_link_libraries(pineforge_hpo_test_symbol_feeds PRIVATE PineForgeHPO::engine_adapter)
@@ -399,6 +403,19 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE PineForgeHPO::engine_adapter)
 
     find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        set(PFH_DATASET_BIN_FIXTURES "${CMAKE_CURRENT_BINARY_DIR}/dataset-bin-fixtures")
+        add_test(NAME pineforge_hpo_dataset_bin_fixtures
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/generate_dataset_bin_fixtures.py"
+                "${PFH_DATASET_BIN_FIXTURES}")
+        set_tests_properties(pineforge_hpo_dataset_bin_fixtures PROPERTIES
+            FIXTURES_SETUP dataset_bin_inputs)
+        add_test(NAME pineforge_hpo_dataset_bin COMMAND pineforge_hpo_test_dataset_bin
+            "${PFH_DATASET_BIN_FIXTURES}")
+        set_tests_properties(pineforge_hpo_dataset_bin PROPERTIES
+            FIXTURES_REQUIRED dataset_bin_inputs)
+    endif()
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
         add_test(NAME pineforge_hpo_failure_codes
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_failure_codes.py"

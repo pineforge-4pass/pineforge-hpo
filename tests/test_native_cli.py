@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import csv as csv_module
 import json
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 
@@ -25,13 +27,14 @@ def invoke(
     workers: int = 1,
     length_low: int = 14,
     length_high: int = 14,
+    ohlcv_option: str = "--ohlcv",
 ) -> subprocess.CompletedProcess[str]:
     command = [
         str(native),
         "run",
         "--strategy",
         str(plugin),
-        "--ohlcv",
+        ohlcv_option,
         str(csv),
         "--objective",
         "metrics.all.net_profit",
@@ -63,6 +66,133 @@ def invoke(
     return subprocess.run(command, text=True, capture_output=True, check=False)
 
 
+def test_binary_chart(native: Path, plugin: Path, csv: Path) -> None:
+    binary = csv.with_suffix(".bin")
+    with csv.open(newline="", encoding="utf-8") as source:
+        rows = list(csv_module.DictReader(source))
+    binary.write_bytes(
+        b"".join(
+            struct.pack(
+                "<5dq",
+                *(float(row[key]) for key in ("open", "high", "low", "close", "volume")),
+                int(row["timestamp"]),
+            )
+            for row in rows
+        )
+    )
+    sidecar = Path(str(binary) + ".json")
+    metadata = {"format": "pf_bar_t/v1", "count": len(rows)}
+    sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+    # The fixture plugin normally ignores chart prices. This opt-in mode scores the actual
+    # chart fields; the changed-input run below proves these comparisons observe the bars.
+    study = ("--seed", "170905", "--fixed-input", "ChartBarsTest", "1")
+    csv_trials = csv.parent / "csv-trials.jsonl"
+    bin_trials = csv.parent / "bin-trials.jsonl"
+    baseline = invoke(
+        native, plugin, csv, *study, "--trials-file", str(csv_trials),
+        max_trials=3, length_low=2, length_high=4,
+    )
+    mapped = invoke(
+        native, plugin, binary, *study, "--trials-file", str(bin_trials),
+        max_trials=3, length_low=2, length_high=4, ohlcv_option="--ohlcv-bin",
+    )
+    require(baseline.returncode == 0, f"binary test CSV study failed: {baseline.stderr}")
+    require(mapped.returncode == 0, f"binary study failed: {mapped.stderr}")
+    csv_result = json.loads(baseline.stdout)
+    bin_result = json.loads(mapped.stdout)
+    require(len(bin_result["trials"]) == 3, "binary study did not execute three trials")
+    require(
+        all(trial["status"] == "ok" for trial in bin_result["trials"]),
+        "binary study contains a failed trial",
+    )
+    # Trial JSONL contains no wall-clock or path fields: compare the complete original bytes,
+    # without masking or reserializing any record.
+    require(csv_trials.read_bytes() == bin_trials.read_bytes(), "binary/CSV trial bytes differ")
+    require(csv_result["trials"] == bin_result["trials"], "binary/CSV trial values differ")
+
+    changed_rows = list(rows)
+    changed_rows[0] = {**changed_rows[0], "close": "100.5"}
+    changed = csv.parent / "changed.bin"
+    changed.write_bytes(
+        b"".join(
+            struct.pack(
+                "<5dq",
+                *(float(row[key]) for key in ("open", "high", "low", "close", "volume")),
+                int(row["timestamp"]),
+            )
+            for row in changed_rows
+        )
+    )
+    Path(str(changed) + ".json").write_text(json.dumps(metadata), encoding="utf-8")
+    different = invoke(native, plugin, changed, *study, ohlcv_option="--ohlcv-bin")
+    original = invoke(native, plugin, binary, *study, ohlcv_option="--ohlcv-bin")
+    require(different.returncode == original.returncode == 0, "chart sensitivity study failed")
+    require(
+        json.loads(different.stdout)["trials"][0]["objective"]
+        != json.loads(original.stdout)["trials"][0]["objective"],
+        "binary study ignored the changed chart bar",
+    )
+
+    feeds = csv.parent / "feeds.json"
+    feeds.write_text(
+        json.dumps({"symbols": {"TEST:CSV": {"feeds": {"1": csv.name}}}}),
+        encoding="utf-8",
+    )
+    feed_study = (*study, "--symbol-feeds", str(feeds), "--script-tf", "1")
+    csv_feed = invoke(native, plugin, csv, *feed_study)
+    bin_feed = invoke(native, plugin, binary, *feed_study, ohlcv_option="--ohlcv-bin")
+    require(csv_feed.returncode == 0, f"CSV symbol-feed study failed: {csv_feed.stderr}")
+    require(bin_feed.returncode == 0, f"binary chart / CSV feed failed: {bin_feed.stderr}")
+    require(
+        json.loads(csv_feed.stdout)["trials"] == json.loads(bin_feed.stdout)["trials"],
+        "binary chart changed CSV symbol-feed trial results",
+    )
+    require(
+        json.loads(bin_feed.stdout)["trials"][0]["objective"]
+        != json.loads(original.stdout)["trials"][0]["objective"],
+        "binary-chart study did not consume the CSV symbol feed",
+    )
+
+    def refusal(process: subprocess.CompletedProcess[str], cause: str) -> None:
+        require(process.returncode == 1, f"expected initialization exit 1: {process.stderr}")
+        require(cause in process.stderr, f"missing named refusal {cause!r}: {process.stderr}")
+        require(json.loads(process.stdout)["failure"]["exit_code"] == 1, "wrong failure JSON")
+
+    truncated = csv.parent / "truncated.bin"
+    truncated.write_bytes(binary.read_bytes()[:-1])
+    refusal(
+        invoke(native, plugin, truncated, ohlcv_option="--ohlcv-bin"),
+        "size is not a multiple of 48",
+    )
+    sidecar.write_text(json.dumps({**metadata, "count": len(rows) + 1}), encoding="utf-8")
+    refusal(
+        invoke(native, plugin, binary, ohlcv_option="--ohlcv-bin"),
+        "sidecar count disagrees",
+    )
+    refusal(
+        invoke(native, plugin, csv, "--ohlcv-bin", str(binary)),
+        "--ohlcv and --ohlcv-bin are mutually exclusive",
+    )
+    for csv_path, bin_path in (("", str(binary)), (str(csv), "")):
+        refusal(
+            subprocess.run(
+                [str(native), "run", "--strategy", str(plugin), "--ohlcv", csv_path,
+                 "--ohlcv-bin", bin_path, "--objective", "metrics.all.net_profit"],
+                text=True, capture_output=True, check=False,
+            ),
+            "--ohlcv and --ohlcv-bin are mutually exclusive",
+        )
+    refusal(
+        subprocess.run(
+            [str(native), "run", "--strategy", str(plugin),
+             "--objective", "metrics.all.net_profit"],
+            text=True, capture_output=True, check=False,
+        ),
+        "one of --ohlcv or --ohlcv-bin is required",
+    )
+    print("binary native CLI: 3-trial byte identity, chart sensitivity, CSV feeds, 6 refusals")
+
+
 def main() -> int:
     native = Path(sys.argv[1]).resolve()
     plugin = Path(sys.argv[2]).resolve()
@@ -74,6 +204,8 @@ def main() -> int:
             "1700000060000,101,103,100,102,11\n",
             encoding="utf-8",
         )
+
+        test_binary_chart(native, plugin, csv)
 
         unknown = invoke(
             native,

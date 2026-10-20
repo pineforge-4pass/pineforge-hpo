@@ -77,6 +77,7 @@ enum class Direction { kMaximize, kMinimize };
 struct Options {
     std::filesystem::path strategy;
     std::filesystem::path ohlcv;
+    std::filesystem::path ohlcv_bin;
     std::filesystem::path output;
     std::filesystem::path trials_file;
     std::filesystem::path warm_start;
@@ -274,7 +275,7 @@ pfh::CandidatePolicy parse_candidate_policy(const std::string& text) {
 void print_help() {
     std::cout << "pineforge-hpo-native — native PineForge HPO runner\n\n"
               << "Usage:\n"
-              << "  pineforge-hpo-native run --strategy FILE --ohlcv FILE "
+              << "  pineforge-hpo-native run --strategy FILE (--ohlcv FILE | --ohlcv-bin FILE) "
                  "--objective EXPR [options]\n"
               << "  pineforge-hpo-native space-info --spec FILE [--warm-start FILE] "
               << "[--symbol-feeds FILE]\n"
@@ -343,6 +344,8 @@ void print_help() {
               << "  --tpe-prior-weight X        positive Parzen prior weight\n"
               << "  --tpe-constant-liar BOOL    place outstanding trials in g(x)\n\n"
               << "Backtest options:\n"
+              << "  --ohlcv FILE                CSV chart bars\n"
+              << "  --ohlcv-bin FILE            read-only mapped pf_bar_t/v1 chart + .json sidecar\n"
               << "  --syminfo FILE              flat or wrapped instrument JSON\n"
               << "  --input-tf TF --script-tf TF --chart-timezone TZ\n"
               << "  --bar-magnifier true|false --magnifier-samples N\n"
@@ -379,12 +382,18 @@ Options parse_options(int argc, char** argv) {
         usage_error("expected `run` subcommand");
 
     Options out;
+    bool ohlcv_given = false;
+    bool ohlcv_bin_given = false;
     for (int i = 2; i < argc; ++i) {
         const std::string option = argv[i];
         if (option == "--strategy") {
             out.strategy = require_value(argc, argv, i, option);
         } else if (option == "--ohlcv") {
             out.ohlcv = require_value(argc, argv, i, option);
+            ohlcv_given = true;
+        } else if (option == "--ohlcv-bin") {
+            out.ohlcv_bin = require_value(argc, argv, i, option);
+            ohlcv_bin_given = true;
         } else if (option == "--output") {
             out.output = require_value(argc, argv, i, option);
         } else if (option == "--artifact-key") {
@@ -630,8 +639,10 @@ Options parse_options(int argc, char** argv) {
 
     if (out.strategy.empty())
         usage_error("--strategy is required");
-    if (out.ohlcv.empty())
-        usage_error("--ohlcv is required");
+    if (ohlcv_given && ohlcv_bin_given)
+        usage_error("--ohlcv and --ohlcv-bin are mutually exclusive");
+    if (out.ohlcv.empty() && out.ohlcv_bin.empty())
+        usage_error("one of --ohlcv or --ohlcv-bin is required");
     if (out.objective.empty())
         usage_error("--objective is required");
     pfh::detail::require_candidate_list_settings(
@@ -2142,7 +2153,8 @@ int run(Options options) {
         pfh::require_return_stats_identity();
 
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
-    auto dataset = std::make_shared<pfh::Dataset>(pfh::Dataset::load_csv(options.ohlcv));
+    auto dataset = std::make_shared<pfh::Dataset>(options.ohlcv_bin.empty()
+        ? pfh::Dataset::load_csv(options.ohlcv) : pfh::Dataset::load_bin(options.ohlcv_bin));
     pfh::BacktestConfiguration configuration;
     configuration.input_timeframe = options.input_timeframe;
     configuration.script_timeframe = options.script_timeframe;

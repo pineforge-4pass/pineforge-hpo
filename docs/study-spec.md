@@ -369,9 +369,22 @@ OHLCV rows with timestamps compatible with PineForge's public bar contract.
 
 - `id`: unique non-empty ID referenced by the strategy;
 - `ohlcv`: CSV path relative to the StudySpec;
+- `ohlcv_bin`: alternative binary chart path relative to the StudySpec; exactly one of
+  `ohlcv` and `ohlcv_bin` is required;
 - `input_tf`: chart/input timeframe passed to `run_backtest_full()`;
 - `script_tf`: script timeframe; defaults to `input_tf` in the loader;
 - `chart_timezone`: chart timezone; defaults to `UTC`.
+
+`ohlcv_bin` is forwarded as `--ohlcv-bin` to the native runner. It maps a regular file
+read-only (`PROT_READ`, `MAP_PRIVATE`) and passes the mapped records directly to the engine.
+The file has no header: each 48-byte record is little-endian `<5dq` (open, high, low,
+close, volume as binary64, then signed int64 bar-open Unix milliseconds). A big-endian
+host is refused. The file must contain 1 through 2147483647 records and its appended
+`<file>.json` sidecar must be an object with `"format":"pf_bar_t/v1"` and an integer
+`count` equal to file size divided by 48. Other sidecar fields and digests are not checked.
+OHLC prices must be finite, volume nonnegative or NaN, and timestamps strictly increasing.
+Keep the mapped file immutable for the dataset's lifetime. The CSV loader is unchanged.
+Optional `symbol_feeds` remain CSV and can accompany a binary chart.
 
 Multi-dataset train/validation/test roles and walk-forward folds are not
 executable yet.
