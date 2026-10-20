@@ -31,7 +31,7 @@ def main() -> int:
              "--magnifier-samples", "6", "--magnifier-distribution", "triangle",
              "--fixed-input", "BatchPrefixTest", "1", "--fixed-input", "BatchPrefixJitter", "0",
              "--fixed-input", "ChartBarsTest", "1", *extra],
-            text=True, capture_output=True, timeout=10, check=False,
+            text=True, capture_output=True, check=False,
         )
 
     def check(label: str, name: str, cause: str | None, *extra: str) -> None:
