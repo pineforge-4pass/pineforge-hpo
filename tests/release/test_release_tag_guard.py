@@ -196,8 +196,7 @@ class GuardWorkflowTests(unittest.TestCase):
             ("\non:\n", "\non:\n  release:\n    types: [published]\n"),
             (
                 "\non:\n",
-                "\non:\n  workflow_run:\n    workflows: [CI]\n"
-                "    types: [completed]\n",
+                "\non:\n  workflow_run:\n    workflows: [CI]\n    types: [completed]\n",
             ),
             ("        required: true\n", "        required: false\n"),
             ("        type: string\n", "        type: boolean\n"),
