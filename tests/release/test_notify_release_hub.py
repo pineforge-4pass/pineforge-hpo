@@ -1,4 +1,4 @@
-"""Producer contract and fail-closed replay tests. Run only in CI/cloud, not on the Mac."""
+"""Producer contract and fail-closed replay tests for CI/cloud only."""
 
 from __future__ import annotations
 
@@ -7,9 +7,11 @@ import copy
 import hashlib
 import importlib
 import io
+from itertools import product
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tarfile
 import tempfile
@@ -38,7 +40,7 @@ def package_assets(
     metadata_version: str | None = None,
     stamp_overrides: dict | None = None,
 ) -> dict[str, bytes]:
-    """Real zip/tar containers, including the real catalog and a release-stamped diff."""
+    """Real zip/tar containers with the real catalog and a release-stamped diff."""
     base = f"pineforge_hpo-{version}"
     catalog = (ROOT / "python/pineforge_hpo/hpo_failure_codes.json").read_bytes()
     target = {
@@ -245,7 +247,7 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(sum(method == "GET" for method, _, _ in api.calls), 3 * 8)
 
     def test_missing_each_required_asset_is_red_and_emits_no_event(self):
-        # This red case must fail if the asset gate is removed or dispatch moves before it.
+        # Refuse removal of the asset gate or dispatch before validation.
         for missing in package_assets("1.6.0"):
             with self.subTest(missing=missing):
                 api = GitHubFixture(FIXTURES[0])
@@ -407,7 +409,7 @@ class WorkflowWiringTests(unittest.TestCase):
     def assert_release_runners(self, workflow):
         for event in ("pull_request", "pull_request_target"):
             self.assertNotIn(event, workflow["on"])
-        for job_id in ("package", "notify-hub"):
+        for job_id in ("tag-guard", "package", "notify-hub"):
             self.assertEqual(
                 workflow["jobs"][job_id]["runs-on"],
                 ["self-hosted", "pf-ci", "pf-ci-release"],
@@ -424,7 +426,7 @@ class WorkflowWiringTests(unittest.TestCase):
             "${{ fromJSON('[\"self-hosted\",\"pf-ci\",\"pf-ci-release\"]') "
             "|| 'ubuntu-24.04' }}",
         )
-        for job_id in ("package", "notify-hub"):
+        for job_id in ("tag-guard", "package", "notify-hub"):
             for runner in bad_runners:
                 with self.subTest(job=job_id, runner=runner):
                     mutated = copy.deepcopy(self.workflow)
@@ -441,53 +443,102 @@ class WorkflowWiringTests(unittest.TestCase):
                     with self.assertRaises(AssertionError):
                         self.assert_release_runners(mutated)
 
-    def test_release_and_replay_use_one_notifier_after_the_correct_prerequisite(self):
-        self.assertEqual(self.workflow["on"]["release"]["types"], ["published"])
+    def assert_package_and_replay(self, workflow):
+        self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
         self.assertEqual(
-            self.workflow["on"]["workflow_dispatch"]["inputs"]["tag"]["required"],
+            workflow["on"]["workflow_dispatch"]["inputs"]["tag"]["required"],
             "true",
         )
-        jobs = self.workflow["jobs"]
-        self.assertEqual(jobs["package"]["if"], "github.event_name == 'release'")
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["package"]["needs"], "tag-guard")
+        package_expression = " ".join(
+            jobs["package"]["if"].strip().removeprefix("${{").removesuffix("}}").split()
+        )
+        package_expression = package_expression.replace("&&", "and")
+        package_expression = re.sub(r"!(?!=)", "not ", package_expression)
         job = jobs["notify-hub"]
-        self.assertEqual(job["needs"], "package")
+        self.assertEqual(job["needs"], ["tag-guard", "package"])
         expression = " ".join(
             job["if"].strip().removeprefix("${{").removesuffix("}}").split()
         )
-        expression = (
-            expression.replace("&&", "and").replace("||", "or").replace("!", "not ")
-        )
-        for event in ("release", "workflow_dispatch", "push"):
-            for result in ("success", "failure", "cancelled", "skipped"):
-                for cancelled in (False, True):
-                    with self.subTest(event=event, result=result, cancelled=cancelled):
-                        allowed = eval(
-                            expression,
-                            {"__builtins__": {}},
-                            {
-                                "github": SimpleNamespace(event_name=event),
-                                "needs": SimpleNamespace(
-                                    package=SimpleNamespace(result=result)
-                                ),
-                                "cancelled": lambda: cancelled,
-                            },
-                        )
-                        self.assertEqual(
-                            allowed,
-                            not cancelled
-                            and (
-                                (event == "release" and result == "success")
-                                or (
-                                    event == "workflow_dispatch" and result == "skipped"
-                                )
-                            ),
-                        )
+        expression = expression.replace("&&", "and").replace("||", "or")
+        expression = re.sub(r"!(?!=)", "not ", expression)
+        expression = expression.replace("needs.tag-guard", "needs.tag_guard")
+        results = ("success", "failure", "cancelled", "skipped")
+        for event, ref, package, result, guard, cancelled in product(
+            ("release", "workflow_dispatch", "push"),
+            ("refs/heads/main", "refs/heads/side", "refs/tags/v1.6.0"),
+            (False, True),
+            results,
+            results,
+            (False, True),
+        ):
+            context = {
+                "github": SimpleNamespace(event_name=event, ref=ref),
+                "inputs": SimpleNamespace(package=package),
+                "needs": SimpleNamespace(
+                    package=SimpleNamespace(result=result),
+                    tag_guard=SimpleNamespace(result=guard),
+                ),
+                "cancelled": lambda: cancelled,
+            }
+            detail = (event, ref, package, result, guard, cancelled)
+            allowed = eval(expression, {"__builtins__": {}}, context)
+            self.assertEqual(
+                eval(package_expression, {"__builtins__": {}}, context),
+                event == "workflow_dispatch" and ref == "refs/heads/main" and package,
+                detail,
+            )
+            self.assertEqual(
+                allowed,
+                not cancelled
+                and event == "workflow_dispatch"
+                and ref == "refs/heads/main"
+                and (
+                    guard != "success"
+                    or (package, result) in ((True, "success"), (False, "skipped"))
+                ),
+                detail,
+            )
         invocations = [
             s for s in job["steps"] if "notify_release_hub.py" in s.get("run", "")
         ]
         self.assertEqual(len(invocations), 1)
         self.assertIn("--tag", invocations[0]["run"])
         self.assertIn("inputs.tag", invocations[0]["env"]["RELEASE_TAG"])
+
+    def test_package_and_replay_use_one_notifier_after_the_correct_prerequisite(self):
+        self.assert_package_and_replay(self.workflow)
+
+    def test_package_and_replay_condition_mutations_are_refused(self):
+        text = (ROOT / ".github/workflows/release.yml").read_text()
+        mutations = (
+            ("&& inputs.package }}", "&& !inputs.package }}"),
+            (
+                "(inputs.package && needs.package.result == 'success')",
+                "(!inputs.package && needs.package.result == 'success')",
+            ),
+            (
+                "needs.package.result == 'success'",
+                "needs.package.result == 'failure'",
+            ),
+            (
+                "needs.package.result == 'skipped'",
+                "needs.package.result == 'success'",
+            ),
+            (
+                "(needs.tag-guard.result != 'success' ||",
+                "(needs.tag-guard.result == 'success' ||",
+            ),
+        )
+        for old, new in mutations:
+            with self.subTest(old=old):
+                self.assertEqual(text.count(old), 1, "stale condition mutation")
+                mutated = text.replace(old, new)
+                self.assertNotEqual(mutated, text)
+                workflow = yaml.load(mutated, Loader=yaml.BaseLoader)
+                with self.assertRaises(AssertionError):
+                    self.assert_package_and_replay(workflow)
 
     def test_dispatch_credential_is_scoped_to_hub_and_failure_is_visible(self):
         job = self.workflow["jobs"]["notify-hub"]

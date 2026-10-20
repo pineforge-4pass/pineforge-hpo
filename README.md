@@ -692,6 +692,13 @@ architecture boundaries, benchmark contribution rules, and pull-request checklis
 Repository settings that cannot be committed as files are listed in the
 [GitHub setup checklist](docs/repository-setup.md).
 
+After publishing an HPO GitHub Release, dispatch **Release assets** (`release.yml`)
+on **main** with its canonical tag and `package=true` to build/upload assets and
+notify the hub. A tag push or published-release event does not start this workflow.
+Omitting `package` replays notification only. Both modes require a tag that exists,
+peels to a commit and belongs to main's history; packaging uses the verified SHA.
+See the [release operator steps and replay guide](docs/release-chain.md).
+
 Run the required local checks from the repository root:
 
 ```bash

@@ -422,5 +422,66 @@ class PrTierWorkflowTests(unittest.TestCase):
                             )
 
 
+class ReleasePoolTriggerTests(unittest.TestCase):
+    def release_workflows(self):
+        workflows = {}
+        for path in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
+            text = path.read_text()
+            if "pf-ci-release" in text:
+                workflows[path.name] = text
+        self.assertIn("release.yml", workflows)
+        return workflows
+
+    def assert_safe_triggers(self, text):
+        workflow = yaml.load(text, Loader=yaml.BaseLoader)
+        triggers = workflow.get("on", {})
+        self.assertIsInstance(triggers, dict)
+        self.assertTrue(triggers)
+        self.assertLessEqual(
+            set(triggers),
+            {
+                "workflow_dispatch",
+                "schedule",
+                "repository_dispatch",
+                "workflow_call",
+                "push",
+            },
+        )
+        if "push" in triggers:
+            push = triggers.get("push") or {}
+            self.assertIsInstance(push, dict)
+            self.assertEqual(push.get("branches"), ["main"])
+            for forbidden in ("tags", "tags-ignore", "branches-ignore"):
+                self.assertNotIn(forbidden, push)
+
+    def test_every_release_pool_workflow_has_only_protected_ref_triggers(self):
+        for name, text in self.release_workflows().items():
+            with self.subTest(workflow=name):
+                self.assert_safe_triggers(text)
+
+    def test_unsafe_events_and_push_filters_are_rejected_in_real_workflow_text(self):
+        unsafe = (
+            "  release:\n    types: [published]\n",
+            "  workflow_run:\n    workflows: [CI]\n    types: [completed]\n",
+            "  pull_request:\n    branches: [main]\n",
+            "  pull_request_target:\n    branches: [main]\n",
+            "  push:\n",
+            "  push:\n    branches: ['*']\n",
+            "  push:\n    branches: [main, side]\n",
+            "  push:\n    tags: ['v*']\n",
+            "  push:\n    branches: [main]\n    tags: ['v*']\n",
+            "  push:\n    branches: [main]\n    tags-ignore: ['scratch*']\n",
+            "  push:\n    branches: [main]\n    branches-ignore: [side]\n",
+        )
+        for name, text in self.release_workflows().items():
+            self.assertEqual(text.count("\non:\n"), 1, "stale trigger mutation")
+            for trigger in unsafe:
+                with self.subTest(workflow=name, trigger=trigger):
+                    mutated = text.replace("\non:\n", "\non:\n" + trigger)
+                    self.assertNotEqual(mutated, text)
+                    with self.assertRaises(AssertionError):
+                        self.assert_safe_triggers(mutated)
+
+
 if __name__ == "__main__":
     unittest.main()

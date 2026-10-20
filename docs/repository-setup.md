@@ -25,6 +25,14 @@ administrator applies and keeps these settings:
    Actions policy. See [release notification and replay](release-chain.md).
 8. Add `Release notification contract` to the required checks on `main` after
    its first CI run. Keep the existing native, Python and documentation checks.
+9. Keep the `pf-ci-release` runner group restricted to this workflow at
+   `refs/heads/main`. After publishing an HPO Release, dispatch **Release assets**
+   (`release.yml`) on **main** with `tag=<published tag>` and `package=true`.
+   A tag push or published-release event does not start asset packaging.
+   Leave `package=false` for notification-only replay. The required tag guard
+   checks canonical spelling, commit existence and main ancestry before the
+   tagged source or release credentials can be used. Follow the
+   [operator steps](release-chain.md#operator-step-for-a-release).
 
 Pages uses GitHub's OIDC-backed deployment action and the repository-scoped
 `GITHUB_TOKEN` permissions declared in the workflow. It needs no additional

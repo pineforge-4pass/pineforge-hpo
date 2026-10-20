@@ -1,11 +1,29 @@
 # HPO release notification and replay
 
-`.github/workflows/release.yml` receives GitHub's `release: published` event.
-Its existing `package` job builds and uploads the Python wheel, sdist and two
-failure catalogs. `notify-hub` depends on that job succeeding. A failed,
-cancelled or skipped package job cannot send the producer event on this path.
+`.github/workflows/release.yml` starts only through `workflow_dispatch` on
+`main`, with a required `tag` and a boolean `package` input defaulting to `false`.
+Release semantics change: a tag push no longer starts this workflow. Publishing
+a GitHub Release also does not start it; an operator dispatches after publishing.
 
-Both `package` and `notify-hub` use
+The first job, `tag-guard`, refuses any event or ref other than a dispatch on
+`refs/heads/main` before checkout. It checks out main with full history and
+read-only permissions, then validates all three release prerequisites:
+
+1. The tag matches the canonical HPO spelling described below. This check runs
+   before the input is used in any git command.
+2. After fetching main and tags, `git rev-parse -q --verify` must peel the local
+   tag ref to a commit. A missing tag or a tag pointing to a non-commit fails.
+3. `git merge-base --is-ancestor` must confirm that commit is reachable from
+   `origin/main`. A tag on an unmerged side branch fails.
+
+Only then does the guard output a full 40-hex commit SHA. Every other job needs
+the guard. The `package` job checks out that verified SHA with credentials
+disabled, so moving a tag between jobs cannot change the source being built.
+The notification job retains the current workflow's immutable implementation
+SHA for historical replays. A failed or skipped guard reaches only the
+notification job's first-step refusal, before checkout or App-token creation.
+
+`tag-guard`, `package` and `notify-hub` use
 `runs-on: ["self-hosted","pf-ci","pf-ci-release"]` without a hosted fallback.
 The isolated class has its own runner group restricted to selected workflows at
 protected refs, its own service account with no roles, and one job per runner;
@@ -67,6 +85,26 @@ Section 3.2's `pineforge/release-ready/v1` manifest belongs to the hub-to-consum
 packages and immutable facts needed for that manifest. An HPO producer event
 does not assert that the combination is ready.
 
+## Operator step for a release
+
+1. Merge the release commit, including its canonical `VERSION`, into `main`.
+   Create and push the matching `vN.N.N` or `vN.N.NrcM` tag on that history.
+2. Publish the GitHub Release for that tag. This repository's workflow does not
+   create the Release; a missing or draft Release blocks asset packaging.
+3. Dispatch **Release assets** (`release.yml`) on **main** with the published
+   tag and `package=true`:
+
+   ```sh
+   gh workflow run release.yml --repo pineforge-4pass/pineforge-hpo \
+     --ref main -f tag=v1.6.0 -F package=true
+   ```
+
+4. Require the guard and packaging to succeed. Packaging looks up the published
+   Release ID using the repository token's read API access, builds the wheel,
+   sdist and two failure catalogs from the verified SHA, and uploads to that
+   Release. Only successful packaging proceeds to verification and hub dispatch.
+   A failed, cancelled or skipped package job cannot notify in this mode.
+
 ## Replay after repair or a missed event
 
 Run the same workflow on `main` with an existing published tag:
@@ -76,9 +114,10 @@ gh workflow run release.yml --repo pineforge-4pass/pineforge-hpo \
   --ref main -f tag=v1.6.0
 ```
 
-The `workflow_dispatch` path skips `package` and calls the same verifier and
-sender. It works for releases whose tagged source predates the notification
-implementation. It never rebuilds, uploads, changes, removes or replaces release
+Omitting `package` keeps its default `false`: the guard still runs, then the
+workflow skips packaging and calls the same verifier and sender. Replay works
+for releases whose tagged source predates the notification implementation.
+It never rebuilds, uploads, changes, removes or replaces release
 assets, tags, commits or version files. Repair incomplete assets through the
 producer's release process before replaying; replay refuses incomplete releases.
 
@@ -121,8 +160,13 @@ The CI job runs `python -m unittest discover -s tests/release -v` and Ruff. The
 fixtures cover stable/RC payloads, replay, missing assets, partial uploads,
 metadata/catalog disagreement, wrong source/version, pagination and failed
 authentication/transport. Workflow checks exercise the actual notification
-condition for failed, skipped, cancelled and successful upstream jobs. Removing
-the notification implementation or moving dispatch before asset validation makes
+condition for failed, skipped, cancelled and successful upstream jobs. Real-git
+tests extract the guard's Bash script from the workflow and execute it against
+a temporary main history, side branch, missing tags and annotated tags. Their
+literal expected outcomes and SHA assertions also reject executed guard-bypass
+mutations; structural mutations cover triggers, dependencies, checkout refs and
+input interpolation. Missing git or Bash fails these tests instead of skipping.
+Removing the notification implementation or moving dispatch before asset validation makes
 the corresponding cases fail. Tests run in CI or on cloud boxes; local work on
 the owner's Mac is limited to static checks.
 

@@ -1,43 +1,137 @@
 name: Release assets
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Replay hub notification for an existing published tag (vN.N.N or vN.N.NrcM)'
+        description: 'Published release tag on main (vN.N.N or vN.N.NrcM)'
         required: true
         type: string
+      package:
+        description: 'Build and upload assets before notifying the hub (false replays only)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-assets-${{ github.event.release.tag_name || inputs.tag }}
+  group: release-assets-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
+  tag-guard:
+    runs-on: ["self-hosted","pf-ci","pf-ci-release"]
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.verify.outputs.sha }}
+    steps:
+      - name: Require dispatch on main before checkout
+        env:
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_EVENT: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_REF" != refs/heads/main || "$WORKFLOW_EVENT" != workflow_dispatch ]]; then
+            echo '::error::Release assets must be dispatched on refs/heads/main.'
+            exit 1
+          fi
+
+      - name: Check out main history for tag verification
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release tag and main ancestry
+        id: verify
+        env:
+          TAG: ${{ inputs.tag }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_EVENT: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$WORKFLOW_REF" != refs/heads/main || "$WORKFLOW_EVENT" != workflow_dispatch ]]; then
+            echo '::error::Release assets must be dispatched on refs/heads/main.'
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(rc[1-9][0-9]*)?$ ]]; then
+            echo '::error::Tag must use vN.N.N or vN.N.NrcM, no leading zeros, M >= 1.'
+            exit 1
+          fi
+          git fetch --no-recurse-submodules origin '+refs/heads/main:refs/remotes/origin/main'
+          git fetch --tags --force --no-recurse-submodules origin
+          if ! TAG_COMMIT="$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}")"; then
+            echo '::error::Release tag does not exist or does not peel to a commit.'
+            exit 1
+          fi
+          if [[ ! "$TAG_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Release tag did not resolve to a full commit SHA.'
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+            echo '::error::Release tag commit is not reachable from origin/main.'
+            exit 1
+          fi
+          printf 'sha=%s\n' "$TAG_COMMIT" >> "$GITHUB_OUTPUT"
+
   package:
-    if: github.event_name == 'release'
+    needs: tag-guard
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' && inputs.package }}
     runs-on: ["self-hosted","pf-ci","pf-ci-release"]
     permissions:
       contents: write
     steps:
-      - name: Check out released source
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-        with:
-          ref: ${{ github.event.release.tag_name }}
-          fetch-depth: 0
-
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: '3.14'
 
+      - name: Find published release for asset upload
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GH_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/hpo-release.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          release_path = Path(os.environ["RUNNER_TEMP"]) / "hpo-release.json"
+          release = json.loads(release_path.read_text())
+          if (
+              release.get("draft") is not False
+              or not release.get("published_at")
+              or release.get("tag_name") != os.environ["RELEASE_TAG"]
+              or type(release.get("id")) is not int
+              or release["id"] <= 0
+          ):
+              raise SystemExit("Release must exist and be published for the verified tag")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"id={release['id']}\n")
+          PY
+
+      - name: Check out released source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ needs.tag-guard.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
       - name: Validate version and stamp catalog diff
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           test "$RELEASE_TAG" = "v$(tr -d '\n' < VERSION)"
           python - <<'PY'
@@ -68,7 +162,7 @@ jobs:
 
       - name: Upload release assets
         env:
-          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
           GH_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -93,18 +187,31 @@ jobs:
           PY
 
   # The producer event is not the hub's downstream release-ready manifest.
-  # Replay verifies existing published bytes; it never rebuilds or uploads them.
+  # With package=false, replay verifies bytes without rebuilding or uploading.
   notify-hub:
     name: Notify release hub
-    needs: package
+    needs: [tag-guard, package]
     if: >-
-      ${{ !cancelled() &&
-          ((github.event_name == 'release' && needs.package.result == 'success') ||
-           (github.event_name == 'workflow_dispatch' && needs.package.result == 'skipped')) }}
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch' &&
+          github.ref == 'refs/heads/main' &&
+          (needs.tag-guard.result != 'success' ||
+           (inputs.package && needs.package.result == 'success') ||
+           (!inputs.package && needs.package.result == 'skipped')) }}
     runs-on: ["self-hosted","pf-ci","pf-ci-release"]
     permissions:
       contents: read
     steps:
+      - name: Refuse notification without a successful tag guard
+        env:
+          TAG_GUARD_RESULT: ${{ needs.tag-guard.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$TAG_GUARD_RESULT" != success ]]; then
+            echo '::error::Tag guard failed or was skipped; refusing checkout and notification.'
+            exit 1
+          fi
+
       - name: Check out notification implementation
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -130,7 +237,7 @@ jobs:
 
       - name: Verify published artifacts and dispatch hpo-release
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_READ_TOKEN: ${{ github.token }}
           HUB_DISPATCH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
