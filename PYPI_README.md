@@ -28,7 +28,7 @@ transpiler.
 
 Starting with v0.11.0, original code is source-available under the
 [PineForge Source License 1.2](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/LICENSE).
-The `LICENSE` file is the controlling text; the licensor is pineforge, LLC.
+The `LICENSE` file is the controlling text; the licensor is PINEFORGE LLC.
 Noncommercial use and Personal Trading are free. Investment management (except
 Personal Trading) and other Commercial Use require a commercial license from
 <https://license.pineforge.dev>. One commercial license covers both codegen and HPO.
