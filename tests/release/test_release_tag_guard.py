@@ -438,6 +438,22 @@ class RealGitGuardTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     self.assert_case(mutated, tag, False)
 
+    def test_local_branches_named_like_tags_cannot_stand_in_for_tags(self):
+        # A local branch resolves by its bare name: v3.0.0^{commit} would find
+        # the branch and pass the reachability check although no tag exists.
+        self.git(self.checkout, "branch", "v3.0.0", self.tip)
+        # A branch next to an honest tag must not change which commit is built.
+        self.git(self.checkout, "branch", "v1.2.3", self.tip)
+        self.assert_case(self.text, "v3.0.0", False)
+        self.assert_case(self.text, "v1.2.3", True, self.first)
+        bare = replace_literal(
+            self.text,
+            'rev-parse -q --verify "refs/tags/${TAG}^{commit}"',
+            'rev-parse -q --verify "${TAG}^{commit}"',
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_case(bare, "v3.0.0", False)
+
     def test_ref_and_event_fail_closed_before_fetch_or_any_output(self):
         self.git(self.checkout, "remote", "set-url", "origin", "missing-origin")
         for ref, event in (
