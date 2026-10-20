@@ -78,6 +78,7 @@ struct Options {
     std::filesystem::path strategy;
     std::filesystem::path ohlcv;
     std::filesystem::path ohlcv_bin;
+    pfh::BinaryVerification verify_bin = pfh::BinaryVerification::Full;
     std::filesystem::path output;
     std::filesystem::path trials_file;
     std::filesystem::path warm_start;
@@ -346,6 +347,7 @@ void print_help() {
               << "Backtest options:\n"
               << "  --ohlcv FILE                CSV chart bars\n"
               << "  --ohlcv-bin FILE            read-only mapped pf_bar_t/v1 chart + .json sidecar\n"
+              << "  --verify-bin full|sidecar    binary digest verification (default: full)\n"
               << "  --syminfo FILE              flat or wrapped instrument JSON\n"
               << "  --input-tf TF --script-tf TF --chart-timezone TZ\n"
               << "  --bar-magnifier true|false --magnifier-samples N\n"
@@ -394,6 +396,14 @@ Options parse_options(int argc, char** argv) {
         } else if (option == "--ohlcv-bin") {
             out.ohlcv_bin = require_value(argc, argv, i, option);
             ohlcv_bin_given = true;
+        } else if (option == "--verify-bin") {
+            const auto mode = require_value(argc, argv, i, option);
+            if (mode == "full")
+                out.verify_bin = pfh::BinaryVerification::Full;
+            else if (mode == "sidecar")
+                out.verify_bin = pfh::BinaryVerification::Sidecar;
+            else
+                usage_error("--verify-bin must be full or sidecar");
         } else if (option == "--output") {
             out.output = require_value(argc, argv, i, option);
         } else if (option == "--artifact-key") {
@@ -2154,7 +2164,8 @@ int run(Options options) {
 
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
     auto dataset = std::make_shared<pfh::Dataset>(options.ohlcv_bin.empty()
-        ? pfh::Dataset::load_csv(options.ohlcv) : pfh::Dataset::load_bin(options.ohlcv_bin));
+        ? pfh::Dataset::load_csv(options.ohlcv)
+        : pfh::Dataset::load_bin(options.ohlcv_bin, options.verify_bin));
     pfh::BacktestConfiguration configuration;
     configuration.input_timeframe = options.input_timeframe;
     configuration.script_timeframe = options.script_timeframe;

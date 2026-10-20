@@ -738,6 +738,8 @@ def _native_command(
         "--non-finite",
         "allow" if study.objective.nan_policy == "propagate" else "reject",
     ]
+    if dataset.ohlcv_bin is not None:
+        command.extend(("--verify-bin", dataset.verify_bin))
     if isinstance(study.symbol_feeds, Path):
         command.extend(("--symbol-feeds", str(study.symbol_feeds)))
     elif study.symbol_feeds is not None:

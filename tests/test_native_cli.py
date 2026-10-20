@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv as csv_module
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -81,7 +82,12 @@ def test_binary_chart(native: Path, plugin: Path, csv: Path) -> None:
         )
     )
     sidecar = Path(str(binary) + ".json")
-    metadata = {"format": "pf_bar_t/v1", "count": len(rows)}
+    metadata = {
+        "format": "pf_bar_t/v1", "record_size": 48, "symbol": "TEST:BIN", "tf": "1",
+        "count": len(rows), "first_ts": int(rows[0]["timestamp"]),
+        "last_ts": int(rows[-1]["timestamp"]),
+        "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+    }
     sidecar.write_text(json.dumps(metadata), encoding="utf-8")
     # The fixture plugin normally ignores chart prices. This opt-in mode scores the actual
     # chart fields; the changed-input run below proves these comparisons observe the bars.
@@ -123,7 +129,10 @@ def test_binary_chart(native: Path, plugin: Path, csv: Path) -> None:
             for row in changed_rows
         )
     )
-    Path(str(changed) + ".json").write_text(json.dumps(metadata), encoding="utf-8")
+    Path(str(changed) + ".json").write_text(
+        json.dumps({**metadata, "sha256": hashlib.sha256(changed.read_bytes()).hexdigest()}),
+        encoding="utf-8",
+    )
     different = invoke(native, plugin, changed, *study, ohlcv_option="--ohlcv-bin")
     original = invoke(native, plugin, binary, *study, ohlcv_option="--ohlcv-bin")
     require(different.returncode == original.returncode == 0, "chart sensitivity study failed")
@@ -167,7 +176,7 @@ def test_binary_chart(native: Path, plugin: Path, csv: Path) -> None:
     sidecar.write_text(json.dumps({**metadata, "count": len(rows) + 1}), encoding="utf-8")
     refusal(
         invoke(native, plugin, binary, ohlcv_option="--ohlcv-bin"),
-        "sidecar count disagrees",
+        "sidecar does not match the bar/close files",
     )
     refusal(
         invoke(native, plugin, csv, "--ohlcv-bin", str(binary)),

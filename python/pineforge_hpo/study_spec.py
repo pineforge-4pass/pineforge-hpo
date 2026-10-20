@@ -69,6 +69,7 @@ class DatasetSpec:
     script_tf: str
     chart_timezone: str
     ohlcv_bin: Path | None = None
+    verify_bin: str = "full"
 
 
 @dataclass(frozen=True)
@@ -488,13 +489,19 @@ def _parse_dataset(
     raw = _object(value, path, issues)
     _check_unknown(
         raw,
-        {"id", "ohlcv", "ohlcv_bin", "input_tf", "script_tf", "chart_timezone"},
+        {"id", "ohlcv", "ohlcv_bin", "verify_bin", "input_tf", "script_tf", "chart_timezone"},
         path,
         issues,
     )
     dataset_id = _nonempty_string(raw.get("id"), f"{path}.id", issues)
     has_csv = "ohlcv" in raw
     has_binary = "ohlcv_bin" in raw
+    verify_bin = raw.get("verify_bin", "full")
+    if verify_bin not in ("full", "sidecar"):
+        issues.append(ValidationIssue(f"{path}.verify_bin", "must be full or sidecar"))
+        verify_bin = "full"
+    if "verify_bin" in raw and not has_binary:
+        issues.append(ValidationIssue(f"{path}.verify_bin", "requires ohlcv_bin"))
     if has_csv and has_binary:
         issues.append(
             ValidationIssue(path, "ohlcv and ohlcv_bin are mutually exclusive")
@@ -526,6 +533,7 @@ def _parse_dataset(
         script_tf=script_tf_raw,
         chart_timezone=chart_timezone,
         ohlcv_bin=ohlcv_bin,
+        verify_bin=verify_bin,
     )
 
 

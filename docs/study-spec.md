@@ -371,6 +371,8 @@ OHLCV rows with timestamps compatible with PineForge's public bar contract.
 - `ohlcv`: CSV path relative to the StudySpec;
 - `ohlcv_bin`: alternative binary chart path relative to the StudySpec; exactly one of
   `ohlcv` and `ohlcv_bin` is required;
+- `verify_bin`: `full` (default) or `sidecar`; requires `ohlcv_bin` and is forwarded as
+  `--verify-bin`;
 - `input_tf`: chart/input timeframe passed to `run_backtest_full()`;
 - `script_tf`: script timeframe; defaults to `input_tf` in the loader;
 - `chart_timezone`: chart timezone; defaults to `UTC`.
@@ -380,10 +382,30 @@ read-only (`PROT_READ`, `MAP_PRIVATE`) and passes the mapped records directly to
 The file has no header: each 48-byte record is little-endian `<5dq` (open, high, low,
 close, volume as binary64, then signed int64 bar-open Unix milliseconds). A big-endian
 host is refused. The file must contain 1 through 2147483647 records and its appended
-`<file>.json` sidecar must be an object with `"format":"pf_bar_t/v1"` and an integer
-`count` equal to file size divided by 48. Other sidecar fields and digests are not checked.
+`<file>.json` sidecar must be a regular file of at most 1 MiB containing a JSON object with:
+
+- `format`: `"pf_bar_t/v1"`;
+- `record_size`: integer `48`;
+- `symbol`: a string, including an empty string;
+- `tf`: a string matching the whole canonical value
+  `[1-9][0-9]{0,4}|[1-9][0-9]{0,3}[DWMS]`;
+- `count`: integer equal to file size divided by 48;
+- `first_ts` and `last_ts`: integers equal to the mapped signed int64 timestamps at
+  byte `40` and `48*(count-1)+40`;
+- `sha256`: exactly 64 lowercase hexadecimal characters.
+
+Booleans are not integers. Symbol and timeframe are descriptive and are not compared to
+the run configuration; extra metadata keys are allowed. Metadata or digest mismatches
+are refused as `sidecar` (`hpo_dataset_invalid`, with the engine's cause text
+`sidecar does not match the bar/close files`) before a Dataset is returned.
+`full` is the default and compares SHA-256 of the entire mapped file, without a prefix.
+`sidecar` checks all metadata and digest shapes but skips the digest comparison.
+Both modes scan every record:
 OHLC prices must be finite, volume nonnegative or NaN, and timestamps strictly increasing.
-Keep the mapped file immutable for the dataset's lifetime. The CSV loader is unchanged.
+The mapped file must never be rewritten in place. Publish a new file by `rename`/`os.replace`:
+an in-place write reaches later trials without validation, and truncation can cause SIGBUS,
+terminating the process without failure JSON. Keep each mapped inode immutable for the
+dataset's lifetime. The CSV loader is unchanged.
 Optional `symbol_feeds` remain CSV and can accompany a binary chart.
 
 Multi-dataset train/validation/test roles and walk-forward folds are not

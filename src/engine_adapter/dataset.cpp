@@ -2,7 +2,8 @@
 #include <pineforge/hpo/error.hpp>
 
 #include "dataset_bin.hpp"
-#include "../cli/json.hpp"
+#include "../core/json.hpp"
+#include "../core/sha256.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -17,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <type_traits>
@@ -273,9 +275,14 @@ namespace {
 
 class BinaryDescriptor final {
 public:
-    explicit BinaryDescriptor(const std::filesystem::path& path)
+    explicit BinaryDescriptor(const std::filesystem::path& path, bool sidecar = false)
         : descriptor_(::open(path.c_str(), O_RDONLY | O_NONBLOCK)) {
         if (descriptor_ < 0) {
+            if (sidecar) {
+                binary_dataset_error(std::string(errno == ENOENT ? "sidecar missing: " :
+                                                                  "sidecar unreadable: ") +
+                                     path.string());
+            }
             binary_dataset_error("cannot open OHLCV binary: " + path.string() + ": " +
                                  std::strerror(errno));
         }
@@ -290,28 +297,65 @@ private:
     int descriptor_;
 };
 
-void check_binary_sidecar(const std::filesystem::path& path, std::uint64_t count) {
+bool sidecar_integer_equals(const detail::Json* value, std::int64_t expected) {
+    if (!value || value->kind != detail::Json::Kind::Number) {
+        return false;
+    }
+    std::int64_t integer = 0;
+    const auto* begin = value->value.data();
+    const auto* end = begin + value->value.size();
+    const auto parsed = std::from_chars(begin, end, integer, 10);
+    return parsed.ec == std::errc{} && parsed.ptr == end && integer == expected;
+}
+
+bool canonical_sidecar_timeframe(const detail::Json* value) {
+    if (!value || value->kind != detail::Json::Kind::String || value->value.empty()) {
+        return false;
+    }
+    // Full-match the engine's [1-9][0-9]{0,4}|[1-9][0-9]{0,3}[DWMS] without regex scratch.
+    const std::string_view text(value->value);
+    const bool unit = text.back() == 'D' || text.back() == 'W' ||
+                      text.back() == 'M' || text.back() == 'S';
+    const auto digits = text.size() - (unit ? 1 : 0);
+    return digits >= 1 && digits <= (unit ? 4U : 5U) && text.front() >= '1' &&
+           text.front() <= '9' && std::all_of(text.begin(), text.begin() + digits,
+                                            [](char ch) { return ch >= '0' && ch <= '9'; });
+}
+
+std::string check_binary_sidecar(const std::filesystem::path& path, const pf_bar_t* bars,
+                                 std::size_t count) {
     const std::filesystem::path sidecar(path.string() + ".json");
-    std::ifstream input(sidecar, std::ios::binary);
-    if (!input) {
-        binary_dataset_error(std::string(errno == ENOENT ? "sidecar missing: " :
-                                                          "sidecar unreadable: ") +
-                             sidecar.string());
+    // Open nonblocking, then fstat BEFORE any read/stream open: FIFOs cannot hang, and directory
+    // refusals do not depend on the standard library's ifstream/EISDIR behavior.
+    const BinaryDescriptor input(sidecar, true);
+    struct stat info {};
+    if (::fstat(input.get(), &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 0) {
+        binary_dataset_error("sidecar unreadable: " + sidecar.string());
     }
-    // Bound metadata memory independently of the bar count, using the existing JSON parser's
-    // 1 MiB limit. The bar file itself is never read into a stream, string, or vector.
+    // Allocate the text once, bounded independently of bar count. The parsed tree is bounded by
+    // the same 1 MiB input limit. No bar bytes are copied into this storage.
     constexpr std::size_t sidecar_limit = 1024 * 1024;
-    std::string text;
-    char chunk[4096];
-    while (input) {
-        input.read(chunk, sizeof(chunk));
-        text.append(chunk, static_cast<std::size_t>(input.gcount()));
-        if (text.size() > sidecar_limit) {
-            binary_dataset_error("sidecar invalid JSON: exceeds 1048576 bytes: " +
-                                 sidecar.string());
-        }
+    if (static_cast<std::uint64_t>(info.st_size) > sidecar_limit) {
+        binary_dataset_error("sidecar invalid JSON: exceeds 1048576 bytes: " + sidecar.string());
     }
-    if (input.bad()) {
+    std::string text(static_cast<std::size_t>(info.st_size), '\0');
+    std::size_t consumed = 0;
+    while (consumed < text.size()) {
+        const auto bytes = ::read(input.get(), text.data() + consumed, text.size() - consumed);
+        if (bytes < 0 && errno == EINTR) {
+            continue;
+        }
+        if (bytes <= 0) {
+            binary_dataset_error("sidecar unreadable: " + sidecar.string());
+        }
+        consumed += static_cast<std::size_t>(bytes);
+    }
+    char extra;
+    ssize_t trailing;
+    do {
+        trailing = ::read(input.get(), &extra, 1);
+    } while (trailing < 0 && errno == EINTR);
+    if (trailing != 0) {
         binary_dataset_error("sidecar unreadable: " + sidecar.string());
     }
     detail::Json document;
@@ -324,19 +368,22 @@ void check_binary_sidecar(const std::filesystem::path& path, std::uint64_t count
         binary_dataset_error("sidecar must be a JSON object: " + sidecar.string());
     }
     const auto* format = document.find("format");
-    if (!format || format->kind != detail::Json::Kind::String || format->value != "pf_bar_t/v1") {
-        binary_dataset_error("sidecar format must be pf_bar_t/v1: " + sidecar.string());
+    const auto* symbol = document.find("symbol");
+    const auto* digest = document.find("sha256");
+    if (!format || format->kind != detail::Json::Kind::String || format->value != "pf_bar_t/v1" ||
+        !sidecar_integer_equals(document.find("record_size"), 48) ||
+        !symbol || symbol->kind != detail::Json::Kind::String ||
+        !canonical_sidecar_timeframe(document.find("tf")) ||
+        !sidecar_integer_equals(document.find("count"), static_cast<std::int64_t>(count)) ||
+        !sidecar_integer_equals(document.find("first_ts"), bars[0].timestamp) ||
+        !sidecar_integer_equals(document.find("last_ts"), bars[count - 1].timestamp) ||
+        !digest || digest->kind != detail::Json::Kind::String || digest->value.size() != 64 ||
+        !std::all_of(digest->value.begin(), digest->value.end(), [](char ch) {
+            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+        })) {
+        binary_dataset_error("sidecar does not match the bar/close files");
     }
-    const auto* recorded_count = document.find("count");
-    if (!recorded_count || recorded_count->kind != detail::Json::Kind::Number ||
-        recorded_count->value.find_first_of(".eE") != std::string::npos) {
-        binary_dataset_error("sidecar count must be an integer: " + sidecar.string());
-    }
-    // JSON integer tokens have canonical decimal spelling. Compare exact tokens rather than
-    // rounding through double or trusting metadata to determine the mmap length.
-    if (recorded_count->value != std::to_string(count)) {
-        binary_dataset_error("sidecar count disagrees with file size/48: " + sidecar.string());
-    }
+    return digest->value;
 }
 
 void check_binary_records(const pf_bar_t* bars, std::size_t count) {
@@ -400,7 +447,7 @@ std::shared_ptr<const pf_bar_t> detail::map_bin_records(
 Dataset::Dataset(std::shared_ptr<const pf_bar_t> mapped_bars, std::size_t count)
     : mapped_bars_(std::move(mapped_bars)), mapped_count_(count) {}
 
-Dataset Dataset::load_bin(const std::filesystem::path& path) {
+Dataset Dataset::load_bin(const std::filesystem::path& path, BinaryVerification verification) {
     const std::uint16_t endian_probe = 1;
     detail::require_bin_little_endian(
         *reinterpret_cast<const unsigned char*>(&endian_probe) == 1);
@@ -417,10 +464,15 @@ Dataset Dataset::load_bin(const std::filesystem::path& path) {
         binary_dataset_error("record count exceeds 2147483647: " + path.string());
     }
     detail::require_bin_address_space(bytes, std::numeric_limits<std::size_t>::max(), path);
-    check_binary_sidecar(path, count);
     const auto length = static_cast<std::size_t>(bytes);
     auto mapped = detail::map_bin_records(file.get(), length, path);
+    const auto digest = check_binary_sidecar(path, mapped.get(), static_cast<std::size_t>(count));
     check_binary_records(mapped.get(), static_cast<std::size_t>(count));
+    if (verification == BinaryVerification::Full &&
+        digest != detail::sha256(std::string_view(reinterpret_cast<const char*>(mapped.get()),
+                                                  length))) {
+        binary_dataset_error("sidecar does not match the bar/close files");
+    }
     return Dataset(std::move(mapped), static_cast<std::size_t>(count));
 }
 

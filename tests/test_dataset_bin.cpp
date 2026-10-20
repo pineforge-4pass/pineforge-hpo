@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -91,6 +92,24 @@ int main(int argc, char** argv) {
         test("binary_sidecar_extra_metadata_is_ignored", [&] {
             require_same_bars(Dataset::load_bin(directory / "extra-metadata.bin"), csv);
         });
+        test("binary_single_record_endpoints", [&] {
+            const auto single = Dataset::load_bin(directory / "single.bin");
+            require(single.size() == 1 && single.data()[0].timestamp == csv.data()[0].timestamp,
+                    "single-record endpoints differ");
+        });
+        test("binary_signed_int64_timestamp_endpoints", [&] {
+            const auto wide = Dataset::load_bin(directory / "int64-timestamps.bin");
+            require(wide.size() == 2 &&
+                        wide.data()[0].timestamp == std::numeric_limits<std::int64_t>::min() &&
+                        wide.data()[1].timestamp == std::numeric_limits<std::int64_t>::max(),
+                    "int64 endpoints differ");
+        });
+        test("binary_sidecar_mode_skips_only_digest_comparison", [&] {
+            const auto mapped = Dataset::load_bin(directory / "digest-mismatch.bin",
+                                                  pineforge::hpo::BinaryVerification::Sidecar);
+            require(mapped.size() == csv.size(), "sidecar mode lost records");
+            require(mapped.data()[0].open != csv.data()[0].open, "flipped price byte was ignored");
+        });
         const auto refused = [&](const std::string& name, const std::string& cause) {
             test(name, [&] {
                 require_dataset_refusal([&] { (void)Dataset::load_bin(directory / name); }, cause);
@@ -103,19 +122,34 @@ int main(int argc, char** argv) {
         refused("empty.bin", "zero records");
         refused("too-many.bin", "record count exceeds 2147483647");
         refused("missing-sidecar.bin", "sidecar missing");
-        refused("wrong-count.bin", "sidecar count disagrees");
-        refused("wrong-format.bin", "sidecar format must be pf_bar_t/v1");
+        const std::string mismatch = "sidecar does not match the bar/close files";
+        refused("wrong-count.bin", mismatch);
+        refused("wrong-format.bin", mismatch);
         for (const auto* type : {"bool", "float", "string", "null"}) {
-            refused(std::string("count-") + type + ".bin", "sidecar count must be an integer");
+            refused(std::string("count-") + type + ".bin", mismatch);
+        }
+        for (const auto* name : {
+                 "record-size-wrong", "record-size-missing", "record-size-bool",
+                 "record-size-float", "record-size-string", "symbol-missing", "symbol-number",
+                 "symbol-bool", "tf-missing", "tf-number", "first-ts-mismatch", "last-ts-mismatch",
+                 "first-ts-missing", "last-ts-missing", "first-ts-bool", "last-ts-float",
+                 "first-ts-string", "last-ts-overflow", "sha256-missing", "sha256-number",
+                 "sha256-short", "sha256-uppercase", "sha256-nonhex", "sha256-unchecked",
+                 "digest-mismatch"}) {
+            refused(std::string(name) + ".bin", mismatch);
+        }
+        for (int index = 0; index < 12; ++index) {
+            refused("tf-bad-" + std::to_string(index) + ".bin", mismatch);
         }
         refused("malformed.bin", "sidecar invalid JSON");
         refused("oversized-sidecar.bin", "sidecar invalid JSON: exceeds 1048576 bytes");
         refused("unreadable-sidecar.bin", "sidecar unreadable");
+        refused("fifo-sidecar.bin", "sidecar unreadable");
         refused("nonobject.bin", "sidecar must be a JSON object");
-        refused("missing-count.bin", "sidecar count must be an integer");
-        refused("missing-format.bin", "sidecar format must be pf_bar_t/v1");
-        refused("exponent-count.bin", "sidecar count must be an integer");
-        refused("negative-count.bin", "sidecar count disagrees");
+        refused("missing-count.bin", mismatch);
+        refused("missing-format.bin", mismatch);
+        refused("exponent-count.bin", mismatch);
+        refused("negative-count.bin", mismatch);
         test("binary_big_endian_host_is_refused", [&] {
             // Exercise the production guard's refusal on the little-endian proof box. There
             // is no public flag/environment override of the loader's actual host detection.

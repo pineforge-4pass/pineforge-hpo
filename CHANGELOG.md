@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add native `--ohlcv-bin` and StudySpec `ohlcv_bin` for shared read-only mapped chart bars.
+  Validate the complete `pf_bar_t/v1` sidecar and mapped file SHA-256 by default (`full`);
+  `--verify-bin sidecar` / dataset `verify_bin: "sidecar"` skips only the digest comparison.
+  Refuse non-regular sidecars before reading. Publish mapped files by rename/`os.replace`,
+  never by rewriting or truncating them in place.
+
 - Add the `sobol` sampler (native `--sampler sobol [--sobol-scramble digital_shift|none]`; StudySpec
   `sampler.kind: "sobol"` with `sampler.config.scramble`). It issues the 64-bit Gray-code Sobol
   sequence (Joe-Kuo criterion-6 direction numbers for dimensions 2 to 1024, vendored verbatim with

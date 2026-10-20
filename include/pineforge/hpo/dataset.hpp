@@ -10,12 +10,17 @@
 namespace pineforge {
 namespace hpo {
 
+/// Verification of a binary chart's sidecar and mapped bytes.
+enum class BinaryVerification { Full, Sidecar };
+
 /// @brief Immutable owned or file-mapped OHLCV input shared by independent trial executions.
 ///
 /// The public API intentionally exposes only const access even though the legacy PineForge C ABI
 /// accepts `pf_bar_t*` rather than `const pf_bar_t*`. Timestamps must be strictly increasing and
 /// owned OHLCV values must be finite. Binary inputs follow the engine's volume contract:
-/// nonnegative or NaN, with finite OHLC prices. Mapped files must remain immutable while in use.
+/// nonnegative or NaN, with finite OHLC prices. Never rewrite a mapped file in place: publish by
+/// rename/os.replace. In-place writes reach later trials without validation; truncation can cause
+/// SIGBUS and terminate the process without failure JSON.
 class Dataset final {
 public:
     /// Takes ownership of validated bars.
@@ -33,10 +38,18 @@ public:
     /// Maps a headerless little-endian `pf_bar_t/v1` file read-only, without copying its bars.
     ///
     /// Requires a regular file containing 1..2147483647 records of 48 bytes and an appended
-    /// `.json` sidecar whose format and integer count match. Other sidecar fields, including
-    /// digests, are not checked. Copies share ownership of the mapping until the last is freed.
+    /// regular `.json` sidecar (at most 1 MiB) with format `pf_bar_t/v1`, integer record_size 48,
+    /// string symbol, canonical tf matching `[1-9][0-9]{0,4}|[1-9][0-9]{0,3}[DWMS]`, integer
+    /// count equal to file size/48, and integer first_ts/last_ts equal to the mapped endpoints.
+    /// Booleans are not integers. sha256 must contain exactly 64 lowercase hexadecimal characters.
+    /// Full verification (the default) compares SHA-256 of the entire mapped file; Sidecar skips
+    /// only the digest comparison. Both modes scan values and timestamp order before returning.
+    /// Symbol/tf are descriptive, not compared to the run configuration; extra keys are allowed.
+    /// Copies share ownership of the mapping until the last is freed. Publish files by rename,
+    /// never by rewriting or truncating a file while it is mapped.
     /// @throws std::runtime_error for invalid files, sidecars, bars, or a big-endian host.
-    static Dataset load_bin(const std::filesystem::path& path);
+    static Dataset load_bin(const std::filesystem::path& path,
+                            BinaryVerification verification = BinaryVerification::Full);
 
     /// Returns a const pointer suitable for PineForge backtest calls.
     const pf_bar_t* data() const noexcept {
@@ -46,7 +59,8 @@ public:
     std::size_t size() const noexcept { return mapped_bars_ ? mapped_count_ : bars_.size(); }
     /// Returns whether the dataset contains no bars.
     bool empty() const noexcept { return size() == 0; }
-    /// Returns the owning vector; empty for mapped input. Use data()/size() for either format.
+    /// Returns the owning vector; an empty vector even for nonempty mapped input.
+    /// Use data()/size() for either format.
     const std::vector<pf_bar_t>& bars() const noexcept { return bars_; }
 
 private:

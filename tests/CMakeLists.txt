@@ -417,6 +417,12 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             FIXTURES_REQUIRED dataset_bin_inputs)
     endif()
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
+        add_test(NAME pineforge_hpo_dataset_bin_sidecars
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_dataset_bin_sidecars.py"
+                $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                "${PFH_DATASET_BIN_FIXTURES}" --modes)
+        set_tests_properties(pineforge_hpo_dataset_bin_sidecars PROPERTIES
+            FIXTURES_REQUIRED dataset_bin_inputs TIMEOUT 60)
         add_test(NAME pineforge_hpo_failure_codes
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_failure_codes.py"
                 $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
