@@ -15,8 +15,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/release.yml"
 TAG_PATTERN = (
-    r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\."
-    r"(0|[1-9][0-9]*)(rc[1-9][0-9]*)?$"
+    r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\." r"(0|[1-9][0-9]*)(rc[1-9][0-9]*)?$"
 )
 PATTERN_BLOCK = (
     f'if [[ ! "$TAG" =~ {TAG_PATTERN} ]]; then\n'

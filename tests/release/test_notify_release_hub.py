@@ -423,7 +423,7 @@ class WorkflowWiringTests(unittest.TestCase):
             "ubuntu-24.04",
             "ubuntu-latest",
             ["self-hosted", "pf-ci", "pf-ci-x64"],
-            "${{ fromJSON('[\"self-hosted\",\"pf-ci\",\"pf-ci-release\"]') "
+            '${{ fromJSON(\'["self-hosted","pf-ci","pf-ci-release"]\') '
             "|| 'ubuntu-24.04' }}",
         )
         for job_id in ("tag-guard", "package", "notify-hub"):
