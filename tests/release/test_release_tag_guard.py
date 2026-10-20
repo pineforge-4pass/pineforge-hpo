@@ -30,7 +30,7 @@ EXISTENCE_BLOCK = (
     "  exit 1\n"
     "fi\n"
 )
-ANCESTRY_BLOCK = """if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+ANCESTRY_BLOCK = """if ! git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/main; then
   echo '::error::Release tag commit is not reachable from origin/main.'
   exit 1
 fi
@@ -335,6 +335,11 @@ class RealGitGuardTests(unittest.TestCase):
         self.git(self.origin, "switch", "-c", "side", self.first)
         self.git(self.origin, "commit", "--allow-empty", "-m", "side only")
         self.git(self.origin, "tag", "v9.9.9")
+        # Decoy tags named like main on the side commit: a short name such as
+        # origin/main resolves refs/tags/ before refs/remotes/, so a guard that
+        # names main loosely would accept the side-branch tag above.
+        for decoy in ("origin/main", "main", "heads/main", "remotes/origin/main"):
+            self.git(self.origin, "tag", decoy)
         self.git(self.origin, "switch", "main")
         self.git(
             self.directory,
@@ -414,9 +419,15 @@ class RealGitGuardTests(unittest.TestCase):
         mutations = (
             (PATTERN_BLOCK, "", "v01.2.3"),
             (ANCESTRY_BLOCK, "", "v9.9.9"),
+            # The decoy tags make the short name accept the side-branch tag.
+            (
+                ANCESTRY_BLOCK,
+                ANCESTRY_BLOCK.replace("refs/remotes/origin/main", "origin/main", 1),
+                "v9.9.9",
+            ),
             (
                 EXISTENCE_BLOCK,
-                'TAG_COMMIT="$(git rev-parse origin/main)"\n',
+                'TAG_COMMIT="$(git rev-parse refs/remotes/origin/main)"\n',
                 "v8.8.8",
             ),
         )

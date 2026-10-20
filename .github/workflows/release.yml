@@ -74,7 +74,7 @@ jobs:
             echo '::error::Release tag did not resolve to a full commit SHA.'
             exit 1
           fi
-          if ! git merge-base --is-ancestor "$TAG_COMMIT" origin/main; then
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" refs/remotes/origin/main; then
             echo '::error::Release tag commit is not reachable from origin/main.'
             exit 1
           fi

@@ -14,7 +14,8 @@ read-only permissions, then validates all three release prerequisites:
 2. After fetching main and tags, `git rev-parse -q --verify` must peel the local
    tag ref to a commit. A missing tag or a tag pointing to a non-commit fails.
 3. `git merge-base --is-ancestor` must confirm that commit is reachable from
-   `origin/main`. A tag on an unmerged side branch fails.
+   `refs/remotes/origin/main`, named in full so that a tag called `origin/main`
+   cannot stand in for it. A tag on an unmerged side branch fails.
 
 Only then does the guard output a full 40-hex commit SHA. Every other job needs
 the guard. The `package` job checks out that verified SHA with credentials
