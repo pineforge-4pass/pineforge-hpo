@@ -5,7 +5,7 @@ import re
 import unittest
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_ENTITY = "PINEFORGE LLC"
 ENTITY_PATTERN = re.compile(r"\bpineforge[\s,]*llc\b", re.IGNORECASE)
 OLD_ENTITY_PATTERN = re.compile(r"pineforge,\s*LLC", re.IGNORECASE)
