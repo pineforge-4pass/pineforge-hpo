@@ -4,9 +4,10 @@ The `memory-gate` job in CI builds Release HPO with tests, the engine adapter an
 the native runner enabled, then invokes `scripts/ci_memory_gate.py` through
 `bash scripts/run_ci_memory_gate.sh`. CI and release use the same local composite
 action at `.github/actions/memory-gate/action.yml` and the pinned engine runtime.
-The measurement script and fixed fixtures are owned by SM-CX. They are absent at
-the wiring base: **the job is wired ahead of the script and stays RED until SM-CX
-lands it and the HPO memory growth is flat within the allowance.**
+The measurement script and its fixed fixtures are delivered separately from this
+wiring. They are absent at the wiring base: **the job is wired ahead of the script
+and stays RED until the script lands and the HPO memory growth is flat within the
+allowance.**
 
 The measurement contract runs the HPO binary on a fixed set of cases at a small
 and a large bar rung. It measures charged memory for the whole child process
@@ -14,8 +15,8 @@ tree, using cgroup `memory.peak` when available and `/proc` RSS plus mapped byte
 otherwise. It compares the per-rung spread with a fixed byte allowance that does
 not scale with bars, prints both figures, and prints how many rows/cases it
 judged. RSS is a proxy where cgroup accounting is unavailable. Fixture values,
-rungs, allowance, child-tree accounting and spot-box measurements remain SM-CX
-deliverables; this wiring supplies no substitute measurements.
+rungs, allowance, child-tree accounting and measured figures belong to the
+measurement script; this wiring supplies no substitute measurements.
 
 The job checks `test -f scripts/ci_memory_gate.py` before any build. The shared
 guard repeats that check, runs the script once, streams its output and retains
@@ -30,7 +31,7 @@ The memory job uses the pinned engine's public Linux heavy-pool expression,
 including its same-repository PR check. Its actual class label is
 `pf-ci-x64-16`, alongside `self-hosted` and `pf-ci`. A hosted fallback refuses
 before checkout or build. A repository missing pool/class admission remains
-queued or refused; changing that allowlist belongs to laneboss.
+queued or refused; changing that allowlist is an organization administrator action.
 
 `build-gate`, displayed as `build`, needs every CI job and runs with `if: always()`
 on the standard runner. It only prints and checks results. A failed/cancelled job

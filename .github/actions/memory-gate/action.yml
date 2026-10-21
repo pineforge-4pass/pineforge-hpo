@@ -1,5 +1,5 @@
 name: HPO charged-memory growth gate
-description: Build Release HPO with tests and run the SM-CX measurement gate without an empty pass.
+description: Build Release HPO with tests and run the memory measurement gate without an empty pass.
 runs:
   using: composite
   steps:

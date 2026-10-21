@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# CI/release wiring only. SM-CX owns ci_memory_gate.py and its measured fixtures.
+# CI/release wiring only. The measurement lives in ci_memory_gate.py and its fixtures.
 set -euo pipefail
 
 if ! test -f scripts/ci_memory_gate.py; then
-    echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing (SM-CX).'
+    echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing.'
     exit 2
 fi
 

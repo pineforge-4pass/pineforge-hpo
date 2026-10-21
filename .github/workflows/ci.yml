@@ -428,11 +428,11 @@ jobs:
           submodules: true
           persist-credentials: false
 
-      - name: Require the SM-CX measurement script before building
+      - name: Require the memory measurement script before building
         shell: bash
         run: |
           if ! test -f scripts/ci_memory_gate.py; then
-            echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing (SM-CX); the gate remains RED.'
+            echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing; the gate remains RED.'
             exit 2
           fi
 

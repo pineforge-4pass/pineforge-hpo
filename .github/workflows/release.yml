@@ -55,11 +55,11 @@ jobs:
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Require the SM-CX measurement script before building
+      - name: Require the memory measurement script before building
         shell: bash
         run: |
           if ! test -f scripts/ci_memory_gate.py; then
-            echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing (SM-CX); release packaging is blocked.'
+            echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing; release packaging is blocked.'
             exit 2
           fi
 
