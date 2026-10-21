@@ -210,7 +210,8 @@ class PrTierWorkflowTests(unittest.TestCase):
                     "release-notification": "Release notification contract",
                     "native": "Native (${{ matrix.os }})",
                     "python": "Python ${{ matrix.python }}",
-                    "build-gate": "CI verification gate",
+                    "memory-gate": "HPO memory growth gate",
+                    "build-gate": "build",
                 },
             ),
             "benchmark-smoke.yml": (

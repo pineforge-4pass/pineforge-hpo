@@ -1,9 +1,11 @@
 # HPO release notification and replay
 
 `.github/workflows/release.yml` receives GitHub's `release: published` event.
-Its existing `package` job builds and uploads the Python wheel, sdist and two
-failure catalogs. `notify-hub` depends on that job succeeding. A failed,
-cancelled or skipped package job cannot send the producer event on this path.
+Its `memory-gate` job must pass the [HPO memory growth gate](ci.md) on the
+released source before `package` builds and uploads the Python wheel, sdist and
+two failure catalogs from that exact verified commit. `notify-hub` depends on
+that job succeeding. A failed, cancelled or skipped package job cannot send the
+producer event on this path.
 
 The notification helper rechecks the published release and downloads these
 four public assets before making any dispatch request:
@@ -63,9 +65,9 @@ gh workflow run release.yml --repo pineforge-4pass/pineforge-hpo \
   --ref main -f tag=v1.6.0
 ```
 
-The `workflow_dispatch` path skips `package` and calls the same verifier and
-sender. It works for releases whose tagged source predates the notification
-implementation. It never rebuilds, uploads, changes, removes or replaces release
+The `workflow_dispatch` path skips `memory-gate` and `package` and calls the same
+verifier and sender. It works for releases whose tagged source predates the
+notification implementation. It never rebuilds, uploads, changes, removes or replaces release
 assets, tags, commits or version files. Repair incomplete assets through the
 producer's release process before replaying; replay refuses incomplete releases.
 

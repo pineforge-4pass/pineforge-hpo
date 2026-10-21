@@ -393,9 +393,55 @@ jobs:
           ruff check python tests/python benchmarks
           ruff format --check python tests/python benchmarks
 
+  memory-gate:
+    name: HPO memory growth gate
+    needs: changes
+    if: >-
+      ${{ !cancelled() &&
+          (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
+           needs.changes.outputs.docs_only != 'true') }}
+    # Match the pinned engine's public heavy-pool expression. A hosted fallback
+    # can report refusal, but must never build or run the memory fixtures.
+    runs-on: >-
+      ${{ github.event_name != 'pull_request_target' &&
+          github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
+          contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
+          fromJSON('["self-hosted","pf-ci","pf-ci-x64-16"]') || 'ubuntu-24.04' }}
+    env:
+      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64-16"]'
+    steps:
+      - name: Refuse to build on the hosted fallback
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if [[ "$RUNNER_ENVIRONMENT" != 'self-hosted' ]]; then
+            echo '::error::HPO memory gate INCOMPLETE: a pf-ci Linux runner is required; no hosted build is allowed.'
+            exit 2
+          fi
+
+      - name: Check out PineForge HPO and pinned submodules
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Require the SM-CX measurement script before building
+        shell: bash
+        run: |
+          if ! test -f scripts/ci_memory_gate.py; then
+            echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing (SM-CX); the gate remains RED.'
+            exit 2
+          fi
+
+      - name: Build and run the HPO memory gate
+        uses: ./.github/actions/memory-gate
+
   build-gate:
-    name: CI verification gate
-    needs: [changes, release-notification, native, python]
+    name: build
+    needs: [changes, release-notification, native, python, memory-gate]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -408,18 +454,19 @@ jobs:
           RELEASE_RESULT: ${{ needs.release-notification.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
           PYTHON_RESULT: ${{ needs.python.result }}
+          MEMORY_RESULT: ${{ needs.memory-gate.result }}
         run: |
           set -euo pipefail
           printf '%s\n' "changes: $CHANGES_RESULT, docs_only: $DOCS_ONLY" \
             "release-notification: $RELEASE_RESULT" "native: $NATIVE_RESULT" \
-            "python: $PYTHON_RESULT"
+            "python: $PYTHON_RESULT" "memory-gate: $MEMORY_RESULT"
           [[ "$CHANGES_RESULT" == "success" ]]
           case "$DOCS_ONLY" in
             true) [[ "$EVENT_NAME" == "pull_request" ]] ;;
             false) ;;
             *) exit 1 ;;
           esac
-          for result in "$RELEASE_RESULT" "$NATIVE_RESULT" "$PYTHON_RESULT"; do
+          for result in "$RELEASE_RESULT" "$NATIVE_RESULT" "$PYTHON_RESULT" "$MEMORY_RESULT"; do
             if [[ "$result" == "success" ]]; then continue; fi
             [[ "$DOCS_ONLY" == "true" && "$result" == "skipped" ]]
           done

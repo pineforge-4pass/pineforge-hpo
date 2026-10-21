@@ -15,8 +15,10 @@ administrator applies and keeps these settings:
    reporting so the link in `SECURITY.md` accepts reports.
 5. Create the `bug`, `enhancement`, and `benchmark` labels referenced by the
    issue forms, or update those forms to match the organization label policy.
-6. Protect `main` with required pull requests and the `CI` and
-   `API documentation / Build API reference` checks after their first runs.
+6. Protect `main` with required pull requests and the `CI / build` aggregate
+   (`build-gate`, check name `build`) and `API documentation / Build API reference`
+   checks after their first runs. The aggregate includes the HPO memory growth
+   gate and refuses skips outside a classified docs-only PR; see [CI](ci.md).
 7. Make the existing org App's `PINEFORGE_APP_ID` and
    `PINEFORGE_APP_PRIVATE_KEY` Actions secrets available to this repository.
    Its installation must include `pineforge-release` with `Contents: write`.

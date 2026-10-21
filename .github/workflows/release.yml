@@ -18,7 +18,56 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  memory-gate:
+    name: HPO memory growth gate (release)
+    if: github.event_name == 'release'
+    runs-on: >-
+      ${{ github.event_name != 'pull_request_target' &&
+          github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
+          contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
+          fromJSON('["self-hosted","pf-ci","pf-ci-x64-16"]') || 'ubuntu-24.04' }}
+    env:
+      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64-16"]'
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Refuse to build on the hosted fallback
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          if [[ "$RUNNER_ENVIRONMENT" != 'self-hosted' ]]; then
+            echo '::error::HPO memory gate INCOMPLETE: a pf-ci Linux runner is required; no hosted build is allowed.'
+            exit 2
+          fi
+
+      - name: Check out the released tree and pinned submodules
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Bind the gate to the released source commit
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Require the SM-CX measurement script before building
+        shell: bash
+        run: |
+          if ! test -f scripts/ci_memory_gate.py; then
+            echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing (SM-CX); release packaging is blocked.'
+            exit 2
+          fi
+
+      - name: Build and run the HPO memory gate
+        uses: ./.github/actions/memory-gate
+
   package:
+    needs: memory-gate
     if: github.event_name == 'release'
     runs-on: ubuntu-24.04
     permissions:
@@ -27,7 +76,8 @@ jobs:
       - name: Check out released source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          ref: ${{ github.event.release.tag_name }}
+          # Package the exact tree the memory gate judged, even if a tag moves.
+          ref: ${{ needs.memory-gate.outputs.source_sha }}
           fetch-depth: 0
 
       - name: Set up Python
