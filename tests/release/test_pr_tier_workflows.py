@@ -427,6 +427,28 @@ class PrTierWorkflowTests(unittest.TestCase):
                                 allowed, result != "success" or docs_only != "true"
                             )
 
+    def test_draft_pull_requests_spend_no_suite_runner(self):
+        jobs = self.workflows["ci.yml"]["jobs"]
+        for job_id in ("release-notification", "native", "python", "memory-gate"):
+            with self.subTest(job=job_id):
+                allowed = evaluate(
+                    jobs[job_id]["if"],
+                    github=SimpleNamespace(
+                        event_name="pull_request",
+                        event=SimpleNamespace(
+                            pull_request=SimpleNamespace(draft=True)
+                        ),
+                    ),
+                    needs=SimpleNamespace(
+                        changes=SimpleNamespace(
+                            result="skipped",
+                            outputs=SimpleNamespace(docs_only="false"),
+                        )
+                    ),
+                    cancelled=lambda: False,
+                )
+                self.assertFalse(allowed)
+
 
 if __name__ == "__main__":
     unittest.main()
