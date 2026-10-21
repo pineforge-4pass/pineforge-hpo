@@ -429,16 +429,12 @@ class PrTierWorkflowTests(unittest.TestCase):
 
     def test_draft_pull_requests_spend_no_suite_runner(self):
         jobs = self.workflows["ci.yml"]["jobs"]
+        draft = SimpleNamespace(pull_request=SimpleNamespace(draft=True))
         for job_id in ("release-notification", "native", "python", "memory-gate"):
             with self.subTest(job=job_id):
                 allowed = evaluate(
                     jobs[job_id]["if"],
-                    github=SimpleNamespace(
-                        event_name="pull_request",
-                        event=SimpleNamespace(
-                            pull_request=SimpleNamespace(draft=True)
-                        ),
-                    ),
+                    github=SimpleNamespace(event_name="pull_request", event=draft),
                     needs=SimpleNamespace(
                         changes=SimpleNamespace(
                             result="skipped",
