@@ -79,12 +79,7 @@ jobs:
       ${{ !cancelled() &&
           (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
            needs.changes.outputs.docs_only != 'true') }}
-    runs-on: >-
-      ${{ github.event_name != 'pull_request' &&
-          github.event_name != 'pull_request_target' &&
-          github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
-          contains(fromJSON('["push","workflow_dispatch","schedule","release"]'), github.event_name) &&
-          fromJSON('["self-hosted","pf-ci","pf-ci-x64"]') || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
 
