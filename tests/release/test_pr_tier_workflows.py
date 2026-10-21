@@ -409,7 +409,12 @@ class PrTierWorkflowTests(unittest.TestCase):
                         ):
                             allowed = evaluate(
                                 job["if"],
-                                github=SimpleNamespace(event_name="pull_request"),
+                                github=SimpleNamespace(
+                                    event_name="pull_request",
+                                    event=SimpleNamespace(
+                                        pull_request=SimpleNamespace(draft=False)
+                                    ),
+                                ),
                                 needs=SimpleNamespace(
                                     changes=SimpleNamespace(
                                         result=result,

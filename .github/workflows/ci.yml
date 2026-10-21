@@ -5,17 +5,21 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # LB-387: ready_for_review starts the suites skipped on draft PRs.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
+    # A skipped classifier keeps the unchanged aggregate red, even for docs-only drafts.
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-24.04
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
@@ -79,9 +83,9 @@ jobs:
     name: Release notification contract
     needs: changes
     if: >-
-      ${{ !cancelled() &&
+      ${{ !github.event.pull_request.draft && (!cancelled() &&
           (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
-           needs.changes.outputs.docs_only != 'true') }}
+           needs.changes.outputs.docs_only != 'true')) }}
     runs-on: >-
       ${{ github.event_name != 'pull_request' &&
           github.event_name != 'pull_request_target' &&
@@ -114,9 +118,9 @@ jobs:
     name: Native (${{ matrix.os }})
     needs: changes
     if: >-
-      ${{ !cancelled() &&
+      ${{ !github.event.pull_request.draft && (!cancelled() &&
           (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
-           needs.changes.outputs.docs_only != 'true') }}
+           needs.changes.outputs.docs_only != 'true')) }}
     runs-on: ${{ matrix.runner }}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
@@ -344,9 +348,9 @@ jobs:
     name: Python ${{ matrix.python }}
     needs: changes
     if: >-
-      ${{ !cancelled() &&
+      ${{ !github.event.pull_request.draft && (!cancelled() &&
           (github.event_name != 'pull_request' || needs.changes.result != 'success' ||
-           needs.changes.outputs.docs_only != 'true') }}
+           needs.changes.outputs.docs_only != 'true')) }}
     runs-on: >-
       ${{ github.event_name != 'pull_request' &&
           github.event_name != 'pull_request_target' &&
