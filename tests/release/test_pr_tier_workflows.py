@@ -1,9 +1,8 @@
-"""Keep PR verification hosted and preserve the complete post-merge native suite."""
+"""Keep verification hosted and preserve the complete post-merge native suite."""
 
 from __future__ import annotations
 
 import copy
-from itertools import product
 import json
 from pathlib import Path
 import re
@@ -126,7 +125,7 @@ class PrTierWorkflowTests(unittest.TestCase):
             benchmark["optuna"]["runs-on"],
         )
         for route in routes:
-            self.assertEqual(compact(route), compact(POOL_ROUTE))
+            self.assertEqual(route, "ubuntu-24.04")
         self.assertEqual(ci["native"]["runs-on"], "${{ matrix.runner }}")
         self.assertEqual(
             ci["native"]["strategy"]["matrix"]["include"][1],
@@ -135,53 +134,29 @@ class PrTierWorkflowTests(unittest.TestCase):
         for jobs in (ci, benchmark):
             for job_id in ("changes", "build-gate"):
                 self.assertEqual(jobs[job_id]["runs-on"], "ubuntu-24.04")
-        return routes
 
-    def test_exact_routing_keeps_non_pr_events_and_bots_on_their_existing_runners(self):
-        events = (
-            "pull_request",
-            "pull_request_target",
-            "push",
-            "workflow_dispatch",
-            "schedule",
-            "release",
-            "repository_dispatch",
+    def test_no_route_is_a_conditional_expression(self):
+        # Every routed site is now a literal hosted label, so routing can no longer
+        # vary by event, actor or fork. Guard that invariant directly: a `${{ }}`
+        # expression creeping back into any of the four routed sites is a regression.
+        ci = self.workflows["ci.yml"]["jobs"]
+        benchmark = self.workflows["benchmark-smoke.yml"]["jobs"]
+        routes = (
+            ci["release-notification"]["runs-on"],
+            ci["python"]["runs-on"],
+            ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
+            benchmark["optuna"]["runs-on"],
         )
-        actors = ("contributor", "dependabot[bot]")
-        for route in self.assert_routing(self.workflows):
-            for event, actor, triggering_actor, fork, same_repo in product(
-                events, actors, actors, (False, True), (False, True)
-            ):
-                with self.subTest(
-                    event=event,
-                    actor=actor,
-                    triggering_actor=triggering_actor,
-                    fork=fork,
-                    same_repo=same_repo,
-                ):
-                    repository = "pineforge-4pass/pineforge-hpo"
-                    repo = SimpleNamespace(
-                        full_name=repository if same_repo else "contributor/hpo",
-                        fork=fork,
-                    )
-                    pull_request = SimpleNamespace(head=SimpleNamespace(repo=repo))
-                    github = SimpleNamespace(
-                        event_name=event,
-                        actor=actor,
-                        triggering_actor=triggering_actor,
-                        repository=repository,
-                        event=SimpleNamespace(pull_request=pull_request),
-                    )
-                    expected = (
-                        "ubuntu-24.04"
-                        if event == "pull_request"
-                        else evaluate(OLD_ROUTE, github=github)
-                    )
-                    self.assertEqual(evaluate(route, github=github), expected)
+        for route in routes:
+            with self.subTest(route=route):
+                self.assertNotIn("${{", route)
+                self.assertEqual(route, "ubuntu-24.04")
+        self.assert_routing(self.workflows)
 
     def test_old_pool_routing_and_pool_fallback_are_rejected(self):
         for bad_route in (
             OLD_ROUTE,
+            POOL_ROUTE,
             POOL_ROUTE.replace("'ubuntu-24.04'", f"fromJSON('{json.dumps(POOL)}')"),
         ):
             for job_id in ("release-notification", "python"):
