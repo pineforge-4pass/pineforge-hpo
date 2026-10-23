@@ -85,6 +85,34 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
+def append_memory_summary(evidence: dict) -> None:
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary:
+        return
+    path, = list_paths("GitHub step summary append", [Path(summary)])
+    lines = [
+        "\n### Streamed trial retention RSS (after)\n\n",
+        "| Trials | Peak RSS bytes | Slope bytes/trial | Limit bytes/trial | Verdict |\n",
+        "| ---: | ---: | ---: | ---: | :--- |\n",
+    ]
+    samples = evidence["samples"]
+    for index, sample in enumerate(samples):
+        slope = limit = "-"
+        verdict = "BASELINE"
+        if index:
+            previous = samples[index - 1]
+            delta = sample["peak_rss_bytes"] - previous["peak_rss_bytes"]
+            trials = sample["trials"] - previous["trials"]
+            limit = evidence["limits_bytes_per_trial"][index - 1]
+            slope = f"{evidence['slopes_bytes_per_trial'][index - 1]:.9f}"
+            verdict = "PASS" if delta <= limit * trials else "FAIL"
+        lines.append(
+            f"| {sample['trials']} | {sample['peak_rss_bytes']} | {slope} | {limit} | {verdict} |\n")
+    lines.append(f"\nRSS verdict: **{evidence['verdict']}**\n")
+    with path.open("a", encoding="utf-8") as output:
+        output.write("".join(lines))
+
+
 def run_child(label: str, command: list[str], inputs: list[Path], *,
               outputs: list[Path] | None = None, tmpdir: Path | None = None) -> dict:
     """wait4 reaps exactly this child; no wrapper/parent usage or exit code is sampled."""
@@ -339,9 +367,12 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             "verdict": "FAIL",
         }
         write_json(ROOT / "memory.result.json", evidence)
-        check_slopes(samples)
-        evidence["verdict"] = "PASS"
-        write_json(ROOT / "memory.result.json", evidence)
+        try:
+            check_slopes(samples)
+            evidence["verdict"] = "PASS"
+            write_json(ROOT / "memory.result.json", evidence)
+        finally:
+            append_memory_summary(evidence)
 
     def test_03_trials_file_bytes_match_result(self) -> None:
         trials_file = ROOT / "equality.trials.jsonl"
@@ -379,7 +410,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         list_paths("output alias read", [shared, stdout])
         self.assertEqual(shared.read_bytes(), stdout.read_bytes())
         pass_row(row, trials_completed=1_000,
-                 check="output inode alias preserves the complete JSON")
+                 check="output overwrites its trials-file path with the complete JSON")
 
     def test_05_spool_failures_are_typed_refusals(self) -> None:
         missing = ROOT / "missing-spool-directory"
@@ -388,10 +419,128 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         self.assert_output_refusal(row)
         if sys.platform.startswith("linux"):
             full = Path("/dev/full")
-            row = run_child("spool-write-refused",
+            row = run_child("trials-file-write-refused",
                             self.command(10, "--trials-file", str(full)),
                             [PLUGIN, MANIFEST, CSV], outputs=[full])
-            self.assert_output_refusal(row)
+            stdout, stderr = list_paths(
+                "ordered trials-file failure read", [Path(row["stdout"]), Path(row["stderr"])])
+            self.assertEqual(row["exit_code"], 1, child_diagnostics(row))
+            document = json.loads(stdout.read_bytes())
+            self.assertEqual(document["failure"], {
+                "origin": "hpo", "code": "hpo_output_io_failed", "args": {}, "exit_code": 1,
+            })
+            self.assertIn("failed writing terminal trial to --trials-file",
+                          stderr.read_text(encoding="utf-8"))
+            # The parent still published the archived terminal table after an ordered stream
+            # failed. This is independent of a refusal to create or complete the all-mode spool.
+            self.assertTrue(document["ok"])
+            self.assertEqual(document["stop_reason"], "cancelled")
+            self.assertEqual(document["trials_out"], "all")
+            self.assertGreater(document["trials_completed"], 0)
+            self.assertLessEqual(document["trials_completed"], 10)
+            self.assertEqual(len(document["trials"]), document["trials_completed"])
+            self.assertEqual([trial["trial_id"] for trial in document["trials"]],
+                             list(range(document["trials_completed"])))
+            self.assertTrue(all(trial["status"] == "ok" for trial in document["trials"]))
+            pass_row(row, trials_completed=document["trials_completed"],
+                     check="parent ordered-stream failure keeps the complete terminal array")
+
+    def test_06_default_all_does_not_backpressure_completions(self) -> None:
+        """Mutation control: a default all-mode run must refill the free rolling worker."""
+        lengths = [2, 1, 3, 5, 7, 9, 11, 13]
+        candidates, bars = list_paths(
+            "rolling guard fixture write", [ROOT / "rolling.candidates.jsonl",
+                                           ROOT / "rolling.bars.csv"])
+        candidates.write_text(
+            "".join(json.dumps({"Length": length}, separators=(",", ":")) + "\n"
+                    for length in lengths), encoding="utf-8")
+        bars.write_text(
+            "timestamp,open,high,low,close,volume\n"
+            + "".join(f"{1700000000000 + index * 60000},100,102,99,101,10\n"
+                      for index in range(64)), encoding="utf-8")
+        command = [
+            str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(bars),
+            "--objective", "metrics.all.net_profit", "--sampler", "candidates",
+            "--max-trials", str(len(lengths)), "--seed", "90210", "--workers", "2",
+            "--input-tf", "1", "--script-tf", "5", "--chart-timezone", "Asia/Taipei",
+            "--bar-magnifier", "true", "--magnifier-samples", "6",
+            "--magnifier-distribution", "triangle", "--fixed-input", "BatchPrefixTest", "1",
+            "--int-dim", "Length", "1", "100", "1", "--trials-out", "all",
+            "--schedule", "rolling", "--candidates", str(candidates),
+            "--fixed-input", "BatchPrefixJitter", "0",
+            "--fixed-input", "SequenceDelayMs", "1000,15",
+        ]
+        self.assertNotIn("--trials-file", command)
+        self.assertNotIn("--progress-fd", command)
+        row = run_child("default-all-rolling", command, [PLUGIN, MANIFEST, bars, candidates])
+        stdout, = list_paths("rolling guard document read", [Path(row["stdout"])])
+        self.assertEqual(row["exit_code"], 0, child_diagnostics(row))
+        document = json.loads(stdout.read_bytes())
+        self.assertTrue(document["ok"])
+        self.assertNotIn("failure", document)
+        self.assertEqual(document["trials_out"], "all")
+        self.assertEqual(document["trials_completed"], len(lengths))
+        self.assertEqual(document["completion_order"], [1, 2, 3, 4, 5, 6, 7, 0])
+        self.assertEqual(document["completed_before"], [0, 0, 1, 2, 3, 4, 5, 6])
+        self.assertEqual([trial["trial_id"] for trial in document["trials"]],
+                         list(range(len(lengths))))
+        self.assertEqual([trial["parameters"]["Length"] for trial in document["trials"]], lengths)
+        self.assertEqual(document["candidate_list"]["evaluated"], len(lengths))
+        self.assertTrue(all(trial["status"] == "ok" for trial in document["trials"]))
+        pass_row(row, trials_completed=len(lengths),
+                 completion_order=document["completion_order"],
+                 completed_before=document["completed_before"],
+                 check="all-mode spool never blocks rolling completion behind trial zero")
+
+    def test_07_default_all_keeps_candidate_list_id_gaps(self) -> None:
+        # Two occurrences hang; the watchdog records one timeout while the other has no row.
+        # The quick first/last positions leave an interior hole whichever hang times out first.
+        lengths = [1, 2, 2, 3]
+        candidates, = list_paths(
+            "candidate gap list write", [ROOT / "gaps.candidates.jsonl"])
+        candidates.write_text(
+            "".join(json.dumps({"Length": length}, separators=(",", ":")) + "\n"
+                    for length in lengths), encoding="utf-8")
+        command = [
+            str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(CSV),
+            "--objective", "metrics.all.net_profit", "--sampler", "candidates",
+            "--candidates", str(candidates), "--workers", "4",
+            "--input-tf", "1", "--script-tf", "5",
+            "--bar-magnifier", "true", "--magnifier-samples", "6",
+            "--magnifier-distribution", "triangle",
+            "--int-dim", "Length", "1", "100", "1",
+            "--fixed-input", "HangAtLength", "2", "--trial-timeout-seconds", "0.5",
+        ]
+        row = run_child("default-all-candidate-gaps", command, [PLUGIN, MANIFEST, CSV, candidates])
+        stdout, = list_paths("candidate gap document read", [Path(row["stdout"])])
+        self.assertEqual(row["exit_code"], 3, child_diagnostics(row))
+        document = json.loads(stdout.read_bytes())
+        self.assertTrue(document["ok"])
+        self.assertNotIn("failure", document)
+        self.assertEqual(document["trials_out"], "all")
+        self.assertEqual(document["stop_reason"], "trial_timeout")
+        self.assertEqual(document["trials_completed"], 3)
+        block = document["candidate_list"]
+        self.assertEqual(block["count"], len(lengths))
+        self.assertEqual(block["evaluated"], 3)
+        self.assertEqual(block["scored"], 2)
+        self.assertFalse(block["complete"])
+        self.assertEqual(len(block["unevaluated_ranges"]), 1)
+        missing, last = block["unevaluated_ranges"][0]
+        self.assertEqual(missing, last)
+        self.assertIn(missing, (1, 2))
+        evaluated_ids = [position for position in range(len(lengths)) if position != missing]
+        trials = document["trials"]
+        self.assertEqual([trial["trial_id"] for trial in trials], evaluated_ids)
+        self.assertEqual([trial["trial_id"] for trial in trials if trial["status"] == "ok"], [0, 3])
+        self.assertEqual(
+            [trial["trial_id"] for trial in trials if trial["status"] == "trial_timeout"],
+            [position for position in (1, 2) if position != missing])
+        self.assertEqual([trial["parameters"]["Length"] for trial in trials],
+                         [lengths[position] for position in evaluated_ids])
+        pass_row(row, trials_completed=3, evaluated_ids=evaluated_ids,
+                 unevaluated_ranges=block["unevaluated_ranges"],
+                 check="default all-mode rows equal evaluated candidate positions with an ID gap")
 
     def assert_output_refusal(self, row: dict) -> None:
         stdout = Path(row["stdout"])

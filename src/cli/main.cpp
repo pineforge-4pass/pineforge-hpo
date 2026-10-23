@@ -1123,7 +1123,8 @@ public:
         : options_(options), space_(space), finite_(finite),
           ordinals_(finite ? space.finite_cardinality().value_or(0) : 0) {
         if (options.trials_out == "all")
-            spool_.emplace(options.trials_file, options.output);
+            spool_.emplace(options.output,
+                           options.warm_history ? options.warm_history->next_id : 0);
         if (options.candidate_list)
             coverage_.emplace(options.candidate_list->size());
         if (options.sobol_descriptor)
@@ -1270,10 +1271,10 @@ public:
              std::function<void(const std::vector<TrialRecord>&, std::exception_ptr)> timeout_result)
         : options_(options), started_(started), archive_(archive),
           timeout_result_(std::move(timeout_result)),
-          has_trials_file_(!options_.trials_file.empty() && !archive_.spool()) {
+          has_trials_file_(!options_.trials_file.empty()) {
         if (options.warm_history)
             next_progress_id_ = options.warm_history->next_id;
-        if (has_trials_file_) {
+        if (!options_.trials_file.empty()) {
             trials_file_.open(options_.trials_file, std::ios::binary | std::ios::trunc);
             if (!trials_file_)
                 throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
@@ -1332,10 +1333,10 @@ public:
         if (timed_out_)
             return;
         active_.erase(record.trial_id);
-        if (streaming() && !stream_failed_) {
+        if (streaming() && !progress_failed_) {
             const auto limit = 2 * (options_.batch_size ? options_.batch_size : options_.workers);
             changed_.wait(lock, [&] {
-                return pending_.size() < limit || stream_failed_ || timed_out_ ||
+                return pending_.size() < limit || progress_failed_ || timed_out_ ||
                        record.trial_id == next_progress_id_;
             });
         }
@@ -1343,28 +1344,40 @@ public:
             return;
         try {
             archive_.add(record);
-            if (streaming() && !stream_failed_) {
-                const auto begin = Clock::now();
-                pending_.emplace(record.trial_id, render_trial(record) + "\n");
-                if (options_.progress_fd >= 0 || !options_.trials_file.empty())
-                    serialization_seconds_ += seconds_since(begin);
-            }
         } catch (...) {
-            // A refused archive/row can leave a gap. Release workers waiting for capacity
-            // before propagating the refusal; no incomplete spool may become a result.
-            progress_failed_ = true;
-            stream_failed_ = true;
-            pending_.clear();
-            reason_.store(StopReason::kCancelled);
-            changed_.notify_all();
+            if (options_.pbo_blocks != 0) {
+                // A block-layout refusal can leave a gap in the ordered stream. Release any
+                // workers waiting for stream capacity before propagating the result refusal.
+                progress_failed_ = true;
+                pending_.clear();
+                reason_.store(StopReason::kCancelled);
+                changed_.notify_all();
+            }
             throw;
+        }
+        if (auto* spool = archive_.spool()) {
+            try {
+                spool->append(record.trial_id, render_trial(record) + "\n");
+            } catch (...) {
+                // A spool refusal must release stream waiters before the trial future throws.
+                progress_failed_ = true;
+                pending_.clear();
+                reason_.store(StopReason::kCancelled);
+                changed_.notify_all();
+                throw;
+            }
+        }
+        if (streaming() && !progress_failed_) {
+            const auto begin = Clock::now();
+            pending_.emplace(record.trial_id, render_trial(record) + "\n");
+            serialization_seconds_ += seconds_since(begin);
         }
         changed_.notify_all();
     }
 
     void skip(std::uint64_t trial_id) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (streaming() && !stream_failed_)
+        if (streaming())
             pending_.emplace(trial_id, "");
         changed_.notify_all();
     }
@@ -1405,7 +1418,7 @@ private:
     }
 
     bool streaming() const {
-        return options_.trials_out == "all" || options_.progress_fd >= 0 || has_trials_file_;
+        return options_.progress_fd >= 0 || has_trials_file_;
     }
 
     void write_progress(const std::string& line) {
@@ -1475,7 +1488,9 @@ private:
             record.error = "trial exceeded --trial-timeout-seconds";
             record.failure = {"hpo_trial_timeout", "{}", "hpo"};
             archive_.add(record);
-            if (streaming() && !stream_failed_)
+            if (auto* spool = archive_.spool())
+                spool->append(trial_id, render_trial(record) + "\n");
+            if (streaming() && !progress_failed_)
                 pending_.emplace(trial_id, render_trial(record) + "\n");
             changed_.notify_all();
             break;
@@ -1496,38 +1511,19 @@ private:
                     next_progress_id_ = next->first + 1;
                     auto line = std::move(next->second);
                     pending_.erase(next);
-                    const bool send_progress = !progress_failed_;
                     changed_.notify_all();
                     lock.unlock();
-                    bool spool_failed = false;
                     try {
                         const auto begin = Clock::now();
-                        if (auto* spool = archive_.spool()) {
-                            try {
-                                spool->append(line);
-                            } catch (...) {
-                                spool_failed = true;
-                                throw;
-                            }
-                        }
-                        if (send_progress)
-                            write_progress(line);
-                        if (!options_.trials_file.empty() ||
-                            (send_progress && options_.progress_fd >= 0)) {
-                            progress_write_seconds_ += seconds_since(begin);
-                            progress_bytes_ += line.size();
-                        }
+                        write_progress(line);
+                        progress_write_seconds_ += seconds_since(begin);
+                        progress_bytes_ += line.size();
                     } catch (const std::exception& error) {
                         std::lock_guard<std::mutex> failed_lock(mutex_);
                         error_ = error.what();
                         error_exception_ = std::current_exception();
                         progress_failed_ = true;
-                        // A failed progress reader must not discard all-mode terminal rows.
-                        // Keep draining the spool, including trials finishing during the stop.
-                        if (spool_failed || !archive_.spool()) {
-                            stream_failed_ = true;
-                            pending_.clear();
-                        }
+                        pending_.clear();
                         changed_.notify_all();
                         StopReason expected = StopReason::kNone;
                         reason_.compare_exchange_strong(expected, StopReason::kCancelled);
@@ -1555,7 +1551,6 @@ private:
             error_ = error.what();
             error_exception_ = std::current_exception();
             progress_failed_ = true;
-            stream_failed_ = true;
             reason_.store(StopReason::kCancelled);
             changed_.notify_all();
         }
@@ -1578,7 +1573,6 @@ private:
     std::string error_;
     std::exception_ptr error_exception_;
     bool progress_failed_ = false;
-    bool stream_failed_ = false;
     bool timed_out_ = false;
     bool done_ = false;
     double serialization_seconds_ = 0.0;

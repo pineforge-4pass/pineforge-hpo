@@ -6,11 +6,9 @@
 #include <array>
 #include <cerrno>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
-#include <memory>
 #include <ostream>
 #include <stdexcept>
 #include <string>
@@ -20,48 +18,52 @@
 
 namespace pineforge::hpo::detail {
 
-// The ordered writer is the sole producer. seal() and copy_array() run only after it has
-// drained (or on that same writer's timeout path). Neither rows nor the JSON array are
-// accumulated in memory: the only copy buffer has a fixed size.
+// Completion appends hold RunState's mutex. The ordered stream never owns this spool. After
+// workers drain (or the watchdog freezes completion), seal() validates both anonymous files
+// before publication; copying uses only a fixed-size buffer.
 class TrialSpool final {
 public:
-    TrialSpool(const std::filesystem::path& trials_file, const std::filesystem::path& output)
-        : file_(open(trials_file, output)), output_(output) {}
+    TrialSpool(const std::filesystem::path& output, std::uint64_t first_trial_id)
+        : data_(open(output, ".pineforge-hpo-trials-data-XXXXXX")),
+          index_(open(output, ".pineforge-hpo-trials-index-XXXXXX")),
+          first_trial_id_(first_trial_id) {}
 
-    void append(const std::string& line) {
-        if (line.empty())  // A proposed trial that never started has no terminal row.
-            return;
-        if (failed_ || sealed_ || line.back() != '\n' ||
-            line.size() > std::numeric_limits<std::uint64_t>::max() - bytes_)
+    void append(std::uint64_t trial_id, const std::string& line) {
+        if (failed_ || sealed_ || line.size() < 2 || line.back() != '\n' ||
+            line.size() > kMaxFileBytes - bytes_)
             fail("invalid terminal trial spool write");
-        if (std::fwrite(line.data(), 1, line.size(), file_.get()) != line.size() ||
-            std::fflush(file_.get()) != 0) {
-            failed_ = true;
-            fail("failed writing terminal trial spool");
+        if (trial_id < first_trial_id_)
+            fail("terminal trial spool ID is outside the index range");
+        const auto rel = trial_id - first_trial_id_;
+        if (rel >= kMaxSlots)
+            fail("terminal trial spool ID is outside the index range");
+        const auto slot_offset = rel * kSlotBytes;
+        if (slot_offset < index_bytes_) {
+            Slot previous{};
+            read_exact(index_.get(), reinterpret_cast<char*>(previous.data()), kSlotBytes,
+                       slot_offset);
+            if (previous[0] != 0 || previous[1] != 0)
+                fail("duplicate terminal trial spool ID");
         }
+        write_exact(data_.get(), line.data(), line.size(), bytes_);
+        const Slot slot{bytes_, static_cast<std::uint64_t>(line.size())};
+        write_exact(index_.get(), reinterpret_cast<const char*>(slot.data()), kSlotBytes,
+                    slot_offset);
+        max_rel_ = std::max(max_rel_, rel);
+        index_bytes_ = std::max(index_bytes_, slot_offset + kSlotBytes);
         bytes_ += line.size();
         ++rows_;
     }
 
     void seal(std::uint64_t terminal_trials) {
-        if (failed_ || rows_ != terminal_trials)
+        if (failed_ || rows_ != terminal_trials || data_.get() < 0 || index_.get() < 0)
             fail("terminal trial spool is incomplete");
-        struct stat status {};
-        if (std::fflush(file_.get()) != 0 || ::fstat(::fileno(file_.get()), &status) != 0 ||
-            status.st_size < 0 || static_cast<std::uint64_t>(status.st_size) != bytes_)
-            fail("cannot finalize terminal trial spool");
-        // Previously --output could overwrite --trials-file (including an inode alias).
-        // Preserve that publication behavior without truncating our only source of rows.
-        struct stat destination {};
-        if (!output_.empty()) {
-            if (::stat(output_.c_str(), &destination) == 0) {
-                if (status.st_dev == destination.st_dev && status.st_ino == destination.st_ino)
-                    preserve_before_overwrite();
-            } else if (errno != ENOENT && errno != ENOTDIR) {
-                fail("cannot inspect output file before terminal trial spool copy");
-            }
+        if (!sealed_) {
+            check_size(data_.get(), bytes_);
+            check_size(index_.get(), index_bytes_);
+            copy_rows(nullptr);
+            sealed_ = true;
         }
-        sealed_ = true;
     }
 
     std::uint64_t array_bytes() const {
@@ -74,89 +76,139 @@ public:
     }
 
     void copy_array(std::ostream& output) const {
-        if (!sealed_ || !file_ || ::fseeko(file_.get(), 0, SEEK_SET) != 0)
-            fail("cannot rewind terminal trial spool");
-        std::array<char, 16384> buffer{};
-        std::uint64_t copied_bytes = 0;
-        std::uint64_t copied_rows = 0;
-        bool row_start = true;
-        for (;;) {
-            const auto count = std::fread(buffer.data(), 1, buffer.size(), file_.get());
-            if (std::ferror(file_.get()))
-                fail("failed reading terminal trial spool");
-            if (count == 0)
-                break;
-            copied_bytes += count;
-            auto begin = buffer.data();
-            const auto end = begin + count;
-            while (begin != end) {
-                if (row_start) {
-                    output << "    ";
-                    row_start = false;
-                }
-                const auto newline = std::find(begin, end, '\n');
-                output.write(begin, newline - begin);
-                begin = newline;
-                if (begin != end) {
-                    ++copied_rows;
-                    output << (copied_rows < rows_ ? ",\n" : "\n");
-                    row_start = true;
-                    ++begin;
-                }
-            }
-            if (!output)
-                fail("failed copying terminal trial spool to result JSON");
-        }
-        if (!row_start || copied_rows != rows_ || copied_bytes != bytes_)
-            fail("terminal trial spool changed or is incomplete");
+        if (failed_ || !sealed_ || data_.get() < 0 || index_.get() < 0)
+            fail("terminal trial spool is not sealed");
+        copy_rows(&output);
     }
 
     void close() {
-        auto* file = file_.release();
-        if (file && std::fclose(file) != 0)
+        const auto data_status = data_.close();
+        const auto index_status = index_.close();
+        if (data_status != 0 || index_status != 0)
             fail("failed closing terminal trial spool");
     }
 
 private:
-    struct CloseFile {
-        void operator()(std::FILE* file) const noexcept { std::fclose(file); }
-    };
-    using File = std::unique_ptr<std::FILE, CloseFile>;
+    static constexpr std::uint64_t kSlotBytes = 16;
+    static constexpr std::uint64_t kMaxFileBytes =
+        static_cast<std::uint64_t>(std::numeric_limits<off_t>::max());
+    static constexpr std::uint64_t kMaxSlots = kMaxFileBytes / kSlotBytes;
+    static constexpr std::size_t kBufferBytes = 16384;
+    using Slot = std::array<std::uint64_t, 2>;
+    static_assert(sizeof(Slot) == kSlotBytes, "trial spool slots must be exactly 16 bytes");
 
-    [[noreturn]] static void fail(const char* message) {
+    class File final {
+    public:
+        explicit File(int descriptor) : descriptor_(descriptor) {}
+        File(File&& other) noexcept : descriptor_(std::exchange(other.descriptor_, -1)) {}
+        File(const File&) = delete;
+        File& operator=(const File&) = delete;
+        ~File() {
+            if (descriptor_ >= 0)
+                ::close(descriptor_);
+        }
+
+        int get() const { return descriptor_; }
+        int close() {
+            const auto descriptor = std::exchange(descriptor_, -1);
+            return descriptor < 0 ? 0 : ::close(descriptor);
+        }
+
+    private:
+        int descriptor_;
+    };
+
+    [[noreturn]] static void io_failure(const char* message) {
         throw TypedHpoError<std::runtime_error>("hpo_output_io_failed", {}, message);
     }
 
-    void preserve_before_overwrite() {
-        auto replacement = open({}, output_);
-        if (::fseeko(file_.get(), 0, SEEK_SET) != 0)
-            fail("cannot rewind terminal trial spool before output overwrite");
-        std::array<char, 16384> buffer{};
-        std::uint64_t copied = 0;
-        for (;;) {
-            const auto count = std::fread(buffer.data(), 1, buffer.size(), file_.get());
-            if (std::ferror(file_.get()))
-                fail("cannot read terminal trial spool before output overwrite");
-            if (count == 0)
-                break;
-            if (std::fwrite(buffer.data(), 1, count, replacement.get()) != count)
-                fail("cannot preserve terminal trial spool before output overwrite");
-            copied += count;
-        }
-        if (copied != bytes_ || std::fflush(replacement.get()) != 0)
-            fail("cannot finalize terminal trial spool before output overwrite");
-        close();
-        file_ = std::move(replacement);
+    [[noreturn]] void fail(const char* message) const {
+        failed_ = true;
+        io_failure(message);
     }
 
-    static File open(const std::filesystem::path& trials_file,
-                     const std::filesystem::path& output) {
-        if (!trials_file.empty()) {
-            File file(std::fopen(trials_file.c_str(), "w+b"));
-            if (!file)
-                fail("cannot open --trials-file as terminal trial spool");
-            return file;
+    void check_size(int descriptor, std::uint64_t bytes) const {
+        struct stat status {};
+        if (::fstat(descriptor, &status) != 0 || status.st_size < 0 ||
+            static_cast<std::uint64_t>(status.st_size) != bytes)
+            fail("cannot finalize terminal trial spool size");
+    }
+
+    void write_exact(int descriptor, const char* data, std::size_t size,
+                     std::uint64_t offset) {
+        while (size != 0) {
+            const auto chunk = std::min(size, kBufferBytes);
+            const auto count = ::pwrite(descriptor, data, chunk, static_cast<off_t>(offset));
+            if (count < 0 && errno == EINTR)
+                continue;
+            if (count <= 0)
+                fail("failed writing terminal trial spool");
+            data += count;
+            size -= static_cast<std::size_t>(count);
+            offset += static_cast<std::uint64_t>(count);
         }
+    }
+
+    void read_exact(int descriptor, char* data, std::size_t size, std::uint64_t offset) const {
+        while (size != 0) {
+            const auto chunk = std::min(size, kBufferBytes);
+            const auto count = ::pread(descriptor, data, chunk, static_cast<off_t>(offset));
+            if (count < 0 && errno == EINTR)
+                continue;
+            if (count <= 0)
+                fail("failed reading terminal trial spool");
+            data += count;
+            size -= static_cast<std::size_t>(count);
+            offset += static_cast<std::uint64_t>(count);
+        }
+    }
+
+    // A null destination is the seal-time read check, before any result header is written.
+    void copy_rows(std::ostream* output) const {
+        std::array<char, kBufferBytes> buffer{};
+        std::uint64_t copied_bytes = 0;
+        std::uint64_t copied_rows = 0;
+        for (std::uint64_t rel = 0; rows_ != 0 && rel <= max_rel_; ++rel) {
+            Slot slot{};
+            read_exact(index_.get(), reinterpret_cast<char*>(slot.data()), kSlotBytes,
+                       rel * kSlotBytes);
+            if (slot[1] == 0) {
+                if (slot[0] != 0)
+                    fail("invalid empty terminal trial spool slot");
+                continue;
+            }
+            if (slot[0] > bytes_ || slot[1] > bytes_ - slot[0] || slot[1] < 2 ||
+                slot[1] > bytes_ - copied_bytes || copied_rows >= rows_)
+                fail("invalid terminal trial spool row bounds");
+            if (output)
+                *output << "    ";
+            auto offset = slot[0];
+            auto remaining = slot[1];
+            while (remaining != 0) {
+                const auto count = static_cast<std::size_t>(
+                    std::min<std::uint64_t>(remaining, buffer.size()));
+                read_exact(data_.get(), buffer.data(), count, offset);
+                const bool last = remaining == count;
+                if (last && buffer[count - 1] != '\n')
+                    fail("terminal trial spool row is incomplete");
+                if (output)
+                    output->write(buffer.data(), count - (last ? 1 : 0));
+                offset += count;
+                remaining -= count;
+            }
+            copied_bytes += slot[1];
+            ++copied_rows;
+            if (output) {
+                *output << (copied_rows < rows_ ? ",\n" : "\n");
+                if (!*output)
+                    fail("failed copying terminal trial spool to result JSON");
+            }
+        }
+        if (copied_rows != rows_ || copied_bytes != bytes_)
+            fail("terminal trial spool changed or is incomplete");
+    }
+
+    static File open(const std::filesystem::path& output, const char* filename) {
         std::filesystem::path directory;
         if (!output.empty()) {
             directory = output.parent_path();
@@ -166,28 +218,23 @@ private:
             const auto* temporary_directory = std::getenv("TMPDIR");
             directory = temporary_directory && *temporary_directory ? temporary_directory : "/tmp";
         }
-        auto pattern = (directory / ".pineforge-hpo-trials-XXXXXX").string();
-        const auto descriptor = ::mkstemp(pattern.data());
-        if (descriptor < 0)
-            fail("cannot create terminal trial spool");
-        // The program owns this newly created file; no named temporary survives the run.
-        if (::unlink(pattern.c_str()) != 0) {
-            ::close(descriptor);
-            fail("cannot unlink terminal trial spool");
-        }
-        File file(::fdopen(descriptor, "w+b"));
-        if (!file) {
-            ::close(descriptor);
-            fail("cannot open terminal trial spool stream");
-        }
+        auto pattern = (directory / filename).string();
+        File file(::mkstemp(pattern.data()));
+        if (file.get() < 0)
+            io_failure("cannot create terminal trial spool");
+        if (::unlink(pattern.c_str()) != 0)
+            io_failure("cannot unlink terminal trial spool");
         return file;
     }
 
-    File file_;
-    std::filesystem::path output_;
+    File data_;
+    File index_;
+    const std::uint64_t first_trial_id_;
+    std::uint64_t max_rel_ = 0;
     std::uint64_t bytes_ = 0;
+    std::uint64_t index_bytes_ = 0;
     std::uint64_t rows_ = 0;
-    bool failed_ = false;
+    mutable bool failed_ = false;
     bool sealed_ = false;
 };
 

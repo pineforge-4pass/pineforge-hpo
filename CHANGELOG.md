@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Stream `--trials-out all` through a file spool to bound trial retention and JSON copying.
+- Bound `--trials-out all` retention with an anonymous spool independent of ordered streams.
 - Add native `--ohlcv-bin` and StudySpec `ohlcv_bin` for shared read-only mapped chart bars.
   Validate the complete `pf_bar_t/v1` sidecar and mapped file SHA-256 by default (`full`);
   `--verify-bin sidecar` / dataset `verify_bin: "sidecar"` skips only the digest comparison.

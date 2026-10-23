@@ -1081,14 +1081,18 @@ paths. `trials_completed` includes the timeout terminal record; coverage and bes
 selection use only the terminal table. Timeout records cannot be feasible and
 make `exhaustive_equivalent` false.
 
-With `--trials-out all`, terminal rows stream in trial-ID order through a file-backed spool,
-and the final `trials` array copies those rendered rows without retaining every trial record
-or the full document in memory. `--trials-file FILE`, when supplied, is that spool and remains
-NDJSON; otherwise the program opens and immediately unlinks a temporary file in the output
-directory, or in `TMPDIR` (the system temporary directory when unset) for stdout-only output.
-Spool creation, writing, finalization or reading failures report `hpo_output_io_failed`;
-an incomplete spool is refused instead of being published as a complete trial array.
-`best-k` and `none` continue to retain only the bounded best-k heap.
+With `--trials-out all`, terminal rows append in completion order to an anonymous temporary
+data file, with offsets in a second anonymous temporary index file. The program creates and
+immediately unlinks both files in the output directory, or in `TMPDIR` (`/tmp` when unset)
+for stdout-only output. The index is addressed relative to the first trial ID of the run,
+so high continuation IDs and gaps are supported.
+The final `trials` array copies those rendered rows in trial-ID order
+without retaining every trial record or the full document in memory. This spool is independent
+of `--trials-file FILE` and `--progress-fd`, which retain their ordered NDJSON stream and
+backpressure only when requested; `--trials-file` may still be a pipe. Spool creation, writing,
+finalization or reading failures report `hpo_output_io_failed`; an incomplete spool is refused
+instead of being published as a complete trial array. `best-k` and `none` continue to retain
+only the bounded best-k heap.
 
 The wall and per-trial timeout controls are not forwarded by the Python CLI.
 The Python `run` wrapper does forward `--no-improvement-trials` when nonzero.
