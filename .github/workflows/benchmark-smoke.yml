@@ -255,10 +255,10 @@ jobs:
 
     steps:
       - name: Check out PineForge HPO
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
           cache: pip
@@ -287,7 +287,7 @@ jobs:
             --output build/benchmarks/optuna/smoke.csv
 
       - name: Upload raw benchmark evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: optuna-smoke-${{ github.run_id }}
           path: |
