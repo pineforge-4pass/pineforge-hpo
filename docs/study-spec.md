@@ -1081,6 +1081,15 @@ paths. `trials_completed` includes the timeout terminal record; coverage and bes
 selection use only the terminal table. Timeout records cannot be feasible and
 make `exhaustive_equivalent` false.
 
+With `--trials-out all`, terminal rows stream in trial-ID order through a file-backed spool,
+and the final `trials` array copies those rendered rows without retaining every trial record
+or the full document in memory. `--trials-file FILE`, when supplied, is that spool and remains
+NDJSON; otherwise the program opens and immediately unlinks a temporary file in the output
+directory, or in `TMPDIR` (the system temporary directory when unset) for stdout-only output.
+Spool creation, writing, finalization or reading failures report `hpo_output_io_failed`;
+an incomplete spool is refused instead of being published as a complete trial array.
+`best-k` and `none` continue to retain only the bounded best-k heap.
+
 The wall and per-trial timeout controls are not forwarded by the Python CLI.
 The Python `run` wrapper does forward `--no-improvement-trials` when nonzero.
 The public Python preparation
