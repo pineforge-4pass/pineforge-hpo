@@ -15,16 +15,20 @@ administrator applies and keeps these settings:
    reporting so the link in `SECURITY.md` accepts reports.
 5. Create the `bug`, `enhancement`, and `benchmark` labels referenced by the
    issue forms, or update those forms to match the organization label policy.
-6. Protect `main` with required pull requests and the `CI` and
-   `API documentation / Build API reference` checks after their first runs.
+6. Protect `main` with required pull requests and the `CI / build-gate` aggregate
+   (job and check name `build-gate`) and `API documentation / Build API reference`
+   checks after their first runs. The aggregate includes the HPO memory growth
+   gate and only accepts heavy-job skips for independently proven docs-only or
+   workflow-only PRs with successful workflow lint; see [CI](ci.md).
 7. Make the existing org App's `PINEFORGE_APP_ID` and
    `PINEFORGE_APP_PRIVATE_KEY` Actions secrets available to this repository.
    Its installation must include `pineforge-release` with `Contents: write`.
    The notification job mints a short-lived token scoped only to that target.
    Allow the pinned official `actions/create-github-app-token` action under
    Actions policy. See [release notification and replay](release-chain.md).
-8. Add `Release notification contract` to the required checks on `main` after
-   its first CI run. Keep the existing native, Python and documentation checks.
+8. Use `build-gate` as the required CI aggregate for the release notification,
+   native, Python and memory jobs. Each heavy job needs authorization and diff
+   classification; a failed or cancelled memory gate fails the aggregate.
 
 Pages uses GitHub's OIDC-backed deployment action and the repository-scoped
 `GITHUB_TOKEN` permissions declared in the workflow. It needs no additional

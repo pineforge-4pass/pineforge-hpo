@@ -1,0 +1,49 @@
+name: HPO charged-memory growth gate
+description: Build Release HPO with tests and run the memory measurement gate without an empty pass.
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: '3.13'
+
+    - name: Install native dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build
+
+    - name: Configure the pinned engine
+      shell: bash
+      run: >-
+        cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+        -DCMAKE_BUILD_TYPE=Release
+        -DPINEFORGE_BUILD_TESTS=OFF
+        -DPINEFORGE_BUILD_TUTORIAL=OFF
+        -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+        -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+        -DPINEFORGE_BUILD_SPEED_BENCH=OFF
+
+    - name: Build the pinned engine runtime
+      shell: bash
+      run: cmake --build external/pineforge-engine/build --target pineforge -j4
+
+    - name: Configure Release HPO with tests and the native runner
+      shell: bash
+      run: |
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DPINEFORGE_ENGINE_ROOT="$GITHUB_WORKSPACE/external/pineforge-engine" \
+          -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON \
+          -DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON \
+          -DPINEFORGE_HPO_BUILD_TESTS=ON \
+          -DPINEFORGE_HPO_REQUIRE_MPFR=ON
+
+    - name: Build HPO and fixture targets
+      shell: bash
+      run: cmake --build build -j4
+
+    - name: Require a clean, nonempty memory judgment
+      shell: bash
+      run: bash scripts/run_ci_memory_gate.sh

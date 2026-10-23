@@ -543,8 +543,31 @@ jobs:
           ruff check python tests/python benchmarks
           ruff format --check python tests/python benchmarks
 
+  memory-gate:
+    name: HPO memory growth gate
+    needs: [authz, changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out PineForge HPO and pinned submodules
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Require the memory measurement script before building
+        shell: bash
+        run: |
+          if ! test -f scripts/ci_memory_gate.py; then
+            echo '::error::HPO memory gate INCOMPLETE: scripts/ci_memory_gate.py is missing; the gate remains RED.'
+            exit 2
+          fi
+
+      - name: Build and run the HPO memory gate
+        uses: ./.github/actions/memory-gate
+
   build-gate:
-    needs: [authz, changes, workflow-lint, release-notification, native, python]
+    needs: [authz, changes, memory-gate, native, python, release-notification, workflow-lint]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
@@ -662,7 +685,7 @@ jobs:
         shell: "bash"
         env:
           NEEDS: "${{ toJSON(needs) }}"
-          HEAVY_JOBS: "[\"native\",\"python\",\"release-notification\"]"
+          HEAVY_JOBS: "[\"memory-gate\",\"native\",\"python\",\"release-notification\"]"
           DOCS_ONLY: "${{ steps.classify.outputs.docs_only }}"
           WORKFLOWS_ONLY: "${{ steps.classify.outputs.workflows_only }}"
         run: |

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 from types import SimpleNamespace
 import unittest
 
@@ -121,6 +124,7 @@ class PrTierWorkflowTests(unittest.TestCase):
         routes = (
             ci["release-notification"]["runs-on"],
             ci["python"]["runs-on"],
+            ci["memory-gate"]["runs-on"],
             ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
             benchmark["optuna"]["runs-on"],
         )
@@ -138,12 +142,13 @@ class PrTierWorkflowTests(unittest.TestCase):
     def test_no_route_is_a_conditional_expression(self):
         # Every routed site is now a literal hosted label, so routing can no longer
         # vary by event, actor or fork. Guard that invariant directly: a `${{ }}`
-        # expression creeping back into any of the four routed sites is a regression.
+        # expression creeping back into any of the five routed sites is a regression.
         ci = self.workflows["ci.yml"]["jobs"]
         benchmark = self.workflows["benchmark-smoke.yml"]["jobs"]
         routes = (
             ci["release-notification"]["runs-on"],
             ci["python"]["runs-on"],
+            ci["memory-gate"]["runs-on"],
             ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
             benchmark["optuna"]["runs-on"],
         )
@@ -159,7 +164,7 @@ class PrTierWorkflowTests(unittest.TestCase):
             POOL_ROUTE,
             POOL_ROUTE.replace("'ubuntu-24.04'", f"fromJSON('{json.dumps(POOL)}')"),
         ):
-            for job_id in ("release-notification", "python"):
+            for job_id in ("release-notification", "python", "memory-gate"):
                 with self.subTest(job=job_id, route=bad_route):
                     mutated = copy.deepcopy(self.workflows)
                     mutated["ci.yml"]["jobs"][job_id]["runs-on"] = bad_route
@@ -187,6 +192,7 @@ class PrTierWorkflowTests(unittest.TestCase):
                     "release-notification": "Release notification contract",
                     "native": "Native (${{ matrix.os }})",
                     "python": "Python ${{ matrix.python }}",
+                    "memory-gate": "HPO memory growth gate",
                     "build-gate": "build-gate",
                 },
             ),
@@ -401,6 +407,90 @@ class PrTierWorkflowTests(unittest.TestCase):
                                 cancelled=lambda: False,
                             )
                             self.assertEqual(allowed, code == "true")
+
+    def assert_memory_gate_contract(self, jobs):
+        memory = jobs["memory-gate"]
+        self.assertEqual(memory["needs"], ["authz", "changes"])
+        self.assertEqual(memory["if"], "needs.changes.outputs.code == 'true'")
+        self.assertEqual(memory["runs-on"], "ubuntu-24.04")
+        gate = jobs["build-gate"]
+        self.assertEqual(gate.get("name", "build-gate"), "build-gate")
+        self.assertEqual(gate["if"], "${{ always() }}")
+        self.assertEqual(gate["needs"], sorted(set(jobs) - {"build-gate"}))
+        self.assertEqual(
+            json.loads(gate["steps"][-1]["env"]["HEAVY_JOBS"]),
+            sorted(
+                job_id
+                for job_id, job in jobs.items()
+                if job_id != "build-gate" and "changes" in job.get("needs", [])
+            ),
+        )
+
+    def test_memory_gate_uses_the_canonical_heavy_job_condition(self):
+        jobs = self.workflows["ci.yml"]["jobs"]
+        self.assert_memory_gate_contract(jobs)
+        for condition in (
+            "!github.event.pull_request.draft && needs.changes.outputs.code == 'true'",
+            "!cancelled() && needs.changes.outputs.code == 'true'",
+            "needs.changes.outputs.docs_only != 'true'",
+        ):
+            with self.subTest(condition=condition):
+                mutated = copy.deepcopy(jobs)
+                mutated["memory-gate"]["if"] = condition
+                with self.assertRaises(AssertionError):
+                    self.assert_memory_gate_contract(mutated)
+        mutated = copy.deepcopy(jobs)
+        mutated["memory-gate"]["needs"] = ["changes"]
+        with self.assertRaises(AssertionError):
+            self.assert_memory_gate_contract(mutated)
+
+    def aggregate_memory_result(self, status):
+        gate = self.workflows["ci.yml"]["jobs"]["build-gate"]
+        step = gate["steps"][-1]
+        needs = {job_id: {"result": "success"} for job_id in gate["needs"]}
+        self.assertIn("memory-gate", needs)
+        needs["memory-gate"]["result"] = status
+        scratch = ROOT / "build/pr-tier-workflow-tests"
+        scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as directory:
+            return subprocess.run(
+                ["bash", "--noprofile", "--norc", "-c", step["run"]],
+                cwd=directory,
+                env={
+                    **os.environ,
+                    **step["env"],
+                    "NEEDS": json.dumps(needs),
+                    "DOCS_ONLY": "false",
+                    "WORKFLOWS_ONLY": "false",
+                    "RUNNER_TEMP": directory,
+                },
+                capture_output=True,
+                text=True,
+            )
+
+    def test_memory_failure_cancellation_or_code_skip_fails_build_gate(self):
+        self.assert_memory_gate_contract(self.workflows["ci.yml"]["jobs"])
+        clean = self.aggregate_memory_result("success")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        for status in ("failure", "cancelled", "skipped"):
+            with self.subTest(status=status):
+                result = self.aggregate_memory_result(status)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_memory_gate_dependency_is_rejected(self):
+        mutated = copy.deepcopy(self.workflows["ci.yml"]["jobs"])
+        mutated["build-gate"]["needs"].remove("memory-gate")
+        with self.assertRaisesRegex(AssertionError, "memory-gate"):
+            self.assert_memory_gate_contract(mutated)
+
+    def test_missing_memory_gate_heavy_job_is_rejected(self):
+        mutated = copy.deepcopy(self.workflows["ci.yml"]["jobs"])
+        environment = mutated["build-gate"]["steps"][-1]["env"]
+        heavy = json.loads(environment["HEAVY_JOBS"])
+        heavy.remove("memory-gate")
+        environment["HEAVY_JOBS"] = json.dumps(heavy)
+        with self.assertRaisesRegex(AssertionError, "memory-gate"):
+            self.assert_memory_gate_contract(mutated)
 
 
 if __name__ == "__main__":
