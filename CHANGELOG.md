@@ -2,12 +2,15 @@
 
 ## Unreleased
 
-- Bound `--trials-out all` retention with an anonymous spool independent of ordered streams.
+- Bound `--trials-out all` retention in the native process with an anonymous spool independent
+  of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
 - Add native `--ohlcv-bin` and StudySpec `ohlcv_bin` for shared read-only mapped chart bars.
   Validate the complete `pf_bar_t/v1` sidecar and mapped file SHA-256 by default (`full`);
   `--verify-bin sidecar` / dataset `verify_bin: "sidecar"` skips only the digest comparison.
   Refuse non-regular sidecars before reading. Publish mapped files by rename/`os.replace`,
   never by rewriting or truncating them in place.
+- Add C++ `Dataset::load_bin`, `BinaryVerification`, and `Dataset::verify_unchanged`.
+  `Dataset::bars()` now throws `std::logic_error` for mapped input; use `data()` and `size()`.
 
 ## 1.6.3 (2026-10-23)
 

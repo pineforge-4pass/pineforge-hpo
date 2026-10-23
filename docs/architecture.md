@@ -269,7 +269,8 @@ domain if normalized double precision cannot keep every bin distinct.
 ### Strategy plugin and trial executor
 
 One `StrategyPlugin` loads the dynamic library and resolves its function table.
-One immutable `Dataset` loads the OHLCV CSV. Each trial independently performs:
+One immutable `Dataset` loads the OHLCV CSV or maps a binary `.bin` chart.
+Each trial independently performs:
 
 ```text
 strategy_create()

@@ -57,7 +57,9 @@ public:
     }
 
     void seal(std::uint64_t terminal_trials) {
-        if (failed_ || rows_ != terminal_trials || data_.get() < 0 || index_.get() < 0)
+        if (failed_)
+            io_failure(first_failure_);
+        if (rows_ != terminal_trials || data_.get() < 0 || index_.get() < 0)
             fail("terminal trial spool is incomplete");
         if (!sealed_) {
             check_size(data_.get(), bytes_);
@@ -82,11 +84,11 @@ public:
         copy_rows(&output);
     }
 
-    void close() {
-        const auto data_status = data_.close();
-        const auto index_status = index_.close();
-        if (data_status != 0 || index_status != 0)
-            fail("failed closing terminal trial spool");
+    void close() noexcept {
+        // Both anonymous files have been fully read before publication. A close error here
+        // cannot lose result bytes and must not turn a published result into another document.
+        data_.close();
+        index_.close();
     }
 
 private:
@@ -110,9 +112,10 @@ private:
         }
 
         int get() const { return descriptor_; }
-        int close() {
+        void close() noexcept {
             const auto descriptor = std::exchange(descriptor_, -1);
-            return descriptor < 0 ? 0 : ::close(descriptor);
+            if (descriptor >= 0)
+                ::close(descriptor);
         }
 
     private:
@@ -124,8 +127,11 @@ private:
     }
 
     [[noreturn]] void fail(const char* message) const {
-        failed_ = true;
-        io_failure(message);
+        if (!failed_) {
+            failed_ = true;
+            first_failure_ = message;
+        }
+        io_failure(first_failure_);
     }
 
     void check_size(int descriptor, std::uint64_t bytes) const {
@@ -242,6 +248,8 @@ private:
     std::uint64_t index_bytes_ = 0;
     std::uint64_t rows_ = 0;
     mutable bool failed_ = false;
+    // Every fail() argument is a string literal; retaining the first needs no allocation.
+    mutable const char* first_failure_ = nullptr;
     bool sealed_ = false;
 };
 

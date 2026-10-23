@@ -242,6 +242,7 @@ struct TrialRecord {
 
 static_assert(std::atomic<bool>::is_always_lock_free);
 std::atomic<bool> signal_cancelled{false};
+std::atomic<bool> result_publication_started{false};
 
 extern "C" void request_stop(int) {
     signal_cancelled.store(true, std::memory_order_relaxed);
@@ -476,6 +477,7 @@ Options parse_options(int argc, char** argv) {
     Options out;
     bool ohlcv_given = false;
     bool ohlcv_bin_given = false;
+    bool verify_bin_given = false;
     for (int i = 2; i < argc; ++i) {
         const std::string option = argv[i];
         if (option == "--strategy") {
@@ -488,6 +490,7 @@ Options parse_options(int argc, char** argv) {
             ohlcv_bin_given = true;
         } else if (option == "--verify-bin") {
             const auto mode = require_value(argc, argv, i, option);
+            verify_bin_given = true;
             if (mode == "full")
                 out.verify_bin = pfh::BinaryVerification::Full;
             else if (mode == "sidecar")
@@ -756,6 +759,8 @@ Options parse_options(int argc, char** argv) {
         usage_error("--ohlcv and --ohlcv-bin are mutually exclusive");
     if (out.ohlcv.empty() && out.ohlcv_bin.empty())
         usage_error("one of --ohlcv or --ohlcv-bin is required");
+    if (verify_bin_given && !ohlcv_bin_given)
+        usage_error("--verify-bin requires --ohlcv-bin");
     if (out.objective.empty())
         usage_error("--objective is required");
     pfh::detail::require_candidate_list_settings(
@@ -1543,7 +1548,8 @@ private:
             if (timed_out_) {
                 std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
                 std::cerr.flush();
-                std::cout << pfh::detail::failure_document(error, 3);
+                if (!result_publication_started.load())
+                    std::cout << pfh::detail::failure_document(error, 3);
                 std::cout.flush();
                 ::_exit(3);
             }
@@ -2129,6 +2135,9 @@ void write_result_file(const Options& options, const pfh::detail::ResultDocument
 }
 
 void publish_result(const pfh::detail::ResultDocument& json) {
+    // A later read/write failure may leave a partial document. Never append a second JSON
+    // document to bytes already published; the caller still reports the failure on stderr.
+    result_publication_started.store(true);
     json.write(std::cout);
     std::cout.flush();
     if (!std::cout)
@@ -2331,8 +2340,46 @@ std::string require_sobol_numeric_identity() {
     return identity;
 }
 
+bool same_dataset_file(const std::filesystem::path& input,
+                       const std::filesystem::path& output) {
+    struct stat input_status {};
+    struct stat output_status {};
+    const bool input_exists = ::stat(input.c_str(), &input_status) == 0;
+    const bool output_exists = ::stat(output.c_str(), &output_status) == 0;
+    if (input_exists && output_exists) {
+        return input_status.st_dev == output_status.st_dev &&
+               input_status.st_ino == output_status.st_ino;
+    }
+    return std::filesystem::absolute(input).lexically_normal() ==
+           std::filesystem::absolute(output).lexically_normal();
+}
+
+void refuse_mapped_output_aliases(const Options& options) {
+    if (options.ohlcv_bin.empty())
+        return;
+    const std::filesystem::path inputs[] = {
+        options.ohlcv_bin, options.ohlcv_bin.string() + ".json",
+    };
+    const std::pair<const char*, const std::filesystem::path*> outputs[] = {
+        {"--trials-file", &options.trials_file},
+        {"--output", &options.output},
+        {"--scheduler-stats", &options.scheduler_stats},
+    };
+    for (const auto& output : outputs) {
+        if (output.second->empty())
+            continue;
+        for (const auto& input : inputs) {
+            if (same_dataset_file(input, *output.second))
+                usage_error(std::string(output.first) +
+                            " must not name --ohlcv-bin or its sidecar: " +
+                            output.second->string());
+        }
+    }
+}
+
 int run(Options options) {
     const auto started = RunState::Clock::now();
+    refuse_mapped_output_aliases(options);
     validate_search_input_kinds(options);
     pfh::Pruner pruner(options.pruner, options.pruner_rungs, options.pruner_eta,
                        options.direction == Direction::kMinimize);
@@ -2562,6 +2609,7 @@ int run(Options options) {
     };
     RunState state(options, started, archive, [&](const std::vector<TrialRecord>& completed,
                                                 std::exception_ptr failure) {
+        dataset->verify_unchanged();
         write_results(options, append_process_failure(
             render_results(options, space, finite_cardinality, completed, archive,
                            duplicate_proposals_skipped.load(),
@@ -2910,6 +2958,7 @@ int run(Options options) {
     std::string stop_reason = state.stop_reason();
     if (stop_reason.empty() && early_stop.trigger_trial_id)
         stop_reason = "no_improvement";
+    dataset->verify_unchanged();
     const auto json = append_process_failure(
         render_results(options, space, finite_cardinality, trials, archive,
                        duplicate_proposals_skipped.load(), stop_reason, early_stop,
@@ -3070,7 +3119,8 @@ int main(int argc, char** argv) {
         return 5;
     } catch (const std::exception& error) {
         std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
-        std::cout << pfh::detail::failure_document(error, 1);
+        if (!result_publication_started.load())
+            std::cout << pfh::detail::failure_document(error, 1);
         return 1;
     }
 }

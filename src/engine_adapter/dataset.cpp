@@ -297,6 +297,38 @@ private:
     int descriptor_;
 };
 
+struct stat binary_file_status(int descriptor, const std::filesystem::path& path) {
+    struct stat info {};
+    if (::fstat(descriptor, &info) != 0) {
+        binary_dataset_error("cannot stat OHLCV binary: " + path.string() + ": " +
+                             std::strerror(errno));
+    }
+    if (!S_ISREG(info.st_mode)) {
+        binary_dataset_error("not a regular file: " + path.string());
+    }
+    return info;
+}
+
+bool same_timestamp(const struct timespec& left, const struct timespec& right) noexcept {
+    return left.tv_sec == right.tv_sec && left.tv_nsec == right.tv_nsec;
+}
+
+bool same_modification_time(const struct stat& left, const struct stat& right) noexcept {
+#if defined(__APPLE__)
+    return same_timestamp(left.st_mtimespec, right.st_mtimespec);
+#else
+    return same_timestamp(left.st_mtim, right.st_mtim);
+#endif
+}
+
+bool same_change_time(const struct stat& left, const struct stat& right) noexcept {
+#if defined(__APPLE__)
+    return same_timestamp(left.st_ctimespec, right.st_ctimespec);
+#else
+    return same_timestamp(left.st_ctim, right.st_ctim);
+#endif
+}
+
 bool sidecar_integer_equals(const detail::Json* value, std::int64_t expected) {
     if (!value || value->kind != detail::Json::Kind::Number) {
         return false;
@@ -406,6 +438,31 @@ void check_binary_records(const pf_bar_t* bars, std::size_t count) {
 
 }  // namespace
 
+struct Dataset::MappedFile final {
+    explicit MappedFile(const std::filesystem::path& path)
+        : path(path), descriptor(path), identity(binary_file_status(descriptor.get(), path)) {}
+
+    void verify_unchanged() const {
+        struct stat current {};
+        if (::fstat(descriptor.get(), &current) != 0) {
+            binary_dataset_error("changed while mapped (cannot stat descriptor): " +
+                                 path.string());
+        }
+        // Rename-over drops a link to the old inode and can update its ctime without touching
+        // its bytes. Accept that link-count change; size and mtime must still match exactly.
+        const bool removed_link = current.st_nlink < identity.st_nlink;
+        if (current.st_dev != identity.st_dev || current.st_ino != identity.st_ino ||
+            current.st_size != identity.st_size || !same_modification_time(current, identity) ||
+            (!same_change_time(current, identity) && !removed_link)) {
+            binary_dataset_error("changed while mapped: " + path.string());
+        }
+    }
+
+    const std::filesystem::path path;
+    const BinaryDescriptor descriptor;
+    const struct stat identity;
+};
+
 void detail::require_bin_little_endian(bool little_endian) {
     if (!little_endian) {
         binary_dataset_error("big-endian host is unsupported; pf_bar_t/v1 requires little-endian");
@@ -420,15 +477,7 @@ void detail::require_bin_address_space(std::uint64_t bytes, std::uint64_t maximu
 }
 
 std::uint64_t detail::binary_file_size(int descriptor, const std::filesystem::path& path) {
-    struct stat info {};
-    if (::fstat(descriptor, &info) != 0) {
-        binary_dataset_error("cannot stat OHLCV binary: " + path.string() + ": " +
-                             std::strerror(errno));
-    }
-    if (!S_ISREG(info.st_mode)) {
-        binary_dataset_error("not a regular file: " + path.string());
-    }
-    return static_cast<std::uint64_t>(info.st_size);
+    return static_cast<std::uint64_t>(binary_file_status(descriptor, path).st_size);
 }
 
 std::shared_ptr<const pf_bar_t> detail::map_bin_records(
@@ -444,15 +493,31 @@ std::shared_ptr<const pf_bar_t> detail::map_bin_records(
         });
 }
 
-Dataset::Dataset(std::shared_ptr<const pf_bar_t> mapped_bars, std::size_t count)
-    : mapped_bars_(std::move(mapped_bars)), mapped_count_(count) {}
+Dataset::Dataset(std::shared_ptr<const MappedFile> mapped_file,
+                 std::shared_ptr<const pf_bar_t> mapped_bars, std::size_t count)
+    : mapped_file_(std::move(mapped_file)), mapped_bars_(std::move(mapped_bars)),
+      mapped_count_(count) {}
+
+const std::vector<pf_bar_t>& Dataset::bars() const {
+    if (mapped_bars_) {
+        throw std::logic_error(
+            "bars() is not available for a mapped dataset; use data() and size()");
+    }
+    return bars_;
+}
+
+void Dataset::verify_unchanged() const {
+    if (mapped_file_) {
+        mapped_file_->verify_unchanged();
+    }
+}
 
 Dataset Dataset::load_bin(const std::filesystem::path& path, BinaryVerification verification) {
     const std::uint16_t endian_probe = 1;
     detail::require_bin_little_endian(
         *reinterpret_cast<const unsigned char*>(&endian_probe) == 1);
-    const BinaryDescriptor file(path);
-    const auto bytes = detail::binary_file_size(file.get(), path);
+    const auto file = std::make_shared<const MappedFile>(path);
+    const auto bytes = static_cast<std::uint64_t>(file->identity.st_size);
     if (bytes % 48 != 0) {
         binary_dataset_error("size is not a multiple of 48: " + path.string());
     }
@@ -465,7 +530,7 @@ Dataset Dataset::load_bin(const std::filesystem::path& path, BinaryVerification 
     }
     detail::require_bin_address_space(bytes, std::numeric_limits<std::size_t>::max(), path);
     const auto length = static_cast<std::size_t>(bytes);
-    auto mapped = detail::map_bin_records(file.get(), length, path);
+    auto mapped = detail::map_bin_records(file->descriptor.get(), length, path);
     const auto digest = check_binary_sidecar(path, mapped.get(), static_cast<std::size_t>(count));
     check_binary_records(mapped.get(), static_cast<std::size_t>(count));
     if (verification == BinaryVerification::Full &&
@@ -473,7 +538,9 @@ Dataset Dataset::load_bin(const std::filesystem::path& path, BinaryVerification 
                                                   length))) {
         binary_dataset_error("sidecar does not match the bar/close files");
     }
-    return Dataset(std::move(mapped), static_cast<std::size_t>(count));
+    Dataset dataset(file, std::move(mapped), static_cast<std::size_t>(count));
+    dataset.verify_unchanged();
+    return dataset;
 }
 
 }  // namespace hpo

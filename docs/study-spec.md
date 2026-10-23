@@ -402,10 +402,15 @@ are refused as `sidecar` (`hpo_dataset_invalid`, with the engine's cause text
 `sidecar` checks all metadata and digest shapes but skips the digest comparison.
 Both modes scan every record:
 OHLC prices must be finite, volume nonnegative or NaN, and timestamps strictly increasing.
-The mapped file must never be rewritten in place. Publish a new file by `rename`/`os.replace`:
-an in-place write reaches later trials without validation, and truncation can cause SIGBUS,
-terminating the process without failure JSON. Keep each mapped inode immutable for the
-dataset's lifetime. The CSV loader is unchanged.
+In-place rewriting or truncation of a mapped file is unsupported. Publish a new file by
+write-then-`rename`/`os.replace`, keeping each mapped inode immutable for the dataset's lifetime.
+The native runner keeps the original descriptor open and checks its identity, size and timestamps
+at the end of the run, including the timeout path, before rendering results. An in-place rewrite
+is refused as `hpo_dataset_invalid` with a `changed while mapped` diagnostic; replacing the path
+with a new inode is accepted. Truncation can cause an unrecoverable SIGBUS before this end-of-run
+check, terminating the process without failure JSON. The CSV loader is unchanged.
+The native runner refuses `--trials-file`, `--output` or `--scheduler-stats` paths that alias the
+binary chart or its sidecar with `hpo_cli_usage`. `--verify-bin` requires `--ohlcv-bin`.
 Optional `symbol_feeds` remain CSV and can accompany a binary chart.
 
 Multi-dataset train/validation/test roles and walk-forward folds are not
@@ -1088,6 +1093,8 @@ directory (`.` when the parent path is empty). Otherwise it uses non-empty `TMPD
 when `TMPDIR` is unset or empty. The directory is chosen once for both files; creation failures
 do not trigger a retry in another directory. The index is addressed relative to the first trial
 ID of the run, so high continuation IDs and gaps are supported.
+If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
+not in the native process RSS.
 The final `trials` array copies those rendered rows in trial-ID order
 without retaining every trial record or the full document in memory. This spool is independent
 of `--trials-file FILE` and `--progress-fd`, which retain their ordered NDJSON stream and

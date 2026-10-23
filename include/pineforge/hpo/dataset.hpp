@@ -19,8 +19,10 @@ enum class BinaryVerification { Full, Sidecar };
 /// accepts `pf_bar_t*` rather than `const pf_bar_t*`. Timestamps must be strictly increasing and
 /// owned OHLCV values must be finite. Binary inputs follow the engine's volume contract:
 /// nonnegative or NaN, with finite OHLC prices. Never rewrite a mapped file in place: publish by
-/// rename/os.replace. In-place writes reach later trials without validation; truncation can cause
-/// SIGBUS and terminate the process without failure JSON.
+/// rename/os.replace. In-place rewriting or truncation is unsupported. The native runner checks
+/// the open descriptor for rewrites at the end of a run, including the timeout path, before
+/// publishing results. Truncation can cause an unrecoverable SIGBUS before that check and
+/// terminate the process without failure JSON.
 class Dataset final {
 public:
     /// Takes ownership of validated bars.
@@ -45,8 +47,8 @@ public:
     /// Full verification (the default) compares SHA-256 of the entire mapped file; Sidecar skips
     /// only the digest comparison. Both modes scan values and timestamp order before returning.
     /// Symbol/tf are descriptive, not compared to the run configuration; extra keys are allowed.
-    /// Copies share ownership of the mapping until the last is freed. Publish files by rename,
-    /// never by rewriting or truncating a file while it is mapped.
+    /// Copies share ownership of the mapping and its open descriptor until the last is freed.
+    /// Publish files by write-then-rename, never by rewriting or truncating a mapped file.
     /// @throws std::runtime_error for invalid files, sidecars, bars, or a big-endian host.
     static Dataset load_bin(const std::filesystem::path& path,
                             BinaryVerification verification = BinaryVerification::Full);
@@ -59,14 +61,26 @@ public:
     std::size_t size() const noexcept { return mapped_bars_ ? mapped_count_ : bars_.size(); }
     /// Returns whether the dataset contains no bars.
     bool empty() const noexcept { return size() == 0; }
-    /// Returns the owning vector; an empty vector even for nonempty mapped input.
-    /// Use data()/size() for either format.
-    const std::vector<pf_bar_t>& bars() const noexcept { return bars_; }
+    /// Returns the owning vector for CSV or vector-backed input.
+    /// @throws std::logic_error for mapped input; use data()/size() for either format.
+    const std::vector<pf_bar_t>& bars() const;
+
+    /// Checks the mapped file's open descriptor against its load-time identity and timestamps.
+    ///
+    /// A no-op for owned input. Replacing the path by rename leaves the mapped inode valid.
+    /// This is an end-of-run change detector, not protection from SIGBUS after truncation.
+    /// @throws std::runtime_error with code hpo_dataset_invalid when the file changed while mapped
+    /// or its descriptor cannot be checked.
+    void verify_unchanged() const;
 
 private:
-    Dataset(std::shared_ptr<const pf_bar_t> mapped_bars, std::size_t count);
+    struct MappedFile;
+
+    Dataset(std::shared_ptr<const MappedFile> mapped_file,
+            std::shared_ptr<const pf_bar_t> mapped_bars, std::size_t count);
 
     std::vector<pf_bar_t> bars_;
+    std::shared_ptr<const MappedFile> mapped_file_;
     std::shared_ptr<const pf_bar_t> mapped_bars_;
     std::size_t mapped_count_ = 0;
 };
