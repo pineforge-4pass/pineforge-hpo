@@ -24,8 +24,9 @@ namespace pineforge::hpo::detail {
 class TrialSpool final {
 public:
     TrialSpool(const std::filesystem::path& output, std::uint64_t first_trial_id)
-        : data_(open(output, ".pineforge-hpo-trials-data-XXXXXX")),
-          index_(open(output, ".pineforge-hpo-trials-index-XXXXXX")),
+        : directory_(select_directory(output)),
+          data_(open(directory_, ".pineforge-hpo-trials-data-XXXXXX")),
+          index_(open(directory_, ".pineforge-hpo-trials-index-XXXXXX")),
           first_trial_id_(first_trial_id) {}
 
     void append(std::uint64_t trial_id, const std::string& line) {
@@ -208,16 +209,21 @@ private:
             fail("terminal trial spool changed or is incomplete");
     }
 
-    static File open(const std::filesystem::path& output, const char* filename) {
-        std::filesystem::path directory;
+    static std::filesystem::path select_directory(const std::filesystem::path& output) {
         if (!output.empty()) {
-            directory = output.parent_path();
+            auto directory = output.parent_path();
             if (directory.empty())
                 directory = ".";
-        } else {
-            const auto* temporary_directory = std::getenv("TMPDIR");
-            directory = temporary_directory && *temporary_directory ? temporary_directory : "/tmp";
+            struct stat status {};
+            if (::stat(directory.c_str(), &status) == 0 && S_ISDIR(status.st_mode) &&
+                ::access(directory.c_str(), W_OK) == 0)
+                return directory;
         }
+        const auto* temporary_directory = std::getenv("TMPDIR");
+        return temporary_directory && *temporary_directory ? temporary_directory : "/tmp";
+    }
+
+    static File open(const std::filesystem::path& directory, const char* filename) {
         auto pattern = (directory / filename).string();
         File file(::mkstemp(pattern.data()));
         if (file.get() < 0)
@@ -227,6 +233,7 @@ private:
         return file;
     }
 
+    const std::filesystem::path directory_;
     File data_;
     File index_;
     const std::uint64_t first_trial_id_;

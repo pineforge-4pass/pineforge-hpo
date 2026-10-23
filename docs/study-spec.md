@@ -1083,9 +1083,11 @@ make `exhaustive_equivalent` false.
 
 With `--trials-out all`, terminal rows append in completion order to an anonymous temporary
 data file, with offsets in a second anonymous temporary index file. The program creates and
-immediately unlinks both files in the output directory, or in `TMPDIR` (`/tmp` when unset)
-for stdout-only output. The index is addressed relative to the first trial ID of the run,
-so high continuation IDs and gaps are supported.
+immediately unlinks both files in `--output`'s parent directory when it exists and is a writable
+directory (`.` when the parent path is empty). Otherwise it uses non-empty `TMPDIR`, or `/tmp`
+when `TMPDIR` is unset or empty. The directory is chosen once for both files; creation failures
+do not trigger a retry in another directory. The index is addressed relative to the first trial
+ID of the run, so high continuation IDs and gaps are supported.
 The final `trials` array copies those rendered rows in trial-ID order
 without retaining every trial record or the full document in memory. This spool is independent
 of `--trials-file FILE` and `--progress-fd`, which retain their ordered NDJSON stream and
