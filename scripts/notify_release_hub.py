@@ -23,6 +23,7 @@ import zipfile
 from gen_catalog_diff import DIFF_SCHEMA, VERSION, validate_catalog, version_key
 
 SOURCE = "pineforge-4pass/pineforge-hpo"
+SOURCE_REPOSITORIES = ("pineforge-4pass/pineforge-hpo", "tunaxis/pineforge-hpo")
 HUB = "pineforge-4pass/pineforge-release"
 API = "https://api.github.com"
 CATALOGS = ("hpo_failure_codes.json", "hpo_failure_codes_diff.json")
@@ -225,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--receipt", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        if os.environ.get("GITHUB_REPOSITORY") != SOURCE:
+        if os.environ.get("GITHUB_REPOSITORY") not in SOURCE_REPOSITORIES:
             raise ValueError("notification is restricted to the HPO source repository")
         attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
         if attempt <= 0:

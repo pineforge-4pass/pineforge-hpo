@@ -170,13 +170,21 @@ class NotificationTests(unittest.TestCase):
         self.receipt = self.directory / "receipt.json"
         self.summary = self.directory / "summary.md"
 
-    def invoke(self, api, *, tag=None, run_id="123456", attempt="1", repository=None):
+    def invoke(
+        self,
+        api,
+        *,
+        tag=None,
+        run_id="123456",
+        attempt="1",
+        repository="pineforge-4pass/pineforge-hpo",
+    ):
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
             mock.patch.dict(
                 os.environ,
                 {
-                    "GITHUB_REPOSITORY": repository or "pineforge-4pass/pineforge-hpo",
+                    "GITHUB_REPOSITORY": repository or "",
                     "GITHUB_RUN_ID": run_id,
                     "GITHUB_RUN_ATTEMPT": attempt,
                     "RELEASE_READ_TOKEN": READ_TOKEN,
@@ -188,6 +196,8 @@ class NotificationTests(unittest.TestCase):
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
         ):
+            if repository is None:
+                os.environ.pop("GITHUB_REPOSITORY", None)
             try:
                 status = NOTIFY.main(
                     ["--tag", tag or api.tag, "--receipt", str(self.receipt)]
@@ -226,6 +236,50 @@ class NotificationTests(unittest.TestCase):
                     {asset["name"]: asset["digest"] for asset in api.inventory},
                 )
                 self.assertIn("readiness are pending", self.summary.read_text())
+
+    def test_both_source_repositories_dispatch_with_the_fixed_source_identity(self):
+        for repository in (
+            "pineforge-4pass/pineforge-hpo",
+            "tunaxis/pineforge-hpo",
+        ):
+            with self.subTest(repository=repository):
+                api = GitHubFixture(FIXTURES[0])
+                status, stdout, stderr = self.invoke(api, repository=repository)
+                self.assertEqual(status, 0, stdout + stderr)
+                self.assertEqual(api.posts, [FIXTURES[0]["expected_dispatch"]])
+                self.assertEqual(api.calls[-1][:2], ("POST", api.dispatch_url))
+                receipt = json.loads(self.receipt.read_text())
+                self.assertEqual(
+                    receipt["source_repository"], "pineforge-4pass/pineforge-hpo"
+                )
+
+    def test_other_repository_identities_get_the_exact_source_guard_refusal(self):
+        for repository in (
+            "other/pineforge-hpo",
+            "pineforge-4pass-x/pineforge-hpo",
+            "xpineforge-4pass/pineforge-hpo",
+            "tunaxis-x/pineforge-hpo",
+            "tunaxis/other",
+            "pineforge-4pass/other",
+            "Tunaxis/pineforge-hpo",
+            "PINEFORGE-4PASS/pineforge-hpo",
+            "tunaxis/pineforge-hpo/",
+            "",
+            None,
+        ):
+            with self.subTest(repository=repository):
+                api = GitHubFixture(FIXTURES[0])
+                status, stdout, stderr = self.invoke(api, repository=repository)
+                self.assertEqual(status, 1, stdout + stderr)
+                self.assertEqual(
+                    stderr,
+                    "HPO hub notification failed: "
+                    "notification is restricted to the HPO source repository\n",
+                )
+                self.assertFalse(self.receipt.exists())
+                self.assertNotIn("GitHub accepted", stdout)
+                self.assertEqual(api.calls, [])
+                self.assertEqual(api.posts, [])
 
     def test_duplicate_and_missed_event_replay_rechecks_the_same_release_bytes(self):
         api = GitHubFixture(FIXTURES[0])
