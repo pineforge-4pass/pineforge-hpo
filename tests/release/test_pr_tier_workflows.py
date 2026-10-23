@@ -304,9 +304,9 @@ class PrTierWorkflowTests(unittest.TestCase):
         )
 
     def test_authz_script_decision_table_refuses_untrusted_inputs(self):
-        script = workflow_step(
-            self.workflows["ci.yml"], "authz", AUTHZ_STEP_NAME
-        )["run"]
+        script = workflow_step(self.workflows["ci.yml"], "authz", AUTHZ_STEP_NAME)[
+            "run"
+        ]
         repository = "pineforge-4pass/pineforge-hpo"
         cases = (
             ("trusted push", {"EVENT": "push"}, True),
@@ -362,9 +362,9 @@ class PrTierWorkflowTests(unittest.TestCase):
                 )
 
     def test_authz_script_rejects_a_noop_fail_mutation(self):
-        script = workflow_step(
-            self.workflows["ci.yml"], "authz", AUTHZ_STEP_NAME
-        )["run"]
+        script = workflow_step(self.workflows["ci.yml"], "authz", AUTHZ_STEP_NAME)[
+            "run"
+        ]
         fail_function = (
             'fail() { echo "::error title=authz::$1"; echo "authz: REFUSED: $1" '
             '>> "$GITHUB_STEP_SUMMARY"; exit 1; }'
