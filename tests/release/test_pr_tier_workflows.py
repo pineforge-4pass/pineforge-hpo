@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 from types import SimpleNamespace
 import unittest
 
@@ -54,6 +56,8 @@ ADAPTER_BLOCK_OPEN = "if(UNIX AND TARGET PineForgeHPO::engine_adapter)"
 ENGINE_REFERENCE = re.compile(
     r"engine_adapter|pineforge-hpo-native|PINEFORGE_ENGINE_|fake_strategy"
 )
+AUTHZ_STEP_NAME = "Only our own pull requests and our own events run CI"
+AGGREGATE_STEP_NAME = "Require success or independently proven cheap skips"
 
 
 def compact(text):
@@ -86,6 +90,14 @@ def engine_references_outside_block(cmake_text):
     start, end = adapter_block(lines)
     outside = lines[:start] + lines[end + 1 :]
     return [line for line in outside if ENGINE_REFERENCE.search(line)]
+
+
+def workflow_step(workflow, job_id, step_name):
+    return job_step(workflow["jobs"][job_id], step_name)
+
+
+def job_step(job, step_name):
+    return next(step for step in job["steps"] if step["name"] == step_name)
 
 
 def evaluate(expression, **context):
@@ -184,6 +196,7 @@ class PrTierWorkflowTests(unittest.TestCase):
                     "authz": "authz",
                     "changes": "changes",
                     "workflow-lint": "workflow-lint",
+                    "light": "Light",
                     "release-notification": "Release notification contract",
                     "native": "Native (${{ matrix.os }})",
                     "python": "Python ${{ matrix.python }}",
@@ -232,6 +245,183 @@ class PrTierWorkflowTests(unittest.TestCase):
             self.workflows["ci.yml"]["jobs"]["python"]["strategy"]["matrix"]["python"],
             ["3.11", "3.14"],
         )
+
+    def test_license_entity_is_an_unconditional_light_check(self):
+        jobs = self.workflows["ci.yml"]["jobs"]
+        light = jobs["light"]
+        self.assertEqual(light["needs"], ["authz"])
+        self.assertEqual(light["if"], "${{ needs.authz.result == 'success' }}")
+        self.assertEqual(light["runs-on"], "ubuntu-24.04")
+        self.assertEqual(
+            job_step(light, "Check license entity")["run"],
+            "python3 -m unittest tests/python/test_license_entity.py -v",
+        )
+        self.assertEqual(
+            jobs["build-gate"]["needs"],
+            [
+                "authz",
+                "changes",
+                "workflow-lint",
+                "light",
+                "release-notification",
+                "native",
+                "python",
+            ],
+        )
+
+    def authz_environment(self, **overrides):
+        environment = {
+            "EVENT": "push",
+            "REPO": "pineforge-4pass/pineforge-hpo",
+            "HEAD_REPO": "pineforge-4pass/pineforge-hpo",
+            "HEAD_IS_FORK": "false",
+            "ASSOCIATION": "OWNER",
+            "PR_AUTHOR": "owner",
+            "WR_HEAD_REPO": "pineforge-4pass/pineforge-hpo",
+            "WR_ACTOR": "pineforge-app[bot]",
+            "ALLOWED_BOTS": "dependabot[bot] pineforge-app[bot]",
+        }
+        environment.update(overrides)
+        return environment
+
+    @staticmethod
+    def run_workflow_script(script, environment):
+        process_environment = os.environ.copy()
+        process_environment.update(
+            {
+                "GITHUB_STEP_SUMMARY": "/dev/null",
+                "RUNNER_TEMP": str(ROOT),
+            }
+        )
+        process_environment.update(environment)
+        return subprocess.run(
+            ["bash", "-c", script],
+            cwd=ROOT,
+            env=process_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_authz_script_decision_table_refuses_untrusted_inputs(self):
+        script = workflow_step(self.workflows["ci.yml"], "authz", AUTHZ_STEP_NAME)[
+            "run"
+        ]
+        repository = "pineforge-4pass/pineforge-hpo"
+        cases = (
+            ("trusted push", {"EVENT": "push"}, True),
+            (
+                "trusted workflow run",
+                {
+                    "EVENT": "workflow_run",
+                    "WR_HEAD_REPO": repository,
+                    "WR_ACTOR": "pineforge-app[bot]",
+                },
+                True,
+            ),
+            (
+                "same-repository owner pull request",
+                {
+                    "EVENT": "pull_request",
+                    "HEAD_REPO": repository,
+                    "HEAD_IS_FORK": "false",
+                    "ASSOCIATION": "OWNER",
+                },
+                True,
+            ),
+            (
+                "same-repository allowlisted bot pull request",
+                {
+                    "EVENT": "pull_request",
+                    "HEAD_REPO": repository,
+                    "HEAD_IS_FORK": "false",
+                    "ASSOCIATION": "CONTRIBUTOR",
+                    "PR_AUTHOR": "dependabot[bot]",
+                },
+                True,
+            ),
+            (
+                "foreign fork pull request",
+                {
+                    "EVENT": "pull_request",
+                    "HEAD_REPO": "attacker/example",
+                    "HEAD_IS_FORK": "true",
+                    "ASSOCIATION": "OWNER",
+                },
+                False,
+            ),
+            ("pull request target", {"EVENT": "pull_request_target"}, False),
+        )
+        for name, overrides, expected_success in cases:
+            with self.subTest(case=name):
+                result = self.run_workflow_script(
+                    script, self.authz_environment(**overrides)
+                )
+                self.assertEqual(
+                    result.returncode == 0, expected_success, result.stderr
+                )
+
+    def test_authz_script_rejects_a_noop_fail_mutation(self):
+        script = workflow_step(self.workflows["ci.yml"], "authz", AUTHZ_STEP_NAME)[
+            "run"
+        ]
+        fail_function = (
+            'fail() { echo "::error title=authz::$1"; echo "authz: REFUSED: $1" '
+            '>> "$GITHUB_STEP_SUMMARY"; exit 1; }'
+        )
+        self.assertIn(fail_function, script)
+        environment = self.authz_environment(
+            EVENT="pull_request",
+            HEAD_REPO="attacker/example",
+            HEAD_IS_FORK="true",
+            ASSOCIATION="OWNER",
+        )
+        shipped_result = self.run_workflow_script(script, environment)
+        self.assertNotEqual(shipped_result.returncode, 0, shipped_result.stderr)
+
+        mutated = script.replace(fail_function, "fail() { :; }", 1)
+        self.assertNotEqual(mutated, script)
+        mutant_result = self.run_workflow_script(mutated, environment)
+        self.assertEqual(mutant_result.returncode, 0, mutant_result.stderr)
+
+    def aggregate_environment(self, **overrides):
+        aggregate = self.workflows["ci.yml"]["jobs"]["build-gate"]
+        step = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )
+        needs = {job_id: {"result": "success"} for job_id in aggregate["needs"]}
+        for job_id, result in overrides.items():
+            needs[job_id] = {"result": result}
+        return {
+            "NEEDS": json.dumps(needs),
+            "HEAVY_JOBS": step["env"]["HEAVY_JOBS"],
+            "DOCS_ONLY": "false",
+            "WORKFLOWS_ONLY": "false",
+        }
+
+    def test_aggregate_script_rejects_a_failed_native_result(self):
+        script = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )["run"]
+        result = self.run_workflow_script(
+            script, self.aggregate_environment(native="failure")
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_aggregate_script_rejects_a_noop_run_mutation(self):
+        script = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )["run"]
+        environment = self.aggregate_environment(native="failure")
+        shipped_result = self.run_workflow_script(script, environment)
+        self.assertNotEqual(shipped_result.returncode, 0, shipped_result.stderr)
+
+        mutated = copy.deepcopy(self.workflows["ci.yml"])
+        step = workflow_step(mutated, "build-gate", AGGREGATE_STEP_NAME)
+        step["run"] = "true"
+        self.assertNotEqual(step["run"], script)
+        mutant_result = self.run_workflow_script(step["run"], environment)
+        self.assertEqual(mutant_result.returncode, 0, mutant_result.stderr)
 
     def test_concurrency_cancels_only_runs_of_the_same_pull_request(self):
         for workflow in self.workflows.values():
@@ -378,7 +568,7 @@ class PrTierWorkflowTests(unittest.TestCase):
             aggregate = "build-gate" if name == "ci.yml" else "benchmark-check"
             self.assertEqual(jobs[aggregate]["if"], "${{ always() }}")
             for job_id, job in jobs.items():
-                if job_id in ("authz", "changes", "workflow-lint", aggregate):
+                if job_id in ("authz", "changes", "workflow-lint", "light", aggregate):
                     continue
                 self.assertEqual(job["needs"], ["authz", "changes"])
                 for result in ("success", "failure", "cancelled", "skipped"):
