@@ -131,8 +131,8 @@ class PrTierWorkflowTests(unittest.TestCase):
             ci["native"]["strategy"]["matrix"]["include"][1],
             {"os": "macos-latest", "runner": "macos-latest"},
         )
-        for jobs in (ci, benchmark):
-            for job_id in ("changes", "build-gate"):
+        for jobs, aggregate in ((ci, "build-gate"), (benchmark, "benchmark-check")):
+            for job_id in ("authz", "changes", "workflow-lint", aggregate):
                 self.assertEqual(jobs[job_id]["runs-on"], "ubuntu-24.04")
 
     def test_no_route_is_a_conditional_expression(self):
@@ -181,19 +181,23 @@ class PrTierWorkflowTests(unittest.TestCase):
             "ci.yml": (
                 "CI",
                 {
+                    "authz": "authz",
                     "changes": "changes",
+                    "workflow-lint": "workflow-lint",
                     "release-notification": "Release notification contract",
                     "native": "Native (${{ matrix.os }})",
                     "python": "Python ${{ matrix.python }}",
-                    "build-gate": "CI verification gate",
+                    "build-gate": "build-gate",
                 },
             ),
             "benchmark-smoke.yml": (
                 "Benchmark smoke",
                 {
+                    "authz": "authz",
                     "changes": "changes",
+                    "workflow-lint": "workflow-lint",
                     "optuna": "Native TPE vs Optuna",
-                    "build-gate": "Benchmark verification gate",
+                    "benchmark-check": "benchmark-check",
                 },
             ),
         }
@@ -212,10 +216,10 @@ class PrTierWorkflowTests(unittest.TestCase):
                 trigger = workflow["on"]["pull_request"] or {}
                 self.assertNotIn("paths", trigger)
                 self.assertNotIn("paths-ignore", trigger)
-                for job in workflow["jobs"].values():
+                for job_id, job in workflow["jobs"].items():
                     self.assertEqual(
                         job.get("permissions", workflow["permissions"]),
-                        {"contents": "read"},
+                        {} if job_id == "authz" else {"contents": "read"},
                     )
                 text = (ROOT / ".github/workflows" / name).read_text()
                 self.assertNotIn("secrets.", text)
@@ -369,18 +373,17 @@ class PrTierWorkflowTests(unittest.TestCase):
             engine_references_outside_block(moved)
 
     def test_docs_only_skips_remain_fail_closed(self):
-        for workflow in self.workflows.values():
+        for name, workflow in self.workflows.items():
             jobs = workflow["jobs"]
-            self.assertEqual(jobs["build-gate"]["if"], "always()")
+            aggregate = "build-gate" if name == "ci.yml" else "benchmark-check"
+            self.assertEqual(jobs[aggregate]["if"], "${{ always() }}")
             for job_id, job in jobs.items():
-                if job_id in ("changes", "build-gate"):
+                if job_id in ("authz", "changes", "workflow-lint", aggregate):
                     continue
-                self.assertEqual(job["needs"], "changes")
+                self.assertEqual(job["needs"], ["authz", "changes"])
                 for result in ("success", "failure", "cancelled", "skipped"):
-                    for docs_only in ("true", "false", ""):
-                        with self.subTest(
-                            job=job_id, result=result, docs_only=docs_only
-                        ):
+                    for code in ("true", "false", ""):
+                        with self.subTest(job=job_id, result=result, code=code):
                             allowed = evaluate(
                                 job["if"],
                                 github=SimpleNamespace(
@@ -392,14 +395,12 @@ class PrTierWorkflowTests(unittest.TestCase):
                                 needs=SimpleNamespace(
                                     changes=SimpleNamespace(
                                         result=result,
-                                        outputs=SimpleNamespace(docs_only=docs_only),
+                                        outputs=SimpleNamespace(code=code),
                                     )
                                 ),
                                 cancelled=lambda: False,
                             )
-                            self.assertEqual(
-                                allowed, result != "success" or docs_only != "true"
-                            )
+                            self.assertEqual(allowed, code == "true")
 
 
 if __name__ == "__main__":
