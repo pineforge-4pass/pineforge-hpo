@@ -655,6 +655,15 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_streamed_trial_retention
+            COMMAND "${Python3_EXECUTABLE}" -I
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_streamed_trial_retention.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                "${CMAKE_CURRENT_BINARY_DIR}/streamed-trial-retention")
+        # Keep other CTest cases from contending with this small RSS-delta gate.
+        # It is always run on Linux; no skip code or sanitizer-specific threshold is supplied.
+        set_tests_properties(pineforge_hpo_streamed_trial_retention PROPERTIES RUN_SERIAL TRUE)
         add_test(NAME pineforge_hpo_warm_start_contract
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_warm_start_contract.py"
