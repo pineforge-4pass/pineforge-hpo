@@ -54,6 +54,18 @@ void require_same_bars(const Dataset& actual, const Dataset& expected) {
     }
 }
 
+void require_mapped_bars_refusal(const Dataset& dataset) {
+    try {
+        (void)dataset.bars();
+    } catch (const std::logic_error& error) {
+        require(std::string(error.what()) ==
+                    "bars() is not available for a mapped dataset; use data() and size()",
+                "mapped bars() refusal does not explain the supported accessors");
+        return;
+    }
+    throw std::runtime_error("bars() did not refuse a mapped dataset");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -70,7 +82,7 @@ int main(int argc, char** argv) {
         test("binary_layout_matches_independent_csv", [&] {
             const Dataset mapped = Dataset::load_bin(directory / "good.bin");
             require_same_bars(mapped, csv);
-            require(mapped.bars().empty(), "mapped bars were copied to the owning vector");
+            require_mapped_bars_refusal(mapped);
         });
         test("binary_mapping_survives_copy_move_and_assignment", [&] {
             Dataset owner = [&] {
@@ -86,8 +98,12 @@ int main(int argc, char** argv) {
             Dataset assigned = Dataset::load_csv(directory / "good.csv");
             assigned = moved;
             require(assigned.data() == address, "dataset assignment copied mapped bars");
-            require(assigned.bars().empty(), "dataset assignment retained an owning bar vector");
+            require_mapped_bars_refusal(assigned);
             require_same_bars(assigned, csv);
+        });
+        test("csv_bars_accessor_keeps_its_owning_vector", [&] {
+            require(csv.bars().size() == csv.size(), "CSV bars() lost its owning vector");
+            require(csv.bars().data() == csv.data(), "CSV bars() changed the data pointer");
         });
         test("binary_sidecar_extra_metadata_is_ignored", [&] {
             require_same_bars(Dataset::load_bin(directory / "extra-metadata.bin"), csv);

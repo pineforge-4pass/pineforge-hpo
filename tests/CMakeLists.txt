@@ -484,6 +484,8 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             "${PFH_DATASET_BIN_FIXTURES}")
         set_tests_properties(pineforge_hpo_dataset_bin PROPERTIES
             FIXTURES_REQUIRED dataset_bin_inputs)
+    else()
+        message(WARNING "SKIP: Python not found; binary-loader tests will not run")
     endif()
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
         add_test(NAME pineforge_hpo_dataset_bin_sidecars

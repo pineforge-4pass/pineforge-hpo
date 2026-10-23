@@ -9,13 +9,18 @@ parent and head binaries. Linux cannot skip the memory row.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 import unittest
 
@@ -114,7 +119,9 @@ def append_memory_summary(evidence: dict) -> None:
 
 
 def run_child(label: str, command: list[str], inputs: list[Path], *,
-              outputs: list[Path] | None = None, tmpdir: Path | None = None) -> dict:
+              outputs: list[Path] | None = None, tmpdir: Path | None = None,
+              pass_fds: tuple[int, ...] = (),
+              after_start: Callable[[subprocess.Popen], None] | None = None) -> dict:
     """wait4 reaps exactly this child; no wrapper/parent usage or exit code is sampled."""
     stdout = ROOT / f"{label}.stdout"
     stderr = ROOT / f"{label}.stderr"
@@ -126,9 +133,19 @@ def run_child(label: str, command: list[str], inputs: list[Path], *,
     print("COMMAND " + json.dumps(command), flush=True)
     environment = os.environ.copy()
     environment["TMPDIR"] = str(allowed_path(tmpdir or ROOT))
+    action_error = None
     with stdout.open("wb") as output, stderr.open("wb") as errors:
         child = subprocess.Popen(command, stdout=output, stderr=errors,
-                                 cwd=ROOT, env=environment)
+                                 cwd=ROOT, env=environment, pass_fds=pass_fds)
+        try:
+            if after_start is not None:
+                after_start(child)
+        except BaseException as error:
+            action_error = error
+            try:
+                child.kill()
+            except ProcessLookupError:
+                pass
         while True:
             try:
                 waited_pid, status, usage = os.wait4(child.pid, 0)
@@ -155,6 +172,8 @@ def run_child(label: str, command: list[str], inputs: list[Path], *,
         "reason": "work output has not passed its assertions",
     }
     write_json(result_file, row)
+    if action_error is not None:
+        raise action_error
     return row
 
 
@@ -541,6 +560,213 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         pass_row(row, trials_completed=3, evaluated_ids=evaluated_ids,
                  unevaluated_ranges=block["unevaluated_ranges"],
                  check="default all-mode rows equal evaluated candidate positions with an ID gap")
+
+    def mapped_fixture(self, label: str) -> tuple[Path, Path, bytes]:
+        directory, binary, sidecar = list_paths("mapped fixture write", [
+            ROOT / label, ROOT / label / "bars.bin", ROOT / label / "bars.bin.json"])
+        directory.mkdir()
+        data = b"".join(struct.pack("<5dq", 100.0, 102.0, 99.0, 101.0, 10.0,
+                                    1700000000000 + index * 60000) for index in range(2))
+        binary.write_bytes(data)
+        # An old mtime makes an in-place write observable even on a coarse-mtime filesystem.
+        os.utime(binary, ns=(1600000000000000000, 1600000000000000000))
+        write_json(sidecar, {
+            "format": "pf_bar_t/v1", "record_size": 48, "symbol": "TEST:BIN", "tf": "1",
+            "count": 2, "first_ts": 1700000000000, "last_ts": 1700000060000,
+            "sha256": hashlib.sha256(data).hexdigest(),
+        })
+        return binary, sidecar, data
+
+    def mapped_command(self, binary: Path, *extra: str) -> list[str]:
+        return [
+            str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv-bin", str(binary),
+            "--objective", "metrics.all.net_profit", "--sampler", "grid",
+            "--seed", "17", "--workers", "1", "--max-trials", "2",
+            "--input-tf", "1", "--script-tf", "5",
+            "--bar-magnifier", "true", "--magnifier-samples", "6",
+            "--magnifier-distribution", "triangle",
+            "--int-dim", "Length", "1", "2", "1",
+            "--fixed-input", "ChartBarsTest", "1", *extra,
+        ]
+
+    def mapped_update(self, label: str, *, replace: bool, timeout: bool = False,
+                      verification: str = "full") -> None:
+        binary, sidecar, data = self.mapped_fixture(label)
+        replacement, = list_paths("mapped replacement write", [binary.with_name("next.bin")])
+        changed = struct.pack("<5dq", 100.0, 102.0, 99.0, 100.5, 10.0, 1700000000000)
+        progress_read, progress_write = os.pipe()
+        entered_read, entered_write = os.pipe()
+        release_read, release_write = os.pipe()
+        descriptors = {progress_read, progress_write, entered_read, entered_write,
+                       release_read, release_write}
+        progress = bytearray()
+
+        def close_descriptor(descriptor: int) -> None:
+            os.close(descriptor)
+            descriptors.remove(descriptor)
+
+        def read_event(descriptor: int, delimiter: bytes) -> bytes:
+            observed = bytearray()
+            deadline = time.monotonic() + 30.0
+            while not observed.endswith(delimiter):
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0.0, "mapped-update event did not arrive")
+                ready, _, _ = select.select([descriptor], [], [], remaining)
+                self.assertTrue(ready, "mapped-update event timed out")
+                chunk = os.read(descriptor, 65536)
+                self.assertTrue(chunk, "child closed the event pipe before admission")
+                observed.extend(chunk)
+            return bytes(observed)
+
+        def update_after_progress(_child: subprocess.Popen) -> None:
+            for descriptor in (progress_write, entered_write, release_read):
+                close_descriptor(descriptor)
+            progress.extend(read_event(progress_read, b"\n"))
+            first = json.loads(progress)
+            self.assertEqual(first["trial_id"], 0)
+            self.assertEqual(first["status"], "ok")
+            self.assertEqual(read_event(entered_read, b"G"), b"G")
+            # The first row proves the mapping was loaded; the second trial's gate keeps
+            # render_results out of reach until this write/replace is complete. No sleep barrier.
+            if replace:
+                replacement.write_bytes(changed + data[48:])
+                os.replace(replacement, binary)
+            else:
+                with binary.open("r+b") as output:
+                    self.assertEqual(output.write(changed), 48)
+            if not timeout:
+                self.assertEqual(os.write(release_write, b"R"), 1)
+            # Drain the remaining row as an event too, so even a small pipe cannot block
+            # the progress writer while run_child waits for the work's exit.
+            terminal = json.loads(read_event(progress_read, b"\n"))
+            self.assertEqual(terminal["trial_id"], 1)
+            self.assertEqual(terminal["status"], "trial_timeout" if timeout else "ok")
+
+        extra = (
+            "--verify-bin", verification,
+            "--progress-fd", str(progress_write),
+            "--fixed-input", "GateAtLength", "2",
+            "--fixed-input", "GateEnteredFd", str(entered_write),
+            "--fixed-input", "GateReleaseFd", str(release_read),
+            "--fixed-input", "SequenceDelayMs", "0,20",
+        )
+        if timeout:
+            extra += ("--trial-timeout-seconds", "2")
+        try:
+            row = run_child(
+                label, self.mapped_command(binary, *extra), [PLUGIN, MANIFEST, binary, sidecar],
+                outputs=[replacement] if replace else [],
+                pass_fds=(progress_write, entered_write, release_read),
+                after_start=update_after_progress)
+        finally:
+            for descriptor in tuple(descriptors):
+                close_descriptor(descriptor)
+        stdout, stderr = list_paths(
+            "mapped-update result read", [Path(row["stdout"]), Path(row["stderr"])])
+        document = json.loads(stdout.read_bytes())
+        if replace:
+            self.assertEqual(row["exit_code"], 0, child_diagnostics(row))
+            self.assertTrue(document["ok"])
+            self.assertNotIn("failure", document)
+            self.assertEqual(document["trials_completed"], 2)
+            self.assertEqual([trial["status"] for trial in document["trials"]], ["ok", "ok"])
+            # Length contributes one point; the replaced path must not change the held mapping.
+            self.assertEqual(document["trials"][1]["objective"],
+                             document["trials"][0]["objective"] + 1.0)
+        else:
+            self.assertEqual(row["exit_code"], 3 if timeout else 1, child_diagnostics(row))
+            self.assertEqual(document["failure"]["code"], "hpo_dataset_invalid")
+            self.assertEqual(document["failure"]["exit_code"], row["exit_code"])
+            self.assertIn("changed while mapped", stderr.read_text(encoding="utf-8"))
+            self.assertNotIn("trials", document)
+        pass_row(row, first_progress_trial_id=0,
+                 check="rename-over keeps the mapping" if replace else
+                       "in-place rewrite refused before timeout/result publication")
+
+    def test_08_mapped_rewrite_is_refused_before_publication(self) -> None:
+        # T1/F3: both verification modes must detect changes after the load-time checks.
+        for mode in ("full", "sidecar"):
+            with self.subTest(mode=mode):
+                self.mapped_update(f"mapped-in-place-rewrite-{mode}", replace=False,
+                                   verification=mode)
+
+    def test_09_mapped_rename_over_keeps_the_original_inode(self) -> None:
+        # T1's independent positive row: the path changes; the mapped inode does not.
+        for mode in ("full", "sidecar"):
+            with self.subTest(mode=mode):
+                self.mapped_update(f"mapped-rename-over-{mode}", replace=True,
+                                   verification=mode)
+
+    def test_10_mapped_rewrite_is_refused_on_timeout(self) -> None:
+        for mode in ("full", "sidecar"):
+            with self.subTest(mode=mode):
+                self.mapped_update(f"mapped-timeout-rewrite-{mode}", replace=False, timeout=True,
+                                   verification=mode)
+
+    def test_11_mapped_input_aliases_are_usage_refusals(self) -> None:
+        # T2/F7: each run has its own valid fixture, even against a truncating parent binary.
+        for option in ("--trials-file", "--output", "--scheduler-stats"):
+            for target_name in ("bars", "sidecar"):
+                for alias_kind in ("same", "lexical", "hardlink", "symlink"):
+                    label = f"mapped-alias-{option[2:]}-{target_name}-{alias_kind}"
+                    with self.subTest(option=option, target=target_name, alias=alias_kind):
+                        binary, sidecar, data = self.mapped_fixture(label)
+                        metadata = sidecar.read_bytes()
+                        target = binary if target_name == "bars" else sidecar
+                        destination = target
+                        if alias_kind == "lexical":
+                            # stat fails through the missing component; lexical normalization
+                            # still identifies the protected input before any writer is opened.
+                            destination = target.parent / "absent" / ".." / target.name
+                        elif alias_kind in ("hardlink", "symlink"):
+                            destination = target.with_name("alias")
+                            list_paths("alias creation", [target, destination])
+                            if alias_kind == "hardlink":
+                                os.link(target, destination)
+                            else:
+                                destination.symlink_to(target)
+                        row = run_child(label, self.mapped_command(
+                            binary, option, str(destination)), [PLUGIN, MANIFEST, binary, sidecar],
+                            outputs=[destination])
+                        stdout, = list_paths("alias refusal read", [Path(row["stdout"])])
+                        self.assertEqual(row["exit_code"], 1, child_diagnostics(row))
+                        document = json.loads(stdout.read_bytes())
+                        self.assertEqual(document["failure"]["code"], "hpo_cli_usage")
+                        self.assertEqual(document["failure"]["exit_code"], 1)
+                        self.assertNotIn("trials", document)
+                        list_paths("protected input bytes read", [binary, sidecar])
+                        self.assertEqual(binary.read_bytes(), data)
+                        self.assertEqual(sidecar.read_bytes(), metadata)
+                        pass_row(row, check="output alias refused before either input is written")
+
+    def test_12_csv_verify_bin_requires_binary_input(self) -> None:
+        # T3/F8: an explicit default mode must be refused just like sidecar mode.
+        for mode in ("sidecar", "full"):
+            with self.subTest(mode=mode):
+                row = run_child(f"csv-verify-bin-{mode}",
+                                self.command(2, "--verify-bin", mode), [PLUGIN, MANIFEST, CSV])
+                stdout, stderr = list_paths(
+                    "CSV verification refusal read", [Path(row["stdout"]), Path(row["stderr"])])
+                self.assertEqual(row["exit_code"], 1, child_diagnostics(row))
+                document = json.loads(stdout.read_bytes())
+                self.assertEqual(document["failure"]["code"], "hpo_cli_usage")
+                self.assertEqual(document["failure"]["exit_code"], 1)
+                self.assertIn("--verify-bin requires --ohlcv-bin",
+                              stderr.read_text(encoding="utf-8"))
+                pass_row(row, check="CSV cannot silently ignore an explicit --verify-bin")
+
+    def test_13_output_dev_null_uses_a_writable_spool_directory(self) -> None:
+        # T4/F6: guard for fix6; green on bb327ed by design.
+        if os.geteuid() == 0:
+            reason = "root can create a spool in /dev; this row requires a non-root user"
+            print("SKIP /dev/null spool row: " + reason, flush=True)
+            write_json(ROOT / "output-dev-null.result.json", {"verdict": "SKIP", "reason": reason})
+            return
+        target = Path("/dev/null")
+        row = run_child("output-dev-null", self.command(2, "--output", str(target)),
+                        [PLUGIN, MANIFEST, CSV], outputs=[target])
+        self.completed_document(row, 2)
+        pass_row(row, check="--trials-out all --output /dev/null uses the writable TMPDIR")
 
     def assert_output_refusal(self, row: dict) -> None:
         stdout = Path(row["stdout"])
