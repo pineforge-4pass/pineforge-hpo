@@ -758,12 +758,18 @@ class CliTests(unittest.TestCase):
             )
         )
         Path(str(binary) + ".json").write_text(
-            json.dumps({
-                "format": "pf_bar_t/v1", "record_size": 48, "symbol": "TEST:BIN", "tf": "1",
-                "count": len(rows), "first_ts": int(rows[0]["timestamp"]),
-                "last_ts": int(rows[-1]["timestamp"]),
-                "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-            }),
+            json.dumps(
+                {
+                    "format": "pf_bar_t/v1",
+                    "record_size": 48,
+                    "symbol": "TEST:BIN",
+                    "tf": "1",
+                    "count": len(rows),
+                    "first_ts": int(rows[0]["timestamp"]),
+                    "last_ts": int(rows[-1]["timestamp"]),
+                    "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                }
+            ),
             encoding="utf-8",
         )
         self._write_study(
@@ -790,21 +796,42 @@ class CliTests(unittest.TestCase):
         )
 
     def test_dataset_binary_sidecar_verification_is_forwarded(self) -> None:
-        self._write_study(datasets=[{
-            "id": "bars", "ohlcv_bin": "bars.bin", "input_tf": "1", "verify_bin": "sidecar",
-        }])
+        self._write_study(
+            datasets=[
+                {
+                    "id": "bars",
+                    "ohlcv_bin": "bars.bin",
+                    "input_tf": "1",
+                    "verify_bin": "sidecar",
+                }
+            ]
+        )
         study = load_study_spec(self.study_path)
-        command = _native_command(study, native=self.native, plugin=self.root / "strategy.dylib",
-                                  artifact_key="a" * 64)
+        command = _native_command(
+            study,
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
         self.assertEqual(command[command.index("--verify-bin") + 1], "sidecar")
 
     def test_dataset_binary_verification_refuses_invalid_mode_or_csv(self) -> None:
-        for source, mode in (("ohlcv_bin", "unchecked"), ("ohlcv_bin", True),
-                             ("ohlcv", "sidecar")):
+        for source, mode in (
+            ("ohlcv_bin", "unchecked"),
+            ("ohlcv_bin", True),
+            ("ohlcv", "sidecar"),
+        ):
             with self.subTest(source=source, mode=mode):
-                self._write_study(datasets=[{
-                    "id": "bars", source: "bars.bin", "input_tf": "1", "verify_bin": mode,
-                }])
+                self._write_study(
+                    datasets=[
+                        {
+                            "id": "bars",
+                            source: "bars.bin",
+                            "input_tf": "1",
+                            "verify_bin": mode,
+                        }
+                    ]
+                )
                 with self.assertRaisesRegex(StudySpecError, "verify_bin"):
                     load_study_spec(self.study_path)
 

@@ -492,7 +492,15 @@ def _parse_dataset(
     raw = _object(value, path, issues)
     _check_unknown(
         raw,
-        {"id", "ohlcv", "ohlcv_bin", "verify_bin", "input_tf", "script_tf", "chart_timezone"},
+        {
+            "id",
+            "ohlcv",
+            "ohlcv_bin",
+            "verify_bin",
+            "input_tf",
+            "script_tf",
+            "chart_timezone",
+        },
         path,
         issues,
     )
