@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.6.3 (2026-10-23)
+
+- Final 1.6.3 release (PEP 440 `1.6.3`, tag `v1.6.3`), paired with `pineforge-engine` v1.6.3 and
+  `pineforge-codegen` 1.6.3 (tags `v1.6.3`; the C ABI version `PF_ABI_VERSION` remains 4). The
+  `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.6.3`. The optional submodule gitlinks in
+  `external/pineforge-engine` (`e799ac8`) and `external/pineforge-codegen-oss` (`3ac6503`) pin
+  the `v1.6.3` release commits.
+- Since 1.6.2, the pinned engine changes are CI-only or test-only: run on the GCP fleet
+  (#474), require full verify and parity green for release (#479), split the PR wall from
+  full-event verification (#480), and test fixes (#476/#478); there is no runtime or ABI change.
+  The pinned codegen changes are CI and docs only: hosted runners (#237), npm publish by
+  operator dispatch only (#238), and docs (#239/#240). HPO's own code and behaviour are
+  unchanged since 1.6.2; its only commit since v1.6.2 is
+  `ci: run every hpo job on GitHub-hosted runners (#69)`.
+
 ## 1.6.2 (2026-10-21)
 
 - Final 1.6.2 release (PEP 440 `1.6.2`, tag `v1.6.2`), paired with `pineforge-engine` v1.6.2 and
