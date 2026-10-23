@@ -249,6 +249,18 @@ jobs:
           fi
           "$lint_dir/actionlint" -config-file "$lint_dir/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
 
+  light:
+    name: Light
+    needs: [authz]
+    if: "${{ needs.authz.result == 'success' }}"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check license entity
+        run: python3 -m unittest tests/python/test_license_entity.py -v
+
   release-notification:
     name: Release notification contract
     needs: [authz, changes]
@@ -544,7 +556,7 @@ jobs:
           ruff format --check python tests/python benchmarks
 
   build-gate:
-    needs: [authz, changes, workflow-lint, release-notification, native, python]
+    needs: [authz, changes, workflow-lint, light, release-notification, native, python]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
