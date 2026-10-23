@@ -135,6 +135,44 @@ def pass_row(row: dict, **evidence: object) -> None:
     write_json(Path(row["result_file"]), row)
 
 
+def document_diagnostics(document: dict, first_trial: dict | None) -> str:
+    first_fields = None
+    if first_trial is not None:
+        first_fields = {key: first_trial[key] for key in ("status", "error") if key in first_trial}
+    return (
+        f"CLI document reports ok={document.get('ok')!r}: "
+        f"best_trial_id={document.get('best_trial_id')!r}, "
+        f"trials_completed={document.get('trials_completed')!r}, first trial={first_fields!r}"
+    )
+
+
+def child_diagnostics(row: dict, *, include_document: bool = False) -> str:
+    names = ("stdout", "stderr")
+    paths = list_paths("child output diagnostics read", [Path(row[name]) for name in names])
+    messages = [f"child exit code: {row['exit_code']}"]
+    for name, path in zip(names, paths):
+        with path.open("rb") as source:
+            messages.append(f"{name} (first 2,000 bytes): {source.read(2_000)!r}")
+    if include_document:
+        with paths[0].open("rb") as source:
+            header = bytearray()
+            for line in source:
+                if line == b'  "trials": [\n':
+                    try:
+                        document = json.loads(bytes(header) + b'  "trials": []\n}')
+                        payload = source.readline().strip().removesuffix(b",")
+                        first_trial = json.loads(payload) if payload.startswith(b"{") else None
+                    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                        # Keep the excerpts and the original nonzero-exit assertion on bad JSON.
+                        messages.append(f"CLI document diagnostic could not be parsed: {error}")
+                    else:
+                        if document.get("ok") is False:
+                            messages.append(document_diagnostics(document, first_trial))
+                    break
+                header.extend(line)
+    return "\n".join(messages)
+
+
 class StreamedTrialRetentionTests(unittest.TestCase):
     def command(self, trials: int, *extra: str) -> list[str]:
         return [
@@ -144,6 +182,8 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             "--schedule", "batches", "--pruner", "none",
             "--max-trials", str(trials), "--trials-out", "all",
             "--input-tf", "1", "--script-tf", "5",
+            "--bar-magnifier", "true", "--magnifier-samples", "6",
+            "--magnifier-distribution", "triangle",
             "--real-dim", "Length", "1", "100", "continuous", *extra,
         ]
 
@@ -151,11 +191,16 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         stdout = Path(row["stdout"])
         stderr = Path(row["stderr"])
         list_paths("CLI document read", [stdout, stderr])
-        self.assertEqual(row["exit_code"], 0, stderr.read_text(encoding="utf-8"))
+        self.assertEqual(
+            row["exit_code"], 0,
+            child_diagnostics(row, include_document=True) if row["exit_code"] != 0 else None)
         # Parse one row at a time. A large Python document retained between children could
         # contaminate a forked child's initial RSS on platforms that account for that memory.
         header = bytearray()
         observed = 0
+        trial_ids = set() if trials == 1_000 else None
+        smallest_row_bytes = None
+        first_trial = None
         with stdout.open("rb") as source:
             for line in source:
                 if line == b'  "trials": [\n':
@@ -163,6 +208,8 @@ class StreamedTrialRetentionTests(unittest.TestCase):
                 header.extend(line)
             else:
                 self.fail("CLI document has no trials array")
+            # Check ok before a failed first trial can mask the document-level diagnostic.
+            document = json.loads(bytes(header) + b'  "trials": []\n}')
             for line in source:
                 if line.startswith(b"  ]"):
                     closing = line
@@ -173,15 +220,23 @@ class StreamedTrialRetentionTests(unittest.TestCase):
                     self.assertTrue(payload.endswith(b","), "missing trial-array separator")
                     payload = payload[:-1]
                 trial = json.loads(payload)
+                if observed == 0:
+                    first_trial = {key: trial[key] for key in ("status", "error") if key in trial}
+                    self.assertTrue(document["ok"], document_diagnostics(document, first_trial))
                 self.assertEqual(trial["trial_id"], observed)
                 self.assertEqual(trial["status"], "ok")
                 self.assertTrue(trial["feasible"])
+                if trial_ids is not None:
+                    trial_ids.add(trial["trial_id"])
+                    size = len(payload)
+                    smallest_row_bytes = (
+                        size if smallest_row_bytes is None else min(smallest_row_bytes, size))
                 observed += 1
             else:
                 self.fail("CLI document has an incomplete trials array")
             metadata = bytes(header) + b'  "trials": []' + closing[3:] + source.read()
         document = json.loads(metadata)
-        self.assertTrue(document["ok"])
+        self.assertTrue(document["ok"], document_diagnostics(document, first_trial))
         self.assertNotIn("failure", document)
         self.assertEqual(document["trials_out"], "all")
         self.assertEqual(document["sampler"], "random")
@@ -190,6 +245,14 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         self.assertEqual(document["stop_reason"], "trial_budget_reached")
         # This also catches clipping, missing/duplicate IDs and an early stop hidden by a count.
         self.assertEqual(observed, trials)
+        row["trial_rows"] = observed
+        if trial_ids is not None:
+            self.assertEqual(observed, 1_000, "stdout must contain exactly 1,000 trial rows")
+            self.assertEqual(len(trial_ids), 1_000, "stdout must contain 1,000 distinct trial IDs")
+            self.assertIsNotNone(smallest_row_bytes, "stdout has no trial row size")
+            self.assertGreater(smallest_row_bytes, 0)
+            row.update(distinct_trial_ids=len(trial_ids),
+                       smallest_trial_row_bytes=smallest_row_bytes)
         return document
 
     def test_00_slope_checker_controls(self) -> None:
@@ -223,7 +286,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             sys.executable, "-I", "-c",
             "import os, signal; os.kill(os.getpid(), signal.SIGKILL)",
         ], [])
-        self.assertEqual(row["exit_code"], -signal.SIGKILL)
+        self.assertEqual(row["exit_code"], -signal.SIGKILL, child_diagnostics(row))
         exit_file = Path(row["exit_file"])
         list_paths("deliberate crash marker read", [exit_file])
         self.assertEqual(int(exit_file.read_text(encoding="ascii")), -signal.SIGKILL)
@@ -238,9 +301,29 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         self.assertTrue(sys.platform.startswith("linux"), "RSS gate requires Linux CI")
         self.assertTrue(hasattr(os, "wait4"), "Linux RSS gate must run with os.wait4")
         samples = []
+        smallest_row_bytes = None
+        retention_guard = {}
         for trials in COUNTS:
             row = run_child(f"rss-{trials}", self.command(trials), [PLUGIN, MANIFEST, CSV])
             self.completed_document(row, trials)
+            if trials == 1_000:
+                smallest_row_bytes = row["smallest_trial_row_bytes"]
+                retention_guard.update(
+                    trial_rows_at_1000=row["trial_rows"],
+                    distinct_trial_ids_at_1000=row["distinct_trial_ids"],
+                    smallest_trial_row_bytes_at_1000=smallest_row_bytes)
+            elif trials == 100_000:
+                self.assertIsNotNone(smallest_row_bytes, "missing 1,000-trial row-size evidence")
+                stdout, = list_paths("retention stdout size read", [Path(row["stdout"])])
+                stdout_bytes = stdout.stat().st_size
+                # Integer comparison: stdout must exceed N times half the smallest 1,000-run row.
+                self.assertGreater(
+                    2 * stdout_bytes, trials * smallest_row_bytes,
+                    f"{stdout_bytes} stdout bytes must exceed {trials} times half of "
+                    f"the smallest 1,000-trial row ({smallest_row_bytes} bytes)")
+                row.update(stdout_size_bytes=stdout_bytes,
+                           smallest_trial_row_bytes_at_1000=smallest_row_bytes)
+                retention_guard["stdout_size_bytes_at_100000"] = stdout_bytes
             samples.append((trials, row["peak_rss_bytes"]))
             pass_row(row, trials_completed=trials, check="complete CLI document and ordered rows")
         values = slopes(samples)
@@ -252,6 +335,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             "samples": [{"trials": trials, "peak_rss_bytes": peak} for trials, peak in samples],
             "slopes_bytes_per_trial": values,
             "limits_bytes_per_trial": list(SLOPE_LIMITS),
+            "retention_guard": retention_guard,
             "verdict": "FAIL",
         }
         write_json(ROOT / "memory.result.json", evidence)
@@ -312,7 +396,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
     def assert_output_refusal(self, row: dict) -> None:
         stdout = Path(row["stdout"])
         list_paths("spool refusal document read", [stdout])
-        self.assertEqual(row["exit_code"], 1)
+        self.assertEqual(row["exit_code"], 1, child_diagnostics(row))
         document = json.loads(stdout.read_bytes())
         self.assertEqual(document["failure"]["code"], "hpo_output_io_failed")
         self.assertNotIn("trials", document, "a partial spool was published as a trial array")
