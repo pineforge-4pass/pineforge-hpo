@@ -1,7 +1,8 @@
 """Bind documented release pins and producer versions to the committed gitlinks.
 
-The Python CI job initializes both submodules and installs pineforge-codegen.
-Controls change in-memory inputs to the same check used for the live checkout.
+The light CI job checks repository files and gitlinks without the producers.
+The Python CI job also initializes both submodules and installs pineforge-codegen.
+Controls change in-memory inputs to the same checks used for the live checkout.
 """
 
 from dataclasses import dataclass, replace
@@ -29,16 +30,20 @@ VERSION_PATTERN = re.compile(
 
 
 @dataclass(frozen=True)
-class ReleasePins:
+class RepositoryPins:
     version: str
     readme: str
     changelog: str
     gitlinks: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ReleasePins(RepositoryPins):
     engine_version: str
     codegen_version: str
 
 
-def read_release_pins() -> ReleasePins:
+def read_repository_pins() -> RepositoryPins:
     listed = subprocess.run(
         ["git", "ls-tree", "HEAD", "--", ENGINE, CODEGEN],
         cwd=ROOT,
@@ -55,17 +60,27 @@ def read_release_pins() -> ReleasePins:
         gitlinks[path] = sha
     if set(gitlinks) != {ENGINE, CODEGEN}:
         raise AssertionError(f"expected both dependency gitlinks, got {gitlinks!r}")
-    return ReleasePins(
+    return RepositoryPins(
         version=(ROOT / "VERSION").read_text(encoding="utf-8").strip(),
         readme=(ROOT / "README.md").read_text(encoding="utf-8"),
         changelog=(ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
         gitlinks=gitlinks,
+    )
+
+
+def read_release_pins() -> ReleasePins:
+    pins = read_repository_pins()
+    return ReleasePins(
+        version=pins.version,
+        readme=pins.readme,
+        changelog=pins.changelog,
+        gitlinks=pins.gitlinks,
         engine_version=(ROOT / ENGINE / "VERSION").read_text(encoding="utf-8").strip(),
         codegen_version=metadata.version("pineforge-codegen"),
     )
 
 
-def release_pin_errors(pins: ReleasePins) -> dict[str, str]:
+def repository_pin_errors(pins: RepositoryPins) -> dict[str, str]:
     errors = {}
     version = VERSION_PATTERN.fullmatch(pins.version)
     if version is None:
@@ -114,6 +129,17 @@ def release_pin_errors(pins: ReleasePins) -> dict[str, str]:
         break
     else:
         errors["CHANGELOG.md release"] = "missing versioned entry"
+    return errors
+
+
+def release_pin_errors(pins: ReleasePins) -> dict[str, str]:
+    errors = repository_pin_errors(pins)
+    version = VERSION_PATTERN.fullmatch(pins.version)
+    if version is None:
+        return errors
+    tag = f"v{version.group('core')}"
+    if version.group("rc"):
+        tag += f"-rc.{version.group('rc')}"
 
     engine_versions = (pins.version,)
     if version.group("rc"):
@@ -122,17 +148,20 @@ def release_pin_errors(pins: ReleasePins) -> dict[str, str]:
         errors["engine VERSION"] = (
             f"expected one of {engine_versions!r}, got {pins.engine_version!r}"
         )
-    equal("pineforge-codegen version", pins.codegen_version, pins.version)
+    if pins.codegen_version != pins.version:
+        errors["pineforge-codegen version"] = (
+            f"expected {pins.version!r}, got {pins.codegen_version!r}"
+        )
     return errors
 
 
-class ReleasePinTests(unittest.TestCase):
+class RepositoryReleasePinTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.pins = read_release_pins()
+        cls.pins = read_repository_pins()
 
     def assert_errors(self, pins, expected_keys):
-        errors = release_pin_errors(pins)
+        errors = repository_pin_errors(pins)
         self.assertEqual(set(errors), set(expected_keys), errors)
         return errors
 
@@ -144,22 +173,6 @@ class ReleasePinTests(unittest.TestCase):
 
     def test_live_release_pins_agree(self):
         self.assert_errors(self.pins, ())
-
-    def test_reader_old_engine_gitlink_is_rejected(self):
-        old_engine = "dfe5f367e8935ef549ee7a8a38c1d437d1e8e42e"
-        changed = replace(
-            self.pins,
-            gitlinks={**self.pins.gitlinks, ENGINE: old_engine},
-            engine_version="1.6.2",
-        )
-        errors = self.assert_errors(
-            changed,
-            (f"README.md {ENGINE}", f"CHANGELOG.md {ENGINE}", "engine VERSION"),
-        )
-        for document in ("README.md", "CHANGELOG.md"):
-            self.assertIn(old_engine, errors[f"{document} {ENGINE}"])
-        self.assertIn("1.6.2", errors["engine VERSION"])
-        self.assertIn(self.pins.version, errors["engine VERSION"])
 
     def test_reader_one_character_readme_typo_is_rejected(self):
         match = README_PIN.search(self.pins.readme)
@@ -183,31 +196,6 @@ class ReleasePinTests(unittest.TestCase):
         )
         for error in errors.values():
             self.assertIn(moved, error)
-
-    def test_final_dependency_versions_must_match_version(self):
-        for field, key in (
-            ("engine_version", "engine VERSION"),
-            ("codegen_version", "pineforge-codegen version"),
-        ):
-            with self.subTest(field=field):
-                changed = replace(self.pins, **{field: self.pins.version + "rc1"})
-                errors = self.assert_errors(changed, (key,))
-                self.assertIn(self.pins.version + "rc1", errors[key])
-                self.assertIn(self.pins.version, errors[key])
-
-    def test_changing_version_requires_docs_and_producer_versions_to_follow(self):
-        major = int(self.pins.version.split(".")[0]) + 1
-        changed = replace(self.pins, version=f"{major}.0.0")
-        self.assert_errors(
-            changed,
-            (
-                "README.md engine tag",
-                "README.md codegen tag",
-                "CHANGELOG.md release",
-                "engine VERSION",
-                "pineforge-codegen version",
-            ),
-        )
 
     def test_historical_changelog_pins_cannot_replace_missing_top_pins(self):
         changed = replace(
@@ -234,6 +222,58 @@ class ReleasePinTests(unittest.TestCase):
         errors = self.assert_errors(changed, ("README.md pin sentence",))
         self.assertEqual(
             errors["README.md pin sentence"], "expected one pin sentence, found 0"
+        )
+
+
+class ReleasePinTests(RepositoryReleasePinTests):
+    @classmethod
+    def setUpClass(cls):
+        cls.pins = read_release_pins()
+
+    def assert_errors(self, pins, expected_keys):
+        errors = release_pin_errors(pins)
+        self.assertEqual(set(errors), set(expected_keys), errors)
+        return errors
+
+    def test_reader_old_engine_gitlink_is_rejected(self):
+        old_engine = "dfe5f367e8935ef549ee7a8a38c1d437d1e8e42e"
+        changed = replace(
+            self.pins,
+            gitlinks={**self.pins.gitlinks, ENGINE: old_engine},
+            engine_version="1.6.2",
+        )
+        errors = self.assert_errors(
+            changed,
+            (f"README.md {ENGINE}", f"CHANGELOG.md {ENGINE}", "engine VERSION"),
+        )
+        for document in ("README.md", "CHANGELOG.md"):
+            self.assertIn(old_engine, errors[f"{document} {ENGINE}"])
+        self.assertIn("1.6.2", errors["engine VERSION"])
+        self.assertIn(self.pins.version, errors["engine VERSION"])
+
+    def test_final_dependency_versions_must_match_version(self):
+        for field, key in (
+            ("engine_version", "engine VERSION"),
+            ("codegen_version", "pineforge-codegen version"),
+        ):
+            with self.subTest(field=field):
+                changed = replace(self.pins, **{field: self.pins.version + "rc1"})
+                errors = self.assert_errors(changed, (key,))
+                self.assertIn(self.pins.version + "rc1", errors[key])
+                self.assertIn(self.pins.version, errors[key])
+
+    def test_changing_version_requires_docs_and_producer_versions_to_follow(self):
+        major = int(self.pins.version.split(".")[0]) + 1
+        changed = replace(self.pins, version=f"{major}.0.0")
+        self.assert_errors(
+            changed,
+            (
+                "README.md engine tag",
+                "README.md codegen tag",
+                "CHANGELOG.md release",
+                "engine VERSION",
+                "pineforge-codegen version",
+            ),
         )
 
     def test_release_candidate_spelling_map(self):

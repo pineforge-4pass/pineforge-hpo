@@ -252,14 +252,21 @@ jobs:
   light:
     name: Light
     needs: [authz]
-    if: "${{ needs.authz.result == 'success' }}"
     runs-on: ubuntu-24.04
     steps:
       - name: Check out PineForge HPO
+        if: "${{ needs.authz.result == 'success' }}"
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          submodules: false
 
       - name: Check license entity
+        if: "${{ needs.authz.result == 'success' }}"
         run: python3 -m unittest tests/python/test_license_entity.py -v
+
+      - name: Check release pins
+        if: "${{ needs.authz.result == 'success' }}"
+        run: python3 -m unittest tests.python.test_release_pins.RepositoryReleasePinTests -v
 
   release-notification:
     name: Release notification contract

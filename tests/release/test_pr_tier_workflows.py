@@ -58,6 +58,9 @@ ENGINE_REFERENCE = re.compile(
 )
 AUTHZ_STEP_NAME = "Only our own pull requests and our own events run CI"
 AGGREGATE_STEP_NAME = "Require success or independently proven cheap skips"
+RELEASE_PIN_LIGHT_COMMAND = (
+    "python3 -m unittest tests.python.test_release_pins.RepositoryReleasePinTests -v"
+)
 
 
 def compact(text):
@@ -250,8 +253,10 @@ class PrTierWorkflowTests(unittest.TestCase):
         jobs = self.workflows["ci.yml"]["jobs"]
         light = jobs["light"]
         self.assertEqual(light["needs"], ["authz"])
-        self.assertEqual(light["if"], "${{ needs.authz.result == 'success' }}")
+        self.assertNotIn("if", light)
         self.assertEqual(light["runs-on"], "ubuntu-24.04")
+        for step in light["steps"]:
+            self.assertEqual(step["if"], "${{ needs.authz.result == 'success' }}")
         self.assertEqual(
             job_step(light, "Check license entity")["run"],
             "python3 -m unittest tests/python/test_license_entity.py -v",
@@ -268,6 +273,77 @@ class PrTierWorkflowTests(unittest.TestCase):
                 "python",
             ],
         )
+
+    def assert_light_release_pin_check(self, light):
+        self.assertEqual(
+            [
+                command
+                for step in light.get("steps", [])
+                for command in commands(step.get("run", ""))
+            ],
+            [
+                "python3 -m unittest tests/python/test_license_entity.py -v",
+                RELEASE_PIN_LIGHT_COMMAND,
+            ],
+        )
+        self.assertEqual(light["needs"], ["authz"])
+        self.assertNotIn("if", light)
+        for step in light["steps"]:
+            self.assertEqual(step.get("if"), "${{ needs.authz.result == 'success' }}")
+        checkout = job_step(light, "Check out PineForge HPO")
+        self.assertEqual(checkout.get("with", {}).get("submodules", "false"), "false")
+
+    def test_documentation_only_prs_run_release_pin_checks(self):
+        light = self.workflows["ci.yml"]["jobs"].get("light", {})
+        self.assert_light_release_pin_check(light)
+        # Exact executable commands: mentioning the file cannot cover the README
+        # typo, and selecting the full suite would require the producers.
+        for run in (
+            "true",
+            "# " + RELEASE_PIN_LIGHT_COMMAND,
+            "echo " + RELEASE_PIN_LIGHT_COMMAND,
+            RELEASE_PIN_LIGHT_COMMAND + " || true",
+            RELEASE_PIN_LIGHT_COMMAND.replace(
+                "RepositoryReleasePinTests", "ReleasePinTests"
+            ),
+            "python3 -m unittest discover -s tests/python -v",
+        ):
+            with self.subTest(run=run):
+                mutated = copy.deepcopy(light)
+                job_step(mutated, "Check release pins")["run"] = run
+                with self.assertRaises(AssertionError):
+                    self.assert_light_release_pin_check(mutated)
+        mutated = copy.deepcopy(light)
+        mutated["steps"] = [
+            step for step in mutated["steps"] if step["name"] != "Check release pins"
+        ]
+        with self.assertRaises(AssertionError):
+            self.assert_light_release_pin_check(mutated)
+        for key, value in (
+            ("needs", ["authz", "changes"]),
+            ("if", "needs.changes.outputs.code == 'true'"),
+        ):
+            with self.subTest(job_key=key):
+                mutated = copy.deepcopy(light)
+                mutated[key] = value
+                with self.assertRaises(AssertionError):
+                    self.assert_light_release_pin_check(mutated)
+        for step in light["steps"]:
+            with self.subTest(unguarded_step=step["name"]):
+                mutated = copy.deepcopy(light)
+                job_step(mutated, step["name"])["if"] = "true"
+                with self.assertRaises(AssertionError):
+                    self.assert_light_release_pin_check(mutated)
+        mutated = copy.deepcopy(light)
+        job_step(mutated, "Check out PineForge HPO")["with"] = {"submodules": "true"}
+        with self.assertRaises(AssertionError):
+            self.assert_light_release_pin_check(mutated)
+        mutated = copy.deepcopy(light)
+        job_step(mutated, "Check release pins")["run"] += (
+            "\npython3 -m pip install -e external/pineforge-codegen-oss"
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_light_release_pin_check(mutated)
 
     def authz_environment(self, **overrides):
         environment = {
