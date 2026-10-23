@@ -370,17 +370,19 @@ class PrTierWorkflowTests(unittest.TestCase):
             '>> "$GITHUB_STEP_SUMMARY"; exit 1; }'
         )
         self.assertIn(fail_function, script)
-        mutated = script.replace(fail_function, "fail() { :; }", 1)
-        result = self.run_workflow_script(
-            mutated,
-            self.authz_environment(
-                EVENT="pull_request",
-                HEAD_REPO="attacker/example",
-                HEAD_IS_FORK="true",
-                ASSOCIATION="OWNER",
-            ),
+        environment = self.authz_environment(
+            EVENT="pull_request",
+            HEAD_REPO="attacker/example",
+            HEAD_IS_FORK="true",
+            ASSOCIATION="OWNER",
         )
-        self.assertNotEqual(result.returncode, 0)
+        shipped_result = self.run_workflow_script(script, environment)
+        self.assertNotEqual(shipped_result.returncode, 0, shipped_result.stderr)
+
+        mutated = script.replace(fail_function, "fail() { :; }", 1)
+        self.assertNotEqual(mutated, script)
+        mutant_result = self.run_workflow_script(mutated, environment)
+        self.assertEqual(mutant_result.returncode, 0, mutant_result.stderr)
 
     def aggregate_environment(self, **overrides):
         aggregate = self.workflows["ci.yml"]["jobs"]["build-gate"]
@@ -407,13 +409,19 @@ class PrTierWorkflowTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
     def test_aggregate_script_rejects_a_noop_run_mutation(self):
+        script = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )["run"]
+        environment = self.aggregate_environment(native="failure")
+        shipped_result = self.run_workflow_script(script, environment)
+        self.assertNotEqual(shipped_result.returncode, 0, shipped_result.stderr)
+
         mutated = copy.deepcopy(self.workflows["ci.yml"])
         step = workflow_step(mutated, "build-gate", AGGREGATE_STEP_NAME)
         step["run"] = "true"
-        result = self.run_workflow_script(
-            step["run"], self.aggregate_environment(native="failure")
-        )
-        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(step["run"], script)
+        mutant_result = self.run_workflow_script(step["run"], environment)
+        self.assertEqual(mutant_result.returncode, 0, mutant_result.stderr)
 
     def test_concurrency_cancels_only_runs_of_the_same_pull_request(self):
         for workflow in self.workflows.values():
