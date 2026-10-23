@@ -27,20 +27,22 @@ rows/cases or omits a positive count. Accepted integer summaries include `4 rows
 count is refused. A positive count only validates nonempty output: the measurement
 script's exit status still decides whether the growth comparison passed.
 
-The memory job uses the pinned engine's public Linux heavy-pool expression,
-including its same-repository PR check. Its actual class label is
-`pf-ci-x64-16`, alongside `self-hosted` and `pf-ci`. A hosted fallback refuses
-before checkout or build. A repository missing pool/class admission remains
-queued or refused; changing that allowlist is an organization administrator action.
+CI and release run the memory job on GitHub-hosted `ubuntu-24.04`. In CI it is a
+canonical heavy job with `needs: [authz, changes]` and exactly
+`if: needs.changes.outputs.code == 'true'`. Code diffs run it for draft and ready
+pull requests alike, and pushes always run it. Source, scripts, fixtures,
+local actions and workflow-dependent changes require the gate.
 
-`build-gate`, displayed as `build`, needs every CI job and runs with `if: always()`
-on the standard runner. It only prints and checks results. A failed/cancelled job
-or a failed/missing path classification fails the aggregate. A skipped verification
-job is accepted only after successful classification of a docs-only pull request.
-The memory gate follows that same skip condition; source, scripts, fixtures,
-workflow and local-action changes run it. Administrators must require the `build`
-check in branch protection as described in [repository setup](repository-setup.md).
-Adding the dependency in YAML does not change GitHub settings.
+`build-gate` is the required CI check. It needs every CI job, includes
+`memory-gate` in its sorted `HEAVY_JOBS` list and runs with `if: ${{ always() }}`.
+It refuses unsuccessful authorization before checkout, then independently
+recomputes the PR diff classification. Failure or cancellation of any dependency
+fails the aggregate. A skipped heavy job is accepted only for an independently
+proven docs-only or workflow-only PR with successful `authz`, `changes` and
+`workflow-lint`; every other skip fails. A skipped memory gate on a code diff
+therefore fails `build-gate`. Administrators must require `CI / build-gate` in
+branch protection as described in [repository setup](repository-setup.md).
+Adding dependencies in YAML does not change GitHub settings.
 
 On a published release, `package` needs `memory-gate` to succeed. The gate checks
 out the release tag and exports its resolved commit; packaging checks out that

@@ -2,10 +2,11 @@
 
 `.github/workflows/release.yml` receives GitHub's `release: published` event.
 Its `memory-gate` job must pass the [HPO memory growth gate](ci.md) on the
-released source before `package` builds and uploads the Python wheel, sdist and
-two failure catalogs from that exact verified commit. `notify-hub` depends on
-that job succeeding. A failed, cancelled or skipped package job cannot send the
-producer event on this path.
+released source on GitHub-hosted `ubuntu-24.04` before `package` builds and uploads
+the Python wheel, sdist and two failure catalogs from that exact verified commit.
+A missing measurement script or incomplete judgment blocks packaging.
+`notify-hub` depends on the package job succeeding. A failed, cancelled or skipped
+package job cannot send the producer event on this path.
 
 The notification helper rechecks the published release and downloads these
 four public assets before making any dispatch request:
@@ -101,10 +102,12 @@ HPO job's read-only `GITHUB_TOKEN`; public asset downloads carry no credential.
 No new variable, PAT or consumer deployment credential is used.
 
 The workflow and replay entry point must land on the default branch before use.
-Add `Release notification contract` to the branch's required status checks and
-retain all existing checks and pull-request protection. This lane neither
-merges nor deploys consumer updates. Required-check enforcement is a repository
-setting and cannot be enabled by these committed files.
+Require `CI / build-gate` as the CI aggregate in branch protection. It includes
+`Release notification contract` and the HPO memory gate, and fails on either
+job's failure or cancellation. Its only skipped-heavy-job exception requires
+independent cheap-PR diff proof and successful workflow lint. Retain the
+documentation check and pull-request protection. Required-check enforcement is
+a repository setting and cannot be enabled by these committed files.
 
 The CI job runs `python -m unittest discover -s tests/release -v` and Ruff. The
 fixtures cover stable/RC payloads, replay, missing assets, partial uploads,

@@ -160,7 +160,7 @@ strategy receives identical immutable facts/bars/closes before running. Index/CS
 errors use `--symbol-feeds:` and identify the symbol/timeframe before terminal trial output.
 Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted).
 `input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
-Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.6.2-rc.1).
+Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.6.3).
 `input.source` and `input.enum` search dimensions are supported and cannot be symbols.
 String dimensions require the manifest-level `"input_kind_schema": 1` marker. HPO's builder
 requires a valid modern codegen `requests` list and a separate cached one-line

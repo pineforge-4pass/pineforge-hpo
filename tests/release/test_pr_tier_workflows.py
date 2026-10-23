@@ -1,12 +1,14 @@
-"""Keep PR verification hosted and preserve the complete post-merge native suite."""
+"""Keep verification hosted and preserve the complete post-merge native suite."""
 
 from __future__ import annotations
 
 import copy
-from itertools import product
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 from types import SimpleNamespace
 import unittest
 
@@ -122,69 +124,47 @@ class PrTierWorkflowTests(unittest.TestCase):
         routes = (
             ci["release-notification"]["runs-on"],
             ci["python"]["runs-on"],
+            ci["memory-gate"]["runs-on"],
             ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
             benchmark["optuna"]["runs-on"],
         )
         for route in routes:
-            self.assertEqual(compact(route), compact(POOL_ROUTE))
+            self.assertEqual(route, "ubuntu-24.04")
         self.assertEqual(ci["native"]["runs-on"], "${{ matrix.runner }}")
         self.assertEqual(
             ci["native"]["strategy"]["matrix"]["include"][1],
             {"os": "macos-latest", "runner": "macos-latest"},
         )
-        for jobs in (ci, benchmark):
-            for job_id in ("changes", "build-gate"):
+        for jobs, aggregate in ((ci, "build-gate"), (benchmark, "benchmark-check")):
+            for job_id in ("authz", "changes", "workflow-lint", aggregate):
                 self.assertEqual(jobs[job_id]["runs-on"], "ubuntu-24.04")
-        return routes
 
-    def test_exact_routing_keeps_non_pr_events_and_bots_on_their_existing_runners(self):
-        events = (
-            "pull_request",
-            "pull_request_target",
-            "push",
-            "workflow_dispatch",
-            "schedule",
-            "release",
-            "repository_dispatch",
+    def test_no_route_is_a_conditional_expression(self):
+        # Every routed site is now a literal hosted label, so routing can no longer
+        # vary by event, actor or fork. Guard that invariant directly: a `${{ }}`
+        # expression creeping back into any of the five routed sites is a regression.
+        ci = self.workflows["ci.yml"]["jobs"]
+        benchmark = self.workflows["benchmark-smoke.yml"]["jobs"]
+        routes = (
+            ci["release-notification"]["runs-on"],
+            ci["python"]["runs-on"],
+            ci["memory-gate"]["runs-on"],
+            ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
+            benchmark["optuna"]["runs-on"],
         )
-        actors = ("contributor", "dependabot[bot]")
-        for route in self.assert_routing(self.workflows):
-            for event, actor, triggering_actor, fork, same_repo in product(
-                events, actors, actors, (False, True), (False, True)
-            ):
-                with self.subTest(
-                    event=event,
-                    actor=actor,
-                    triggering_actor=triggering_actor,
-                    fork=fork,
-                    same_repo=same_repo,
-                ):
-                    repository = "pineforge-4pass/pineforge-hpo"
-                    repo = SimpleNamespace(
-                        full_name=repository if same_repo else "contributor/hpo",
-                        fork=fork,
-                    )
-                    pull_request = SimpleNamespace(head=SimpleNamespace(repo=repo))
-                    github = SimpleNamespace(
-                        event_name=event,
-                        actor=actor,
-                        triggering_actor=triggering_actor,
-                        repository=repository,
-                        event=SimpleNamespace(pull_request=pull_request),
-                    )
-                    expected = (
-                        "ubuntu-24.04"
-                        if event == "pull_request"
-                        else evaluate(OLD_ROUTE, github=github)
-                    )
-                    self.assertEqual(evaluate(route, github=github), expected)
+        for route in routes:
+            with self.subTest(route=route):
+                self.assertNotIn("${{", route)
+                self.assertEqual(route, "ubuntu-24.04")
+        self.assert_routing(self.workflows)
 
     def test_old_pool_routing_and_pool_fallback_are_rejected(self):
         for bad_route in (
             OLD_ROUTE,
+            POOL_ROUTE,
             POOL_ROUTE.replace("'ubuntu-24.04'", f"fromJSON('{json.dumps(POOL)}')"),
         ):
-            for job_id in ("release-notification", "python"):
+            for job_id in ("release-notification", "python", "memory-gate"):
                 with self.subTest(job=job_id, route=bad_route):
                     mutated = copy.deepcopy(self.workflows)
                     mutated["ci.yml"]["jobs"][job_id]["runs-on"] = bad_route
@@ -206,20 +186,24 @@ class PrTierWorkflowTests(unittest.TestCase):
             "ci.yml": (
                 "CI",
                 {
+                    "authz": "authz",
                     "changes": "changes",
+                    "workflow-lint": "workflow-lint",
                     "release-notification": "Release notification contract",
                     "native": "Native (${{ matrix.os }})",
                     "python": "Python ${{ matrix.python }}",
                     "memory-gate": "HPO memory growth gate",
-                    "build-gate": "build",
+                    "build-gate": "build-gate",
                 },
             ),
             "benchmark-smoke.yml": (
                 "Benchmark smoke",
                 {
+                    "authz": "authz",
                     "changes": "changes",
+                    "workflow-lint": "workflow-lint",
                     "optuna": "Native TPE vs Optuna",
-                    "build-gate": "Benchmark verification gate",
+                    "benchmark-check": "benchmark-check",
                 },
             ),
         }
@@ -238,10 +222,10 @@ class PrTierWorkflowTests(unittest.TestCase):
                 trigger = workflow["on"]["pull_request"] or {}
                 self.assertNotIn("paths", trigger)
                 self.assertNotIn("paths-ignore", trigger)
-                for job in workflow["jobs"].values():
+                for job_id, job in workflow["jobs"].items():
                     self.assertEqual(
                         job.get("permissions", workflow["permissions"]),
-                        {"contents": "read"},
+                        {} if job_id == "authz" else {"contents": "read"},
                     )
                 text = (ROOT / ".github/workflows" / name).read_text()
                 self.assertNotIn("secrets.", text)
@@ -395,18 +379,17 @@ class PrTierWorkflowTests(unittest.TestCase):
             engine_references_outside_block(moved)
 
     def test_docs_only_skips_remain_fail_closed(self):
-        for workflow in self.workflows.values():
+        for name, workflow in self.workflows.items():
             jobs = workflow["jobs"]
-            self.assertEqual(jobs["build-gate"]["if"], "always()")
+            aggregate = "build-gate" if name == "ci.yml" else "benchmark-check"
+            self.assertEqual(jobs[aggregate]["if"], "${{ always() }}")
             for job_id, job in jobs.items():
-                if job_id in ("changes", "build-gate"):
+                if job_id in ("authz", "changes", "workflow-lint", aggregate):
                     continue
-                self.assertEqual(job["needs"], "changes")
+                self.assertEqual(job["needs"], ["authz", "changes"])
                 for result in ("success", "failure", "cancelled", "skipped"):
-                    for docs_only in ("true", "false", ""):
-                        with self.subTest(
-                            job=job_id, result=result, docs_only=docs_only
-                        ):
+                    for code in ("true", "false", ""):
+                        with self.subTest(job=job_id, result=result, code=code):
                             allowed = evaluate(
                                 job["if"],
                                 github=SimpleNamespace(
@@ -418,32 +401,96 @@ class PrTierWorkflowTests(unittest.TestCase):
                                 needs=SimpleNamespace(
                                     changes=SimpleNamespace(
                                         result=result,
-                                        outputs=SimpleNamespace(docs_only=docs_only),
+                                        outputs=SimpleNamespace(code=code),
                                     )
                                 ),
                                 cancelled=lambda: False,
                             )
-                            self.assertEqual(
-                                allowed, result != "success" or docs_only != "true"
-                            )
+                            self.assertEqual(allowed, code == "true")
 
-    def test_draft_pull_requests_spend_no_suite_runner(self):
+    def assert_memory_gate_contract(self, jobs):
+        memory = jobs["memory-gate"]
+        self.assertEqual(memory["needs"], ["authz", "changes"])
+        self.assertEqual(memory["if"], "needs.changes.outputs.code == 'true'")
+        self.assertEqual(memory["runs-on"], "ubuntu-24.04")
+        gate = jobs["build-gate"]
+        self.assertEqual(gate.get("name", "build-gate"), "build-gate")
+        self.assertEqual(gate["if"], "${{ always() }}")
+        self.assertEqual(gate["needs"], sorted(set(jobs) - {"build-gate"}))
+        self.assertEqual(
+            json.loads(gate["steps"][-1]["env"]["HEAVY_JOBS"]),
+            sorted(
+                job_id
+                for job_id, job in jobs.items()
+                if job_id != "build-gate" and "changes" in job.get("needs", [])
+            ),
+        )
+
+    def test_memory_gate_uses_the_canonical_heavy_job_condition(self):
         jobs = self.workflows["ci.yml"]["jobs"]
-        draft = SimpleNamespace(pull_request=SimpleNamespace(draft=True))
-        for job_id in ("release-notification", "native", "python", "memory-gate"):
-            with self.subTest(job=job_id):
-                allowed = evaluate(
-                    jobs[job_id]["if"],
-                    github=SimpleNamespace(event_name="pull_request", event=draft),
-                    needs=SimpleNamespace(
-                        changes=SimpleNamespace(
-                            result="skipped",
-                            outputs=SimpleNamespace(docs_only="false"),
-                        )
-                    ),
-                    cancelled=lambda: False,
-                )
-                self.assertFalse(allowed)
+        self.assert_memory_gate_contract(jobs)
+        for condition in (
+            "!github.event.pull_request.draft && needs.changes.outputs.code == 'true'",
+            "!cancelled() && needs.changes.outputs.code == 'true'",
+            "needs.changes.outputs.docs_only != 'true'",
+        ):
+            with self.subTest(condition=condition):
+                mutated = copy.deepcopy(jobs)
+                mutated["memory-gate"]["if"] = condition
+                with self.assertRaises(AssertionError):
+                    self.assert_memory_gate_contract(mutated)
+        mutated = copy.deepcopy(jobs)
+        mutated["memory-gate"]["needs"] = ["changes"]
+        with self.assertRaises(AssertionError):
+            self.assert_memory_gate_contract(mutated)
+
+    def aggregate_memory_result(self, status):
+        gate = self.workflows["ci.yml"]["jobs"]["build-gate"]
+        step = gate["steps"][-1]
+        needs = {job_id: {"result": "success"} for job_id in gate["needs"]}
+        self.assertIn("memory-gate", needs)
+        needs["memory-gate"]["result"] = status
+        scratch = ROOT / "build/pr-tier-workflow-tests"
+        scratch.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=scratch) as directory:
+            return subprocess.run(
+                ["bash", "--noprofile", "--norc", "-c", step["run"]],
+                cwd=directory,
+                env={
+                    **os.environ,
+                    **step["env"],
+                    "NEEDS": json.dumps(needs),
+                    "DOCS_ONLY": "false",
+                    "WORKFLOWS_ONLY": "false",
+                    "RUNNER_TEMP": directory,
+                },
+                capture_output=True,
+                text=True,
+            )
+
+    def test_memory_failure_cancellation_or_code_skip_fails_build_gate(self):
+        self.assert_memory_gate_contract(self.workflows["ci.yml"]["jobs"])
+        clean = self.aggregate_memory_result("success")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        for status in ("failure", "cancelled", "skipped"):
+            with self.subTest(status=status):
+                result = self.aggregate_memory_result(status)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_memory_gate_dependency_is_rejected(self):
+        mutated = copy.deepcopy(self.workflows["ci.yml"]["jobs"])
+        mutated["build-gate"]["needs"].remove("memory-gate")
+        with self.assertRaisesRegex(AssertionError, "memory-gate"):
+            self.assert_memory_gate_contract(mutated)
+
+    def test_missing_memory_gate_heavy_job_is_rejected(self):
+        mutated = copy.deepcopy(self.workflows["ci.yml"]["jobs"])
+        environment = mutated["build-gate"]["steps"][-1]["env"]
+        heavy = json.loads(environment["HEAVY_JOBS"])
+        heavy.remove("memory-gate")
+        environment["HEAVY_JOBS"] = json.dumps(heavy)
+        with self.assertRaisesRegex(AssertionError, "memory-gate"):
+            self.assert_memory_gate_contract(mutated)
 
 
 if __name__ == "__main__":

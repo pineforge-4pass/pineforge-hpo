@@ -21,28 +21,10 @@ jobs:
   memory-gate:
     name: HPO memory growth gate (release)
     if: github.event_name == 'release'
-    runs-on: >-
-      ${{ github.event_name != 'pull_request_target' &&
-          github.actor != 'dependabot[bot]' && github.triggering_actor != 'dependabot[bot]' &&
-          contains(fromJSON('["push","pull_request","workflow_dispatch","schedule","release"]'), github.event_name) &&
-          (github.event_name != 'pull_request' ||
-           (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)) &&
-          fromJSON('["self-hosted","pf-ci","pf-ci-x64-16"]') || 'ubuntu-24.04' }}
-    env:
-      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64-16"]'
+    runs-on: ubuntu-24.04
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
-      - name: Refuse to build on the hosted fallback
-        shell: bash
-        env:
-          RUNNER_ENVIRONMENT: ${{ runner.environment }}
-        run: |
-          if [[ "$RUNNER_ENVIRONMENT" != 'self-hosted' ]]; then
-            echo '::error::HPO memory gate INCOMPLETE: a pf-ci Linux runner is required; no hosted build is allowed.'
-            exit 2
-          fi
-
       - name: Check out the released tree and pinned submodules
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:

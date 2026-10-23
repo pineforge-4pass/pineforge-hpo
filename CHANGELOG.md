@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## 1.6.3 (2026-10-23)
+
+- Final 1.6.3 release (PEP 440 `1.6.3`, tag `v1.6.3`), paired with `pineforge-engine` v1.6.3 and
+  `pineforge-codegen` 1.6.3 (tags `v1.6.3`; the C ABI version `PF_ABI_VERSION` remains 4). The
+  `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.6.3`. The optional submodule gitlinks in
+  `external/pineforge-engine` (`e799ac8`) and `external/pineforge-codegen-oss` (`3ac6503`) pin
+  the `v1.6.3` release commits.
+- Since 1.6.2, the pinned engine changes are CI-only or test-only: run on the GCP fleet
+  (#474), require full verify and parity green for release (#479), split the PR wall from
+  full-event verification (#480), and test fixes (#476/#478); there is no runtime or ABI change.
+  The pinned codegen changes are CI and docs only: hosted runners (#237), npm publish by
+  operator dispatch only (#238), and docs (#239/#240). HPO's own code and behaviour are
+  unchanged since 1.6.2; its only commit since v1.6.2 is
+  `ci: run every hpo job on GitHub-hosted runners (#69)`.
+
+## 1.6.2 (2026-10-21)
+
+- Final 1.6.2 release (PEP 440 `1.6.2`, tag `v1.6.2`), paired with `pineforge-engine` v1.6.2 and
+  `pineforge-codegen` 1.6.2 (tags `v1.6.2`; the C ABI version `PF_ABI_VERSION` remains 4). The
+  `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.6.2` (a pre-release is not selected by default, so `1.6.2rc1` needed
+  `--pre` or `pineforge-codegen==1.6.2rc1`). The optional submodule gitlinks in
+  `external/pineforge-engine` (`dfe5f36`) and `external/pineforge-codegen-oss` (`f0786ea`) pin
+  the `v1.6.2` release commits.
+- The pinned pair carries the engine's selected-window contract revision `1.3` declared with the
+  EN-115 completeness proof (#412), EN-115 ownership probe fixes (#446) and the ownership
+  manifest-controls test sharded (#445), and codegen's generated-C++ allowlist checker
+  `pf-cpp-allowlist` (CR-164 S1, #210), plus CI-only changes in both.
+- Since 1.6.2rc1, the licensor entity in `LICENSE`, `NOTICE`, `PYPI_README.md` and `README.md`
+  is exactly PINEFORGE LLC, pinned by `tests/python/test_license_entity.py` (#63), and CI skips
+  the PR suite on draft pull requests and cancels only superseded pull-request runs (#66).
+  HPO's own code and behaviour are unchanged since 1.6.1.
+
 ## 1.6.2rc1 (2026-10-20)
 
 - Re-pin to engine and codegen v1.6.2-rc.1 (gitlinks: `external/pineforge-engine` `7bd065c`,

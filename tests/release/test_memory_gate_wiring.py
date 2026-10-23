@@ -1,5 +1,7 @@
 """Exercise CI/release refusal paths with stubs only; never invoke HPO."""
 
+import copy
+import json
 from pathlib import Path
 import os
 import subprocess
@@ -105,14 +107,11 @@ class MemoryGateWiringTests(unittest.TestCase):
                     output + "\n",
                 )
 
-    def test_both_jobs_refuse_hosted_work_and_absent_script_before_build(self):
+    def test_both_jobs_use_hosted_runners_and_refuse_absent_script_before_build(self):
         for job in (self.ci["memory-gate"], self.release["memory-gate"]):
             with self.subTest(job=job["name"]):
+                self.assertEqual(job["runs-on"], "ubuntu-24.04")
                 steps = job["steps"]
-                hosted = self.shell(steps[0]["run"], RUNNER_ENVIRONMENT="github-hosted")
-                self.assertEqual(hosted.returncode, 2, hosted.stdout + hosted.stderr)
-                own = self.shell(steps[0]["run"], RUNNER_ENVIRONMENT="self-hosted")
-                self.assertEqual(own.returncode, 0, own.stdout + own.stderr)
                 precheck_index = next(
                     i
                     for i, step in enumerate(steps)
@@ -131,57 +130,149 @@ class MemoryGateWiringTests(unittest.TestCase):
                 for step in steps:
                     self.assertNotIn("continue-on-error", step)
 
-    def aggregate(self, docs_only="false", event="push", **results):
-        step = self.ci["build-gate"]["steps"][0]
-        environment = {key: "success" for key in step["env"] if key.endswith("_RESULT")}
-        environment.update(EVENT_NAME=event, DOCS_ONLY=docs_only, **results)
+    def assert_aggregate_contract(self, ci):
+        gate = ci["build-gate"]
+        self.assertEqual(set(gate["needs"]), set(ci) - {"build-gate"})
+        self.assertEqual(gate["needs"], sorted(gate["needs"]))
+        self.assertEqual(gate.get("name", "build-gate"), "build-gate")
+        self.assertEqual(gate["if"], "${{ always() }}")
+        self.assertEqual(gate["runs-on"], "ubuntu-24.04")
+        environment = gate["steps"][-1]["env"]
+        self.assertEqual(environment["NEEDS"], "${{ toJSON(needs) }}")
+        self.assertEqual(
+            environment["DOCS_ONLY"], "${{ steps.classify.outputs.docs_only }}"
+        )
+        self.assertEqual(
+            environment["WORKFLOWS_ONLY"],
+            "${{ steps.classify.outputs.workflows_only }}",
+        )
+        self.assertEqual(
+            json.loads(environment["HEAVY_JOBS"]),
+            sorted(
+                job_id
+                for job_id, job in ci.items()
+                if job_id != "build-gate" and "changes" in job.get("needs", [])
+            ),
+        )
+
+    def aggregate(self, docs_only="false", workflows_only="false", ci=None, **results):
+        ci = self.ci if ci is None else ci
+        gate = ci["build-gate"]
+        step = gate["steps"][-1]
+        needs = {job_id: {"result": "success"} for job_id in gate["needs"]}
+        self.assertLessEqual(results.keys(), needs.keys())
+        for job_id, result in results.items():
+            needs[job_id]["result"] = result
+        environment = {
+            **step["env"],
+            "NEEDS": json.dumps(needs),
+            "DOCS_ONLY": docs_only,
+            "WORKFLOWS_ONLY": workflows_only,
+            "RUNNER_TEMP": str(self.directory),
+        }
         return self.shell(step["run"], **environment)
 
     def test_aggregate_covers_all_jobs_and_refuses_every_failed_cancelled_or_skipped_job(
         self,
     ):
         gate = self.ci["build-gate"]
-        self.assertEqual(set(gate["needs"]), set(self.ci) - {"build-gate"})
-        self.assertEqual(gate["name"], "build")
-        self.assertEqual(gate["if"], "always()")
-        self.assertEqual(gate["runs-on"], "ubuntu-24.04")
+        self.assert_aggregate_contract(self.ci)
         clean = self.aggregate()
         self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
-        for variable in gate["steps"][0]["env"]:
-            if not variable.endswith("_RESULT"):
-                continue
+        for job_id in gate["needs"]:
             for status in ("failure", "cancelled", "skipped"):
-                with self.subTest(variable=variable, status=status):
-                    result = self.aggregate(**{variable: status})
+                with self.subTest(job=job_id, status=status):
+                    result = self.aggregate(**{job_id: status})
                     self.assertNotEqual(
                         result.returncode, 0, result.stdout + result.stderr
                     )
 
-    def test_aggregate_only_accepts_docs_skips_after_successful_pr_classification(self):
-        skipped = dict(
-            RELEASE_RESULT="skipped",
-            NATIVE_RESULT="skipped",
-            PYTHON_RESULT="skipped",
-            MEMORY_RESULT="skipped",
+    def test_aggregate_only_accepts_independently_proven_cheap_skips(self):
+        skipped = dict.fromkeys(
+            ("release-notification", "native", "python", "memory-gate"), "skipped"
         )
-        result = self.aggregate("true", "pull_request", **skipped)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        for docs_only, event, changes in (
-            ("true", "push", "success"),
-            ("false", "pull_request", "success"),
-            ("", "pull_request", "success"),
-            ("true", "pull_request", "failure"),
-            ("true", "pull_request", "cancelled"),
-            ("true", "pull_request", "skipped"),
+        for docs_only, workflows_only in (("true", "false"), ("false", "true")):
+            with self.subTest(docs_only=docs_only, workflows_only=workflows_only):
+                result = self.aggregate(docs_only, workflows_only, **skipped)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for job_id in ("authz", "changes", "workflow-lint"):
+                    for status in ("failure", "cancelled", "skipped"):
+                        with self.subTest(job=job_id, status=status):
+                            result = self.aggregate(
+                                docs_only,
+                                workflows_only,
+                                **{**skipped, job_id: status},
+                            )
+                            self.assertNotEqual(
+                                result.returncode, 0, result.stdout + result.stderr
+                            )
+                for job_id in skipped:
+                    for status in ("failure", "cancelled"):
+                        with self.subTest(job=job_id, status=status):
+                            result = self.aggregate(
+                                docs_only,
+                                workflows_only,
+                                **{**skipped, job_id: status},
+                            )
+                            self.assertNotEqual(
+                                result.returncode, 0, result.stdout + result.stderr
+                            )
+        for docs_only, workflows_only in (
+            ("false", "false"),
+            ("", "false"),
+            ("false", ""),
+            ("true", "true"),
+            ("true", ""),
+            ("", "true"),
         ):
-            with self.subTest(docs_only=docs_only, event=event, changes=changes):
-                result = self.aggregate(
-                    docs_only, event, CHANGES_RESULT=changes, **skipped
-                )
+            with self.subTest(docs_only=docs_only, workflows_only=workflows_only):
+                result = self.aggregate(docs_only, workflows_only, **skipped)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        for status in ("failure", "cancelled"):
-            result = self.aggregate("true", "pull_request", MEMORY_RESULT=status)
-            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_push_classification_cannot_authorize_cheap_skips(self):
+        classify = next(
+            step
+            for step in self.ci["build-gate"]["steps"]
+            if step.get("id") == "classify"
+        )
+        output = self.directory / "classification"
+        result = self.shell(
+            classify["run"],
+            EVENT="push",
+            PR_BASE="",
+            PR_HEAD="",
+            GITHUB_OUTPUT=str(output),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        proof = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        self.assertEqual(
+            proof, {"docs_only": "false", "workflows_only": "false", "code": "true"}
+        )
+        result = self.aggregate(
+            proof["docs_only"],
+            proof["workflows_only"],
+            **dict.fromkeys(
+                ("release-notification", "native", "python", "memory-gate"), "skipped"
+            ),
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_memory_gate_dependency_is_rejected(self):
+        mutated = copy.deepcopy(self.ci)
+        mutated["build-gate"]["needs"].remove("memory-gate")
+        with self.assertRaisesRegex(AssertionError, "memory-gate"):
+            self.assert_aggregate_contract(mutated)
+        result = self.aggregate(ci=mutated)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_memory_gate_heavy_job_is_rejected(self):
+        mutated = copy.deepcopy(self.ci)
+        environment = mutated["build-gate"]["steps"][-1]["env"]
+        heavy = json.loads(environment["HEAVY_JOBS"])
+        heavy.remove("memory-gate")
+        environment["HEAVY_JOBS"] = json.dumps(heavy)
+        with self.assertRaisesRegex(AssertionError, "memory-gate"):
+            self.assert_aggregate_contract(mutated)
 
     def test_release_package_depends_on_the_gate_and_uses_its_exact_commit(self):
         package = self.release["package"]
