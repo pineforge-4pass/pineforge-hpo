@@ -1,9 +1,8 @@
-"""Keep PR verification hosted and preserve the complete post-merge native suite."""
+"""Keep verification hosted and preserve the complete post-merge native suite."""
 
 from __future__ import annotations
 
 import copy
-from itertools import product
 import json
 from pathlib import Path
 import re
@@ -126,62 +125,38 @@ class PrTierWorkflowTests(unittest.TestCase):
             benchmark["optuna"]["runs-on"],
         )
         for route in routes:
-            self.assertEqual(compact(route), compact(POOL_ROUTE))
+            self.assertEqual(route, "ubuntu-24.04")
         self.assertEqual(ci["native"]["runs-on"], "${{ matrix.runner }}")
         self.assertEqual(
             ci["native"]["strategy"]["matrix"]["include"][1],
             {"os": "macos-latest", "runner": "macos-latest"},
         )
-        for jobs in (ci, benchmark):
-            for job_id in ("changes", "build-gate"):
+        for jobs, aggregate in ((ci, "build-gate"), (benchmark, "benchmark-check")):
+            for job_id in ("authz", "changes", "workflow-lint", aggregate):
                 self.assertEqual(jobs[job_id]["runs-on"], "ubuntu-24.04")
-        return routes
 
-    def test_exact_routing_keeps_non_pr_events_and_bots_on_their_existing_runners(self):
-        events = (
-            "pull_request",
-            "pull_request_target",
-            "push",
-            "workflow_dispatch",
-            "schedule",
-            "release",
-            "repository_dispatch",
+    def test_no_route_is_a_conditional_expression(self):
+        # Every routed site is now a literal hosted label, so routing can no longer
+        # vary by event, actor or fork. Guard that invariant directly: a `${{ }}`
+        # expression creeping back into any of the four routed sites is a regression.
+        ci = self.workflows["ci.yml"]["jobs"]
+        benchmark = self.workflows["benchmark-smoke.yml"]["jobs"]
+        routes = (
+            ci["release-notification"]["runs-on"],
+            ci["python"]["runs-on"],
+            ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
+            benchmark["optuna"]["runs-on"],
         )
-        actors = ("contributor", "dependabot[bot]")
-        for route in self.assert_routing(self.workflows):
-            for event, actor, triggering_actor, fork, same_repo in product(
-                events, actors, actors, (False, True), (False, True)
-            ):
-                with self.subTest(
-                    event=event,
-                    actor=actor,
-                    triggering_actor=triggering_actor,
-                    fork=fork,
-                    same_repo=same_repo,
-                ):
-                    repository = "pineforge-4pass/pineforge-hpo"
-                    repo = SimpleNamespace(
-                        full_name=repository if same_repo else "contributor/hpo",
-                        fork=fork,
-                    )
-                    pull_request = SimpleNamespace(head=SimpleNamespace(repo=repo))
-                    github = SimpleNamespace(
-                        event_name=event,
-                        actor=actor,
-                        triggering_actor=triggering_actor,
-                        repository=repository,
-                        event=SimpleNamespace(pull_request=pull_request),
-                    )
-                    expected = (
-                        "ubuntu-24.04"
-                        if event == "pull_request"
-                        else evaluate(OLD_ROUTE, github=github)
-                    )
-                    self.assertEqual(evaluate(route, github=github), expected)
+        for route in routes:
+            with self.subTest(route=route):
+                self.assertNotIn("${{", route)
+                self.assertEqual(route, "ubuntu-24.04")
+        self.assert_routing(self.workflows)
 
     def test_old_pool_routing_and_pool_fallback_are_rejected(self):
         for bad_route in (
             OLD_ROUTE,
+            POOL_ROUTE,
             POOL_ROUTE.replace("'ubuntu-24.04'", f"fromJSON('{json.dumps(POOL)}')"),
         ):
             for job_id in ("release-notification", "python"):
@@ -206,19 +181,23 @@ class PrTierWorkflowTests(unittest.TestCase):
             "ci.yml": (
                 "CI",
                 {
+                    "authz": "authz",
                     "changes": "changes",
+                    "workflow-lint": "workflow-lint",
                     "release-notification": "Release notification contract",
                     "native": "Native (${{ matrix.os }})",
                     "python": "Python ${{ matrix.python }}",
-                    "build-gate": "CI verification gate",
+                    "build-gate": "build-gate",
                 },
             ),
             "benchmark-smoke.yml": (
                 "Benchmark smoke",
                 {
+                    "authz": "authz",
                     "changes": "changes",
+                    "workflow-lint": "workflow-lint",
                     "optuna": "Native TPE vs Optuna",
-                    "build-gate": "Benchmark verification gate",
+                    "benchmark-check": "benchmark-check",
                 },
             ),
         }
@@ -237,10 +216,10 @@ class PrTierWorkflowTests(unittest.TestCase):
                 trigger = workflow["on"]["pull_request"] or {}
                 self.assertNotIn("paths", trigger)
                 self.assertNotIn("paths-ignore", trigger)
-                for job in workflow["jobs"].values():
+                for job_id, job in workflow["jobs"].items():
                     self.assertEqual(
                         job.get("permissions", workflow["permissions"]),
-                        {"contents": "read"},
+                        {} if job_id == "authz" else {"contents": "read"},
                     )
                 text = (ROOT / ".github/workflows" / name).read_text()
                 self.assertNotIn("secrets.", text)
@@ -394,32 +373,34 @@ class PrTierWorkflowTests(unittest.TestCase):
             engine_references_outside_block(moved)
 
     def test_docs_only_skips_remain_fail_closed(self):
-        for workflow in self.workflows.values():
+        for name, workflow in self.workflows.items():
             jobs = workflow["jobs"]
-            self.assertEqual(jobs["build-gate"]["if"], "always()")
+            aggregate = "build-gate" if name == "ci.yml" else "benchmark-check"
+            self.assertEqual(jobs[aggregate]["if"], "${{ always() }}")
             for job_id, job in jobs.items():
-                if job_id in ("changes", "build-gate"):
+                if job_id in ("authz", "changes", "workflow-lint", aggregate):
                     continue
-                self.assertEqual(job["needs"], "changes")
+                self.assertEqual(job["needs"], ["authz", "changes"])
                 for result in ("success", "failure", "cancelled", "skipped"):
-                    for docs_only in ("true", "false", ""):
-                        with self.subTest(
-                            job=job_id, result=result, docs_only=docs_only
-                        ):
+                    for code in ("true", "false", ""):
+                        with self.subTest(job=job_id, result=result, code=code):
                             allowed = evaluate(
                                 job["if"],
-                                github=SimpleNamespace(event_name="pull_request"),
+                                github=SimpleNamespace(
+                                    event_name="pull_request",
+                                    event=SimpleNamespace(
+                                        pull_request=SimpleNamespace(draft=False)
+                                    ),
+                                ),
                                 needs=SimpleNamespace(
                                     changes=SimpleNamespace(
                                         result=result,
-                                        outputs=SimpleNamespace(docs_only=docs_only),
+                                        outputs=SimpleNamespace(code=code),
                                     )
                                 ),
                                 cancelled=lambda: False,
                             )
-                            self.assertEqual(
-                                allowed, result != "success" or docs_only != "true"
-                            )
+                            self.assertEqual(allowed, code == "true")
 
 
 if __name__ == "__main__":
