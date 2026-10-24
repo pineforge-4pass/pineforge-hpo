@@ -1,5 +1,5 @@
 PineForge HPO
-The bounded JSON reader in src/cli/json.hpp is adapted from pineforge-engine
+The bounded JSON reader in src/core/json.hpp is adapted from pineforge-engine
 v1.0.0's Apache-2.0-licensed native runner JSON reader.
 Copyright 2025-2026 PINEFORGE LLC
 

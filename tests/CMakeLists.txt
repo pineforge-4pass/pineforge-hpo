@@ -4,6 +4,14 @@ target_compile_options(pineforge_hpo_test_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_core COMMAND pineforge_hpo_test_core)
 
+add_executable(pineforge_hpo_test_trial_spool test_trial_spool.cpp)
+target_include_directories(pineforge_hpo_test_trial_spool PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/cli")
+target_link_libraries(pineforge_hpo_test_trial_spool PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_trial_spool PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_trial_spool COMMAND pineforge_hpo_test_trial_spool
+    "${CMAKE_CURRENT_BINARY_DIR}/trial-spool")
+
 add_executable(pineforge_hpo_test_portable_math_canary test_portable_math_canary.cpp)
 target_link_libraries(pineforge_hpo_test_portable_math_canary PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_portable_math_canary PRIVATE
@@ -440,6 +448,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
     endif()
 
+    add_executable(pineforge_hpo_test_dataset_bin test_dataset_bin.cpp)
+    target_link_libraries(pineforge_hpo_test_dataset_bin PRIVATE PineForgeHPO::engine_adapter)
+    target_compile_options(pineforge_hpo_test_dataset_bin PRIVATE -Wall -Wextra -Wpedantic)
+
     add_executable(pineforge_hpo_test_symbol_feeds test_symbol_feeds.cpp)
     target_include_directories(pineforge_hpo_test_symbol_feeds PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
     target_link_libraries(pineforge_hpo_test_symbol_feeds PRIVATE PineForgeHPO::engine_adapter)
@@ -468,7 +480,33 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     endif()
 
     find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        set(PFH_DATASET_BIN_FIXTURES "${CMAKE_CURRENT_BINARY_DIR}/dataset-bin-fixtures")
+        add_test(NAME pineforge_hpo_dataset_bin_fixtures
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/generate_dataset_bin_fixtures.py"
+                "${PFH_DATASET_BIN_FIXTURES}")
+        set_tests_properties(pineforge_hpo_dataset_bin_fixtures PROPERTIES
+            FIXTURES_SETUP dataset_bin_inputs)
+        add_test(NAME pineforge_hpo_dataset_bin COMMAND pineforge_hpo_test_dataset_bin
+            "${PFH_DATASET_BIN_FIXTURES}")
+        # R4 uses the same C++ executable and real mapping, with unconditional seam references.
+        add_test(NAME pineforge_hpo_dataset_bin_identity COMMAND pineforge_hpo_test_dataset_bin
+            "${PFH_DATASET_BIN_FIXTURES}" --mapped-identity)
+        set_tests_properties(pineforge_hpo_dataset_bin pineforge_hpo_dataset_bin_identity PROPERTIES
+            FIXTURES_REQUIRED dataset_bin_inputs)
+    else()
+        message(WARNING "SKIP: Python not found; binary-loader tests will not run")
+        add_test(NAME pineforge_hpo_dataset_bin_requires_python
+            COMMAND "${CMAKE_COMMAND}" -E false)
+    endif()
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
+        add_test(NAME pineforge_hpo_dataset_bin_sidecars
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_dataset_bin_sidecars.py"
+                $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                "${PFH_DATASET_BIN_FIXTURES}" --modes)
+        set_tests_properties(pineforge_hpo_dataset_bin_sidecars PROPERTIES
+            FIXTURES_REQUIRED dataset_bin_inputs)
         add_test(NAME pineforge_hpo_pbo_proof_build
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --config $<CONFIG>
                 --target pineforge-hpo-native-proof pineforge_hpo_pbo_proof_strategy
@@ -632,6 +670,15 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_streamed_trial_retention
+            COMMAND "${Python3_EXECUTABLE}" -I
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_streamed_trial_retention.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                "${CMAKE_CURRENT_BINARY_DIR}/streamed-trial-retention")
+        # Keep other CTest cases from contending with this small RSS-delta gate.
+        # It is always run on Linux; no skip code or sanitizer-specific threshold is supplied.
+        set_tests_properties(pineforge_hpo_streamed_trial_retention PROPERTIES RUN_SERIAL TRUE)
         add_test(NAME pineforge_hpo_warm_start_contract
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_warm_start_contract.py"

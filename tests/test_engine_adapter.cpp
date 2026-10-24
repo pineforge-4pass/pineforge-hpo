@@ -227,7 +227,7 @@ PF_API int strategy_set_symbol_feed(pf_strategy_t strategy, const char* key, con
 #endif
 
 PF_API void run_backtest_full(pf_strategy_t strategy,
-                              pf_bar_t*,
+                              pf_bar_t* bars,
                               int bar_count,
                               const char* input_timeframe,
                               const char* script_timeframe,
@@ -393,10 +393,17 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
         for (const auto& bar : feed.second)
             feed_bonus += bar.close;
     }
-    const double score = sequence_score.empty()
+    double score = sequence_score.empty()
         ? static_cast<double>(length) + initial_capital / 1'000.0 + timezone_bonus +
               symbol_bonus + metadata_bonus + feed_bonus
         : std::strtod(sequence_score.c_str(), nullptr);
+    if (parse_or(state->inputs, "ChartBarsTest", 0.0) == 1.0) {
+        for (int index = 0; index < bar_count; ++index) {
+            const auto& bar = bars[index];
+            score += bar.open + 2 * bar.high + 3 * bar.low + 4 * bar.close +
+                     5 * bar.volume + static_cast<double>(bar.timestamp) / 1e12;
+        }
+    }
 
     report->total_trades = length;
     report->net_profit = score;

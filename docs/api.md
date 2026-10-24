@@ -295,7 +295,15 @@ These controls are native `run` flags, not new StudySpec fields or Python wrappe
 pass-throughs. Existing callers retain `--trials-out all` by default.
 
 - `--trials-out all` retains every terminal record in `trials`, as before. This
-  compatibility mode intentionally uses memory proportional to study size.
+  mode now spools rows in the native child without retaining every trial record or the
+  full result document in memory. The Python `run` wrapper still holds the child's stdout
+  in memory. The default `--trials-out all` requires a writable directory for two anonymous
+  files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files are
+  unlinked at creation, but the spool holds the whole trial array on disk until the process
+  exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
+  filesystems, `--output` in a writable place and `--trials-out none|best-k` are remedies for
+  the native CLI only; the Python `run` wrapper forwards neither, so for `pineforge-hpo run`
+  only a writable `TMPDIR` (or `/tmp`) helps.
 - `--trials-out best-k --best-k N` retains at most N feasible, finite-objective
   winners in `trials`; ties prefer the lower trial ID. Records are emitted in
   trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.

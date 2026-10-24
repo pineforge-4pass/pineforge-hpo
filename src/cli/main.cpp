@@ -20,6 +20,7 @@
 #include "no_improvement.hpp"
 #include "sobol_continuation.hpp"
 #include "symbol_feeds.hpp"
+#include "trial_spool.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -49,7 +50,6 @@
 #include <string>
 #include <thread>
 #include <type_traits>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -124,6 +124,8 @@ private:
 struct Options {
     std::filesystem::path strategy;
     std::filesystem::path ohlcv;
+    std::filesystem::path ohlcv_bin;
+    pfh::BinaryVerification verify_bin = pfh::BinaryVerification::Full;
     std::filesystem::path output;
     std::filesystem::path trials_file;
     std::filesystem::path warm_start;
@@ -240,6 +242,7 @@ struct TrialRecord {
 
 static_assert(std::atomic<bool>::is_always_lock_free);
 std::atomic<bool> signal_cancelled{false};
+std::atomic<bool> result_publication_started{false};
 
 extern "C" void request_stop(int) {
     signal_cancelled.store(true, std::memory_order_relaxed);
@@ -358,7 +361,7 @@ pfh::CandidatePolicy parse_candidate_policy(const std::string& text) {
 void print_help() {
     std::cout << "pineforge-hpo-native — native PineForge HPO runner\n\n"
               << "Usage:\n"
-              << "  pineforge-hpo-native run --strategy FILE --ohlcv FILE "
+              << "  pineforge-hpo-native run --strategy FILE (--ohlcv FILE | --ohlcv-bin FILE) "
                  "--objective EXPR [options]\n"
               << "  pineforge-hpo-native space-info --spec FILE [--warm-start FILE] "
               << "[--symbol-feeds FILE]\n"
@@ -433,6 +436,9 @@ void print_help() {
               << "  --tpe-prior-weight X        positive Parzen prior weight\n"
               << "  --tpe-constant-liar BOOL    place outstanding trials in g(x)\n\n"
               << "Backtest options:\n"
+              << "  --ohlcv FILE                CSV chart bars\n"
+              << "  --ohlcv-bin FILE            read-only mapped pf_bar_t/v1 chart + .json sidecar\n"
+              << "  --verify-bin full|sidecar    binary digest verification (default: full)\n"
               << "  --syminfo FILE              flat or wrapped instrument JSON\n"
               << "  --input-tf TF --script-tf TF --chart-timezone TZ\n"
               << "  --bar-magnifier true|false --magnifier-samples N\n"
@@ -469,12 +475,28 @@ Options parse_options(int argc, char** argv) {
         usage_error("expected `run` subcommand");
 
     Options out;
+    bool ohlcv_given = false;
+    bool ohlcv_bin_given = false;
+    bool verify_bin_given = false;
     for (int i = 2; i < argc; ++i) {
         const std::string option = argv[i];
         if (option == "--strategy") {
             out.strategy = require_value(argc, argv, i, option);
         } else if (option == "--ohlcv") {
             out.ohlcv = require_value(argc, argv, i, option);
+            ohlcv_given = true;
+        } else if (option == "--ohlcv-bin") {
+            out.ohlcv_bin = require_value(argc, argv, i, option);
+            ohlcv_bin_given = true;
+        } else if (option == "--verify-bin") {
+            const auto mode = require_value(argc, argv, i, option);
+            verify_bin_given = true;
+            if (mode == "full")
+                out.verify_bin = pfh::BinaryVerification::Full;
+            else if (mode == "sidecar")
+                out.verify_bin = pfh::BinaryVerification::Sidecar;
+            else
+                usage_error("--verify-bin must be full or sidecar");
         } else if (option == "--output") {
             out.output = require_value(argc, argv, i, option);
         } else if (option == "--artifact-key") {
@@ -733,8 +755,12 @@ Options parse_options(int argc, char** argv) {
 
     if (out.strategy.empty())
         usage_error("--strategy is required");
-    if (out.ohlcv.empty())
-        usage_error("--ohlcv is required");
+    if (ohlcv_given && ohlcv_bin_given)
+        usage_error("--ohlcv and --ohlcv-bin are mutually exclusive");
+    if (out.ohlcv.empty() && out.ohlcv_bin.empty())
+        usage_error("one of --ohlcv or --ohlcv-bin is required");
+    if (verify_bin_given && !ohlcv_bin_given)
+        usage_error("--verify-bin requires --ohlcv-bin");
     if (out.objective.empty())
         usage_error("--objective is required");
     pfh::detail::require_candidate_list_settings(
@@ -1101,6 +1127,9 @@ public:
     TrialArchive(const Options& options, const pfh::SearchSpace& space, bool finite)
         : options_(options), space_(space), finite_(finite),
           ordinals_(finite ? space.finite_cardinality().value_or(0) : 0) {
+        if (options.trials_out == "all")
+            spool_.emplace(options.output,
+                           options.warm_history ? options.warm_history->next_id : 0);
         if (options.candidate_list)
             coverage_.emplace(options.candidate_list->size());
         if (options.sobol_descriptor)
@@ -1133,13 +1162,15 @@ public:
         if (finite_ && (options_.warm_history || (options_.sampler != "grid" &&
             options_.candidate_policy == pfh::CandidatePolicy::SamplerDefault)))
             ordinals_.insert(space_.candidate_ordinal(record.candidate));
-        if (options_.trials_out == "all") {
-            all_.push_back(record);
-            if (record.return_block_layout && record.return_block_layout->usable)
-                all_.back().return_block_layout = return_block_layout_;
-        }
         if (!record.feasible || !record.objective || !std::isfinite(*record.objective))
             return;
+        if (!best_value ||
+            (options_.direction == Direction::kMaximize ? *record.objective > *best_value
+                                                       : *record.objective < *best_value) ||
+            (*record.objective == *best_value && record.trial_id < *best_trial_id)) {
+            best_trial_id = record.trial_id;
+            best_value = record.objective;
+        }
         const auto compare = [&](const TrialRecord& left, const TrialRecord& right) {
             if (*left.objective != *right.objective)
                 return options_.direction == Direction::kMaximize
@@ -1159,7 +1190,7 @@ public:
     }
 
     std::vector<TrialRecord> retained() {
-        auto records = options_.trials_out == "all" ? std::move(all_) : best_;
+        auto records = best_;
         std::sort(records.begin(), records.end(), [](const auto& left, const auto& right) {
             return left.trial_id < right.trial_id;
         });
@@ -1190,9 +1221,13 @@ public:
         return return_block_layout_.get();
     }
 
+    pfh::detail::TrialSpool* spool() { return spool_ ? &*spool_ : nullptr; }
+
     std::uint64_t completed = 0;
     std::map<std::string, std::uint64_t> counts;
     bool objective_coverage = true;
+    std::optional<std::uint64_t> best_trial_id;
+    std::optional<double> best_value;
 
 private:
     void observe_return_blocks(const TrialRecord& record) {
@@ -1225,8 +1260,8 @@ private:
     const pfh::SearchSpace& space_;
     bool finite_;
     pfh::detail::OrdinalSet ordinals_;
-    std::vector<TrialRecord> all_;
     std::vector<TrialRecord> best_;
+    std::optional<pfh::detail::TrialSpool> spool_;
     std::optional<pfh::detail::CandidateCoverage> coverage_;
     std::optional<pfh::detail::SobolPartAccumulator> sobol_part_;
     std::shared_ptr<const pfh::ReturnBlockLayout> return_block_layout_;
@@ -1266,8 +1301,7 @@ public:
                 throw pfh::TypedHpoError<std::runtime_error>(
                     "hpo_output_io_failed", {}, "cannot make --progress-fd nonblocking");
         }
-        if (options_.progress_fd >= 0 || has_trials_file_ ||
-            options_.trial_timeout_seconds > 0.0)
+        if (streaming() || options_.trial_timeout_seconds > 0.0)
             writer_ = std::thread([this] { watch(); });
     }
 
@@ -1304,8 +1338,7 @@ public:
         if (timed_out_)
             return;
         active_.erase(record.trial_id);
-        const bool streaming = options_.progress_fd >= 0 || has_trials_file_;
-        if (streaming && !progress_failed_) {
+        if (streaming() && !progress_failed_) {
             const auto limit = 2 * (options_.batch_size ? options_.batch_size : options_.workers);
             changed_.wait(lock, [&] {
                 return pending_.size() < limit || progress_failed_ || timed_out_ ||
@@ -1327,7 +1360,19 @@ public:
             }
             throw;
         }
-        if (streaming && !progress_failed_) {
+        if (auto* spool = archive_.spool()) {
+            try {
+                spool->append(record.trial_id, render_trial(record) + "\n");
+            } catch (...) {
+                // A spool refusal must release stream waiters before the trial future throws.
+                progress_failed_ = true;
+                pending_.clear();
+                reason_.store(StopReason::kCancelled);
+                changed_.notify_all();
+                throw;
+            }
+        }
+        if (streaming() && !progress_failed_) {
             const auto begin = Clock::now();
             pending_.emplace(record.trial_id, render_trial(record) + "\n");
             serialization_seconds_ += seconds_since(begin);
@@ -1337,7 +1382,7 @@ public:
 
     void skip(std::uint64_t trial_id) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (options_.progress_fd >= 0 || has_trials_file_)
+        if (streaming())
             pending_.emplace(trial_id, "");
         changed_.notify_all();
     }
@@ -1375,6 +1420,10 @@ private:
 
     static double seconds_since(Clock::time_point started) {
         return std::chrono::duration<double>(Clock::now() - started).count();
+    }
+
+    bool streaming() const {
+        return options_.progress_fd >= 0 || has_trials_file_;
     }
 
     void write_progress(const std::string& line) {
@@ -1444,7 +1493,9 @@ private:
             record.error = "trial exceeded --trial-timeout-seconds";
             record.failure = {"hpo_trial_timeout", "{}", "hpo"};
             archive_.add(record);
-            if ((options_.progress_fd >= 0 || has_trials_file_) && !progress_failed_)
+            if (auto* spool = archive_.spool())
+                spool->append(trial_id, render_trial(record) + "\n");
+            if (streaming() && !progress_failed_)
                 pending_.emplace(trial_id, render_trial(record) + "\n");
             changed_.notify_all();
             break;
@@ -1497,7 +1548,8 @@ private:
             if (timed_out_) {
                 std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
                 std::cerr.flush();
-                std::cout << pfh::detail::failure_document(error, 3);
+                if (!result_publication_started.load())
+                    std::cout << pfh::detail::failure_document(error, 3);
                 std::cout.flush();
                 ::_exit(3);
             }
@@ -1565,10 +1617,6 @@ void validate_metric_identifiers(const std::vector<pfh::MetricExpression*>& expr
             }
         }
     }
-}
-
-bool better(Direction direction, double candidate, double current) {
-    return direction == Direction::kMaximize ? candidate > current : candidate < current;
 }
 
 TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
@@ -1741,18 +1789,17 @@ private:
     std::map<std::uint64_t, std::uint64_t> numbers_;
 };
 
-std::string render_results(const Options& options,
-                           const pfh::SearchSpace& space,
-                           const std::optional<std::uint64_t>& finite_cardinality,
-                           const std::vector<TrialRecord>& trials,
-                           const std::optional<std::size_t>& best_index,
-                           std::uint64_t duplicate_proposals_skipped,
-                           const std::string& requested_stop_reason = {},
-                           const TrialArchive* archive = nullptr,
-                           const pfh::detail::NoImprovementSnapshot& early_stop = {},
-                           const CompletionLog* rolling_log = nullptr) {
-    const auto* block_layout = options.pbo_blocks != 0 && archive
-        ? archive->return_block_layout() : nullptr;
+pfh::detail::ResultDocument render_results(
+    const Options& options,
+    const pfh::SearchSpace& space,
+    const std::optional<std::uint64_t>& finite_cardinality,
+    const std::vector<TrialRecord>& trials,
+    TrialArchive& archive,
+    std::uint64_t duplicate_proposals_skipped,
+    const std::string& requested_stop_reason = {},
+    const pfh::detail::NoImprovementSnapshot& early_stop = {},
+    const CompletionLog* rolling_log = nullptr) {
+    const auto* block_layout = options.pbo_blocks != 0 ? archive.return_block_layout() : nullptr;
     if (block_layout) {
         for (const auto& trial : trials)
             validate_trial_return_blocks(trial, *block_layout);
@@ -1784,28 +1831,15 @@ std::string render_results(const Options& options,
         return "pineforge_grid_v2_finite";
     }();
 
-    std::optional<std::uint64_t> unique_candidates;
-    if (archive) {
-        unique_candidates = archive->unique();
-    } else if (finite_cardinality.has_value()) {
-        std::unordered_set<std::uint64_t> ordinals;
-        ordinals.reserve(trials.size());
-        for (const auto& trial : trials) {
-            ordinals.insert(space.candidate_ordinal(trial.candidate));
-        }
-        unique_candidates = static_cast<std::uint64_t>(ordinals.size());
-    }
+    const auto unique_candidates = archive.unique();
     const std::uint64_t trials_requested =
         options.max_trials != 0 ? options.max_trials :
             (options.sampler == "grid" ? finite_cardinality.value_or(0) : 0);
-    const std::uint64_t trials_completed = archive ? archive->completed : trials.size();
+    const std::uint64_t trials_completed = archive.completed;
     const bool search_space_exhausted =
         finite_cardinality.has_value() && unique_candidates == finite_cardinality;
     const bool full_parameter_coverage = search_space_exhausted;
-    const bool terminal_objective_coverage = archive ? archive->objective_coverage :
-        std::all_of(trials.begin(), trials.end(), [](const TrialRecord& trial) {
-            return trial.status == "ok" || trial.status == "constraint_violation";
-        });
+    const bool terminal_objective_coverage = archive.objective_coverage;
     const bool exhaustive_equivalent = full_parameter_coverage && terminal_objective_coverage;
     const std::string stop_reason = !requested_stop_reason.empty()
         ? requested_stop_reason
@@ -1828,7 +1862,7 @@ std::string render_results(const Options& options,
             << pfh::detail::symbol_feeds_identity(&*options.symbol_feeds_record) << "\",\n";
     }
     out
-        << "  \"ok\": " << (best_index ? "true" : "false") << ",\n"
+        << "  \"ok\": " << (archive.best_trial_id ? "true" : "false") << ",\n"
         << "  \"artifact_key\": \"" << json_escape(options.artifact_key) << "\",\n"
         << "  \"sampler\": \"" << json_escape(options.sampler) << "\",\n"
         << "  \"candidate_policy\": \"" << pfh::candidate_policy_name(options.candidate_policy)
@@ -1932,29 +1966,37 @@ std::string render_results(const Options& options,
         << ",\n"
         << "  \"exhaustive_equivalent\": " << (exhaustive_equivalent ? "true" : "false") << ",\n"
         << "  \"best_trial_id\": ";
-    if (best_index)
-        out << trials[*best_index].trial_id;
+    if (archive.best_trial_id)
+        out << *archive.best_trial_id;
     else
         out << "null";
     out << ",\n  \"best_value\": ";
-    if (best_index && trials[*best_index].objective) {
-        out << json_number(*trials[*best_index].objective);
+    if (archive.best_value) {
+        out << json_number(*archive.best_value);
     } else {
         out << "null";
     }
     out << ",\n  \"trials\": [\n";
 
-    for (std::size_t i = 0; options.trials_out != "none" && i < trials.size(); ++i) {
-        out << "    " << render_trial(trials[i]);
-        if (i + 1 != trials.size())
-            out << ',';
-        out << '\n';
+    std::string before_trials;
+    auto* spool = archive.spool();
+    if (spool) {
+        spool->seal(archive.completed);
+        before_trials = out.str();
+        out.str(std::string{});
+    } else {
+        for (std::size_t i = 0; options.trials_out != "none" && i < trials.size(); ++i) {
+            out << "    " << render_trial(trials[i]);
+            if (i + 1 != trials.size())
+                out << ',';
+            out << '\n';
+        }
     }
     out << "  ]";
-    if (archive && options.trials_out != "all") {
+    if (options.trials_out != "all") {
         out << ",\n  \"summary\": {\"counts_by_status\": {";
         std::size_t count_index = 0;
-        for (const auto& [status, count] : archive->counts) {
+        for (const auto& [status, count] : archive.counts) {
             if (count_index++)
                 out << ',';
             out << '"' << json_escape(status) << "\":" << count;
@@ -2063,41 +2105,28 @@ std::string render_results(const Options& options,
         out << ", \"numeric_build_identity\": \""
             << json_escape(std::string(pfh::return_stats_numeric_build_identity())) << "\"}";
     }
-    if (options.sobol_descriptor && archive && archive->sobol_part())
+    if (options.sobol_descriptor && archive.sobol_part())
         out << ",\n  \"sobol\": "
             << pfh::detail::render_sobol_block(
                    *options.sobol_descriptor,
-                   archive->sobol_part()->summary(options.sobol_first_index,
-                                                  options.sobol_parent_exact));
-    if (options.candidate_list && archive && archive->coverage())
+                   archive.sobol_part()->summary(options.sobol_first_index,
+                                                 options.sobol_parent_exact));
+    if (options.candidate_list && archive.coverage())
         out << ",\n  \"candidate_list\": "
-            << pfh::detail::candidate_list_json(*options.candidate_list, *archive->coverage());
+            << pfh::detail::candidate_list_json(*options.candidate_list, *archive.coverage());
     out << "\n}\n";
-    return out.str();
+    return {std::move(before_trials), out.str(), spool};
 }
 
-std::optional<std::size_t> best_trial(const Options& options,
-                                     const std::vector<TrialRecord>& trials) {
-    std::optional<std::size_t> best_index;
-    for (std::size_t index = 0; index < trials.size(); ++index) {
-        if (!trials[index].feasible || !trials[index].objective ||
-            !std::isfinite(*trials[index].objective))
-            continue;
-        if (!best_index || better(options.direction, *trials[index].objective,
-                                  *trials[*best_index].objective))
-            best_index = index;
-    }
-    return best_index;
-}
-
-void write_result_file(const Options& options, const std::string& json) {
+void write_result_file(const Options& options, const pfh::detail::ResultDocument& json) {
     if (!options.output.empty()) {
         std::ofstream output(options.output, std::ios::binary | std::ios::trunc);
         if (!output)
             throw pfh::TypedHpoError<std::runtime_error>(
                 "hpo_output_io_failed", {}, "cannot open output file: " + options.output.string());
-        output << json;
+        json.write(output);
         output.flush();
+        output.close();
         if (!output)
             throw pfh::TypedHpoError<std::runtime_error>(
                 "hpo_output_io_failed", {},
@@ -2105,27 +2134,31 @@ void write_result_file(const Options& options, const std::string& json) {
     }
 }
 
-void publish_result(const std::string& json) {
-    std::cout << json;
+void publish_result(const pfh::detail::ResultDocument& json) {
+    // A later read/write failure may leave a partial document. Never append a second JSON
+    // document to bytes already published; the caller still reports the failure on stderr.
+    result_publication_started.store(true);
+    json.write(std::cout);
     std::cout.flush();
     if (!std::cout)
         throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
                                                      "failed writing result JSON to stdout");
 }
 
-void write_results(const Options& options, const std::string& json) {
+void write_results(const Options& options, const pfh::detail::ResultDocument& json) {
     write_result_file(options, json);
     publish_result(json);
 }
 
-std::string append_process_failure(std::string json, std::exception_ptr failure,
-                                  std::int32_t exit_code) {
+pfh::detail::ResultDocument append_process_failure(pfh::detail::ResultDocument json,
+                                                  std::exception_ptr failure,
+                                                  std::int32_t exit_code) {
     if (failure) {
         try {
             std::rethrow_exception(failure);
         } catch (const std::exception& error) {
-            json.insert(json.rfind('}'), ",\"failure\":" +
-                                            pfh::detail::failure_json(error, exit_code));
+            json.after_trials.insert(json.after_trials.rfind('}'), ",\"failure\":" +
+                pfh::detail::failure_json(error, exit_code));
         }
     }
     return json;
@@ -2307,8 +2340,46 @@ std::string require_sobol_numeric_identity() {
     return identity;
 }
 
+bool same_dataset_file(const std::filesystem::path& input,
+                       const std::filesystem::path& output) {
+    struct stat input_status {};
+    struct stat output_status {};
+    const bool input_exists = ::stat(input.c_str(), &input_status) == 0;
+    const bool output_exists = ::stat(output.c_str(), &output_status) == 0;
+    if (input_exists && output_exists) {
+        return input_status.st_dev == output_status.st_dev &&
+               input_status.st_ino == output_status.st_ino;
+    }
+    return std::filesystem::absolute(input).lexically_normal() ==
+           std::filesystem::absolute(output).lexically_normal();
+}
+
+void refuse_mapped_output_aliases(const Options& options) {
+    if (options.ohlcv_bin.empty())
+        return;
+    const std::filesystem::path inputs[] = {
+        options.ohlcv_bin, options.ohlcv_bin.string() + ".json",
+    };
+    const std::pair<const char*, const std::filesystem::path*> outputs[] = {
+        {"--trials-file", &options.trials_file},
+        {"--output", &options.output},
+        {"--scheduler-stats", &options.scheduler_stats},
+    };
+    for (const auto& output : outputs) {
+        if (output.second->empty())
+            continue;
+        for (const auto& input : inputs) {
+            if (same_dataset_file(input, *output.second))
+                usage_error(std::string(output.first) +
+                            " must not name --ohlcv-bin or its sidecar: " +
+                            output.second->string());
+        }
+    }
+}
+
 int run(Options options) {
     const auto started = RunState::Clock::now();
+    refuse_mapped_output_aliases(options);
     validate_search_input_kinds(options);
     pfh::Pruner pruner(options.pruner, options.pruner_rungs, options.pruner_eta,
                        options.direction == Direction::kMinimize);
@@ -2491,7 +2562,9 @@ int run(Options options) {
 #endif
 
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
-    auto dataset = std::make_shared<pfh::Dataset>(pfh::Dataset::load_csv(options.ohlcv));
+    auto dataset = std::make_shared<pfh::Dataset>(options.ohlcv_bin.empty()
+        ? pfh::Dataset::load_csv(options.ohlcv)
+        : pfh::Dataset::load_bin(options.ohlcv_bin, options.verify_bin));
     pfh::BacktestConfiguration configuration;
     configuration.input_timeframe = options.input_timeframe;
     configuration.script_timeframe = options.script_timeframe;
@@ -2536,11 +2609,14 @@ int run(Options options) {
     };
     RunState state(options, started, archive, [&](const std::vector<TrialRecord>& completed,
                                                 std::exception_ptr failure) {
+        dataset->verify_unchanged();
         write_results(options, append_process_failure(
-            render_results(options, space, finite_cardinality, completed,
-                           best_trial(options, completed), duplicate_proposals_skipped.load(),
-                           "trial_timeout", &archive, no_improvement.snapshot(),
+            render_results(options, space, finite_cardinality, completed, archive,
+                           duplicate_proposals_skipped.load(),
+                           "trial_timeout", no_improvement.snapshot(),
                            rolling_log_ptr()), failure, 3));
+        if (auto* spool = archive.spool())
+            spool->close();
         print_process_failure(failure);
     });
     const auto direction = options.direction == Direction::kMaximize
@@ -2868,7 +2944,6 @@ int run(Options options) {
                                                      "sampler produced no candidates");
 
     const auto trials = archive.retained();
-    const auto best_index = best_trial(options, trials);
 
     const auto render_start = RunState::Clock::now();
     const auto progress_failure = state.progress_error();
@@ -2883,9 +2958,10 @@ int run(Options options) {
     std::string stop_reason = state.stop_reason();
     if (stop_reason.empty() && early_stop.trigger_trial_id)
         stop_reason = "no_improvement";
+    dataset->verify_unchanged();
     const auto json = append_process_failure(
-        render_results(options, space, finite_cardinality, trials, best_index,
-                       duplicate_proposals_skipped.load(), stop_reason, &archive, early_stop,
+        render_results(options, space, finite_cardinality, trials, archive,
+                       duplicate_proposals_skipped.load(), stop_reason, early_stop,
                        rolling_log_ptr()),
         progress_failure, 1);
     const auto write_start = RunState::Clock::now();
@@ -2917,11 +2993,13 @@ int run(Options options) {
                                                          "failed writing scheduler stats file");
     }
     publish_result(json);
+    if (auto* spool = archive.spool())
+        spool->close();
     if (progress_failure) {
         print_process_failure(progress_failure);
         return 1;
     }
-    return best_index ? 0 : 2;
+    return archive.best_trial_id ? 0 : 2;
 }
 
 }  // namespace
@@ -3041,7 +3119,8 @@ int main(int argc, char** argv) {
         return 5;
     } catch (const std::exception& error) {
         std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
-        std::cout << pfh::detail::failure_document(error, 1);
+        if (!result_publication_started.load())
+            std::cout << pfh::detail::failure_document(error, 1);
         return 1;
     }
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import csv
 import dataclasses
 import hashlib
 import io
@@ -8,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import tempfile
 import unittest
 from unittest import mock
@@ -26,7 +28,7 @@ from pineforge_hpo.cli import (
     _validate_manifest_inputs,
     main,
 )
-from pineforge_hpo.study_spec import StudySpec, load_study_spec
+from pineforge_hpo.study_spec import StudySpec, StudySpecError, load_study_spec
 
 
 class CliTests(unittest.TestCase):
@@ -726,6 +728,8 @@ class CliTests(unittest.TestCase):
             artifact_key="a" * 64,
         )
         self.assertEqual(command[:2], [str(self.native), "run"])
+        self.assertEqual(command[4:6], ["--ohlcv", str(self.data.resolve())])
+        self.assertNotIn("--ohlcv-bin", command)
         self.assertIn("--int-dim", command)
         self.assertIn("--real-dim", command)
         self.assertIn("--fixed-input", command)
@@ -735,6 +739,133 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             command[command.index("--candidate-policy") + 1], "sampler_default"
         )
+
+    def test_native_command_forwards_ohlcv_bin_with_csv_symbol_feeds(self) -> None:
+        binary = self.root / "bars.bin"
+        with self.data.open(newline="", encoding="utf-8") as source:
+            rows = list(csv.DictReader(source))
+        binary.write_bytes(
+            b"".join(
+                struct.pack(
+                    "<5dq",
+                    *(
+                        float(row[key])
+                        for key in ("open", "high", "low", "close", "volume")
+                    ),
+                    int(row["timestamp"]),
+                )
+                for row in rows
+            )
+        )
+        Path(str(binary) + ".json").write_text(
+            json.dumps(
+                {
+                    "format": "pf_bar_t/v1",
+                    "record_size": 48,
+                    "symbol": "TEST:BIN",
+                    "tf": "1",
+                    "count": len(rows),
+                    "first_ts": int(rows[0]["timestamp"]),
+                    "last_ts": int(rows[-1]["timestamp"]),
+                    "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        self._write_study(
+            datasets=[{"id": "bars", "ohlcv_bin": "bars.bin", "input_tf": "1"}],
+            symbol_feeds="feeds/index.json",
+        )
+        study = load_study_spec(self.study_path, require_files=True)
+        self.assertIsNone(study.datasets[0].ohlcv)
+        self.assertEqual(study.datasets[0].ohlcv_bin, binary.resolve())
+        command = _native_command(
+            study,
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        self.assertEqual(
+            command[command.index("--ohlcv-bin") + 1], str(binary.resolve())
+        )
+        self.assertNotIn("--ohlcv", command)
+        self.assertEqual(command[command.index("--verify-bin") + 1], "full")
+        self.assertEqual(
+            command[command.index("--symbol-feeds") + 1],
+            str((self.root / "feeds/index.json").resolve()),
+        )
+
+    def test_dataset_binary_sidecar_verification_is_forwarded(self) -> None:
+        self._write_study(
+            datasets=[
+                {
+                    "id": "bars",
+                    "ohlcv_bin": "bars.bin",
+                    "input_tf": "1",
+                    "verify_bin": "sidecar",
+                }
+            ]
+        )
+        study = load_study_spec(self.study_path)
+        command = _native_command(
+            study,
+            native=self.native,
+            plugin=self.root / "strategy.dylib",
+            artifact_key="a" * 64,
+        )
+        self.assertEqual(command[command.index("--verify-bin") + 1], "sidecar")
+
+    def test_dataset_binary_verification_refuses_invalid_mode_or_csv(self) -> None:
+        for source, mode in (
+            ("ohlcv_bin", "unchecked"),
+            ("ohlcv_bin", True),
+            ("ohlcv", "sidecar"),
+        ):
+            with self.subTest(source=source, mode=mode):
+                self._write_study(
+                    datasets=[
+                        {
+                            "id": "bars",
+                            source: "bars.bin",
+                            "input_tf": "1",
+                            "verify_bin": mode,
+                        }
+                    ]
+                )
+                with self.assertRaisesRegex(StudySpecError, "verify_bin"):
+                    load_study_spec(self.study_path)
+
+    def test_dataset_csv_and_binary_sources_are_mutually_exclusive(self) -> None:
+        self._write_study(
+            datasets=[
+                {
+                    "id": "bars",
+                    "ohlcv": "bars.csv",
+                    "ohlcv_bin": "bars.bin",
+                    "input_tf": "1",
+                }
+            ]
+        )
+        with self.assertRaisesRegex(
+            StudySpecError, "ohlcv and ohlcv_bin are mutually exclusive"
+        ):
+            load_study_spec(self.study_path)
+
+    def test_dataset_requires_csv_or_binary_source(self) -> None:
+        self._write_study(datasets=[{"id": "bars", "input_tf": "1"}])
+        with self.assertRaisesRegex(
+            StudySpecError, "one of ohlcv or ohlcv_bin is required"
+        ):
+            load_study_spec(self.study_path)
+
+    def test_dataset_binary_file_check_uses_binary_path(self) -> None:
+        self._write_study(
+            datasets=[{"id": "bars", "ohlcv_bin": "missing.bin", "input_tf": "1"}]
+        )
+        with self.assertRaises(StudySpecError) as caught:
+            load_study_spec(self.study_path, require_files=True)
+        self.assertIn("$.datasets[0].ohlcv_bin", str(caught.exception))
+        self.assertIn("missing.bin", str(caught.exception))
 
     def test_native_command_forwards_batching_and_pruning(self) -> None:
         self._write_study(

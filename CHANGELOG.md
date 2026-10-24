@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- Bound `--trials-out all` retention in the native process with an anonymous spool independent
+  of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
+- The default `--trials-out all` needs a writable directory for two anonymous files
+  (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`), with no retry elsewhere
+  after selection. Both files are unlinked at creation, but the spool holds the whole trial array
+  on disk until the process exits. On read-only root filesystems, `--output` in a writable place
+  and `--trials-out none|best-k` are remedies for the native CLI only. The Python `run` wrapper
+  forwards neither `--output` nor `--trials-out`, so for `pineforge-hpo run` only a writable
+  `TMPDIR` (or `/tmp`) helps.
+- Attribute result destination write failures to the output file or stdout without marking
+  the terminal trial spool failed; retain `hpo_output_io_failed` and the existing exit codes.
+- Add native `--ohlcv-bin` and StudySpec `ohlcv_bin` for shared read-only mapped chart bars.
+  Validate the complete `pf_bar_t/v1` sidecar and mapped file SHA-256 by default (`full`);
+  `--verify-bin sidecar` / dataset `verify_bin: "sidecar"` skips only the digest comparison.
+  Refuse non-regular sidecars before reading. Publish mapped files by rename/`os.replace`,
+  never by rewriting or truncating them in place.
+- The public Python API adds `DatasetSpec.ohlcv_bin` and `DatasetSpec.verify_bin`;
+  `DatasetSpec.ohlcv` is now `Path | None`, with exactly one of `ohlcv` / `ohlcv_bin` set.
+- Add C++ `Dataset::load_bin`, `BinaryVerification`, and `Dataset::verify_unchanged`.
+  `Dataset::bars()` now throws `std::logic_error` for mapped input; use `data()` and `size()`.
+  The mapped-file guard compares `st_dev`, `st_ino`, `st_size`, `st_mtim` and `st_ctim` against
+  their load-time values, using full seconds+nanoseconds timestamps. Changes to device, inode,
+  size or mtime are refused. When only ctime moves (chmod, chown, xattr, an extra hard link,
+  or rename-over), re-hash the held mapped bytes against the sidecar digest parsed at load and
+  accept only equality; without a digest a ctime change is refused. Rename-over never reopens
+  the replacement path.
+  In Sidecar mode the bytes were not compared to the digest at load, so even a metadata-only
+  change can refuse if the bytes never matched it.
+  The run's results are computed only from the bytes verified at load: a change that the mapped
+  bytes show is refused (the held mapping is re-hashed against the sidecar digest when ctime moved).
+  On platforms where a private read-only mapping does not show later in-place writes (observed on
+  macOS), the run keeps using the original verified bytes and is accepted. This also applies to a
+  same-size rewrite followed by exact mtime restoration (`touch -r`, `os.utime` with `ns=`):
+  POSIX writes and mtime updates advance ctime.
+  Residual: a rewrite that is fully restored (content and mtime) before the end-of-run re-hash can
+  go undetected if trials read the changed pages in between; the guard covers changes still present
+  at the end of the run, and the scenario needs a deliberate local writer.
+  Detection resolution is the filesystem's timestamp granularity: coarse ctime can miss a
+  rewrite within one tick that keeps size, mtime and ctime unchanged.
+
 ## 1.6.3 (2026-10-23)
 
 - Final 1.6.3 release (PEP 440 `1.6.3`, tag `v1.6.3`), paired with `pineforge-engine` v1.6.3 and
