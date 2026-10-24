@@ -1214,9 +1214,6 @@ class _ResultJson:
         return self.buffer_start + self.position
 
     def seek(self, offset: int) -> None:
-        if self.buffer_start <= offset <= self.buffer_start + len(self.buffer):
-            self.position = offset - self.buffer_start
-            return
         self.source.seek(offset)
         self.buffer = b""
         self.buffer_start = offset
