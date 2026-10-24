@@ -22,15 +22,18 @@
   `DatasetSpec.ohlcv` is now `Path | None`, with exactly one of `ohlcv` / `ohlcv_bin` set.
 - Add C++ `Dataset::load_bin`, `BinaryVerification`, and `Dataset::verify_unchanged`.
   `Dataset::bars()` now throws `std::logic_error` for mapped input; use `data()` and `size()`.
-  The mapped-file guard compares only `st_dev`, `st_ino`, `st_size` and `st_mtim` (the full
-  seconds+nanoseconds value the filesystem reports). Detection resolution is the filesystem's
-  timestamp granularity (some filesystems store a coarse tick or whole seconds), so a rewrite
-  within one timestamp tick of the load that keeps the size is not detected.
-  Metadata-only changes (chmod, chown, xattr, extra hard link) are accepted; rewrites changing
-  size or mtime are refused.
-  An in-place same-size rewrite (or a truncate-and-rewrite to the same size) followed by restoring
-  the exact mtime (`touch -r`, `os.utime` with `ns=`) is not detected; this is a deliberate escape
-  that a fix-up script must take on purpose, and the guard is a change detector, not a lock.
+  The mapped-file guard compares `st_dev`, `st_ino`, `st_size`, `st_mtim` and `st_ctim` against
+  their load-time values, using full seconds+nanoseconds timestamps. Changes to device, inode,
+  size or mtime are refused. When only ctime moves (chmod, chown, xattr, an extra hard link,
+  or rename-over), re-hash the held mapped bytes against the sidecar digest parsed at load and
+  accept only equality; without a digest a ctime change is refused. Rename-over never reopens
+  the replacement path.
+  In Sidecar mode the bytes were not compared to the digest at load, so even a metadata-only
+  change can refuse if the bytes never matched it.
+  The re-hash detects a same-size rewrite followed by exact mtime restoration (`touch -r`,
+  `os.utime` with `ns=`) when ctime moves; POSIX writes and mtime updates advance ctime.
+  Detection resolution is the filesystem's timestamp granularity: coarse ctime can miss a
+  rewrite within one tick that keeps size, mtime and ctime unchanged.
 
 ## 1.6.3 (2026-10-23)
 

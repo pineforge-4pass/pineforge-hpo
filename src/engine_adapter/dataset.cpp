@@ -321,6 +321,14 @@ bool same_modification_time(const struct stat& left, const struct stat& right) n
 #endif
 }
 
+bool same_change_time(const struct stat& left, const struct stat& right) noexcept {
+#if defined(__APPLE__)
+    return same_timestamp(left.st_ctimespec, right.st_ctimespec);
+#else
+    return same_timestamp(left.st_ctim, right.st_ctim);
+#endif
+}
+
 bool sidecar_integer_equals(const detail::Json* value, std::int64_t expected) {
     if (!value || value->kind != detail::Json::Kind::Number) {
         return false;
@@ -434,23 +442,19 @@ struct Dataset::MappedFile final {
     explicit MappedFile(const std::filesystem::path& path)
         : path(path), descriptor(path), identity(binary_file_status(descriptor.get(), path)) {}
 
-    void verify_unchanged() const {
+    void verify_unchanged(const pf_bar_t* mapped_bars, std::size_t length) const {
         struct stat current {};
         if (::fstat(descriptor.get(), &current) != 0) {
             binary_dataset_error("changed while mapped (cannot stat descriptor): " +
                                  path.string());
         }
-        // Check the held inode, accepting rename-over and metadata-only changes. This detects
-        // size/mtime changes, not a same-size rewrite that restores the original mtime.
-        if (current.st_dev != identity.st_dev || current.st_ino != identity.st_ino ||
-            current.st_size != identity.st_size || !same_modification_time(current, identity)) {
-            binary_dataset_error("changed while mapped: " + path.string());
-        }
+        detail::require_bin_unchanged(current, identity, mapped_bars, length, sidecar_digest, path);
     }
 
     const std::filesystem::path path;
     const BinaryDescriptor descriptor;
     const struct stat identity;
+    std::string sidecar_digest;
 };
 
 void detail::require_bin_little_endian(bool little_endian) {
@@ -463,6 +467,24 @@ void detail::require_bin_address_space(std::uint64_t bytes, std::uint64_t maximu
                                        const std::filesystem::path& path) {
     if (bytes > maximum) {
         binary_dataset_error("size exceeds host address space: " + path.string());
+    }
+}
+
+void detail::require_bin_unchanged(const struct stat& current, const struct stat& identity,
+                                   const pf_bar_t* mapped_bars, std::size_t length,
+                                   std::string_view sidecar_digest,
+                                   const std::filesystem::path& path) {
+    if (current.st_dev != identity.st_dev || current.st_ino != identity.st_ino ||
+        current.st_size != identity.st_size || !same_modification_time(current, identity)) {
+        binary_dataset_error("changed while mapped: " + path.string());
+    }
+    // Accept unchanged identity, or only metadata moved and the mapped bytes still hash to
+    // the sidecar digest. Use the held mapping, never the current path's contents.
+    if (!same_change_time(current, identity) &&
+        (sidecar_digest.empty() ||
+         sidecar_digest != detail::sha256(std::string_view(
+             reinterpret_cast<const char*>(mapped_bars), length)))) {
+        binary_dataset_error("changed while mapped: " + path.string());
     }
 }
 
@@ -498,7 +520,7 @@ const std::vector<pf_bar_t>& Dataset::bars() const {
 
 void Dataset::verify_unchanged() const {
     if (mapped_file_) {
-        mapped_file_->verify_unchanged();
+        mapped_file_->verify_unchanged(mapped_bars_.get(), mapped_count_ * sizeof(pf_bar_t));
     }
 }
 
@@ -506,7 +528,7 @@ Dataset Dataset::load_bin(const std::filesystem::path& path, BinaryVerification 
     const std::uint16_t endian_probe = 1;
     detail::require_bin_little_endian(
         *reinterpret_cast<const unsigned char*>(&endian_probe) == 1);
-    const auto file = std::make_shared<const MappedFile>(path);
+    const auto file = std::make_shared<MappedFile>(path);
     const auto bytes = static_cast<std::uint64_t>(file->identity.st_size);
     if (bytes % 48 != 0) {
         binary_dataset_error("size is not a multiple of 48: " + path.string());
@@ -521,11 +543,12 @@ Dataset Dataset::load_bin(const std::filesystem::path& path, BinaryVerification 
     detail::require_bin_address_space(bytes, std::numeric_limits<std::size_t>::max(), path);
     const auto length = static_cast<std::size_t>(bytes);
     auto mapped = detail::map_bin_records(file->descriptor.get(), length, path);
-    const auto digest = check_binary_sidecar(path, mapped.get(), static_cast<std::size_t>(count));
+    file->sidecar_digest =
+        check_binary_sidecar(path, mapped.get(), static_cast<std::size_t>(count));
     check_binary_records(mapped.get(), static_cast<std::size_t>(count));
     if (verification == BinaryVerification::Full &&
-        digest != detail::sha256(std::string_view(reinterpret_cast<const char*>(mapped.get()),
-                                                  length))) {
+        file->sidecar_digest != detail::sha256(
+            std::string_view(reinterpret_cast<const char*>(mapped.get()), length))) {
         binary_dataset_error("sidecar does not match the bar/close files");
     }
     Dataset dataset(file, std::move(mapped), static_cast<std::size_t>(count));

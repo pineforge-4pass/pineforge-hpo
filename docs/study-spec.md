@@ -404,18 +404,21 @@ Both modes scan every record:
 OHLC prices must be finite, volume nonnegative or NaN, and timestamps strictly increasing.
 In-place rewriting or truncation of a mapped file is unsupported. Publish a new file by
 write-then-`rename`/`os.replace`, keeping each mapped inode immutable for the dataset's lifetime.
-The native runner keeps the original descriptor open and compares only `st_dev`, `st_ino`,
-`st_size` and `st_mtim` (the full seconds+nanoseconds value the filesystem reports) against their
-load-time values at the end of the run, including the timeout path, before rendering results.
-Detection resolution is the filesystem's timestamp granularity (some filesystems store a coarse
-tick or whole seconds), so a rewrite within one timestamp tick of the load that keeps the size
-is not detected.
-Metadata-only changes (chmod, chown, xattr, extra hard link) are accepted. A rewrite that changes
-size or mtime is refused as `hpo_dataset_invalid` with a `changed while mapped` diagnostic;
-replacing the path with a new inode is accepted.
-An in-place same-size rewrite (or a truncate-and-rewrite to the same size) followed by restoring
-the exact mtime (`touch -r`, `os.utime` with `ns=`) is not detected; this is a deliberate escape
-that a fix-up script must take on purpose, and the guard is a change detector, not a lock.
+The native runner keeps the original descriptor open and compares `st_dev`, `st_ino`, `st_size`,
+`st_mtim` and `st_ctim` against their load-time values at the end of the run, including the timeout
+path, before rendering results. Timestamps use the full seconds+nanoseconds values the filesystem
+reports. A change to device, inode, size or mtime is refused as `hpo_dataset_invalid` with a
+`changed while mapped` diagnostic. When only ctime moves (chmod, chown, xattr, an extra hard link,
+or rename-over), the bytes in the held mapping are re-hashed against the sidecar digest parsed
+at load and accepted only if equal; without a digest a ctime change is refused.
+Rename-over hashes the original mapped inode, without reopening the replacement path.
+In `sidecar` mode the bytes were not compared to the digest at load, so even a metadata-only
+change can refuse if the re-hash finds that the bytes never matched it.
+The re-hash detects a same-size rewrite (including truncate-and-rewrite to the same size) followed
+by exact mtime restoration (`touch -r`, `os.utime` with `ns=`) when ctime moves; POSIX writes and
+mtime updates advance ctime.
+Detection resolution is the filesystem's timestamp granularity: a filesystem with coarse ctime
+can miss a rewrite within one tick that keeps size, mtime and ctime unchanged.
 Truncation can cause an unrecoverable SIGBUS before this end-of-run check, terminating the process
 without failure JSON.
 The CSV loader is unchanged.

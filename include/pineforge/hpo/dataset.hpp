@@ -20,16 +20,18 @@ enum class BinaryVerification { Full, Sidecar };
 /// owned OHLCV values must be finite. Binary inputs follow the engine's volume contract:
 /// nonnegative or NaN, with finite OHLC prices. Never rewrite a mapped file in place: publish by
 /// rename/os.replace. In-place rewriting or truncation is unsupported. The native runner compares
-/// only the open descriptor's `st_dev`, `st_ino`, `st_size` and `st_mtim` (the full
-/// seconds+nanoseconds value the filesystem reports) against their load-time values at the end
-/// of a run, including the timeout path, before publishing results.
-/// Detection resolution is the filesystem's timestamp granularity (some filesystems store a
-/// coarse tick or whole seconds), so a rewrite within one timestamp tick of the load that keeps
-/// the size is not detected. Metadata-only changes (chmod, chown, xattr, extra hard link) are
-/// accepted.
-/// An in-place same-size rewrite (or a truncate-and-rewrite to the same size) followed by restoring
-/// the exact mtime (`touch -r`, `os.utime` with `ns=`) is not detected; this is a deliberate escape
-/// that a fix-up script must take on purpose, and the guard is a change detector, not a lock.
+/// the open descriptor's `st_dev`, `st_ino`, `st_size`, `st_mtim` and `st_ctim` against their
+/// load-time values at the end of a run, including the timeout path, before publishing results.
+/// Timestamps use the full seconds+nanoseconds values the filesystem reports. Changes to device,
+/// inode, size or mtime are refused. When only ctime moves (chmod, chown, xattr, an extra hard
+/// link, or rename-over), the mapped bytes are re-hashed against the sidecar digest parsed at
+/// load and accepted only if equal; without that digest a ctime change is refused.
+/// In Sidecar mode the bytes were not compared to the digest at load, so even a metadata-only
+/// change can refuse when the re-hash finds that they never matched.
+/// The re-hash detects a same-size rewrite followed by exact mtime restoration (`touch -r`,
+/// `os.utime` with `ns=`) when ctime moves; POSIX writes and mtime updates advance ctime.
+/// Detection resolution is the filesystem's timestamp granularity: coarse ctime can miss a
+/// rewrite within one tick that keeps size, mtime and ctime unchanged.
 /// Truncation can cause an unrecoverable SIGBUS before that check and terminate the process
 /// without failure JSON.
 class Dataset final {
@@ -74,20 +76,19 @@ public:
     /// @throws std::logic_error for mapped input; use data()/size() for either format.
     const std::vector<pf_bar_t>& bars() const;
 
-    /// Compares only the mapped file's open descriptor's `st_dev`, `st_ino`, `st_size` and
-    /// `st_mtim` (the full seconds+nanoseconds value the filesystem reports) to their load-time
-    /// values.
-    /// Detection resolution is the filesystem's timestamp granularity (some filesystems store a
-    /// coarse tick or whole seconds), so a rewrite within one timestamp tick of the load that
-    /// keeps the size is not detected.
+    /// Compares the mapped file's open descriptor's `st_dev`, `st_ino`, `st_size`, `st_mtim`
+    /// and `st_ctim` to their load-time values, using full seconds+nanoseconds timestamps.
     ///
-    /// A no-op for owned input. Replacing the path by rename leaves the mapped inode valid.
-    /// Metadata-only changes (chmod, chown, xattr, extra hard link) are accepted. Rewrites that
-    /// change size or mtime are refused.
-    /// An in-place same-size rewrite (or a truncate-and-rewrite to the same size) followed by
-    /// restoring the exact mtime (`touch -r`, `os.utime` with `ns=`) is not detected; this is a
-    /// deliberate escape that a fix-up script must take on purpose, and the guard is a change
-    /// detector, not a lock.
+    /// A no-op for owned input. Changes to device, inode, size or mtime are refused. If only
+    /// ctime moves (chmod, chown, xattr, an extra hard link, or rename-over), re-hashes the held
+    /// mapped bytes against the sidecar digest parsed at load and accepts only equality;
+    /// without a digest a ctime change is refused. Replacing the path never reopens the new file.
+    /// In Sidecar mode the bytes were not compared to the digest at load, so a ctime-only
+    /// change can refuse if the bytes never matched it.
+    /// A same-size rewrite followed by exact mtime restoration is detected when ctime moves,
+    /// as POSIX writes and mtime updates advance ctime.
+    /// Detection resolution is the filesystem's timestamp granularity: coarse ctime can miss a
+    /// rewrite within one tick that keeps size, mtime and ctime unchanged.
     /// Truncation can cause an unrecoverable SIGBUS before the check.
     /// @throws std::runtime_error with code hpo_dataset_invalid when the file changed while mapped
     /// or its descriptor cannot be checked.
