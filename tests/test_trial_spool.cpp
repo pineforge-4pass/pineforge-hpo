@@ -79,7 +79,7 @@ public:
                 "RLIMIT_FSIZE hard limit is below the 4096-byte control");
         struct sigaction ignored {};
         ignored.sa_handler = SIG_IGN;
-        require(::sigemptyset(&ignored.sa_mask) == 0, "cannot initialize SIGXFSZ mask");
+        require(sigemptyset(&ignored.sa_mask) == 0, "cannot initialize SIGXFSZ mask");
         require(::sigaction(SIGXFSZ, &ignored, nullptr) == 0, "cannot ignore SIGXFSZ");
         signal_changed_ = true;
         auto limited = saved_limit_;
