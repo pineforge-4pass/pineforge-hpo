@@ -127,10 +127,8 @@ private:
     }
 
     [[noreturn]] void fail(const char* message) const {
-        if (!failed_) {
-            failed_ = true;
-            first_failure_ = message;
-        }
+        failed_ = true;
+        first_failure_ = message;
         io_failure(first_failure_);
     }
 
