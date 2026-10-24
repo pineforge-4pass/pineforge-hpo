@@ -199,6 +199,11 @@ class MemoryGateProcessTests(unittest.TestCase):
     def test_wait4_samples_the_exact_child_and_converts_linux_kib(self):
         child = SimpleNamespace(pid=4321, returncode=None)
         with (
+            mock.patch.object(
+                GATE.resource,
+                "getrusage",
+                return_value=SimpleNamespace(ru_maxrss=8192),
+            ) as getrusage,
             mock.patch.object(GATE.subprocess, "Popen", return_value=child),
             mock.patch.object(
                 GATE.os,
@@ -213,8 +218,10 @@ class MemoryGateProcessTests(unittest.TestCase):
             row = GATE.run_child(
                 self.directory, "wait4", [sys.executable, "-I", "-c", "pass"], []
             )
+        getrusage.assert_called_once_with(GATE.resource.RUSAGE_SELF)
         self.assertEqual(wait4.call_args_list, [mock.call(4321, 0)] * 2)
         self.assertEqual(row["pid"], row["waited_pid"])
+        self.assertEqual(row["parent_floor_bytes"], 8192 * 1024)
         self.assertEqual(row["peak_rss_bytes"], 12345 * 1024)
         self.assertEqual(row["exit_code"], 0)
         self.assertEqual(child.returncode, 0)
@@ -265,6 +272,19 @@ class MemoryGateProcessTests(unittest.TestCase):
     def test_complete_native_output_is_observed_row_by_row(self):
         self.assertEqual(GATE.validate_output(self.output_fixture(), 10), 10)
 
+    def test_infeasible_trial_is_refused(self):
+        rows = [
+            {
+                "trial_id": index,
+                "status": "ok",
+                "feasible": index != 5,
+                "objective": 1.0,
+            }
+            for index in range(10)
+        ]
+        with self.assertRaisesRegex(ValueError, "native trial 5 did not complete"):
+            GATE.validate_output(self.output_fixture(rows=rows), 10)
+
     def test_exit_zero_or_completion_counts_cannot_hide_bad_work(self):
         for metadata in (
             {"ok": False},
@@ -295,6 +315,50 @@ class MemoryGateProcessTests(unittest.TestCase):
             with self.subTest(status=status), self.assertRaises(ValueError):
                 GATE.validate_output(self.output_fixture(rows=rows), 10)
 
+    def measurement_row(self, stdout, *, peak=BASE, parent_floor=BASE // 2):
+        return {
+            "exit_code": 0,
+            "parent_floor_bytes": parent_floor,
+            "peak_rss_bytes": peak,
+            "stdout": str(stdout),
+            "result_file": str(self.path("native.result.json")),
+            "verdict": "ERROR",
+        }
+
+    def test_trial_peaks_must_strictly_exceed_parent_floor_plus_one_page(self):
+        stdout = self.output_fixture()
+        arguments = (self.directory, Path(sys.executable), stdout, stdout, 10, 2)
+        for offset in (-4096, 0, 4095, 4096, 4097):
+            row = self.measurement_row(stdout, peak=BASE + offset, parent_floor=BASE)
+            with (
+                self.subTest(offset=offset),
+                mock.patch.object(GATE, "run_child", return_value=row),
+                redirect_stdout(io.StringIO()),
+            ):
+                if offset <= 4096:
+                    with self.assertRaisesRegex(ValueError, f"parent floor {BASE}"):
+                        GATE.measure(*arguments)
+                else:
+                    measured = GATE.measure(*arguments)
+                    self.assertEqual(measured["trial_rows"], 10)
+            result = self.read_json(Path(row["result_file"]))
+            self.assertEqual(result["verdict"], "ERROR" if offset <= 4096 else "PASS")
+            self.assertEqual(result["parent_floor_bytes"], BASE)
+
+    def test_exit_zero_incomplete_native_output_is_not_a_measurement_pass(self):
+        stdout = self.output_fixture(trials_completed=9)
+        row = self.measurement_row(stdout)
+        with (
+            mock.patch.object(GATE, "run_child", return_value=row),
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "did not complete all 10 requested trials"),
+        ):
+            GATE.measure(self.directory, Path(sys.executable), stdout, stdout, 10, 2)
+        result = self.read_json(Path(row["result_file"]))
+        self.assertEqual(result["verdict"], "ERROR")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("did not complete all 10 requested trials", result["reason"])
+
     def test_nonzero_native_exit_is_not_a_measurement_pass(self):
         stdout = self.path("failed.stdout")
         stderr = self.path("failed.stderr")
@@ -303,6 +367,7 @@ class MemoryGateProcessTests(unittest.TestCase):
         result = self.path("failed.result.json")
         row = {
             "exit_code": -signal.SIGKILL,
+            "parent_floor_bytes": BASE // 2,
             "peak_rss_bytes": BASE,
             "stdout": str(stdout),
             "stderr": str(stderr),
@@ -327,6 +392,59 @@ class MemoryGateProcessTests(unittest.TestCase):
         return SimpleNamespace(
             native=Path(sys.executable), plugin=plugin, ohlcv=bars, bars_axis=True
         )
+
+    def crash_control_row(self, marker_exit=-signal.SIGKILL):
+        marker = self.path("crash.exit")
+        marker.write_text(f"{marker_exit}\n", encoding="ascii")
+        return {
+            "exit_code": -signal.SIGKILL,
+            "exit_file": str(marker),
+            "result_file": str(self.path("crash.result.json")),
+        }
+
+    def test_non_linux_is_refused_before_following_inputs(self):
+        with (
+            mock.patch.object(GATE.sys, "platform", "darwin"),
+            mock.patch.object(GATE, "list_paths") as paths,
+            self.assertRaisesRegex(ValueError, "requires Linux child os.wait4"),
+        ):
+            GATE.run_gate(SimpleNamespace(), self.directory)
+        paths.assert_not_called()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
+    def test_parent_floor_is_exit_two_before_any_rss_judgment(self):
+        args = self.gate_inputs()
+        parent = self.path("unmeasurable")
+        stdout = self.output_fixture()
+        row = self.measurement_row(stdout, peak=BASE, parent_floor=BASE)
+        arguments = self.arguments(parent)
+        arguments[1] = str(args.native)
+        with (
+            mock.patch.object(
+                GATE, "run_child", side_effect=[self.crash_control_row(), row]
+            ) as child,
+            mock.patch.object(GATE, "judge_trial_growth") as judge,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(GATE.main(arguments), 2)
+        self.assertEqual(child.call_count, 2)
+        judge.assert_not_called()
+        complete = self.read_json(next(parent.iterdir()) / "RUN.COMPLETE")
+        self.assertEqual(complete["exit_code"], 2)
+        self.assertEqual(complete["verdict"], "ERROR")
+        self.assertIn(f"parent floor {BASE}", complete["reason"])
+        self.assertEqual(self.read_json(Path(row["result_file"]))["verdict"], "ERROR")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
+    def test_crash_marker_mismatch_stops_before_any_measurement(self):
+        args = self.gate_inputs()
+        with (
+            mock.patch.object(GATE, "run_child", return_value=self.crash_control_row(0)),
+            mock.patch.object(GATE, "measure") as measure,
+            self.assertRaisesRegex(ValueError, "crash marker does not match"),
+        ):
+            GATE.run_gate(args, self.directory)
+        measure.assert_not_called()
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
     def test_measured_trial_peaks_drive_the_verdict_and_bar_growth_is_not_gated(self):

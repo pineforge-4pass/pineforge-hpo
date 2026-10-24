@@ -8,9 +8,19 @@ random sampling, seed 17, one worker, batch size one and `--trials-out all`.
 
 Each of 10, 1,000 and 100,000 trials runs in a fresh native child. `os.wait4`
 reaps that exact PID and supplies its peak RSS (Linux KiB converted to bytes).
-The gate writes stdout to disk and checks every successful trial in order,
-plus the result's completion counts, before judging RSS. It never loads the
-whole trial array into the measuring parent.
+Linux can carry the parent's pre-exec high-water RSS into the child, so the
+reported peak can be `max(parent_floor, native_peak)`. Immediately before every
+spawn, the gate reads its own `resource.getrusage(resource.RUSAGE_SELF).ru_maxrss`
+and records the Linux KiB value converted to bytes as `parent_floor_bytes` in
+the child result. A trial-axis peak must be strictly greater than that floor
+plus 4,096 bytes. Otherwise the gate refuses the measurement as unmeasurable
+with exit 2 and an `ERROR` naming the floor, before judging any trial slopes.
+
+The gate keeps its footprint small with stdlib-only imports and writes native
+stdout directly to disk. After reaping the child, it checks every successful
+trial in order, plus the result's completion counts, before judging RSS. It
+never loads the whole trial array into the measuring parent. Each subsequent
+spawn records the parent's current high-water floor again.
 
 The adjacent RSS differences divided by the trial-count differences must be
 at most **256 bytes/trial** (10 to 1,000) and **32 bytes/trial** (1,000 to
@@ -22,8 +32,9 @@ using the fixture's existing prefix mode with jitter disabled. Bar slopes
 are informational: OHLCV storage may scale with input size.
 
 The script prints one JSON measurement per size and a final JSON verdict.
-Exit 0 means both trial slopes passed; 1 means growth exceeded a bound; 2
-means setup or a workload was incomplete. Each run retains stdout, stderr,
+Exit 0 means both trial slopes passed; 1 means growth exceeded a bound or an
+unexpected gate error occurred; 2 means invalid setup, an incomplete workload
+or an unmeasurable trial peak. Each run retains stdout, stderr,
 child `.exit` and `.result.json` files under a fresh
 `build/memory-gate/run-*` directory, with `RUN.COMPLETE` containing the gate
 verdict and `gate.exit` its own exit code. Every run first checks a deliberate

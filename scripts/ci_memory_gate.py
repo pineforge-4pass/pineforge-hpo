@@ -3,7 +3,8 @@
 
 Run on Linux CI with a Release native CLI, tests' fake_strategy plugin (and its
 adjacent manifest.json), a two-bar CSV and an explicit artifact directory.
-Exit 0: both trial slopes pass; 1: growth; 2: setup or incomplete workload.
+Exit 0: both trial slopes pass; 1: growth or unexpected gate error;
+2: setup, incomplete workload or unmeasurable trial RSS.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import json
 import math
 import os
 from pathlib import Path
+import resource
 import signal
 import subprocess
 import sys
@@ -108,7 +110,7 @@ def run_child(
     command: list[str],
     inputs: list[Path],
 ) -> dict:
-    """Reap exactly the launched child; never sample this Python process's RSS."""
+    """Record the child peak and its pre-spawn parent RSS floor (Linux KiB)."""
     stdout, stderr, exit_file, result_file = list_paths(
         label,
         [
@@ -125,6 +127,9 @@ def run_child(
     print("COMMAND " + json.dumps(command), file=sys.stderr, flush=True)
     environment = {**os.environ, "TMPDIR": str(directory)}
     with stdout.open("wb") as output, stderr.open("wb") as errors:
+        parent_floor_bytes = (
+            int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+        )
         child = subprocess.Popen(
             command, stdout=output, stderr=errors, cwd=directory, env=environment
         )
@@ -142,6 +147,7 @@ def run_child(
         "waited_pid": waited_pid,
         "command": command,
         "exit_code": child.returncode,
+        "parent_floor_bytes": parent_floor_bytes,
         "ru_maxrss": usage.ru_maxrss,
         "peak_rss_bytes": int(usage.ru_maxrss) * 1024,  # Linux wait4 uses KiB.
         "stdout": str(stdout),
@@ -309,6 +315,11 @@ def measure(
             raise ValueError(f"native child exited {row['exit_code']}: {diagnostic}")
         if row["peak_rss_bytes"] <= 0:
             raise ValueError("wait4 returned no child peak RSS")
+        if not bars_axis and row["peak_rss_bytes"] <= row["parent_floor_bytes"] + 4096:
+            raise ValueError(
+                f"unmeasurable child peak RSS {row['peak_rss_bytes']} bytes: "
+                f"must exceed parent floor {row['parent_floor_bytes']} bytes + 4096"
+            )
         row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
     except (OSError, ValueError, TypeError, AttributeError, OverflowError) as error:

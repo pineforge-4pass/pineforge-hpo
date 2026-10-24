@@ -60,7 +60,9 @@ class MemoryGateWiringTests(unittest.TestCase):
         lines = [line.strip() for line in body.splitlines() if "uses:" in line]
         self.assertEqual(len(lines), 2)
         for line in lines:
-            self.assertRegex(line, r"^uses: actions/[\w-]+@[0-9a-f]{40} # v[0-9.]+$")
+            self.assertRegex(
+                line, r"^uses: actions/[\w-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$"
+            )
 
     def test_job_builds_native_fixture_and_runs_the_real_gate_directly(self):
         steps = {step["name"]: step for step in self.jobs["memory-gate"]["steps"]}
