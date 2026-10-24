@@ -480,7 +480,8 @@ void detail::require_bin_unchanged(const struct stat& current, const struct stat
     }
     // Accept unchanged identity, or only metadata moved and the mapped bytes still hash to
     // the sidecar digest. Use the held mapping, never the current path's contents.
-    if (!same_change_time(current, identity) &&
+    // MUTANT: the ctime branch (and with it the re-hash) is skipped, ctime-only moves pass.
+    if (false && !same_change_time(current, identity) &&
         (sidecar_digest.empty() ||
          sidecar_digest != detail::sha256(std::string_view(
              reinterpret_cast<const char*>(mapped_bars), length)))) {
