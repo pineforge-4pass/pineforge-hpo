@@ -234,7 +234,7 @@ class MemoryGateProcessTests(unittest.TestCase):
                     InterruptedError(),
                     (0, 0, None),
                     (0, 0, None),
-                    (4321, 0, SimpleNamespace(ru_maxrss=12345)),
+                    (4321, 0, SimpleNamespace(ru_maxrss=8192)),
                 ],
             ) as wait4,
         ):
@@ -251,14 +251,68 @@ class MemoryGateProcessTests(unittest.TestCase):
         )
         self.assertEqual(row["pid"], row["waited_pid"])
         self.assertEqual(row["parent_floor_bytes"], 8192 * 1024)
-        self.assertEqual(row["ru_maxrss"], 12345)
+        self.assertEqual(row["ru_maxrss"], 8192)
         self.assertEqual(row["peak_rss_bytes"], 48 * 1024)
+        self.assertEqual(row["peak_source"], "vmhwm_last")
         self.assertEqual(row["vmhwm_last_bytes"], 48 * 1024)
         self.assertEqual(row["vmhwm_max_bytes"], 52 * 1024)
         self.assertEqual(row["vmhwm_samples"], 2)
         self.assertEqual(row["exit_code"], 0)
         self.assertEqual(child.returncode, 0)
         self.assertEqual(self.read_json(Path(row["result_file"])), row)
+
+    def sampled_child(self, *, ru_bytes, last_bytes=BASE // 2, parent_floor=BASE):
+        child = SimpleNamespace(pid=4321, returncode=None)
+        with (
+            mock.patch.object(
+                GATE.resource,
+                "getrusage",
+                return_value=SimpleNamespace(ru_maxrss=parent_floor // 1024),
+            ),
+            mock.patch.object(GATE.subprocess, "Popen", return_value=child),
+            mock.patch.object(GATE, "read_child_hwm", return_value=last_bytes),
+            mock.patch.object(
+                GATE.os,
+                "wait4",
+                create=True,
+                return_value=(4321, 0, SimpleNamespace(ru_maxrss=ru_bytes // 1024)),
+            ),
+        ):
+            row = GATE.run_child(
+                self.directory, "rss-source", [sys.executable, "-I", "-c", "pass"], []
+            )
+        self.assertEqual(row["parent_floor_bytes"], parent_floor)
+        self.assertEqual(row["ru_maxrss"], ru_bytes // 1024)
+        self.assertEqual(row["vmhwm_last_bytes"], last_bytes)
+        self.assertEqual(row["vmhwm_max_bytes"], last_bytes)
+        self.assertEqual(row["vmhwm_samples"], 1)
+        self.assertEqual(self.read_json(Path(row["result_file"])), row)
+        return row
+
+    def test_ru_maxrss_above_parent_floor_and_margin_captures_exit_peak(self):
+        ru_bytes = BASE + GATE.RU_MAXRSS_MARGIN_BYTES + 1024
+        row = self.sampled_child(ru_bytes=ru_bytes)
+        self.assertEqual(row["peak_rss_bytes"], ru_bytes)
+        self.assertEqual(row["peak_source"], "ru_maxrss")
+
+    def test_ru_maxrss_at_or_below_parent_floor_margin_keeps_last_vmhwm(self):
+        for ru_bytes in (
+            BASE - 1024,
+            BASE,
+            BASE + 1024,
+            BASE + GATE.RU_MAXRSS_MARGIN_BYTES,
+        ):
+            with self.subTest(ru_bytes=ru_bytes):
+                row = self.sampled_child(ru_bytes=ru_bytes)
+                self.assertEqual(row["peak_rss_bytes"], BASE // 2)
+                self.assertEqual(row["peak_source"], "vmhwm_last")
+
+    def test_eligible_ru_maxrss_does_not_lower_a_larger_vmhwm_sample(self):
+        ru_bytes = BASE + GATE.RU_MAXRSS_MARGIN_BYTES + 1024
+        last_bytes = ru_bytes + 4096
+        row = self.sampled_child(ru_bytes=ru_bytes, last_bytes=last_bytes)
+        self.assertEqual(row["peak_rss_bytes"], last_bytes)
+        self.assertEqual(row["peak_source"], "vmhwm_last")
 
     def test_preexec_samples_are_ignored_before_reading_status(self):
         executable = self.path("proc-exe")
@@ -300,6 +354,11 @@ class MemoryGateProcessTests(unittest.TestCase):
     def test_zero_postexec_samples_are_refused_with_a_mocked_reader(self):
         child = SimpleNamespace(pid=4321, returncode=None)
         with (
+            mock.patch.object(
+                GATE.resource,
+                "getrusage",
+                return_value=SimpleNamespace(ru_maxrss=12345),
+            ),
             mock.patch.object(GATE.subprocess, "Popen", return_value=child),
             mock.patch.object(GATE, "read_child_hwm", return_value=None),
             mock.patch.object(GATE.time, "sleep"),
@@ -356,6 +415,7 @@ class MemoryGateProcessTests(unittest.TestCase):
                 self.assertGreater(row["vmhwm_samples"], 0)
                 self.assertGreater(row["peak_rss_bytes"], 0)
                 self.assertEqual(row["peak_rss_bytes"], row["vmhwm_last_bytes"])
+                self.assertEqual(row["peak_source"], "vmhwm_last")
                 self.assertGreaterEqual(row["vmhwm_max_bytes"], row["peak_rss_bytes"])
                 self.assertNotEqual(row["peak_rss_bytes"], row["parent_floor_bytes"])
                 self.assertEqual(self.read_json(Path(row["result_file"])), row)
@@ -460,6 +520,8 @@ class MemoryGateProcessTests(unittest.TestCase):
             "parent_floor_bytes": parent_floor,
             "ru_maxrss": max(peak, parent_floor) // 1024,
             "peak_rss_bytes": peak,
+            "peak_source": "vmhwm_last",
+            "vmhwm_last_bytes": peak,
             "vmhwm_samples": samples,
             "stdout": str(stdout),
             "result_file": str(self.path("native.result.json")),
@@ -484,11 +546,14 @@ class MemoryGateProcessTests(unittest.TestCase):
 
     def test_zero_samples_or_zero_vmhwm_are_refused_on_both_axes(self):
         stdout = self.output_fixture()
-        for peak, samples in ((BASE, 0), (0, 3)):
+        for peak, last, samples in ((BASE, BASE, 0), (0, 0, 3), (BASE, 0, 3)):
             for bars_axis in (False, True):
                 row = self.measurement_row(stdout, peak=peak, samples=samples)
+                row["vmhwm_last_bytes"] = last
                 with (
-                    self.subTest(peak=peak, samples=samples, bars_axis=bars_axis),
+                    self.subTest(
+                        peak=peak, last=last, samples=samples, bars_axis=bars_axis
+                    ),
                     mock.patch.object(GATE, "run_child", return_value=row),
                     redirect_stdout(io.StringIO()),
                     self.assertRaisesRegex(ValueError, "post-exec VmHWM"),
@@ -612,6 +677,53 @@ class MemoryGateProcessTests(unittest.TestCase):
         measure.assert_not_called()
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
+    def test_main_verdict_records_resolution_and_trial_peak_sources(self):
+        args = self.gate_inputs()
+        sources = ["vmhwm_last", "ru_maxrss", "vmhwm_last"]
+        statement = (
+            "a PASS means growth below the thresholds as measured by the last VmHWM "
+            "sample before exit (lower bound) or ru_maxrss when it exceeded the parent "
+            "floor by the margin (upper bound)"
+        )
+        for growth, expected in ((0, 0), (512, 1)):
+            with self.subTest(growth=growth):
+                parent = self.path(f"resolution-{growth}")
+                arguments = self.arguments(parent)
+                arguments[1] = str(args.native)
+                rows = [
+                    {"peak_rss_bytes": BASE + growth * count, "peak_source": source}
+                    for count, source in zip(GATE.COUNTS, sources)
+                ]
+                output = io.StringIO()
+                with (
+                    mock.patch.object(
+                        GATE, "run_child", return_value=self.crash_control_row()
+                    ),
+                    mock.patch.object(GATE, "measure", side_effect=rows) as measure,
+                    redirect_stdout(output),
+                ):
+                    self.assertEqual(GATE.main(arguments), expected)
+                self.assertEqual(measure.call_count, 3)
+                verdict = json.loads(output.getvalue())
+                self.assertEqual(
+                    self.read_json(next(parent.iterdir()) / "RUN.COMPLETE"), verdict
+                )
+                self.assertEqual(
+                    verdict["verdict"], "PASS" if expected == 0 else "FAIL"
+                )
+                self.assertEqual(verdict["poll_interval_seconds"], 0.001)
+                self.assertEqual(verdict["ru_maxrss_margin_bytes"], 1024 * 1024)
+                self.assertEqual(verdict["peak_sources"], sources)
+                for text in (
+                    "0.001 seconds (about 1 ms)",
+                    "1048576 bytes (1 MiB)",
+                    statement,
+                ):
+                    self.assertIn(text, verdict["measurement_resolution"])
+                    if expected != 0:
+                        self.assertIn(text, verdict["reason"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
     def test_measured_trial_peaks_drive_the_verdict_and_bar_growth_is_not_gated(self):
         args = self.gate_inputs()
         for growth, expected in ((0, 0), (512, 1)):
@@ -624,12 +736,18 @@ class MemoryGateProcessTests(unittest.TestCase):
                     peak = BASE + (
                         count * 1024 * 1024 if kw.get("bars_axis") else growth * trials
                     )
-                    return {"peak_rss_bytes": peak}
+                    return {
+                        "peak_rss_bytes": peak,
+                        "peak_source": (
+                            "vmhwm_last" if kw.get("bars_axis") else "ru_maxrss"
+                        ),
+                    }
 
                 measurements = mock.patch.object(GATE, "measure", side_effect=measured)
                 with measurements as measure:
                     verdict = GATE.run_gate(args, directory)
                 self.assertEqual(verdict["exit_code"], expected)
+                self.assertEqual(verdict["peak_sources"], ["ru_maxrss"] * 3)
                 self.assertEqual(
                     [call.args[4] for call in measure.call_args_list[:3]],
                     [10, 1_000, 100_000],

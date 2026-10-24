@@ -26,6 +26,14 @@ COUNTS = (10, 1_000, 100_000)
 SLOPE_LIMITS = (256, 32)  # Bytes/trial; identical to streamed-trial acceptance.
 BAR_COUNTS = (2, 1_000, 100_000)
 POLL_INTERVAL_SECONDS = 0.001
+RU_MAXRSS_MARGIN_BYTES = 1024 * 1024
+MEASUREMENT_RESOLUTION = (
+    f"poll interval {POLL_INTERVAL_SECONDS} seconds (about 1 ms), "
+    f"ru_maxrss margin {RU_MAXRSS_MARGIN_BYTES} bytes (1 MiB); "
+    "a PASS means growth below the thresholds as measured by the last VmHWM "
+    "sample before exit (lower bound) or ru_maxrss when it exceeded the parent "
+    "floor by the margin (upper bound)."
+)
 MAX_METADATA_BYTES = 1024 * 1024
 CSV_HEADER = ["timestamp", "open", "high", "low", "close", "volume"]
 
@@ -128,7 +136,7 @@ def run_child(
     command: list[str],
     inputs: list[Path],
 ) -> dict:
-    """Poll the child's own VmHWM after exec; wait4 owns its exit and diagnostics."""
+    """Poll post-exec VmHWM; supplement with rusage above the inherited floor."""
     stdout, stderr, exit_file, result_file = list_paths(
         label,
         [
@@ -159,13 +167,13 @@ def run_child(
             file=sys.stderr,
             flush=True,
         )
-        peak_rss_bytes = 0
+        vmhwm_last_bytes = 0
         max_hwm_bytes = 0
         hwm_samples = 0
         while True:
             sample = read_child_hwm(executable, status_path, native)
             if sample is not None:
-                peak_rss_bytes = sample
+                vmhwm_last_bytes = sample
                 max_hwm_bytes = max(max_hwm_bytes, sample)
                 hwm_samples += 1
             try:
@@ -175,6 +183,13 @@ def run_child(
             if waited_pid != 0:
                 break
             time.sleep(POLL_INTERVAL_SECONDS)
+        ru_bytes = int(usage.ru_maxrss) * 1024
+        peak_rss_bytes = vmhwm_last_bytes
+        peak_source = "vmhwm_last"
+        if ru_bytes > parent_floor_bytes + RU_MAXRSS_MARGIN_BYTES:
+            peak_rss_bytes = max(vmhwm_last_bytes, ru_bytes)
+            if ru_bytes > vmhwm_last_bytes:
+                peak_source = "ru_maxrss"
         child.returncode = os.waitstatus_to_exitcode(status)
         # Even a signalled child records its own nonzero exit, without a shell/tee.
         exit_file.write_text(f"{child.returncode}\n", encoding="ascii")
@@ -186,7 +201,8 @@ def run_child(
         "parent_floor_bytes": parent_floor_bytes,
         "ru_maxrss": usage.ru_maxrss,  # Linux KiB; can include the parent's floor.
         "peak_rss_bytes": peak_rss_bytes,
-        "vmhwm_last_bytes": peak_rss_bytes,
+        "peak_source": peak_source,
+        "vmhwm_last_bytes": vmhwm_last_bytes,
         "vmhwm_max_bytes": max_hwm_bytes,
         "vmhwm_samples": hwm_samples,
         "poll_interval_seconds": POLL_INTERVAL_SECONDS,
@@ -353,10 +369,14 @@ def measure(
             with errors.open("rb") as source:
                 diagnostic = source.read(2_000).decode("utf-8", errors="replace")
             raise ValueError(f"native child exited {row['exit_code']}: {diagnostic}")
-        if row["vmhwm_samples"] <= 0 or row["peak_rss_bytes"] <= 0:
+        if (
+            row["vmhwm_samples"] <= 0
+            or row["vmhwm_last_bytes"] <= 0
+            or row["peak_rss_bytes"] <= 0
+        ):
             raise ValueError(
                 "unmeasurable child post-exec VmHWM: "
-                f"{row['vmhwm_samples']} samples, {row['peak_rss_bytes']} bytes"
+                f"{row['vmhwm_samples']} samples, {row['vmhwm_last_bytes']} bytes"
             )
         row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
@@ -419,10 +439,22 @@ def run_gate(args: argparse.Namespace, directory: Path) -> dict:
     write_json(Path(crash["result_file"]), crash)
 
     samples = []
+    peak_sources = []
     for trials in COUNTS:
         row = measure(directory, native, plugin, bars, trials, 2)
         samples.append((trials, row["peak_rss_bytes"]))
+        peak_sources.append(row["peak_source"])
     verdict = judge_trial_growth(samples)
+    verdict.update(
+        poll_interval_seconds=POLL_INTERVAL_SECONDS,
+        ru_maxrss_margin_bytes=RU_MAXRSS_MARGIN_BYTES,
+        peak_sources=peak_sources,
+        measurement_resolution=MEASUREMENT_RESOLUTION,
+    )
+    if verdict["exit_code"] != 0:
+        verdict["reason"] = (
+            f"trial RSS growth exceeded a threshold; {MEASUREMENT_RESOLUTION}"
+        )
     # A failed trial-growth control stops before the informational bar axis.
     if verdict["exit_code"] == 0 and args.bars_axis:
         bar_samples = []

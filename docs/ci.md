@@ -10,20 +10,30 @@ Each of 10, 1,000 and 100,000 trials runs in a fresh native child. The gate
 measures the child's own `VmHWM` in `/proc/<pid>/status` after exec, converting
 Linux kB to bytes. Every poll first checks that `/proc/<pid>/exe` points to the
 resolved native binary; samples from the forked Python address space are ignored.
-It samples about every **1 ms** and uses the last successfully read high-water
-value as `peak_rss_bytes`, also retaining `vmhwm_last_bytes`, `vmhwm_max_bytes`
-and `vmhwm_samples`. This is a lower bound: a peak shorter than the poll interval
-can be missed if the child exits before the next sample. A child with no
-post-exec samples or a zero `VmHWM` is refused with exit 2 and an `ERROR`.
+It samples about every **1 ms**, retaining `vmhwm_last_bytes`, `vmhwm_max_bytes`
+and `vmhwm_samples`. The last sample is a lower bound: a peak shorter than the
+poll interval can be missed if the child exits before the next sample. A child
+with no post-exec samples or a zero `VmHWM` is refused with exit 2 and an `ERROR`,
+even if `ru_maxrss` is usable.
 
 `os.wait4(child.pid, os.WNOHANG)` reaps that exact PID once and supplies the
-child's own exit status and diagnostic `ru_maxrss` (Linux KiB). An exec'd child's
+child's own exit status and `ru_maxrss` (Linux KiB). An exec'd child's
 `ru_maxrss` includes the parent's pre-exec high-water, so it can be
 `max(parent_floor, native_peak)` and cannot measure small native peaks.
 Immediately before each spawn, the gate records its own
 `resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024` as
-`parent_floor_bytes`. Both values remain diagnostic; the previous parent-floor
-refusal is removed because post-exec `VmHWM` is independent of that floor.
+`parent_floor_bytes`.
+
+After reaping, only when `int(ru_maxrss) * 1024` exceeds that floor plus the
+**1 MiB (1,048,576 bytes)** margin does `peak_rss_bytes` take the maximum of the
+last VmHWM sample and `ru_maxrss` in bytes, otherwise it keeps the last sample,
+with `peak_source` recording `"vmhwm_last"` or `"ru_maxrss"` according to which
+value won. The PASS/FAIL verdict records `poll_interval_seconds`,
+`ru_maxrss_margin_bytes` and the three trial `peak_sources` in order, and both
+`measurement_resolution` and the growth-failure `reason` state the interval,
+margin and meaning: a PASS means growth below the thresholds as measured by the
+last VmHWM sample before exit (lower bound) or ru_maxrss when it exceeded the
+parent floor by the margin (upper bound).
 
 The gate keeps its footprint small with stdlib-only imports and writes native
 stdout directly to disk. After reaping the child, it checks every successful
