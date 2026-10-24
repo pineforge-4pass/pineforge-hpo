@@ -72,10 +72,9 @@ def allowed_path(path: Path) -> Path:
         ):
             raise ValueError(f"refused protected path by name: {candidate}")
         for index in range(len(parts)):
-            if (
-                parts[index : index + 3] == (".config", "zsh", "keys")
-                or parts[index : index + 2] == (".config", "pineforge")
-            ):
+            if parts[index : index + 3] == (".config", "zsh", "keys") or parts[
+                index : index + 2
+            ] == (".config", "pineforge"):
                 raise ValueError(f"refused protected path by name: {candidate}")
 
     check(path)

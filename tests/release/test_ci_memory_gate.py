@@ -351,7 +351,9 @@ class MemoryGateProcessTests(unittest.TestCase):
         with (
             mock.patch.object(GATE, "run_child", return_value=row),
             redirect_stdout(io.StringIO()),
-            self.assertRaisesRegex(ValueError, "did not complete all 10 requested trials"),
+            self.assertRaisesRegex(
+                ValueError, "did not complete all 10 requested trials"
+            ),
         ):
             GATE.measure(self.directory, Path(sys.executable), stdout, stdout, 10, 2)
         result = self.read_json(Path(row["result_file"]))
@@ -439,7 +441,9 @@ class MemoryGateProcessTests(unittest.TestCase):
     def test_crash_marker_mismatch_stops_before_any_measurement(self):
         args = self.gate_inputs()
         with (
-            mock.patch.object(GATE, "run_child", return_value=self.crash_control_row(0)),
+            mock.patch.object(
+                GATE, "run_child", return_value=self.crash_control_row(0)
+            ),
             mock.patch.object(GATE, "measure") as measure,
             self.assertRaisesRegex(ValueError, "crash marker does not match"),
         ):
