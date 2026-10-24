@@ -1548,7 +1548,6 @@ private:
             if (timed_out_) {
                 std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
                 std::cerr.flush();
-                if (!result_publication_started.load())
                     std::cout << pfh::detail::failure_document(error, 3);
                 std::cout.flush();
                 ::_exit(3);
