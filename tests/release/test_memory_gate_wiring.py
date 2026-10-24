@@ -98,7 +98,7 @@ class MemoryGateWiringTests(unittest.TestCase):
             "ruff check scripts/notify_release_hub.py scripts/ci_memory_gate.py", runs
         )
         self.assertIn(
-            "ruff format --check scripts/notify_release_hub.py "
+            "ruff format --check --diff scripts/notify_release_hub.py "
             "scripts/ci_memory_gate.py",
             runs,
         )

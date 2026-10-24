@@ -274,7 +274,7 @@ jobs:
       - name: Lint and format release notification code
         run: |
           ruff check scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
-          ruff format --check scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
+          ruff format --check --diff scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
 
   native:
     name: Native (${{ matrix.os }})
