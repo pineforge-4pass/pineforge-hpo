@@ -321,14 +321,6 @@ bool same_modification_time(const struct stat& left, const struct stat& right) n
 #endif
 }
 
-bool same_change_time(const struct stat& left, const struct stat& right) noexcept {
-#if defined(__APPLE__)
-    return same_timestamp(left.st_ctimespec, right.st_ctimespec);
-#else
-    return same_timestamp(left.st_ctim, right.st_ctim);
-#endif
-}
-
 bool sidecar_integer_equals(const detail::Json* value, std::int64_t expected) {
     if (!value || value->kind != detail::Json::Kind::Number) {
         return false;
@@ -448,12 +440,10 @@ struct Dataset::MappedFile final {
             binary_dataset_error("changed while mapped (cannot stat descriptor): " +
                                  path.string());
         }
-        // Rename-over drops a link to the old inode and can update its ctime without touching
-        // its bytes. Accept that link-count change; size and mtime must still match exactly.
-        const bool removed_link = current.st_nlink < identity.st_nlink;
+        // Check the held inode, accepting rename-over and metadata-only changes. This detects
+        // size/mtime changes, not a same-size rewrite that restores the original mtime.
         if (current.st_dev != identity.st_dev || current.st_ino != identity.st_ino ||
-            current.st_size != identity.st_size || !same_modification_time(current, identity) ||
-            (!same_change_time(current, identity) && !removed_link)) {
+            current.st_size != identity.st_size || !same_modification_time(current, identity)) {
             binary_dataset_error("changed while mapped: " + path.string());
         }
     }

@@ -20,9 +20,9 @@ enum class BinaryVerification { Full, Sidecar };
 /// owned OHLCV values must be finite. Binary inputs follow the engine's volume contract:
 /// nonnegative or NaN, with finite OHLC prices. Never rewrite a mapped file in place: publish by
 /// rename/os.replace. In-place rewriting or truncation is unsupported. The native runner checks
-/// the open descriptor for rewrites at the end of a run, including the timeout path, before
-/// publishing results. Truncation can cause an unrecoverable SIGBUS before that check and
-/// terminate the process without failure JSON.
+/// the open descriptor's device, inode, size and nanosecond mtime at the end of a run, including
+/// the timeout path, before publishing results. Truncation can cause an unrecoverable SIGBUS
+/// before that check and terminate the process without failure JSON.
 class Dataset final {
 public:
     /// Takes ownership of validated bars.
@@ -65,10 +65,13 @@ public:
     /// @throws std::logic_error for mapped input; use data()/size() for either format.
     const std::vector<pf_bar_t>& bars() const;
 
-    /// Checks the mapped file's open descriptor against its load-time identity and timestamps.
+    /// Checks the mapped file's open descriptor against its load-time device, inode, size and
+    /// nanosecond mtime.
     ///
     /// A no-op for owned input. Replacing the path by rename leaves the mapped inode valid.
-    /// This is an end-of-run change detector, not protection from SIGBUS after truncation.
+    /// Metadata-only changes (chmod, chown, xattr, extra hard link) are accepted. Rewrites that
+    /// change size or mtime are refused; a same-size rewrite restoring the original mtime is
+    /// not detected. This is a change detector, not a lock or protection from SIGBUS on truncation.
     /// @throws std::runtime_error with code hpo_dataset_invalid when the file changed while mapped
     /// or its descriptor cannot be checked.
     void verify_unchanged() const;

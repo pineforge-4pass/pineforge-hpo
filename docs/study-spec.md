@@ -404,11 +404,14 @@ Both modes scan every record:
 OHLC prices must be finite, volume nonnegative or NaN, and timestamps strictly increasing.
 In-place rewriting or truncation of a mapped file is unsupported. Publish a new file by
 write-then-`rename`/`os.replace`, keeping each mapped inode immutable for the dataset's lifetime.
-The native runner keeps the original descriptor open and checks its identity, size and timestamps
-at the end of the run, including the timeout path, before rendering results. An in-place rewrite
-is refused as `hpo_dataset_invalid` with a `changed while mapped` diagnostic; replacing the path
-with a new inode is accepted. Truncation can cause an unrecoverable SIGBUS before this end-of-run
-check, terminating the process without failure JSON. The CSV loader is unchanged.
+The native runner keeps the original descriptor open and checks its device, inode, size and
+nanosecond mtime at the end of the run, including the timeout path, before rendering results.
+Metadata-only changes (chmod, chown, xattr, extra hard link) are accepted. A rewrite that changes
+size or mtime is refused as `hpo_dataset_invalid` with a `changed while mapped` diagnostic;
+replacing the path with a new inode is accepted. This guard is a change detector, not a lock:
+a same-size rewrite that restores the original mtime is not detected. Truncation can cause an
+unrecoverable SIGBUS before this end-of-run check, terminating the process without failure JSON.
+The CSV loader is unchanged.
 The native runner refuses `--trials-file`, `--output` or `--scheduler-stats` paths that alias the
 binary chart or its sidecar with `hpo_cli_usage`. `--verify-bin` requires `--ohlcv-bin`.
 Optional `symbol_feeds` remain CSV and can accompany a binary chart.
@@ -1086,13 +1089,15 @@ paths. `trials_completed` includes the timeout terminal record; coverage and bes
 selection use only the terminal table. Timeout records cannot be feasible and
 make `exhaustive_equivalent` false.
 
-With `--trials-out all`, terminal rows append in completion order to an anonymous temporary
-data file, with offsets in a second anonymous temporary index file. The program creates and
-immediately unlinks both files in `--output`'s parent directory when it exists and is a writable
-directory (`.` when the parent path is empty). Otherwise it uses non-empty `TMPDIR`, or `/tmp`
-when `TMPDIR` is unset or empty. The directory is chosen once for both files; creation failures
-do not trigger a retry in another directory. The index is addressed relative to the first trial
-ID of the run, so high continuation IDs and gaps are supported.
+The default `--trials-out all` requires a writable directory for two short-lived anonymous files.
+Terminal rows append in completion order to a data file, with offsets in an index file.
+The program creates and immediately unlinks both files in `--output`'s parent directory when it
+exists and is a writable directory (`.` when the parent path is empty). Otherwise it uses
+non-empty `TMPDIR`, or `/tmp` when `TMPDIR` is unset or empty. The directory is chosen once for both
+files; creation failures do not trigger a retry in another directory. The index is addressed relative
+to the first trial ID of the run, so high continuation IDs and gaps are supported.
+Read-only root filesystems need `TMPDIR` or `--output` in a writable place; otherwise use
+`--trials-out none|best-k`.
 If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
 not in the native process RSS.
 The final `trials` array copies those rendered rows in trial-ID order

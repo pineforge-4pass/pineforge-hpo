@@ -4,13 +4,25 @@
 
 - Bound `--trials-out all` retention in the native process with an anonymous spool independent
   of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
+- The default `--trials-out all` needs a writable directory for two short-lived anonymous files
+  (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`), with no retry elsewhere
+  after selection. Read-only root filesystems need `TMPDIR` or `--output` in a writable place;
+  otherwise use `--trials-out none|best-k`.
+- Attribute result destination write failures to the output file or stdout without marking
+  the terminal trial spool failed; retain `hpo_output_io_failed` and the existing exit codes.
 - Add native `--ohlcv-bin` and StudySpec `ohlcv_bin` for shared read-only mapped chart bars.
   Validate the complete `pf_bar_t/v1` sidecar and mapped file SHA-256 by default (`full`);
   `--verify-bin sidecar` / dataset `verify_bin: "sidecar"` skips only the digest comparison.
   Refuse non-regular sidecars before reading. Publish mapped files by rename/`os.replace`,
   never by rewriting or truncating them in place.
+- The public Python API adds `DatasetSpec.ohlcv_bin` and `DatasetSpec.verify_bin`;
+  `DatasetSpec.ohlcv` is now `Path | None`, with exactly one of `ohlcv` / `ohlcv_bin` set.
 - Add C++ `Dataset::load_bin`, `BinaryVerification`, and `Dataset::verify_unchanged`.
   `Dataset::bars()` now throws `std::logic_error` for mapped input; use `data()` and `size()`.
+  The mapped-file guard compares device, inode, size and nanosecond mtime, accepting metadata-only
+  changes (chmod, chown, xattr, extra hard link). Rewrites changing size or mtime are refused;
+  a same-size rewrite restoring the original mtime is not detected. This is a change detector,
+  not a lock.
 
 ## 1.6.3 (2026-10-23)
 

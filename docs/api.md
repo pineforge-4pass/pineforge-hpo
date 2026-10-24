@@ -295,7 +295,12 @@ These controls are native `run` flags, not new StudySpec fields or Python wrappe
 pass-throughs. Existing callers retain `--trials-out all` by default.
 
 - `--trials-out all` retains every terminal record in `trials`, as before. This
-  compatibility mode intentionally uses memory proportional to study size.
+  mode now spools rows in the native child without retaining every trial record or the
+  full result document in memory. The Python `run` wrapper still holds the child's stdout
+  in memory. The default `--trials-out all` requires a writable directory for two short-lived
+  anonymous files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`).
+  A chosen directory is not retried elsewhere if creation fails. Read-only root filesystems
+  need `TMPDIR` or `--output` in a writable place; otherwise use `--trials-out none|best-k`.
 - `--trials-out best-k --best-k N` retains at most N feasible, finite-objective
   winners in `trials`; ties prefer the lower trial ID. Records are emitted in
   trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.
