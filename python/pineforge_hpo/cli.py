@@ -1622,6 +1622,7 @@ def _run(args: argparse.Namespace) -> int:
             except (json.JSONDecodeError, UnicodeDecodeError) as error:
                 # Preserve the stdlib diagnostic for small malformed documents,
                 # without ever giving json.loads an unbounded result.
+                detail = error
                 if stdout.seek(0, os.SEEK_END) <= _RUN_DIAGNOSTIC_BYTES:
                     stdout.seek(0)
                     try:
@@ -1631,11 +1632,11 @@ def _run(args: argparse.Namespace) -> int:
                             )
                         )
                     except (json.JSONDecodeError, UnicodeDecodeError) as original:
-                        error = original
+                        detail = original
                 raise _cli_error(
                     "hpo_plugin_invalid",
                     {"reason": "validation"},
-                    f"native runner returned invalid JSON: {error}",
+                    f"native runner returned invalid JSON: {detail}",
                 ) from error
             except OSError as error:
                 raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
