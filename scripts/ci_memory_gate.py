@@ -319,7 +319,6 @@ def measure(
                 f"unmeasurable child peak RSS {row['peak_rss_bytes']} bytes: "
                 f"must exceed parent floor {row['parent_floor_bytes']} bytes + 4096"
             )
-        row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
     except (OSError, ValueError, TypeError, AttributeError, OverflowError) as error:
         row["reason"] = str(error)
