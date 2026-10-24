@@ -2140,9 +2140,6 @@ void publish_result(const pfh::detail::ResultDocument& json) {
     result_publication_started.store(true);
     json.write(std::cout);
     std::cout.flush();
-    if (!std::cout)
-        throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
-                                                     "failed writing result JSON to stdout");
 }
 
 void write_results(const Options& options, const pfh::detail::ResultDocument& json) {
