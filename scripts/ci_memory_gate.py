@@ -186,10 +186,9 @@ def run_child(
         ru_bytes = int(usage.ru_maxrss) * 1024
         peak_rss_bytes = vmhwm_last_bytes
         peak_source = "vmhwm_last"
-        if ru_bytes > parent_floor_bytes + RU_MAXRSS_MARGIN_BYTES:
-            peak_rss_bytes = max(vmhwm_last_bytes, ru_bytes)
-            if ru_bytes > vmhwm_last_bytes:
-                peak_source = "ru_maxrss"
+        peak_rss_bytes = max(vmhwm_last_bytes, ru_bytes)
+        if ru_bytes > vmhwm_last_bytes:
+            peak_source = "ru_maxrss"
         child.returncode = os.waitstatus_to_exitcode(status)
         # Even a signalled child records its own nonzero exit, without a shell/tee.
         exit_file.write_text(f"{child.returncode}\n", encoding="ascii")
