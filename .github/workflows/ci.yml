@@ -395,7 +395,7 @@ jobs:
               raise SystemExit("Patience CTest log unavailable; inspect the Test step.")
           else:
               lines = log.read_text().splitlines()
-              for marker in ("NO_IMPROVEMENT_LATE_READER_CAPABILITY ",
+              for marker in ("NO_IMPROVEMENT_CAPABILITY ",
                              "NO_IMPROVEMENT_SKIP_SUMMARY "):
                   matches = [line for line in lines if marker in line]
                   if not matches:
