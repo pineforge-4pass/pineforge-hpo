@@ -1148,6 +1148,8 @@ public:
     // coverage and the Sobol part accounting need no lock of their own and a position is never
     // recorded twice. Every terminal trial feeds them, whether or not its row is retained.
     void add(const TrialRecord& record) {
+        // Mutation control: retain and touch 4 KiB for every completed trial.
+        retained_for_memory_mutation_.emplace_back(4096, 'x');
         if (options_.pbo_blocks != 0 && completed_trial(record))
             observe_return_blocks(record);
         if (sobol_part_)
@@ -1261,6 +1263,7 @@ private:
     bool finite_;
     pfh::detail::OrdinalSet ordinals_;
     std::vector<TrialRecord> best_;
+    std::vector<std::string> retained_for_memory_mutation_;
     std::optional<pfh::detail::TrialSpool> spool_;
     std::optional<pfh::detail::CandidateCoverage> coverage_;
     std::optional<pfh::detail::SobolPartAccumulator> sobol_part_;
