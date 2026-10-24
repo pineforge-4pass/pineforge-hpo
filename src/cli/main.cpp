@@ -2139,7 +2139,6 @@ void publish_result(const pfh::detail::ResultDocument& json) {
     // document to bytes already published; the caller still reports the failure on stderr.
     result_publication_started.store(true);
     json.write(std::cout);
-    std::cout.flush();
     if (!std::cout)
         throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
                                                      "failed writing result JSON to stdout");
