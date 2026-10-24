@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -590,7 +591,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         ]
 
     def mapped_update(self, label: str, *, replace: bool, timeout: bool = False,
-                      verification: str = "full") -> None:
+                      verification: str = "full", metadata_only: bool = False) -> None:
         binary, sidecar, data = self.mapped_fixture(label)
         replacement, = list_paths("mapped replacement write", [binary.with_name("next.bin")])
         changed = struct.pack("<5dq", 100.0, 102.0, 99.0, 100.5, 10.0, 1700000000000)
@@ -627,8 +628,23 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             self.assertEqual(first["status"], "ok")
             self.assertEqual(read_event(entered_read, b"G"), b"G")
             # The first row proves the mapping was loaded; the second trial's gate keeps
-            # render_results out of reach until this write/replace is complete. No sleep barrier.
-            if replace:
+            # render_results out of reach until this update is complete. No sleep barrier.
+            if metadata_only:
+                list_paths("mapped metadata update", [binary, replacement])
+                before = binary.stat()
+                os.link(binary, replacement)
+                mode = stat.S_IMODE(before.st_mode) ^ stat.S_IXUSR
+                os.chmod(binary, mode)
+                after = binary.stat()
+                self.assertEqual(after.st_ino, before.st_ino)
+                self.assertEqual(after.st_size, before.st_size)
+                self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+                self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns,
+                                    "metadata control must change ctime")
+                self.assertEqual(after.st_nlink, before.st_nlink + 1)
+                self.assertEqual(stat.S_IMODE(after.st_mode), mode)
+                self.assertEqual(binary.read_bytes(), data)
+            elif replace:
                 replacement.write_bytes(changed + data[48:])
                 os.replace(replacement, binary)
             else:
@@ -655,7 +671,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         try:
             row = run_child(
                 label, self.mapped_command(binary, *extra), [PLUGIN, MANIFEST, binary, sidecar],
-                outputs=[replacement] if replace else [],
+                outputs=[replacement] if replace or metadata_only else [],
                 pass_fds=(progress_write, entered_write, release_read),
                 after_start=update_after_progress)
         finally:
@@ -664,13 +680,13 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         stdout, stderr = list_paths(
             "mapped-update result read", [Path(row["stdout"]), Path(row["stderr"])])
         document = json.loads(stdout.read_bytes())
-        if replace:
+        if replace or metadata_only:
             self.assertEqual(row["exit_code"], 0, child_diagnostics(row))
             self.assertTrue(document["ok"])
             self.assertNotIn("failure", document)
             self.assertEqual(document["trials_completed"], 2)
             self.assertEqual([trial["status"] for trial in document["trials"]], ["ok", "ok"])
-            # Length contributes one point; the replaced path must not change the held mapping.
+            # Length contributes one point; the update must not change the held mapping.
             self.assertEqual(document["trials"][1]["objective"],
                              document["trials"][0]["objective"] + 1.0)
         else:
@@ -680,7 +696,8 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             self.assertIn("changed while mapped", stderr.read_text(encoding="utf-8"))
             self.assertNotIn("trials", document)
         pass_row(row, first_progress_trial_id=0,
-                 check="rename-over keeps the mapping" if replace else
+                 check="hard link and chmod keep the mapping" if metadata_only else
+                       "rename-over keeps the mapping" if replace else
                        "in-place rewrite refused before timeout/result publication")
 
     def test_08_mapped_rewrite_is_refused_before_publication(self) -> None:
@@ -761,12 +778,46 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             reason = "root can create a spool in /dev; this row requires a non-root user"
             print("SKIP /dev/null spool row: " + reason, flush=True)
             write_json(ROOT / "output-dev-null.result.json", {"verdict": "SKIP", "reason": reason})
-            return
+            self.skipTest(reason)
         target = Path("/dev/null")
         row = run_child("output-dev-null", self.command(2, "--output", str(target)),
                         [PLUGIN, MANIFEST, CSV], outputs=[target])
         self.completed_document(row, 2)
         pass_row(row, check="--trials-out all --output /dev/null uses the writable TMPDIR")
+
+    def test_14_output_sink_failure_names_output(self) -> None:
+        if not sys.platform.startswith("linux"):
+            reason = "/dev/full destination failure requires Linux"
+            print("SKIP output sink row: " + reason, flush=True)
+            self.skipTest(reason)
+        full = Path("/dev/full")
+        trials_file = ROOT / "output-dev-full.trials.jsonl"
+        row = run_child("output-dev-full", self.command(
+            100, "--output", str(full), "--trials-file", str(trials_file)),
+            [PLUGIN, MANIFEST, CSV], outputs=[full, trials_file])
+        stdout, stderr, trials_file = list_paths("output sink failure read", [
+            Path(row["stdout"]), Path(row["stderr"]), trials_file])
+        self.assertEqual(row["exit_code"], 1, child_diagnostics(row))
+        document = json.loads(stdout.read_bytes())
+        self.assertEqual(document["failure"], {
+            "origin": "hpo", "code": "hpo_output_io_failed", "args": {}, "exit_code": 1,
+        })
+        self.assertNotIn("trials", document)
+        diagnostic = stderr.read_text(encoding="utf-8")
+        self.assertIn("failed writing output file: /dev/full", diagnostic)
+        self.assertNotIn("terminal trial spool", diagnostic)
+        trials = [json.loads(line) for line in trials_file.read_bytes().splitlines()]
+        self.assertEqual([trial["trial_id"] for trial in trials], list(range(100)))
+        self.assertTrue(all(trial["status"] == "ok" for trial in trials))
+        pass_row(row, trials_completed=len(trials),
+                 check="destination failure names /dev/full, with all terminal rows observed")
+
+    def test_15_mapped_metadata_changes_keep_the_original_inode(self) -> None:
+        # G3: independent runs change both link count and mode after the mapping was admitted.
+        for mode in ("full", "sidecar"):
+            with self.subTest(mode=mode):
+                self.mapped_update(f"mapped-metadata-{mode}", replace=False,
+                                   verification=mode, metadata_only=True)
 
     def assert_output_refusal(self, row: dict) -> None:
         stdout = Path(row["stdout"])
