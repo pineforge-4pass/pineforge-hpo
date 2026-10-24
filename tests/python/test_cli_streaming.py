@@ -186,19 +186,25 @@ class RunStreamingTests(unittest.TestCase):
         class CheckedSpool:
             def __init__(self, source) -> None:
                 self.source = source
+                self.read_calls = 0
+                self.bytes_read = 0
 
             def read(self, size: int = -1) -> bytes:
                 test.assertGreater(size, 0, "unbounded result-spool read")
                 test.assertLessEqual(size, 64 * 1024)
-                return self.source.read(size)
+                data = self.source.read(size)
+                self.read_calls += 1
+                self.bytes_read += len(data)
+                return data
 
             def __getattr__(self, name):
                 return getattr(self.source, name)
 
         def track_file(*args, **kwargs):
             source = temporary_file(*args, **kwargs)
-            self.files.append(source)
-            return CheckedSpool(source)
+            spool = CheckedSpool(source)
+            self.files.append(spool)
+            return spool
 
         self.enterContext(
             mock.patch.object(cli.tempfile, "TemporaryFile", side_effect=track_file)
@@ -216,9 +222,54 @@ class RunStreamingTests(unittest.TestCase):
                 cli._parser().parse_args(["run", str(self.study.spec_path), *arguments])
             )
 
+    def _run_payload(self, payload: bytes, *arguments: str) -> int:
+        def complete(command, stdout, progress_fd):
+            stdout.write(payload)
+            return subprocess.CompletedProcess(command, 0, stderr="")
+
+        with mock.patch.object(cli, "_run_native", side_effect=complete):
+            return self._run(["native"], *arguments)
+
     def _assert_clean(self) -> None:
         self.assertEqual(list(self.spools.iterdir()), [])
         self.assertTrue(all(source.closed for source in self.files))
+
+    def test_result_spool_reads_stay_within_four_times_its_size(self) -> None:
+        result = {
+            "ok": True,
+            "trials": [
+                {
+                    "trial_id": index,
+                    "status": "ok",
+                    "parameters": {"Length": 21, "Threshold": 0.25},
+                    "metrics": {"net_profit": 12.5, "max_drawdown": 3.0},
+                    "objective": 12.5,
+                    "duration_ms": 2,
+                }
+                for index in range(2048)
+            ],
+        }
+        payload = json.dumps(result, separators=(",", ":")).encode("utf-8")
+        self.assertEqual(self._run_payload(payload), 0)
+        raw = self.files[0]
+        self.assertGreater(raw.read_calls, 0)
+        self.assertGreaterEqual(raw.bytes_read, len(payload))
+        self.assertLessEqual(
+            raw.bytes_read,
+            4 * len(payload),
+            f"{raw.read_calls} reads for {len(payload)} result bytes",
+        )
+        result.update(
+            study=str(self.study.spec_path),
+            strategy_id="strategy",
+            dataset_id="bars",
+            artifact=self.artifact,
+        )
+        self.assertEqual(
+            self.output.getvalue(),
+            json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        )
+        self._assert_clean()
 
     def test_success_and_no_feasible_exit_preserve_formatted_stdout_bytes(self) -> None:
         # Include escapes, surrogate pairs, exponents, duplicate keys, and values
@@ -305,12 +356,19 @@ class RunStreamingTests(unittest.TestCase):
                 )
                 self.assertEqual(self.output.getvalue(), payload)
                 self.assertEqual(self.errors.getvalue(), "native diagnostic\n")
-                first_stdout = next(
-                    index for index, event in enumerate(events) if event[0] == "stdout"
-                )
-                self.assertTrue(
-                    all(event[0] == "stderr" for event in events[:first_stdout])
-                )
+                stdout_events = [
+                    index
+                    for index, (stream, text) in enumerate(events)
+                    if stream == "stdout" and text
+                ]
+                stderr_events = [
+                    index
+                    for index, (stream, text) in enumerate(events)
+                    if stream == "stderr" and text
+                ]
+                self.assertTrue(stdout_events, "no non-empty stdout event")
+                self.assertTrue(stderr_events, "no non-empty stderr event")
+                self.assertLess(stderr_events[0], stdout_events[0])
                 self._assert_clean()
 
     def test_failure_after_large_trial_array_keeps_classification(self) -> None:
@@ -404,13 +462,75 @@ class RunStreamingTests(unittest.TestCase):
     def test_invalid_json_and_non_object_result_do_not_publish_partial_output(
         self,
     ) -> None:
-        for payload in ('{"trials":[{},', '{"ok":true} trailing', "[]"):
+        for payload in (
+            b'{"trials":[{},',
+            b'{"ok":true} trailing',
+            b"[]",
+            b'{"x":1\x00}',
+            b'{"a":"\\\xc3\xa9"}',
+            b'{"a":"raw\ttab"}',
+        ):
             with self.subTest(payload=payload):
+                self.output = io.StringIO()
+                destination = self.root / "invalid-result.json"
                 with self.assertRaises(cli.CliError) as caught:
-                    self._run(_native_command("--payload", payload))
+                    self._run_payload(payload, "--output", str(destination))
                 self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
                 self.assertEqual(self.output.getvalue(), "")
+                self.assertFalse(destination.exists())
                 self._assert_clean()
+
+    def test_non_finite_results_fail_without_publishing_a_result(self) -> None:
+        for token in ("NaN", "Infinity", "-Infinity", "1e400"):
+            with self.subTest(token=token):
+                payload = '{"ok":true,"best_value":' + token + "}"
+                destination = self.root / "non-finite-result.json"
+                self.output = io.StringIO()
+                self.errors = io.StringIO()
+                with self.assertRaises(ValueError):
+                    self._run(
+                        _native_command("--payload", payload),
+                        "--output",
+                        str(destination),
+                    )
+                self.assertEqual(self.output.getvalue(), "")
+                self.assertFalse(destination.exists())
+                self._assert_clean()
+
+                # main adds its existing failure document after _run fails;
+                # no partially rendered result may precede that document.
+                with (
+                    contextlib.redirect_stdout(self.output),
+                    contextlib.redirect_stderr(self.errors),
+                ):
+                    returned = cli.main(
+                        [
+                            "run",
+                            str(self.study.spec_path),
+                            "--output",
+                            str(destination),
+                        ]
+                    )
+                self.assertEqual(returned, 1)
+                expected = cli.failure_document(ValueError(), 1)
+                self.assertEqual(
+                    self.output.getvalue(),
+                    json.dumps(expected, separators=(",", ":")) + "\n",
+                )
+                self.assertFalse(destination.exists())
+                self._assert_clean()
+
+    def test_large_invalid_json_reports_the_spool_offset(self) -> None:
+        payload = b'{"padding":"' + b"x" * (70 * 1024) + b'" "missing":0}'
+        expected_offset = payload.index(b'"missing"')
+        with self.assertRaises(cli.CliError) as caught:
+            self._run_payload(payload)
+        self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
+        self.assertIsInstance(caught.exception.__cause__, json.JSONDecodeError)
+        self.assertEqual(caught.exception.__cause__.pos, expected_offset)
+        self.assertIn(f"(char {expected_offset})", str(caught.exception))
+        self.assertEqual(self.output.getvalue(), "")
+        self._assert_clean()
 
     def test_small_invalid_json_keeps_the_stdlib_diagnostic(self) -> None:
         payload = '{\n  "trials": [0,}\n'

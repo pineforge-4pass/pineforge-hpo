@@ -5,7 +5,8 @@
 - Bound `--trials-out all` retention in the native process with an anonymous spool independent
   of ordered streams. The Python `run` wrapper also spools the child's stdout, preserves its
   augmented, sorted JSON output with a streaming formatter, and copies it in 64 KiB chunks.
-  Its stderr capture and failure-metadata reads are bounded at 64 KiB; complete trial arrays
+  Stderr capture is capped at 64 KiB. Failure lookup scans the whole spool in chunks of at
+  most 64 KiB, with each extracted metadata field also capped at 64 KiB; complete trial arrays
   are never loaded into Python memory, including on native process failures.
 - The default `--trials-out all` needs a writable directory for two anonymous files
   (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`), with no retry elsewhere
@@ -13,9 +14,10 @@
   on disk until the process exits. On read-only root filesystems, `--output` in a writable place
   and `--trials-out none|best-k` are remedies for the native CLI only. The Python `run` wrapper
   forwards neither `--output` nor `--trials-out`, so for `pineforge-hpo run` only a writable
-  `TMPDIR` (or `/tmp`) helps. The wrapper uses that same directory for its anonymous stdout
-  and formatted-result files, closes both on every exit, and atomically writes its own
-  `--output` from the formatted spool.
+  `TMPDIR` (or `/tmp`) helps. The wrapper adds two anonymous spools in that directory, each
+  about the result size: raw stdout and formatted JSON. With a tmpfs `TMPDIR`, these spools
+  consume system RAM. It closes both on every exit and atomically writes its own `--output`
+  from the formatted spool.
 - Attribute result destination write failures to the output file or stdout without marking
   the terminal trial spool failed; retain `hpo_output_io_failed` and the existing exit codes.
 - Add native `--ohlcv-bin` and StudySpec `ohlcv_bin` for shared read-only mapped chart bars.

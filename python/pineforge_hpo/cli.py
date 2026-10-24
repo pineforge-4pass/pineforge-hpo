@@ -1207,24 +1207,32 @@ class _ResultJson:
     def __init__(self, source: BinaryIO) -> None:
         self.source = source
         self.buffer = b""
+        self.buffer_start = source.tell()
         self.position = 0
 
     def tell(self) -> int:
-        return self.source.tell() - len(self.buffer) + self.position
+        return self.buffer_start + self.position
 
     def seek(self, offset: int) -> None:
+        if self.buffer_start <= offset <= self.buffer_start + len(self.buffer):
+            self.position = offset - self.buffer_start
+            return
         self.source.seek(offset)
         self.buffer = b""
+        self.buffer_start = offset
         self.position = 0
 
     def peek(self) -> bytes:
         if self.position == len(self.buffer):
-            self.buffer = self.source.read(_RUN_CHUNK_BYTES)
-            self.position = 0
+            # Retain nearby keys when a small object crosses a refill boundary.
+            retained = self.buffer[-(_RUN_CHUNK_BYTES // 2) :]
+            self.buffer_start += len(self.buffer) - len(retained)
+            self.buffer = retained + self.source.read(_RUN_CHUNK_BYTES - len(retained))
+            self.position = len(retained)
         return self.buffer[self.position : self.position + 1]
 
     def invalid(self, message: str) -> None:
-        raise json.JSONDecodeError(message, "", 0)
+        raise json.JSONDecodeError(message, "", self.tell())
 
     def take(self, expected: bytes) -> None:
         if self.peek() != expected:
@@ -1269,7 +1277,7 @@ class _ResultJson:
                         self.invalid("Invalid \\uXXXX escape")
                     raw += digit
                     self.position += 1
-            yield json.loads(b'"' + raw + b'"')
+            yield json.loads((b'"' + raw + b'"').decode("ascii"))
         self.invalid("Unterminated string")
 
     def scalar(self) -> Any:
@@ -1283,7 +1291,7 @@ class _ResultJson:
                 self.invalid("Oversized native JSON scalar")
             if match:
                 break
-        return json.loads(raw)
+        return json.loads(raw.decode("ascii"))
 
     def skip(self) -> None:
         self.whitespace()
@@ -1319,9 +1327,14 @@ class _ResultJson:
         if end - begin > _RUN_DIAGNOSTIC_BYTES:
             raise ValueError("oversized native failure metadata")
         self.seek(begin)
-        return json.loads(
-            self.source.read(end - begin).decode(locale.getpreferredencoding(False))
-        )
+        raw = bytearray()
+        while self.tell() < end:
+            if not self.peek():
+                self.invalid("Unexpected end of native JSON value")
+            count = min(end - self.tell(), len(self.buffer) - self.position)
+            raw.extend(self.buffer[self.position : self.position + count])
+            self.position += count
+        return json.loads(raw.decode(locale.getpreferredencoding(False)))
 
     def members(self) -> dict[str, tuple[int, int]]:
         self.take(b"{")
@@ -1606,7 +1619,7 @@ def _run(args: argparse.Namespace) -> int:
                     },
                 )
                 reader.finish()
-            except json.JSONDecodeError as error:
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
                 # Preserve the stdlib diagnostic for small malformed documents,
                 # without ever giving json.loads an unbounded result.
                 if stdout.seek(0, os.SEEK_END) <= _RUN_DIAGNOSTIC_BYTES:
@@ -1617,7 +1630,7 @@ def _run(args: argparse.Namespace) -> int:
                                 locale.getpreferredencoding(False)
                             )
                         )
-                    except json.JSONDecodeError as original:
+                    except (json.JSONDecodeError, UnicodeDecodeError) as original:
                         error = original
                 raise _cli_error(
                     "hpo_plugin_invalid",
