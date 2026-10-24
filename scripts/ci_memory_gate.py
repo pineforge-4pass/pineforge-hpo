@@ -156,7 +156,7 @@ def run_child(
         [Path(command[0]), *inputs, directory],
     )
     native_command = command
-    command = [GNU_TIME, "-f", "%M", "-o", str(time_file), "--", *native_command]
+    command = native_command
     print("COMMAND " + json.dumps(command), file=sys.stderr, flush=True)
     environment = {**os.environ, "TMPDIR": str(directory)}
     with stdout.open("wb") as output, stderr.open("wb") as errors:
@@ -192,20 +192,7 @@ def run_child(
     try:
         if waited_pid != child.pid:
             raise ValueError(f"wait4 reaped {waited_pid}, expected {child.pid}")
-        try:
-            with time_file.open("rb") as source:
-                raw = source.read(MAX_TIME_OUTPUT_BYTES + 1)
-        except OSError as error:
-            raise ValueError(
-                "missing GNU time peak output: install the GNU time package "
-                "in the workflow"
-            ) from error
-        row["gnu_time_output"] = raw[:MAX_TIME_OUTPUT_BYTES].decode(
-            "utf-8", errors="replace"
-        )
-        if len(raw) > MAX_TIME_OUTPUT_BYTES:
-            raise ValueError("GNU time peak output exceeds 4 KiB")
-        row["peak_rss_bytes"] = parse_gnu_time_peak(row["gnu_time_output"])
+        row["peak_rss_bytes"] = int(_usage.ru_maxrss) * 1024
     except ValueError as error:
         row["reason"] = str(error)
         raise
