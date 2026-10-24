@@ -4,6 +4,14 @@ target_compile_options(pineforge_hpo_test_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_core COMMAND pineforge_hpo_test_core)
 
+add_executable(pineforge_hpo_test_trial_spool test_trial_spool.cpp)
+target_include_directories(pineforge_hpo_test_trial_spool PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/cli")
+target_link_libraries(pineforge_hpo_test_trial_spool PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_trial_spool PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_trial_spool COMMAND pineforge_hpo_test_trial_spool
+    "${CMAKE_CURRENT_BINARY_DIR}/trial-spool")
+
 add_executable(pineforge_hpo_test_portable_math_canary test_portable_math_canary.cpp)
 target_link_libraries(pineforge_hpo_test_portable_math_canary PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_portable_math_canary PRIVATE
@@ -486,6 +494,8 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             FIXTURES_REQUIRED dataset_bin_inputs)
     else()
         message(WARNING "SKIP: Python not found; binary-loader tests will not run")
+        add_test(NAME pineforge_hpo_dataset_bin_requires_python
+            COMMAND "${CMAKE_COMMAND}" -E false)
     endif()
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
         add_test(NAME pineforge_hpo_dataset_bin_sidecars
