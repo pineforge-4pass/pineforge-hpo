@@ -1580,13 +1580,13 @@ def _run(args: argparse.Namespace) -> int:
                 f"cannot start native runner: {error}",
             ) from error
         if completed.returncode in {WARM_START_EXIT, SPACE_EXHAUSTED_EXIT}:
-            print(completed.stderr.strip(), file=sys.stderr, flush=True)
             stdout.seek(0)
             if any(
                 chunk.strip()
                 for chunk in iter(lambda: stdout.read(_RUN_CHUNK_BYTES), b"")
             ):
                 _copy_run_stdout(stdout)
+            print(completed.stderr.strip(), file=sys.stderr, flush=True)
             return completed.returncode
         if completed.returncode not in {0, 2}:
             raise _native_run_error(completed, stdout)
