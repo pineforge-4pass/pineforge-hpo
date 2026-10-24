@@ -118,7 +118,7 @@ def write_json(path: Path, value: dict) -> None:
 def parse_gnu_time_peak(output: str) -> int:
     """GNU time can prefix %M with a nonzero-exit or signal diagnostic."""
     try:
-        peak_kib = int(output.splitlines()[-1])
+        peak_kib = int(output.splitlines()[0])
     except (IndexError, ValueError) as error:
         raise ValueError(
             "unmeasurable GNU time peak RSS: last line must be an integer in KiB; "
