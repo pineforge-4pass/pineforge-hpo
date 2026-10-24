@@ -1630,7 +1630,7 @@ def _run(args: argparse.Namespace) -> int:
                                 locale.getpreferredencoding(False)
                             )
                         )
-                    except (json.JSONDecodeError, UnicodeDecodeError) as original:
+                    except json.JSONDecodeError as original:
                         error = original
                 raise _cli_error(
                     "hpo_plugin_invalid",
