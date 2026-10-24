@@ -1422,7 +1422,7 @@ class _ResultJson:
                 output.write(json.dumps(text)[1:-1].encode("ascii"))
             output.write(b'"')
         else:
-            output.write(json.dumps(self.scalar(), allow_nan=False).encode("ascii"))
+            output.write(json.dumps(self.scalar()).encode("ascii"))
 
 
 def _run_native(
