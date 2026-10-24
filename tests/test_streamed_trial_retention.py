@@ -591,7 +591,8 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         ]
 
     def mapped_update(self, label: str, *, replace: bool, timeout: bool = False,
-                      verification: str = "full", metadata_only: bool = False) -> None:
+                      verification: str = "full", metadata_only: bool = False,
+                      hard_link: bool = False, restore_mtime: bool = False) -> None:
         binary, sidecar, data = self.mapped_fixture(label)
         replacement, = list_paths("mapped replacement write", [binary.with_name("next.bin")])
         changed = struct.pack("<5dq", 100.0, 102.0, 99.0, 100.5, 10.0, 1700000000000)
@@ -629,24 +630,58 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             self.assertEqual(read_event(entered_read, b"G"), b"G")
             # The first row proves the mapping was loaded; the second trial's gate keeps
             # render_results out of reach until this update is complete. No sleep barrier.
-            if metadata_only:
-                list_paths("mapped metadata update", [binary, replacement])
+            if metadata_only or hard_link:
+                list_paths("mapped metadata update",
+                           [binary, replacement] if hard_link else [binary])
                 before = binary.stat()
-                os.link(binary, replacement)
-                mode = stat.S_IMODE(before.st_mode) ^ stat.S_IXUSR
-                os.chmod(binary, mode)
+                if hard_link:
+                    os.link(binary, replacement)
+                else:
+                    mode = stat.S_IMODE(before.st_mode) ^ stat.S_IXUSR
+                    os.chmod(binary, mode)
                 after = binary.stat()
+                self.assertEqual(after.st_dev, before.st_dev)
                 self.assertEqual(after.st_ino, before.st_ino)
                 self.assertEqual(after.st_size, before.st_size)
                 self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
                 self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns,
                                     "metadata control must change ctime")
-                self.assertEqual(after.st_nlink, before.st_nlink + 1)
-                self.assertEqual(stat.S_IMODE(after.st_mode), mode)
+                self.assertEqual(after.st_nlink, before.st_nlink + int(hard_link))
+                self.assertEqual(stat.S_IMODE(after.st_mode),
+                                 stat.S_IMODE(before.st_mode) if hard_link else mode)
                 self.assertEqual(binary.read_bytes(), data)
             elif replace:
-                replacement.write_bytes(changed + data[48:])
-                os.replace(replacement, binary)
+                list_paths("mapped rename-over update", [binary, replacement])
+                with binary.open("rb") as held:
+                    before = os.fstat(held.fileno())
+                    replacement.write_bytes(changed + data[48:])
+                    os.replace(replacement, binary)
+                    after = os.fstat(held.fileno())
+                    self.assertEqual(after.st_dev, before.st_dev)
+                    self.assertEqual(after.st_ino, before.st_ino)
+                    self.assertEqual(after.st_size, before.st_size)
+                    self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+                    self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns,
+                                        "rename-over control must change held-inode ctime")
+                    self.assertEqual(held.read(), data)
+            elif restore_mtime:
+                list_paths("mapped mtime-restoring rewrite", [binary, sidecar])
+                before = binary.stat()
+                metadata = sidecar.read_bytes()
+                self.assertEqual(json.loads(metadata)["sha256"], hashlib.sha256(data).hexdigest())
+                with binary.open("r+b") as output:
+                    self.assertEqual(output.write(changed), 48)
+                os.utime(binary, ns=(before.st_atime_ns, before.st_mtime_ns))
+                after = binary.stat()
+                self.assertEqual(after.st_dev, before.st_dev)
+                self.assertEqual(after.st_ino, before.st_ino)
+                self.assertEqual(after.st_size, before.st_size)
+                self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+                self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns,
+                                    "mtime-restoring rewrite must change ctime")
+                self.assertEqual(binary.read_bytes(), changed + data[48:])
+                self.assertEqual(sidecar.read_bytes(), metadata,
+                                 "sidecar must still describe the original bytes")
             else:
                 with binary.open("r+b") as output:
                     self.assertEqual(output.write(changed), 48)
@@ -671,7 +706,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         try:
             row = run_child(
                 label, self.mapped_command(binary, *extra), [PLUGIN, MANIFEST, binary, sidecar],
-                outputs=[replacement] if replace or metadata_only else [],
+                outputs=[replacement] if replace or hard_link else [],
                 pass_fds=(progress_write, entered_write, release_read),
                 after_start=update_after_progress)
         finally:
@@ -680,7 +715,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         stdout, stderr = list_paths(
             "mapped-update result read", [Path(row["stdout"]), Path(row["stderr"])])
         document = json.loads(stdout.read_bytes())
-        if replace or metadata_only:
+        if replace or metadata_only or hard_link:
             self.assertEqual(row["exit_code"], 0, child_diagnostics(row))
             self.assertTrue(document["ok"])
             self.assertNotIn("failure", document)
@@ -696,8 +731,10 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             self.assertIn("changed while mapped", stderr.read_text(encoding="utf-8"))
             self.assertNotIn("trials", document)
         pass_row(row, first_progress_trial_id=0,
-                 check="hard link and chmod keep the mapping" if metadata_only else
+                 check="chmod keeps the mapping" if metadata_only else
+                       "new hard link keeps the mapping" if hard_link else
                        "rename-over keeps the mapping" if replace else
+                       "same-size rewrite with exact mtime restoration refused" if restore_mtime else
                        "in-place rewrite refused before timeout/result publication")
 
     def test_08_mapped_rewrite_is_refused_before_publication(self) -> None:
@@ -813,11 +850,25 @@ class StreamedTrialRetentionTests(unittest.TestCase):
                  check="destination failure names /dev/full, with all terminal rows observed")
 
     def test_15_mapped_metadata_changes_keep_the_original_inode(self) -> None:
-        # G3: independent runs change both link count and mode after the mapping was admitted.
+        # R1/G3: chmod alone changes ctime after the mapping was admitted.
         for mode in ("full", "sidecar"):
             with self.subTest(mode=mode):
                 self.mapped_update(f"mapped-metadata-{mode}", replace=False,
                                    verification=mode, metadata_only=True)
+
+    def test_16_mapped_new_hard_link_keeps_the_original_inode(self) -> None:
+        # R2/G3: an independent row changes link count without changing mode or bytes.
+        for mode in ("full", "sidecar"):
+            with self.subTest(mode=mode):
+                self.mapped_update(f"mapped-new-hard-link-{mode}", replace=False,
+                                   verification=mode, hard_link=True)
+
+    def test_17_mapped_mtime_restoring_rewrite_is_refused_before_publication(self) -> None:
+        # R3: the original sidecar is retained; only ctime exposes the changed mapped bytes.
+        for mode in ("full", "sidecar"):
+            with self.subTest(mode=mode):
+                self.mapped_update(f"mapped-mtime-restoring-rewrite-{mode}", replace=False,
+                                   verification=mode, restore_mtime=True)
 
     def assert_output_refusal(self, row: dict) -> None:
         stdout = Path(row["stdout"])
