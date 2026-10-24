@@ -483,7 +483,8 @@ void detail::require_bin_unchanged(const struct stat& current, const struct stat
     // when ctime moved). On platforms where a private read-only mapping does not show later
     // in-place writes (observed on macOS), the run keeps using the original verified bytes
     // and is accepted. Use the held mapping, never the current path's contents.
-    if (!same_change_time(current, identity) &&
+    // MUTANT (throwaway): the ctime branch, and with it the re-hash, is skipped.
+    if (false && !same_change_time(current, identity) &&
         (sidecar_digest.empty() ||
          sidecar_digest != detail::sha256(std::string_view(
              reinterpret_cast<const char*>(mapped_bars), length)))) {
