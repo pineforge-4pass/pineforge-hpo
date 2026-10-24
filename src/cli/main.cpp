@@ -2939,6 +2939,8 @@ int run(Options options) {
     const double capacity = workers.elapsed_seconds() * worker_count;
 
     state.shutdown();
+    // MUTATION: observe external stops again after output drain.
+    state.stopped();
     if (archive.completed == 0 && !state.stopped())
         throw pfh::TypedHpoError<std::runtime_error>("hpo_invariant", {},
                                                      "sampler produced no candidates");
