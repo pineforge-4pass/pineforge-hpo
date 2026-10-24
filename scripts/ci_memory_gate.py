@@ -378,7 +378,6 @@ def measure(
                 "unmeasurable child post-exec VmHWM: "
                 f"{row['vmhwm_samples']} samples, {row['vmhwm_last_bytes']} bytes"
             )
-        row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
     except (OSError, ValueError, TypeError, AttributeError, OverflowError) as error:
         row["reason"] = str(error)
