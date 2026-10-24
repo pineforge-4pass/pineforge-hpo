@@ -1191,7 +1191,7 @@ def prepare_run(
 
 _RUN_CHUNK_BYTES = 64 * 1024
 _RUN_DIAGNOSTIC_BYTES = 64 * 1024
-_JSON_STRING_SPECIAL = re.compile(rb'["\\\x00-\x1f]')
+_JSON_STRING_SPECIAL = re.compile(rb'["\\]')
 _JSON_WHITESPACE = re.compile(rb"[ \t\r\n]*")
 _JSON_TOKEN_END = re.compile(rb"[ \t\r\n,\]}]")
 
