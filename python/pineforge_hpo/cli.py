@@ -1428,33 +1428,15 @@ class _ResultJson:
 def _run_native(
     command: Sequence[str], stdout: BinaryIO, progress_fd: int | None
 ) -> subprocess.CompletedProcess:
-    # stdout cannot fill a pipe; drain stderr while the child runs, retaining only
-    # its first 64 KiB. Do not use communicate(), which accumulates pipe contents.
-    captured = bytearray()
-    truncated = False
-    with subprocess.Popen(
+    completed = subprocess.run(
         command,
-        stdout=stdout,
-        stderr=subprocess.PIPE,
+        text=True,
+        capture_output=True,
+        check=False,
         **({"pass_fds": (progress_fd,)} if progress_fd is not None else {}),
-    ) as process:
-        assert process.stderr is not None
-        try:
-            while chunk := process.stderr.read(_RUN_CHUNK_BYTES):
-                remaining = _RUN_DIAGNOSTIC_BYTES - len(captured)
-                captured.extend(chunk[:remaining])
-                truncated |= len(chunk) > remaining
-            process.wait()
-        except BaseException:
-            process.kill()
-            process.wait()
-            raise
-    decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))()
-    diagnostic = decoder.decode(captured, final=not truncated)
-    diagnostic = diagnostic.replace("\r\n", "\n").replace("\r", "\n")
-    if truncated:
-        diagnostic += "\n[native stderr truncated]"
-    return subprocess.CompletedProcess(command, process.returncode, stderr=diagnostic)
+    )
+    stdout.write(completed.stdout.encode(locale.getpreferredencoding(False)))
+    return completed
 
 
 def _stdout_diagnostic(source: BinaryIO) -> str:
