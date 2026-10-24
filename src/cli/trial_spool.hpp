@@ -57,8 +57,6 @@ public:
     }
 
     void seal(std::uint64_t terminal_trials) {
-        if (failed_)
-            io_failure(first_failure_);
         if (rows_ != terminal_trials || data_.get() < 0 || index_.get() < 0)
             fail("terminal trial spool is incomplete");
         if (!sealed_) {
