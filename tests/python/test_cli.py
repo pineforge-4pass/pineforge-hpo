@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from native_run_mock import native_completion
+
 from pineforge_hpo.artifact import StrategyArtifact
 from pineforge_hpo import __version__
 from pineforge_hpo.cli import (
@@ -938,7 +940,7 @@ class CliTests(unittest.TestCase):
             "exhaustive",
         )
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_forwards_patience_and_keeps_off_argv(
         self, builder_type: mock.Mock, run: mock.Mock
@@ -961,8 +963,10 @@ class CliTests(unittest.TestCase):
                         "drained_through_trial_id": 0,
                         "reference_scope": "part",
                     }
-                run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=json.dumps(result), stderr=""
+                run.side_effect = native_completion(
+                    subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout=json.dumps(result), stderr=""
+                    )
                 )
                 arguments = [
                     "run",
@@ -1007,25 +1011,27 @@ class CliTests(unittest.TestCase):
                 self.assertIn("expected an unsigned 64-bit integer", stderr.getvalue())
                 self.assertNotIn("unrecognized arguments", stderr.getvalue())
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_builds_once_and_emits_augmented_result(
         self, builder_type: mock.Mock, run: mock.Mock
     ) -> None:
         builder_type.return_value.build.return_value = self._artifact()
-        run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "ok": True,
-                    "artifact_key": "a" * 64,
-                    "best_trial_id": 0,
-                    "best_value": 1.5,
-                    "trials": [],
-                }
+        run.side_effect = native_completion(
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "ok": True,
+                        "artifact_key": "a" * 64,
+                        "best_trial_id": 0,
+                        "best_value": 1.5,
+                        "trials": [],
+                    }
+                ),
+                stderr="",
             ),
-            stderr="",
         )
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -1047,7 +1053,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(document["artifact"]["artifact_key"], "a" * 64)
         self.assertFalse(document["artifact"]["cache_hit"])
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_public_prepare_run_does_not_launch_native(
         self, builder_type: mock.Mock, run: mock.Mock
@@ -1318,7 +1324,9 @@ class CliTests(unittest.TestCase):
             args=[], returncode=1, stdout="", stderr="bad plugin"
         )
         stderr = io.StringIO()
-        with mock.patch("pineforge_hpo.cli.subprocess.run", return_value=completed):
+        with mock.patch(
+            "pineforge_hpo.cli._run_native", side_effect=native_completion(completed)
+        ):
             with contextlib.redirect_stderr(stderr):
                 exit_code = main(
                     ["run", str(self.study_path), "--native", str(self.native)]

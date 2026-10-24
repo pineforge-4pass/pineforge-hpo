@@ -21,6 +21,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from native_run_mock import native_completion
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
 sys.path.insert(0, str(ROOT / "external" / "pineforge-codegen-oss"))
@@ -134,7 +136,7 @@ class ReturnStatsRouteTests(unittest.TestCase):
         self.assertNotIn("--constraint", plain)
         self.assertFalse([item for item in plain if str(item).startswith("returns.")])
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_the_native_return_stats_object_is_relayed_unchanged(
         self, builder: mock.Mock, run: mock.Mock
@@ -155,8 +157,10 @@ class ReturnStatsRouteTests(unittest.TestCase):
             "best_value": 1.5,
             "return_stats": stats,
         }
-        run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
+        run.side_effect = native_completion(
+            subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
+            )
         )
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -173,7 +177,7 @@ class ReturnStatsRouteTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["return_stats"], stats)
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_an_unbound_native_build_refusal_is_relayed_with_its_registered_code(
         self, builder: mock.Mock, run: mock.Mock
@@ -189,12 +193,14 @@ class ReturnStatsRouteTests(unittest.TestCase):
                 "exit_code": 1,
             },
         }
-        run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout=json.dumps(failure),
-            stderr="return statistics are unavailable in this build: its identity is unbound "
-            "(compile_database_disabled)",
+        run.side_effect = native_completion(
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout=json.dumps(failure),
+                stderr="return statistics are unavailable in this build: its identity is unbound "
+                "(compile_database_disabled)",
+            )
         )
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):

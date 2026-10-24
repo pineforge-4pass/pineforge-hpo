@@ -296,14 +296,22 @@ pass-throughs. Existing callers retain `--trials-out all` by default.
 
 - `--trials-out all` retains every terminal record in `trials`, as before. This
   mode now spools rows in the native child without retaining every trial record or the
-  full result document in memory. The Python `run` wrapper still holds the child's stdout
-  in memory. The default `--trials-out all` requires a writable directory for two anonymous
-  files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files are
-  unlinked at creation, but the spool holds the whole trial array on disk until the process
-  exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
+  full result document in memory. The Python `run` wrapper spools the child's stdout and
+  formats the augmented, sorted JSON without loading trial arrays into memory. It streams
+  the formatted result to stdout in 64 KiB chunks and atomically copies it to its own
+  `--output`, when requested. Stderr capture and individual failure-metadata reads are
+  capped at 64 KiB; failure lookup scans the spool even when the failure follows a full
+  trial array. Oversized failure args become `null` while the code and origin are retained;
+  oversized stderr is drained and its captured prefix is marked as truncated.
+  The default native `--trials-out all` requires a writable directory for two anonymous
+  files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files
+  are unlinked at creation, but the spool holds the whole trial array on disk until the
+  process exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
   filesystems, `--output` in a writable place and `--trials-out none|best-k` are remedies for
   the native CLI only; the Python `run` wrapper forwards neither, so for `pineforge-hpo run`
-  only a writable `TMPDIR` (or `/tmp`) helps.
+  only a writable `TMPDIR` (or `/tmp`) helps. The wrapper also places its anonymous stdout
+  and formatted-result files there and closes them on success or failure. An explicitly
+  selected non-empty `TMPDIR` is not retried elsewhere if file creation fails.
 - `--trials-out best-k --best-k N` retains at most N feasible, finite-objective
   winners in `trials`; ties prefer the lower trial ID. Records are emitted in
   trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.
