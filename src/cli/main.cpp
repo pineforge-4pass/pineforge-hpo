@@ -2861,8 +2861,6 @@ int run(Options options) {
     if (options.sampler == "dlib_global") {
         pfh::DlibGlobalSampler sampler(space, options.seed, direction, options.max_trials);
         evaluate_adaptive(sampler);
-        if (options.no_improvement_trials)
-            state.stopped();
     } else if (options.sampler == "tpe") {
         const auto policy = options.warm_history &&
             options.candidate_policy == pfh::CandidatePolicy::Exhaustive
@@ -2890,8 +2888,6 @@ int run(Options options) {
         }
         evaluate_adaptive(sampler);
         // Observe external stops at evaluation completion, before checkpointing/cleanup.
-        if (options.no_improvement_trials)
-            state.stopped();
         // A rolling result carries no tpe_sampler_state, so a later continuation finds no
         // checkpoint and rebuilds. A batches study keeps its exact-continuation contract.
         if (!rolling && sampler.outstanding() == 0)
@@ -2912,8 +2908,6 @@ int run(Options options) {
         evaluate_loop([&]() -> std::optional<pfh::Candidate> { return sampler.next(); },
                       [](const TrialRecord&) {});
         // Observe external stops at evaluation completion, as the other patience-aware samplers do.
-        if (options.no_improvement_trials)
-            state.stopped();
     } else {
         std::unique_ptr<pfh::Sampler> sampler;
         if (options.sampler == "grid")
@@ -2945,8 +2939,6 @@ int run(Options options) {
                 return candidate;
             }
         }, [](const TrialRecord&) {});
-        if (options.no_improvement_trials)
-            state.stopped();
     }
     workers.close();
     const double capacity = workers.elapsed_seconds() * worker_count;
