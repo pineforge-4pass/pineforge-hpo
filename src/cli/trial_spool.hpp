@@ -205,11 +205,10 @@ private:
             }
             copied_bytes += slot[1];
             ++copied_rows;
-            if (output) {
+            // Destination failures belong to write_result_file/publish_result. Keep validating
+            // the spool; the caller checks the destination stream after copying and flushing.
+            if (output)
                 *output << (copied_rows < rows_ ? ",\n" : "\n");
-                if (!*output)
-                    fail("failed copying terminal trial spool to result JSON");
-            }
         }
         if (copied_rows != rows_ || copied_bytes != bytes_)
             fail("terminal trial spool changed or is incomplete");
@@ -226,6 +225,8 @@ private:
                 return directory;
         }
         const auto* temporary_directory = std::getenv("TMPDIR");
+        // A non-empty TMPDIR is an explicit choice. Refuse a missing/unwritable directory
+        // instead of hiding that misconfiguration by retrying elsewhere.
         return temporary_directory && *temporary_directory ? temporary_directory : "/tmp";
     }
 
