@@ -8,9 +8,9 @@
   (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`), with no retry elsewhere
   after selection. Both files are unlinked at creation, but the spool holds the whole trial array
   on disk until the process exits. On read-only root filesystems, `--output` in a writable place
-  and `--trials-out none|best-k` are remedies for the native CLI only. The Python `run` wrapper
-  forwards neither `--output` nor `--trials-out`, so for `pineforge-hpo run` only a writable
-  `TMPDIR` (or `/tmp`) helps.
+  and `--trials-out none|best-k` are remedies for the native CLI only. For `pineforge-hpo run`,
+  set `TMPDIR` to a writable directory with room for the full trial table; the wrapper forwards
+  neither `--output` nor `--trials-out`.
 - Attribute result destination write failures to the output file or stdout without marking
   the terminal trial spool failed; retain `hpo_output_io_failed` and the existing exit codes.
 - Add native `--ohlcv-bin` and StudySpec `ohlcv_bin` for shared read-only mapped chart bars.

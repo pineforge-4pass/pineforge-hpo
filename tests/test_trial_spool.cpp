@@ -73,10 +73,9 @@ public:
             std::abort();
     }
 
-    void apply() {
-        constexpr rlim_t bytes = 4096;
+    void apply(rlim_t bytes = 4096) {
         require(saved_limit_.rlim_max == RLIM_INFINITY || saved_limit_.rlim_max >= bytes,
-                "RLIMIT_FSIZE hard limit is below the 4096-byte control");
+                "RLIMIT_FSIZE hard limit is below the requested control");
         struct sigaction ignored {};
         ignored.sa_handler = SIG_IGN;
         require(sigemptyset(&ignored.sa_mask) == 0, "cannot initialize SIGXFSZ mask");
@@ -138,6 +137,26 @@ std::string output_refusal(Action action, const std::string& expected) {
     throw std::runtime_error("spool operation did not throw a TypedHpoError");
 }
 
+void seal_rethrows_first_failure(const std::filesystem::path& output) {
+    TrialSpool spool(output, 0);
+    FileSizeLimit limit;
+    const std::string line = "{\"payload\":\"" + std::string(1024, 'x') + "\"}\n";
+    limit.apply(static_cast<rlim_t>(line.size() * 3));
+    std::uint64_t completed = 0;
+    const auto first = output_refusal([&] {
+        for (; completed < 4; ++completed)
+            spool.append(completed, line);
+    }, "failed writing terminal trial spool");
+    require(completed == 3, "exact file-size limit did not stop before the fourth row");
+    const auto sealed = output_refusal([&] { spool.seal(completed); },
+                                      "failed writing terminal trial spool");
+    require(sealed == first, "seal did not rethrow the original spool failure");
+    require(limit.restore(), "cannot restore file-size controls");
+    limit.require_restored();
+    spool.close();
+    std::cout << "PASS seal rethrows the first failure before finalization checks\n";
+}
+
 void write_failure_keeps_first_message(const std::filesystem::path& output) {
     TrialSpool spool(output, 0);
     FileSizeLimit limit;
@@ -148,15 +167,19 @@ void write_failure_keeps_first_message(const std::filesystem::path& output) {
         for (; completed < 32; ++completed)
             spool.append(completed, line);
     }, "failed writing terminal trial spool");
+    const auto repeated = output_refusal(
+        [&] { spool.append(completed + 1, line); }, "failed writing terminal trial spool");
+    require(repeated == first, "a later spool failure replaced the first failure");
     const auto sealed = output_refusal([&] { spool.seal(completed); },
                                       "failed writing terminal trial spool");
-    require(sealed == first, "seal did not preserve the first spool failure");
+    require(sealed == first, "seal did not preserve the first spool failure after a retry");
     require(limit.restore(), "cannot restore file-size controls");
     limit.require_restored();
     spool.close();
     spool.close();
     std::cout << "PASS spool write failure is typed\n"
-              << "PASS seal rethrows the same first message\n"
+              << "PASS repeated spool failure keeps the first message\n"
+              << "PASS seal rethrows the same first message after a retry\n"
               << "PASS RLIMIT_FSIZE and SIGXFSZ restored\n";
 }
 
@@ -208,6 +231,7 @@ int main(int argc, char** argv) {
     try {
         require(argc == 2, "usage: test_trial_spool BUILD_SCRATCH_DIRECTORY");
         const auto output = spool_output(argv[1]);
+        seal_rethrows_first_failure(output);
         write_failure_keeps_first_message(output);
         close_is_idempotent(output);
         relative_slots_preserve_bytes(output, 0);
