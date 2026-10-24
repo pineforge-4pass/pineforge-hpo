@@ -1059,7 +1059,6 @@ class NoImprovementTests(unittest.TestCase):
                 self.assertIsNone(child.poll(), "child exited before the SIGTERM intervention")
                 self.assertEqual(select.select([progress_read], [], [], 0)[0], [],
                                  "row 1 progressed before the SIGTERM intervention")
-                child.send_signal(signal.SIGTERM)
                 receipt["signal_sent_seconds"] = time.monotonic() - started
                 self.assertEqual(wait_for_sigterm_delivery(child, signal_read), b"T")
                 receipt["signal_delivered"] = True
