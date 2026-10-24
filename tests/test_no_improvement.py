@@ -246,7 +246,7 @@ def create_prefilled_fifo(path):
         os.mkfifo(path)
         read_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         fill_fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
-        prefix_size = fill_nonblocking_pipe(fill_fd)
+        prefix_size = 0
         return read_fd, prefix_size
     except (AttributeError, NotImplementedError) as error:
         raise CapabilityUnavailable("fifo-handshake", str(error)) from error
