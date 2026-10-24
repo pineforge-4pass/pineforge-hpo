@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import hashlib
 import json
+import mmap
 import os
 from pathlib import Path
 import select
@@ -592,7 +593,8 @@ class StreamedTrialRetentionTests(unittest.TestCase):
 
     def mapped_update(self, label: str, *, replace: bool, timeout: bool = False,
                       verification: str = "full", metadata_only: bool = False,
-                      hard_link: bool = False, restore_mtime: bool = False) -> None:
+                      hard_link: bool = False, restore_mtime: bool = False,
+                      control: bool = False) -> tuple[dict, bytes]:
         binary, sidecar, data = self.mapped_fixture(label)
         replacement, = list_paths("mapped replacement write", [binary.with_name("next.bin")])
         changed = struct.pack("<5dq", 100.0, 102.0, 99.0, 100.5, 10.0, 1700000000000)
@@ -602,6 +604,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         descriptors = {progress_read, progress_write, entered_read, entered_write,
                        release_read, release_write}
         progress = bytearray()
+        reflects: bool | None = None
 
         def close_descriptor(descriptor: int) -> None:
             os.close(descriptor)
@@ -621,6 +624,7 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             return bytes(observed)
 
         def update_after_progress(_child: subprocess.Popen) -> None:
+            nonlocal reflects
             for descriptor in (progress_write, entered_write, release_read):
                 close_descriptor(descriptor)
             progress.extend(read_event(progress_read, b"\n"))
@@ -629,8 +633,14 @@ class StreamedTrialRetentionTests(unittest.TestCase):
             self.assertEqual(first["status"], "ok")
             self.assertEqual(read_event(entered_read, b"G"), b"G")
             # The first row proves the mapping was loaded; the second trial's gate keeps
-            # render_results out of reach until this update is complete. No sleep barrier.
-            if metadata_only or hard_link:
+            # render_results out of reach until the update or control check is complete.
+            # The control uses its own original-data fixture and the same gate, with no update.
+            if control:
+                list_paths("mapped original-data control read", [binary, sidecar])
+                self.assertEqual(binary.read_bytes(), data)
+                self.assertEqual(json.loads(sidecar.read_bytes())["sha256"],
+                                 hashlib.sha256(data).hexdigest())
+            elif metadata_only or hard_link:
                 list_paths("mapped metadata update",
                            [binary, replacement] if hard_link else [binary])
                 before = binary.stat()
@@ -669,9 +679,24 @@ class StreamedTrialRetentionTests(unittest.TestCase):
                 before = binary.stat()
                 metadata = sidecar.read_bytes()
                 self.assertEqual(json.loads(metadata)["sha256"], hashlib.sha256(data).hexdigest())
-                with binary.open("r+b") as output:
-                    self.assertEqual(output.write(changed), 48)
-                os.utime(binary, ns=(before.st_atime_ns, before.st_mtime_ns))
+                probe_fd = os.open(binary, os.O_RDONLY)
+                try:
+                    probe_mapping = mmap.mmap(probe_fd, 0, flags=mmap.MAP_PRIVATE,
+                                              prot=mmap.PROT_READ)
+                    try:
+                        # Fault the original bytes before the write, as the child already has.
+                        self.assertEqual(probe_mapping[:48], data[:48])
+                        with binary.open("r+b") as output:
+                            self.assertEqual(output.write(changed), 48)
+                        os.utime(binary, ns=(before.st_atime_ns, before.st_mtime_ns))
+                        mapped_record = probe_mapping[:48]
+                        self.assertIn(mapped_record, (data[:48], changed),
+                                      "private mapping probe returned unexpected bytes")
+                        reflects = mapped_record == changed
+                    finally:
+                        probe_mapping.close()
+                finally:
+                    os.close(probe_fd)
                 after = binary.stat()
                 self.assertEqual(after.st_dev, before.st_dev)
                 self.assertEqual(after.st_ino, before.st_ino)
@@ -714,28 +739,62 @@ class StreamedTrialRetentionTests(unittest.TestCase):
                 close_descriptor(descriptor)
         stdout, stderr = list_paths(
             "mapped-update result read", [Path(row["stdout"]), Path(row["stderr"])])
-        document = json.loads(stdout.read_bytes())
-        if replace or metadata_only or hard_link:
+        result_bytes = stdout.read_bytes()
+        document = json.loads(result_bytes)
+        if restore_mtime:
+            self.assertIsNotNone(reflects, "private mapping probe did not complete")
+            probe = "reflects" if reflects else "original"
+            branch = ("MAPPING-REFLECTED (probe): refused" if reflects else
+                      "MAPPING-ORIGINAL (probe): accepted, results identical to control")
+            branch += f"; probe={probe}"
+            row.update(probe=probe, branch=branch)
+            write_json(Path(row["result_file"]), row)
+        if (replace or metadata_only or hard_link or control or
+                (restore_mtime and not reflects)):
             self.assertEqual(row["exit_code"], 0, child_diagnostics(row))
             self.assertTrue(document["ok"])
             self.assertNotIn("failure", document)
             self.assertEqual(document["trials_completed"], 2)
+            self.assertEqual([trial["trial_id"] for trial in document["trials"]], [0, 1])
             self.assertEqual([trial["status"] for trial in document["trials"]], ["ok", "ok"])
-            # Length contributes one point; the update must not change the held mapping.
-            self.assertEqual(document["trials"][1]["objective"],
-                             document["trials"][0]["objective"] + 1.0)
+            if restore_mtime:
+                control_row, control_bytes = self.mapped_update(
+                    f"{label}-control", replace=False, verification=verification, control=True)
+
+                def trial_rows(payload: bytes) -> bytes:
+                    marker = b'  "trials": [\n'
+                    start = payload.index(marker) + len(marker)
+                    return payload[start:payload.index(b"\n  ]", start) + 1]
+
+                # render_trial has no timing or process-ID fields. Compare every row byte,
+                # including trial IDs, against the independent original-data control.
+                self.assertEqual(
+                    trial_rows(result_bytes), trial_rows(control_bytes),
+                    "accepted mtime-restoring rewrite differs from the original-data control")
+                row.update(control_result_file=control_row["result_file"],
+                           compared_trial_fields="all (raw row bytes)", excluded_trial_fields=[])
+            else:
+                # Length contributes one point; these runs keep the original mapped bytes.
+                self.assertEqual(document["trials"][1]["objective"],
+                                 document["trials"][0]["objective"] + 1.0)
         else:
             self.assertEqual(row["exit_code"], 3 if timeout else 1, child_diagnostics(row))
             self.assertEqual(document["failure"]["code"], "hpo_dataset_invalid")
             self.assertEqual(document["failure"]["exit_code"], row["exit_code"])
             self.assertIn("changed while mapped", stderr.read_text(encoding="utf-8"))
             self.assertNotIn("trials", document)
-        pass_row(row, first_progress_trial_id=0,
-                 check="chmod keeps the mapping" if metadata_only else
-                       "new hard link keeps the mapping" if hard_link else
-                       "rename-over keeps the mapping" if replace else
-                       "same-size rewrite with exact mtime restoration refused" if restore_mtime else
-                       "in-place rewrite refused before timeout/result publication")
+        if restore_mtime:
+            print(branch, flush=True)
+            pass_row(row, first_progress_trial_id=0, branch=branch,
+                     check="mtime-restoring rewrite refuses reflected bytes or matches control")
+        else:
+            pass_row(row, first_progress_trial_id=0,
+                     check="original-data control with the same trial gate" if control else
+                           "chmod keeps the mapping" if metadata_only else
+                           "new hard link keeps the mapping" if hard_link else
+                           "rename-over keeps the mapping" if replace else
+                           "in-place rewrite refused before timeout/result publication")
+        return row, result_bytes
 
     def test_08_mapped_rewrite_is_refused_before_publication(self) -> None:
         # T1/F3: both verification modes must detect changes after the load-time checks.
@@ -863,8 +922,9 @@ class StreamedTrialRetentionTests(unittest.TestCase):
                 self.mapped_update(f"mapped-new-hard-link-{mode}", replace=False,
                                    verification=mode, hard_link=True)
 
-    def test_17_mapped_mtime_restoring_rewrite_is_refused_before_publication(self) -> None:
-        # R3: the original sidecar is retained; only ctime exposes the changed mapped bytes.
+    def test_17_mapped_mtime_restoring_rewrite_preserves_verified_results(self) -> None:
+        # R3: retain the sidecar and restore mtime exactly. Refuse reflected writes; an
+        # accepted private mapping must produce every row byte of an untouched control.
         for mode in ("full", "sidecar"):
             with self.subTest(mode=mode):
                 self.mapped_update(f"mapped-mtime-restoring-rewrite-{mode}", replace=False,

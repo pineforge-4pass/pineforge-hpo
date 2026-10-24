@@ -30,8 +30,15 @@
   the replacement path.
   In Sidecar mode the bytes were not compared to the digest at load, so even a metadata-only
   change can refuse if the bytes never matched it.
-  The re-hash detects a same-size rewrite followed by exact mtime restoration (`touch -r`,
-  `os.utime` with `ns=`) when ctime moves; POSIX writes and mtime updates advance ctime.
+  The run's results are computed only from the bytes verified at load: a change that the mapped
+  bytes show is refused (the held mapping is re-hashed against the sidecar digest when ctime moved).
+  On platforms where a private read-only mapping does not show later in-place writes (observed on
+  macOS), the run keeps using the original verified bytes and is accepted. This also applies to a
+  same-size rewrite followed by exact mtime restoration (`touch -r`, `os.utime` with `ns=`):
+  POSIX writes and mtime updates advance ctime.
+  Residual: a rewrite that is fully restored (content and mtime) before the end-of-run re-hash can
+  go undetected if trials read the changed pages in between; the guard covers changes still present
+  at the end of the run, and the scenario needs a deliberate local writer.
   Detection resolution is the filesystem's timestamp granularity: coarse ctime can miss a
   rewrite within one tick that keeps size, mtime and ctime unchanged.
 

@@ -478,8 +478,11 @@ void detail::require_bin_unchanged(const struct stat& current, const struct stat
         current.st_size != identity.st_size || !same_modification_time(current, identity)) {
         binary_dataset_error("changed while mapped: " + path.string());
     }
-    // Accept unchanged identity, or only metadata moved and the mapped bytes still hash to
-    // the sidecar digest. Use the held mapping, never the current path's contents.
+    // The run's results are computed only from the bytes verified at load: a change that the
+    // mapped bytes show is refused (the held mapping is re-hashed against the sidecar digest
+    // when ctime moved). On platforms where a private read-only mapping does not show later
+    // in-place writes (observed on macOS), the run keeps using the original verified bytes
+    // and is accepted. Use the held mapping, never the current path's contents.
     if (!same_change_time(current, identity) &&
         (sidecar_digest.empty() ||
          sidecar_digest != detail::sha256(std::string_view(
