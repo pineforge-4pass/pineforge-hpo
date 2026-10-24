@@ -23,6 +23,22 @@ SPEC.loader.exec_module(GATE)
 BASE = 16 * 1024 * 1024
 
 
+def has_proc_vmhwm():
+    if not sys.platform.startswith("linux") or not hasattr(GATE.os, "wait4"):
+        return False
+    (status,) = GATE.list_paths("test VmHWM availability", [Path("/proc/self/status")])
+    try:
+        return any(
+            line.startswith("VmHWM:")
+            for line in status.read_text(encoding="ascii").splitlines()
+        )
+    except OSError:
+        return False
+
+
+HAS_PROC_VMHWM = has_proc_vmhwm()
+
+
 class MemoryGateLogicTests(unittest.TestCase):
     def test_flat_series_passes(self):
         verdict = GATE.judge_trial_growth([(count, BASE) for count in GATE.COUNTS])
@@ -196,7 +212,7 @@ class MemoryGateProcessTests(unittest.TestCase):
         (marker,) = GATE.list_paths("gate crash marker read", [run / "gate.exit"])
         self.assertEqual(int(marker.read_text()), 1)
 
-    def test_wait4_samples_the_exact_child_and_converts_linux_kib(self):
+    def test_polling_keeps_postexec_hwm_and_reaps_the_exact_child_once(self):
         child = SimpleNamespace(pid=4321, returncode=None)
         with (
             mock.patch.object(
@@ -205,12 +221,19 @@ class MemoryGateProcessTests(unittest.TestCase):
                 return_value=SimpleNamespace(ru_maxrss=8192),
             ) as getrusage,
             mock.patch.object(GATE.subprocess, "Popen", return_value=child),
+            # Distinct synthetic values pin the last sample and max independently.
+            mock.patch.object(
+                GATE, "read_child_hwm", side_effect=[None, 52 * 1024, 48 * 1024, None]
+            ) as read_hwm,
+            mock.patch.object(GATE.time, "sleep") as sleep,
             mock.patch.object(
                 GATE.os,
                 "wait4",
                 create=True,
                 side_effect=[
                     InterruptedError(),
+                    (0, 0, None),
+                    (0, 0, None),
                     (4321, 0, SimpleNamespace(ru_maxrss=12345)),
                 ],
             ) as wait4,
@@ -219,13 +242,128 @@ class MemoryGateProcessTests(unittest.TestCase):
                 self.directory, "wait4", [sys.executable, "-I", "-c", "pass"], []
             )
         getrusage.assert_called_once_with(GATE.resource.RUSAGE_SELF)
-        self.assertEqual(wait4.call_args_list, [mock.call(4321, 0)] * 2)
+        self.assertEqual(wait4.call_args_list, [mock.call(4321, GATE.os.WNOHANG)] * 4)
+        self.assertEqual(sleep.call_args_list, [mock.call(0.001)] * 2)
+        native = GATE.allowed_path(Path(sys.executable))
+        self.assertEqual(
+            read_hwm.call_args_list,
+            [mock.call(Path("/proc/4321/exe"), Path("/proc/4321/status"), native)] * 4,
+        )
         self.assertEqual(row["pid"], row["waited_pid"])
         self.assertEqual(row["parent_floor_bytes"], 8192 * 1024)
-        self.assertEqual(row["peak_rss_bytes"], 12345 * 1024)
+        self.assertEqual(row["ru_maxrss"], 12345)
+        self.assertEqual(row["peak_rss_bytes"], 48 * 1024)
+        self.assertEqual(row["vmhwm_last_bytes"], 48 * 1024)
+        self.assertEqual(row["vmhwm_max_bytes"], 52 * 1024)
+        self.assertEqual(row["vmhwm_samples"], 2)
         self.assertEqual(row["exit_code"], 0)
         self.assertEqual(child.returncode, 0)
         self.assertEqual(self.read_json(Path(row["result_file"])), row)
+
+    def test_preexec_samples_are_ignored_before_reading_status(self):
+        executable = self.path("proc-exe")
+        status = self.path("proc-status")
+        native = GATE.allowed_path(Path(sys.executable))
+        with (
+            mock.patch.object(
+                GATE.os, "readlink", return_value=str(self.directory / "forked-python")
+            ),
+            mock.patch.object(
+                Path, "read_text", return_value="VmHWM:\t65536 kB\n"
+            ) as read_status,
+        ):
+            self.assertIsNone(GATE.read_child_hwm(executable, status, native))
+        read_status.assert_not_called()
+
+    def test_postexec_vmhwm_is_converted_from_kib_and_missing_data_is_ignored(self):
+        executable = self.path("proc-exe")
+        status = self.path("proc-status")
+        native = GATE.allowed_path(Path(sys.executable))
+        with mock.patch.object(GATE.os, "readlink", return_value=str(native)):
+            for text, expected in (
+                ("Name:\tnative\nVmHWM:\t12345 kB\nVmRSS:\t42 kB\n", 12345 * 1024),
+                ("VmHWM:\t0 kB\n", 0),
+                ("Name:\tnative\n", None),
+                ("VmHWM:\t12345 MB\n", None),
+                ("VmHWM:\tinvalid kB\n", None),
+            ):
+                with self.subTest(text=text):
+                    status.write_text(text, encoding="ascii")
+                    self.assertEqual(
+                        GATE.read_child_hwm(executable, status, native), expected
+                    )
+            with mock.patch.object(Path, "read_text", side_effect=FileNotFoundError):
+                self.assertIsNone(GATE.read_child_hwm(executable, status, native))
+        with mock.patch.object(GATE.os, "readlink", side_effect=ProcessLookupError):
+            self.assertIsNone(GATE.read_child_hwm(executable, status, native))
+
+    def test_zero_postexec_samples_are_refused_with_a_mocked_reader(self):
+        child = SimpleNamespace(pid=4321, returncode=None)
+        with (
+            mock.patch.object(GATE.subprocess, "Popen", return_value=child),
+            mock.patch.object(GATE, "read_child_hwm", return_value=None),
+            mock.patch.object(GATE.time, "sleep"),
+            mock.patch.object(
+                GATE.os,
+                "wait4",
+                create=True,
+                return_value=(4321, 0, SimpleNamespace(ru_maxrss=12345)),
+            ),
+        ):
+            row = GATE.run_child(
+                self.directory, "no-postexec", [sys.executable, "-I", "-c", "pass"], []
+            )
+        self.assertEqual(row["vmhwm_samples"], 0)
+        self.assertEqual(row["peak_rss_bytes"], 0)
+        with (
+            mock.patch.object(GATE, "run_child", return_value=row),
+            redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "post-exec VmHWM"),
+        ):
+            GATE.measure(self.directory, Path(sys.executable), SOURCE, SOURCE, 10, 2)
+        result = self.read_json(Path(row["result_file"]))
+        self.assertEqual(result["verdict"], "ERROR")
+        self.assertEqual(result["exit_code"], 0)
+
+    @unittest.skipUnless(
+        HAS_PROC_VMHWM, "requires Linux /proc/self/status VmHWM and os.wait4"
+    )
+    def test_real_child_vmhwm_observes_allocation_below_the_parent_floor(self):
+        # Touch the parent's pages so wait4's inherited floor exceeds both children.
+        padding = bytearray(96 * 1024 * 1024)
+        padding[::4096] = b"x" * (len(padding) // 4096)
+        small = GATE.run_child(
+            self.directory,
+            "small-child",
+            [sys.executable, "-I", "-c", "import time; time.sleep(0.05)"],
+            [],
+        )
+        large = GATE.run_child(
+            self.directory,
+            "40mib-child",
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import time; data = bytearray(40 * 1024 * 1024); "
+                "data[::4096] = b'x' * (len(data) // 4096); time.sleep(0.05)",
+            ],
+            [],
+        )
+        for row in (small, large):
+            with self.subTest(command=row["command"]):
+                self.assertEqual(row["exit_code"], 0)
+                self.assertGreater(row["vmhwm_samples"], 0)
+                self.assertGreater(row["peak_rss_bytes"], 0)
+                self.assertEqual(row["peak_rss_bytes"], row["vmhwm_last_bytes"])
+                self.assertGreaterEqual(row["vmhwm_max_bytes"], row["peak_rss_bytes"])
+                self.assertNotEqual(row["peak_rss_bytes"], row["parent_floor_bytes"])
+                self.assertEqual(self.read_json(Path(row["result_file"])), row)
+        self.assertLess(small["peak_rss_bytes"], small["parent_floor_bytes"])
+        self.assertGreaterEqual(large["peak_rss_bytes"], 35 * 1024 * 1024)
+        self.assertGreaterEqual(
+            large["peak_rss_bytes"] - small["peak_rss_bytes"], 35 * 1024 * 1024
+        )
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns wait4 units")
     def test_real_deliberate_crash_records_the_child_signal(self):
@@ -242,7 +380,8 @@ class MemoryGateProcessTests(unittest.TestCase):
         )
         self.assertEqual(row["exit_code"], -signal.SIGKILL)
         self.assertEqual(row["pid"], row["waited_pid"])
-        self.assertGreater(row["peak_rss_bytes"], 0)
+        # A deliberate immediate crash need not survive long enough for a proc sample.
+        self.assertGreater(row["ru_maxrss"], 0)
         (marker,) = GATE.list_paths("child crash marker read", [Path(row["exit_file"])])
         self.assertEqual(int(marker.read_text()), row["exit_code"])
         row.update(verdict="PASS", reason="child signal and marker agree")
@@ -315,17 +454,19 @@ class MemoryGateProcessTests(unittest.TestCase):
             with self.subTest(status=status), self.assertRaises(ValueError):
                 GATE.validate_output(self.output_fixture(rows=rows), 10)
 
-    def measurement_row(self, stdout, *, peak=BASE, parent_floor=BASE // 2):
+    def measurement_row(self, stdout, *, peak=BASE, parent_floor=BASE // 2, samples=3):
         return {
             "exit_code": 0,
             "parent_floor_bytes": parent_floor,
+            "ru_maxrss": max(peak, parent_floor) // 1024,
             "peak_rss_bytes": peak,
+            "vmhwm_samples": samples,
             "stdout": str(stdout),
             "result_file": str(self.path("native.result.json")),
             "verdict": "ERROR",
         }
 
-    def test_trial_peaks_must_strictly_exceed_parent_floor_plus_one_page(self):
+    def test_child_vmhwm_can_be_below_or_at_parent_floor(self):
         stdout = self.output_fixture()
         arguments = (self.directory, Path(sys.executable), stdout, stdout, 10, 2)
         for offset in (-4096, 0, 4095, 4096, 4097):
@@ -335,15 +476,35 @@ class MemoryGateProcessTests(unittest.TestCase):
                 mock.patch.object(GATE, "run_child", return_value=row),
                 redirect_stdout(io.StringIO()),
             ):
-                if offset <= 4096:
-                    with self.assertRaisesRegex(ValueError, f"parent floor {BASE}"):
-                        GATE.measure(*arguments)
-                else:
-                    measured = GATE.measure(*arguments)
-                    self.assertEqual(measured["trial_rows"], 10)
+                measured = GATE.measure(*arguments)
+                self.assertEqual(measured["trial_rows"], 10)
             result = self.read_json(Path(row["result_file"]))
-            self.assertEqual(result["verdict"], "ERROR" if offset <= 4096 else "PASS")
+            self.assertEqual(result["verdict"], "PASS")
             self.assertEqual(result["parent_floor_bytes"], BASE)
+
+    def test_zero_samples_or_zero_vmhwm_are_refused_on_both_axes(self):
+        stdout = self.output_fixture()
+        for peak, samples in ((BASE, 0), (0, 3)):
+            for bars_axis in (False, True):
+                row = self.measurement_row(stdout, peak=peak, samples=samples)
+                with (
+                    self.subTest(peak=peak, samples=samples, bars_axis=bars_axis),
+                    mock.patch.object(GATE, "run_child", return_value=row),
+                    redirect_stdout(io.StringIO()),
+                    self.assertRaisesRegex(ValueError, "post-exec VmHWM"),
+                ):
+                    GATE.measure(
+                        self.directory,
+                        Path(sys.executable),
+                        stdout,
+                        stdout,
+                        10,
+                        2,
+                        bars_axis=bars_axis,
+                    )
+                result = self.read_json(Path(row["result_file"]))
+                self.assertEqual(result["verdict"], "ERROR")
+                self.assertEqual(result["exit_code"], 0)
 
     def test_exit_zero_incomplete_native_output_is_not_a_measurement_pass(self):
         stdout = self.output_fixture(trials_completed=9)
@@ -414,11 +575,11 @@ class MemoryGateProcessTests(unittest.TestCase):
         paths.assert_not_called()
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
-    def test_parent_floor_is_exit_two_before_any_rss_judgment(self):
+    def test_missing_postexec_samples_exit_two_before_any_rss_judgment(self):
         args = self.gate_inputs()
         parent = self.path("unmeasurable")
         stdout = self.output_fixture()
-        row = self.measurement_row(stdout, peak=BASE, parent_floor=BASE)
+        row = self.measurement_row(stdout, samples=0)
         arguments = self.arguments(parent)
         arguments[1] = str(args.native)
         with (
@@ -434,7 +595,7 @@ class MemoryGateProcessTests(unittest.TestCase):
         complete = self.read_json(next(parent.iterdir()) / "RUN.COMPLETE")
         self.assertEqual(complete["exit_code"], 2)
         self.assertEqual(complete["verdict"], "ERROR")
-        self.assertIn(f"parent floor {BASE}", complete["reason"])
+        self.assertIn("post-exec VmHWM", complete["reason"])
         self.assertEqual(self.read_json(Path(row["result_file"]))["verdict"], "ERROR")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")

@@ -4,8 +4,12 @@
 
 - Gate native child peak RSS growth in CI at 10 / 1,000 / 100,000 trials with
   limits of 256 / 32 bytes per trial and a synthetic growth rejection control.
-- Record the memory gate's parent high-water RSS before every spawn and refuse trial
-  peaks within 4 KiB of that floor; test refusal of incomplete native output.
+- Measure the memory gate child's own post-exec `/proc/<pid>/status` `VmHWM`,
+  because an exec'd child's `ru_maxrss` includes the parent's high-water RSS.
+  Poll about every 1 ms and take the last high-water value; a peak shorter than
+  the interval can be missed if the child exits before the next poll. Keep the
+  parent floor and `ru_maxrss` as diagnostics, remove the obsolete floor refusal,
+  and test rejection of missing samples and incomplete native output.
 - Bound `--trials-out all` retention in the native process with an anonymous spool independent
   of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
 - The default `--trials-out all` needs a writable directory for two anonymous files

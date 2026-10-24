@@ -6,21 +6,31 @@ headers on hosted `ubuntu-24.04`. It invokes the stdlib-only
 `scripts/ci_memory_gate.py` directly. The trial axis uses a fixed two-bar CSV,
 random sampling, seed 17, one worker, batch size one and `--trials-out all`.
 
-Each of 10, 1,000 and 100,000 trials runs in a fresh native child. `os.wait4`
-reaps that exact PID and supplies its peak RSS (Linux KiB converted to bytes).
-Linux can carry the parent's pre-exec high-water RSS into the child, so the
-reported peak can be `max(parent_floor, native_peak)`. Immediately before every
-spawn, the gate reads its own `resource.getrusage(resource.RUSAGE_SELF).ru_maxrss`
-and records the Linux KiB value converted to bytes as `parent_floor_bytes` in
-the child result. A trial-axis peak must be strictly greater than that floor
-plus 4,096 bytes. Otherwise the gate refuses the measurement as unmeasurable
-with exit 2 and an `ERROR` naming the floor, before judging any trial slopes.
+Each of 10, 1,000 and 100,000 trials runs in a fresh native child. The gate
+measures the child's own `VmHWM` in `/proc/<pid>/status` after exec, converting
+Linux kB to bytes. Every poll first checks that `/proc/<pid>/exe` points to the
+resolved native binary; samples from the forked Python address space are ignored.
+It samples about every **1 ms** and uses the last successfully read high-water
+value as `peak_rss_bytes`, also retaining `vmhwm_last_bytes`, `vmhwm_max_bytes`
+and `vmhwm_samples`. This is a lower bound: a peak shorter than the poll interval
+can be missed if the child exits before the next sample. A child with no
+post-exec samples or a zero `VmHWM` is refused with exit 2 and an `ERROR`.
+
+`os.wait4(child.pid, os.WNOHANG)` reaps that exact PID once and supplies the
+child's own exit status and diagnostic `ru_maxrss` (Linux KiB). An exec'd child's
+`ru_maxrss` includes the parent's pre-exec high-water, so it can be
+`max(parent_floor, native_peak)` and cannot measure small native peaks.
+Immediately before each spawn, the gate records its own
+`resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024` as
+`parent_floor_bytes`. Both values remain diagnostic; the previous parent-floor
+refusal is removed because post-exec `VmHWM` is independent of that floor.
 
 The gate keeps its footprint small with stdlib-only imports and writes native
 stdout directly to disk. After reaping the child, it checks every successful
 trial in order, plus the result's completion counts, before judging RSS. It
-never loads the whole trial array into the measuring parent. Each subsequent
-spawn records the parent's current high-water floor again.
+never reads the child's stdout during polling or loads the whole trial array
+into the measuring parent. Polling only reads proc files and does not modify
+the child.
 
 The adjacent RSS differences divided by the trial-count differences must be
 at most **256 bytes/trial** (10 to 1,000) and **32 bytes/trial** (1,000 to

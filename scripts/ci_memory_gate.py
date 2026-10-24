@@ -20,10 +20,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 COUNTS = (10, 1_000, 100_000)
 SLOPE_LIMITS = (256, 32)  # Bytes/trial; identical to streamed-trial acceptance.
 BAR_COUNTS = (2, 1_000, 100_000)
+POLL_INTERVAL_SECONDS = 0.001
 MAX_METADATA_BYTES = 1024 * 1024
 CSV_HEADER = ["timestamp", "open", "high", "low", "close", "volume"]
 
@@ -103,13 +105,30 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def read_child_hwm(executable: Path, status: Path, native: Path) -> int | None:
+    """Read only the expected post-exec address space; exit races yield no sample."""
+    try:
+        if os.readlink(executable) != str(native):
+            return None
+        for line in status.read_text(encoding="ascii").splitlines():
+            if line.startswith("VmHWM:"):
+                fields = line.split()
+                if len(fields) != 3 or fields[2] != "kB":
+                    return None
+                peak = int(fields[1]) * 1024
+                return peak if peak >= 0 else None
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def run_child(
     directory: Path,
     label: str,
     command: list[str],
     inputs: list[Path],
 ) -> dict:
-    """Record the child peak and its pre-spawn parent RSS floor (Linux KiB)."""
+    """Poll the child's own VmHWM after exec; wait4 owns its exit and diagnostics."""
     stdout, stderr, exit_file, result_file = list_paths(
         label,
         [
@@ -119,10 +138,10 @@ def run_child(
             directory / f"{label}.result.json",
         ],
     )
-    list_paths(
+    native = list_paths(
         "child executable, inputs and anonymous spool directory",
         [Path(command[0]), *inputs, directory],
-    )
+    )[0]
     print("COMMAND " + json.dumps(command), file=sys.stderr, flush=True)
     environment = {**os.environ, "TMPDIR": str(directory)}
     with stdout.open("wb") as output, stderr.open("wb") as errors:
@@ -132,12 +151,30 @@ def run_child(
         child = subprocess.Popen(
             command, stdout=output, stderr=errors, cwd=directory, env=environment
         )
+        executable = Path(f"/proc/{child.pid}/exe")
+        status_path = Path(f"/proc/{child.pid}/status")
+        # Keep the proc paths themselves: resolving exe would follow its target.
+        print(
+            "FILES child proc read: " + json.dumps([str(executable), str(status_path)]),
+            file=sys.stderr,
+            flush=True,
+        )
+        peak_rss_bytes = 0
+        max_hwm_bytes = 0
+        hwm_samples = 0
         while True:
+            sample = read_child_hwm(executable, status_path, native)
+            if sample is not None:
+                peak_rss_bytes = sample
+                max_hwm_bytes = max(max_hwm_bytes, sample)
+                hwm_samples += 1
             try:
-                waited_pid, status, usage = os.wait4(child.pid, 0)
-                break
+                waited_pid, status, usage = os.wait4(child.pid, os.WNOHANG)
             except InterruptedError:
                 continue
+            if waited_pid != 0:
+                break
+            time.sleep(POLL_INTERVAL_SECONDS)
         child.returncode = os.waitstatus_to_exitcode(status)
         # Even a signalled child records its own nonzero exit, without a shell/tee.
         exit_file.write_text(f"{child.returncode}\n", encoding="ascii")
@@ -147,8 +184,12 @@ def run_child(
         "command": command,
         "exit_code": child.returncode,
         "parent_floor_bytes": parent_floor_bytes,
-        "ru_maxrss": usage.ru_maxrss,
-        "peak_rss_bytes": int(usage.ru_maxrss) * 1024,  # Linux wait4 uses KiB.
+        "ru_maxrss": usage.ru_maxrss,  # Linux KiB; can include the parent's floor.
+        "peak_rss_bytes": peak_rss_bytes,
+        "vmhwm_last_bytes": peak_rss_bytes,
+        "vmhwm_max_bytes": max_hwm_bytes,
+        "vmhwm_samples": hwm_samples,
+        "poll_interval_seconds": POLL_INTERVAL_SECONDS,
         "stdout": str(stdout),
         "stderr": str(stderr),
         "exit_file": str(exit_file),
@@ -312,12 +353,10 @@ def measure(
             with errors.open("rb") as source:
                 diagnostic = source.read(2_000).decode("utf-8", errors="replace")
             raise ValueError(f"native child exited {row['exit_code']}: {diagnostic}")
-        if row["peak_rss_bytes"] <= 0:
-            raise ValueError("wait4 returned no child peak RSS")
-        if not bars_axis and row["peak_rss_bytes"] <= row["parent_floor_bytes"] + 4096:
+        if row["vmhwm_samples"] <= 0 or row["peak_rss_bytes"] <= 0:
             raise ValueError(
-                f"unmeasurable child peak RSS {row['peak_rss_bytes']} bytes: "
-                f"must exceed parent floor {row['parent_floor_bytes']} bytes + 4096"
+                "unmeasurable child post-exec VmHWM: "
+                f"{row['vmhwm_samples']} samples, {row['peak_rss_bytes']} bytes"
             )
         row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
@@ -340,7 +379,7 @@ def write_bar_fixture(path: Path, count: int) -> None:
 
 def run_gate(args: argparse.Namespace, directory: Path) -> dict:
     if not sys.platform.startswith("linux") or not hasattr(os, "wait4"):
-        raise ValueError("this gate requires Linux child os.wait4 rusage")
+        raise ValueError("this gate requires Linux child os.wait4 and /proc VmHWM")
     native, plugin, bars, manifest = list_paths(
         "gate inputs",
         [args.native, args.plugin, args.ohlcv, args.plugin.parent / "manifest.json"],
