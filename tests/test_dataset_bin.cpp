@@ -1,8 +1,10 @@
 #include <pineforge/hpo/dataset.hpp>
 #include <pineforge/hpo/error.hpp>
 
+#include "../src/core/sha256.hpp"
 #include "../src/engine_adapter/dataset_bin.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -11,6 +13,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -66,19 +69,88 @@ void require_mapped_bars_refusal(const Dataset& dataset) {
     throw std::runtime_error("bars() did not refuse a mapped dataset");
 }
 
+template <typename Register>
+void test_mapped_identity(const std::filesystem::path& directory, Register&& test) {
+    const auto path = directory / "good.bin";
+    const Dataset mapped = Dataset::load_bin(path);
+    const auto length = mapped.size() * sizeof(pf_bar_t);
+    // Full loading already verified these real mapped bytes against the fixture's sidecar.
+    const auto digest = pineforge::hpo::detail::sha256(
+        std::string_view(reinterpret_cast<const char*>(mapped.data()), length));
+    auto different_digest = digest;
+    different_digest[0] = digest[0] == '0' ? '1' : '0';
+    struct stat identity {};
+    identity.st_dev = 7;
+    identity.st_ino = 11;
+    identity.st_size = static_cast<decltype(identity.st_size)>(length);
+#if defined(__APPLE__)
+    identity.st_mtimespec = {1700000000, 17};
+    identity.st_ctimespec = {1700000000, 29};
+#else
+    identity.st_mtim = {1700000000, 17};
+    identity.st_ctim = {1700000000, 29};
+#endif
+    auto current = identity;
+#if defined(__APPLE__)
+    ++current.st_ctimespec.tv_nsec;
+#else
+    ++current.st_ctim.tv_nsec;
+#endif
+    const auto verify = [&](const struct stat& status, std::string_view expected_digest) {
+        pineforge::hpo::detail::require_bin_unchanged(
+            status, identity, mapped.data(), length, expected_digest, path);
+    };
+    test("binary_unchanged_identity_does_not_require_a_digest", [&] {
+        verify(identity, {});
+    });
+    test("binary_unchanged_identity_does_not_rehash", [&] {
+        verify(identity, different_digest);
+    });
+    test("binary_ctime_only_matching_digest_is_accepted", [&] {
+        verify(current, digest);
+    });
+    test("binary_ctime_only_different_digest_is_refused", [&] {
+        require_dataset_refusal([&] { verify(current, different_digest); }, "changed while mapped");
+    });
+    test("binary_ctime_only_absent_digest_is_refused", [&] {
+        require_dataset_refusal([&] { verify(current, {}); }, "changed while mapped");
+    });
+    auto mtime_changed = identity;
+#if defined(__APPLE__)
+    ++mtime_changed.st_mtimespec.tv_nsec;
+#else
+    ++mtime_changed.st_mtim.tv_nsec;
+#endif
+    const std::array<std::pair<const char*, std::string_view>, 3> digests{{
+        {"matching", digest}, {"different", different_digest}, {"absent", {}},
+    }};
+    for (const auto& entry : digests) {
+        test("binary_mtime_change_is_refused_with_" + std::string(entry.first) + "_digest", [&] {
+            require_dataset_refusal([&] { verify(mtime_changed, entry.second); },
+                                    "changed while mapped");
+        });
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
-        require(argc == 2, "usage: test_dataset_bin <generated-fixture-directory>");
+        require(argc == 2 || (argc == 3 && std::string(argv[2]) == "--mapped-identity"),
+                "usage: test_dataset_bin <generated-fixture-directory> [--mapped-identity]");
         const std::filesystem::path directory(argv[1]);
-        const Dataset csv = Dataset::load_csv(directory / "good.csv");
         std::size_t passed = 0;
         const auto test = [&](const std::string& name, const std::function<void()>& body) {
             body();
             ++passed;
             std::cout << "PASS " << name << '\n';
         };
+        if (argc == 3) {
+            test_mapped_identity(directory, test);
+            std::cout << "dataset binary identity tests passed: " << passed << '\n';
+            return 0;
+        }
+        const Dataset csv = Dataset::load_csv(directory / "good.csv");
         test("binary_layout_matches_independent_csv", [&] {
             const Dataset mapped = Dataset::load_bin(directory / "good.bin");
             require_same_bars(mapped, csv);

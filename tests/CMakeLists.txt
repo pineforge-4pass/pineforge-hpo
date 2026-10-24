@@ -490,7 +490,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             FIXTURES_SETUP dataset_bin_inputs)
         add_test(NAME pineforge_hpo_dataset_bin COMMAND pineforge_hpo_test_dataset_bin
             "${PFH_DATASET_BIN_FIXTURES}")
-        set_tests_properties(pineforge_hpo_dataset_bin PROPERTIES
+        # R4 uses the same C++ executable and real mapping, with unconditional seam references.
+        add_test(NAME pineforge_hpo_dataset_bin_identity COMMAND pineforge_hpo_test_dataset_bin
+            "${PFH_DATASET_BIN_FIXTURES}" --mapped-identity)
+        set_tests_properties(pineforge_hpo_dataset_bin pineforge_hpo_dataset_bin_identity PROPERTIES
             FIXTURES_REQUIRED dataset_bin_inputs)
     else()
         message(WARNING "SKIP: Python not found; binary-loader tests will not run")
