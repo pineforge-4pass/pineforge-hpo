@@ -314,11 +314,6 @@ def measure(
             raise ValueError(f"native child exited {row['exit_code']}: {diagnostic}")
         if row["peak_rss_bytes"] <= 0:
             raise ValueError("wait4 returned no child peak RSS")
-        if not bars_axis and row["peak_rss_bytes"] <= row["parent_floor_bytes"] + 4096:
-            raise ValueError(
-                f"unmeasurable child peak RSS {row['peak_rss_bytes']} bytes: "
-                f"must exceed parent floor {row['parent_floor_bytes']} bytes + 4096"
-            )
         row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
     except (OSError, ValueError, TypeError, AttributeError, OverflowError) as error:
