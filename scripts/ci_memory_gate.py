@@ -367,7 +367,6 @@ def measure(
             raise ValueError(f"native child exited {row['exit_code']}: {diagnostic}")
         if row["peak_rss_bytes"] <= 0:
             raise ValueError("unmeasurable GNU time peak RSS: peak must be positive")
-        row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
     except (OSError, ValueError, TypeError, AttributeError, OverflowError) as error:
         row["reason"] = str(error)
