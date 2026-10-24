@@ -15,24 +15,26 @@ import json
 import math
 import os
 from pathlib import Path
-import resource
 import signal
 import subprocess
 import sys
 import tempfile
-import time
 
 COUNTS = (10, 1_000, 100_000)
 SLOPE_LIMITS = (256, 32)  # Bytes/trial; identical to streamed-trial acceptance.
 BAR_COUNTS = (2, 1_000, 100_000)
-POLL_INTERVAL_SECONDS = 0.001
-RU_MAXRSS_MARGIN_BYTES = 1024 * 1024
+GNU_TIME = "/usr/bin/time"
+MAX_TIME_OUTPUT_BYTES = 4096
+LAUNCHER_FLOOR_NOTE = (
+    "ru_maxrss of a child launched directly from Python includes Python's "
+    "high-water; GNU time reaps the native child with a launcher floor of about "
+    "1 MiB instead."
+)
 MEASUREMENT_RESOLUTION = (
-    f"poll interval {POLL_INTERVAL_SECONDS} seconds (about 1 ms), "
-    f"ru_maxrss margin {RU_MAXRSS_MARGIN_BYTES} bytes (1 MiB); "
-    "a PASS means growth below the thresholds as measured by the last VmHWM "
-    "sample before exit (lower bound) or ru_maxrss when it exceeded the parent "
-    "floor by the margin (upper bound)."
+    "peak is the child's maximum resident set size from GNU time "
+    "(wait4 ru_maxrss of the native child reaped by a ~1 MiB launcher): "
+    "exact including the final milliseconds, floored at the launcher's own "
+    "size (about 1 MiB)"
 )
 MAX_METADATA_BYTES = 1024 * 1024
 CSV_HEADER = ["timestamp", "open", "high", "low", "close", "volume"]
@@ -113,21 +115,18 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def read_child_hwm(executable: Path, status: Path, native: Path) -> int | None:
-    """Read only the expected post-exec address space; exit races yield no sample."""
+def parse_gnu_time_peak(output: str) -> int:
+    """GNU time can prefix %M with a nonzero-exit or signal diagnostic."""
     try:
-        if os.readlink(executable) != str(native):
-            return None
-        for line in status.read_text(encoding="ascii").splitlines():
-            if line.startswith("VmHWM:"):
-                fields = line.split()
-                if len(fields) != 3 or fields[2] != "kB":
-                    return None
-                peak = int(fields[1]) * 1024
-                return peak if peak >= 0 else None
-    except (OSError, ValueError):
-        return None
-    return None
+        peak_kib = int(output.splitlines()[-1])
+    except (IndexError, ValueError) as error:
+        raise ValueError(
+            "unmeasurable GNU time peak RSS: last line must be an integer in KiB; "
+            "install the GNU time package in the workflow"
+        ) from error
+    if peak_kib <= 0:
+        raise ValueError("unmeasurable GNU time peak RSS: peak must be positive")
+    return peak_kib * 1024
 
 
 def run_child(
@@ -136,85 +135,82 @@ def run_child(
     command: list[str],
     inputs: list[Path],
 ) -> dict:
-    """Poll post-exec VmHWM; supplement with rusage above the inherited floor."""
-    stdout, stderr, exit_file, result_file = list_paths(
+    """Let GNU time reap the native child without Python's inherited RSS floor."""
+    list_paths("GNU time launcher", [Path(GNU_TIME)])
+    if not os.path.exists(GNU_TIME):
+        raise ValueError(
+            "missing GNU /usr/bin/time: install the time package in the workflow"
+        )
+    stdout, stderr, exit_file, result_file, time_file = list_paths(
         label,
         [
             directory / f"{label}.stdout",
             directory / f"{label}.stderr",
             directory / f"{label}.exit",
             directory / f"{label}.result.json",
+            directory / f"{label}.time",
         ],
     )
-    native = list_paths(
+    list_paths(
         "child executable, inputs and anonymous spool directory",
         [Path(command[0]), *inputs, directory],
-    )[0]
+    )
+    native_command = command
+    command = [GNU_TIME, "-f", "%M", "-o", str(time_file), "--", *native_command]
     print("COMMAND " + json.dumps(command), file=sys.stderr, flush=True)
     environment = {**os.environ, "TMPDIR": str(directory)}
     with stdout.open("wb") as output, stderr.open("wb") as errors:
-        parent_floor_bytes = (
-            int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
-        )
         child = subprocess.Popen(
             command, stdout=output, stderr=errors, cwd=directory, env=environment
         )
-        executable = Path(f"/proc/{child.pid}/exe")
-        status_path = Path(f"/proc/{child.pid}/status")
-        # Keep the proc paths themselves: resolving exe would follow its target.
-        print(
-            "FILES child proc read: " + json.dumps([str(executable), str(status_path)]),
-            file=sys.stderr,
-            flush=True,
-        )
-        vmhwm_last_bytes = 0
-        max_hwm_bytes = 0
-        hwm_samples = 0
         while True:
-            sample = read_child_hwm(executable, status_path, native)
-            if sample is not None:
-                vmhwm_last_bytes = sample
-                max_hwm_bytes = max(max_hwm_bytes, sample)
-                hwm_samples += 1
             try:
-                waited_pid, status, usage = os.wait4(child.pid, os.WNOHANG)
+                waited_pid, status, _usage = os.wait4(child.pid, 0)
             except InterruptedError:
                 continue
-            if waited_pid != 0:
-                break
-            time.sleep(POLL_INTERVAL_SECONDS)
-        ru_bytes = int(usage.ru_maxrss) * 1024
-        peak_rss_bytes = vmhwm_last_bytes
-        peak_source = "vmhwm_last"
-        if ru_bytes > parent_floor_bytes + RU_MAXRSS_MARGIN_BYTES:
-            peak_rss_bytes = max(vmhwm_last_bytes, ru_bytes)
-            if ru_bytes > vmhwm_last_bytes:
-                peak_source = "ru_maxrss"
+            break
         child.returncode = os.waitstatus_to_exitcode(status)
-        # Even a signalled child records its own nonzero exit, without a shell/tee.
+        # GNU time propagates normal child exits and returns nonzero for a signal.
         exit_file.write_text(f"{child.returncode}\n", encoding="ascii")
     row = {
         "pid": child.pid,
         "waited_pid": waited_pid,
         "command": command,
+        "native_command": native_command,
         "exit_code": child.returncode,
-        "parent_floor_bytes": parent_floor_bytes,
-        "ru_maxrss": usage.ru_maxrss,  # Linux KiB; can include the parent's floor.
-        "peak_rss_bytes": peak_rss_bytes,
-        "peak_source": peak_source,
-        "vmhwm_last_bytes": vmhwm_last_bytes,
-        "vmhwm_max_bytes": max_hwm_bytes,
-        "vmhwm_samples": hwm_samples,
-        "poll_interval_seconds": POLL_INTERVAL_SECONDS,
+        "peak_rss_bytes": 0,
+        "peak_source": "gnu_time_wait4",
+        "gnu_time_file": str(time_file),
+        "gnu_time_output": "",
+        "launcher_floor_note": LAUNCHER_FLOOR_NOTE,
         "stdout": str(stdout),
         "stderr": str(stderr),
         "exit_file": str(exit_file),
         "result_file": str(result_file),
         "verdict": "ERROR",
     }
-    write_json(result_file, row)
-    if waited_pid != child.pid:
-        raise ValueError(f"wait4 reaped {waited_pid}, expected {child.pid}")
+    try:
+        if waited_pid != child.pid:
+            raise ValueError(f"wait4 reaped {waited_pid}, expected {child.pid}")
+        try:
+            with time_file.open("rb") as source:
+                raw = source.read(MAX_TIME_OUTPUT_BYTES + 1)
+        except OSError as error:
+            raise ValueError(
+                "missing GNU time peak output: install the GNU time package "
+                "in the workflow"
+            ) from error
+        row["gnu_time_output"] = raw[:MAX_TIME_OUTPUT_BYTES].decode(
+            "utf-8", errors="replace"
+        )
+        if len(raw) > MAX_TIME_OUTPUT_BYTES:
+            raise ValueError("GNU time peak output exceeds 4 KiB")
+        row["peak_rss_bytes"] = parse_gnu_time_peak(row["gnu_time_output"])
+    except ValueError as error:
+        row["reason"] = str(error)
+        raise
+    finally:
+        write_json(result_file, row)
     return row
 
 
@@ -369,15 +365,8 @@ def measure(
             with errors.open("rb") as source:
                 diagnostic = source.read(2_000).decode("utf-8", errors="replace")
             raise ValueError(f"native child exited {row['exit_code']}: {diagnostic}")
-        if (
-            row["vmhwm_samples"] <= 0
-            or row["vmhwm_last_bytes"] <= 0
-            or row["peak_rss_bytes"] <= 0
-        ):
-            raise ValueError(
-                "unmeasurable child post-exec VmHWM: "
-                f"{row['vmhwm_samples']} samples, {row['vmhwm_last_bytes']} bytes"
-            )
+        if row["peak_rss_bytes"] <= 0:
+            raise ValueError("unmeasurable GNU time peak RSS: peak must be positive")
         row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
     except (OSError, ValueError, TypeError, AttributeError, OverflowError) as error:
@@ -399,7 +388,7 @@ def write_bar_fixture(path: Path, count: int) -> None:
 
 def run_gate(args: argparse.Namespace, directory: Path) -> dict:
     if not sys.platform.startswith("linux") or not hasattr(os, "wait4"):
-        raise ValueError("this gate requires Linux child os.wait4 and /proc VmHWM")
+        raise ValueError("this gate requires Linux child os.wait4 and GNU time")
     native, plugin, bars, manifest = list_paths(
         "gate inputs",
         [args.native, args.plugin, args.ohlcv, args.plugin.parent / "manifest.json"],
@@ -428,13 +417,18 @@ def run_gate(args: argparse.Namespace, directory: Path) -> dict:
         ],
         [],
     )
-    if crash["exit_code"] != -signal.SIGKILL:
+    if (
+        crash["exit_code"] == 0
+        or f"Command terminated by signal {signal.SIGKILL}"
+        not in crash["gnu_time_output"].splitlines()[:-1]
+    ):
         raise ValueError("deliberate crash control did not record SIGKILL")
     (marker,) = list_paths("crash control marker read", [Path(crash["exit_file"])])
     if int(marker.read_text(encoding="ascii")) != crash["exit_code"]:
         raise ValueError("deliberate crash marker does not match the child's own exit")
     crash.update(
-        verdict="PASS", reason="wait4 and marker both observed deliberate SIGKILL"
+        verdict="PASS",
+        reason="GNU time observed deliberate SIGKILL; wait4 and marker agree",
     )
     write_json(Path(crash["result_file"]), crash)
 
@@ -446,8 +440,6 @@ def run_gate(args: argparse.Namespace, directory: Path) -> dict:
         peak_sources.append(row["peak_source"])
     verdict = judge_trial_growth(samples)
     verdict.update(
-        poll_interval_seconds=POLL_INTERVAL_SECONDS,
-        ru_maxrss_margin_bytes=RU_MAXRSS_MARGIN_BYTES,
         peak_sources=peak_sources,
         measurement_resolution=MEASUREMENT_RESOLUTION,
     )

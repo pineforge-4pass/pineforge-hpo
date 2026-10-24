@@ -565,7 +565,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build
+          sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build time
 
       - name: Configure pinned engine headers
         run: >-

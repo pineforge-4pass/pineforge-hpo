@@ -6,41 +6,36 @@ headers on hosted `ubuntu-24.04`. It invokes the stdlib-only
 `scripts/ci_memory_gate.py` directly. The trial axis uses a fixed two-bar CSV,
 random sampling, seed 17, one worker, batch size one and `--trials-out all`.
 
-Each of 10, 1,000 and 100,000 trials runs in a fresh native child. The gate
-measures the child's own `VmHWM` in `/proc/<pid>/status` after exec, converting
-Linux kB to bytes. Every poll first checks that `/proc/<pid>/exe` points to the
-resolved native binary; samples from the forked Python address space are ignored.
-It samples about every **1 ms**, retaining `vmhwm_last_bytes`, `vmhwm_max_bytes`
-and `vmhwm_samples`. The last sample is a lower bound: a peak shorter than the
-poll interval can be missed if the child exits before the next sample. A child
-with no post-exec samples or a zero `VmHWM` is refused with exit 2 and an `ERROR`,
-even if `ru_maxrss` is usable.
+Each of 10, 1,000 and 100,000 trials runs in a fresh native child through
+`/usr/bin/time -f %M -o <artifact-file> -- <native-command>`. The workflow installs
+the GNU `time` package. The small launcher reaps the native child with `wait4`;
+`%M` is that child's maximum resident set size in KiB. The gate reads the last
+line of the launcher's output file after exit and multiplies it by 1,024 for
+`peak_rss_bytes`. This is the exact kernel peak, including the final milliseconds;
+there is no polling resolution. The reading has the launcher's own floor of
+**about 1 MiB**, so peaks below that size cannot be distinguished.
 
-`os.wait4(child.pid, os.WNOHANG)` reaps that exact PID once and supplies the
-child's own exit status and `ru_maxrss` (Linux KiB). An exec'd child's
-`ru_maxrss` includes the parent's pre-exec high-water, so it can be
-`max(parent_floor, native_peak)` and cannot measure small native peaks.
-Immediately before each spawn, the gate records its own
-`resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024` as
-`parent_floor_bytes`.
+`ru_maxrss` of a child launched directly from Python includes Python's high-water.
+That inherited floor can exceed the native peak. GNU time replaces the large
+Python floor with the small launcher's floor. Python's
+`os.wait4(launcher.pid, 0)` reaps the launcher for its exit status; the launcher's
+Python-floored rusage does not enter the measurement. Normal child exit codes
+propagate through GNU time. A signalled child produces a nonzero launcher exit
+and a `Command terminated by signal N` line before the final numeric peak.
 
-After reaping, only when `int(ru_maxrss) * 1024` exceeds that floor plus the
-**1 MiB (1,048,576 bytes)** margin does `peak_rss_bytes` take the maximum of the
-last VmHWM sample and `ru_maxrss` in bytes, otherwise it keeps the last sample,
-with `peak_source` recording `"vmhwm_last"` or `"ru_maxrss"` according to which
-value won. The PASS/FAIL verdict records `poll_interval_seconds`,
-`ru_maxrss_margin_bytes` and the three trial `peak_sources` in order, and both
-`measurement_resolution` and the growth-failure `reason` state the interval,
-margin and meaning: a PASS means growth below the thresholds as measured by the
-last VmHWM sample before exit (lower bound) or ru_maxrss when it exceeded the
-parent floor by the margin (upper bound).
+Each row records `peak_source: "gnu_time_wait4"`, the full launcher `command`,
+the `native_command`, `gnu_time_file`, raw `gnu_time_output` bounded to 4 KiB,
+and `launcher_floor_note`. Missing GNU time, missing or unparseable output, a
+nonpositive peak or output exceeding 4 KiB refuses the gate with exit 2 and an
+`ERROR`. The actual `-f`/`-o` invocation checks GNU compatibility without an
+extra probe process. The PASS/FAIL verdict records the three trial
+`peak_sources` in order; `measurement_resolution` and any growth-failure
+`reason` describe the exact peak and the launcher's floor.
 
-The gate keeps its footprint small with stdlib-only imports and writes native
-stdout directly to disk. After reaping the child, it checks every successful
-trial in order, plus the result's completion counts, before judging RSS. It
-never reads the child's stdout during polling or loads the whole trial array
-into the measuring parent. Polling only reads proc files and does not modify
-the child.
+The gate uses stdlib-only imports and writes native stdout directly to disk.
+After reaping, it checks every successful trial in order, plus the result's
+completion counts, before judging RSS. It reads trial rows incrementally and
+never loads the whole trial array into the measuring parent.
 
 The adjacent RSS differences divided by the trial-count differences must be
 at most **256 bytes/trial** (10 to 1,000) and **32 bytes/trial** (1,000 to
@@ -55,10 +50,11 @@ The script prints one JSON measurement per size and a final JSON verdict.
 Exit 0 means both trial slopes passed; 1 means growth exceeded a bound or an
 unexpected gate error occurred; 2 means invalid setup, an incomplete workload
 or an unmeasurable trial peak. Each run retains stdout, stderr,
-child `.exit` and `.result.json` files under a fresh
+child `.exit`, `.time` and `.result.json` files under a fresh
 `build/memory-gate/run-*` directory, with `RUN.COMPLETE` containing the gate
 verdict and `gate.exit` its own exit code. Every run first checks a deliberate
-SIGKILL child's nonzero marker. Read the JSON verdict and workload results;
+SIGKILL child's signal diagnostic and nonzero launcher status, requiring its
+`.exit` marker to agree. Read the JSON verdict and workload results;
 an exit marker alone is not a memory judgment. No later workload runs after
 a failed control. Unit tests include flat, growing and exact-bound series.
 

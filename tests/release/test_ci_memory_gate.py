@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import resource
 import signal
 import sys
 import tempfile
@@ -23,20 +24,24 @@ SPEC.loader.exec_module(GATE)
 BASE = 16 * 1024 * 1024
 
 
-def has_proc_vmhwm():
+def gnu_time_skip_reason():
     if not sys.platform.startswith("linux") or not hasattr(GATE.os, "wait4"):
-        return False
-    (status,) = GATE.list_paths("test VmHWM availability", [Path("/proc/self/status")])
+        return "requires Linux os.wait4 and GNU /usr/bin/time"
+    (launcher,) = GATE.list_paths("test GNU time version", [Path(GATE.GNU_TIME)])
+    if not GATE.os.path.exists(GATE.GNU_TIME):
+        return "GNU /usr/bin/time is absent; install the time package"
     try:
-        return any(
-            line.startswith("VmHWM:")
-            for line in status.read_text(encoding="ascii").splitlines()
+        result = GATE.subprocess.run(
+            [str(launcher), "--version"], capture_output=True, text=True, check=False
         )
     except OSError:
-        return False
+        return "GNU /usr/bin/time cannot be executed"
+    if result.returncode != 0 or "gnu time" not in result.stdout.lower():
+        return "/usr/bin/time is not GNU time; install the time package"
+    return None
 
 
-HAS_PROC_VMHWM = has_proc_vmhwm()
+GNU_TIME_SKIP_REASON = gnu_time_skip_reason()
 
 
 class MemoryGateLogicTests(unittest.TestCase):
@@ -212,189 +217,134 @@ class MemoryGateProcessTests(unittest.TestCase):
         (marker,) = GATE.list_paths("gate crash marker read", [run / "gate.exit"])
         self.assertEqual(int(marker.read_text()), 1)
 
-    def test_polling_keeps_postexec_hwm_and_reaps_the_exact_child_once(self):
+    def timed_child(self, output=b"12345\n", *, label="wait4", exit_code=0):
         child = SimpleNamespace(pid=4321, returncode=None)
+
+        def launch(command, **_kwargs):
+            if output is not None:
+                (path,) = GATE.list_paths(
+                    "mock GNU time output write", [Path(command[4])]
+                )
+                path.write_bytes(output)
+            return child
+
         with (
-            mock.patch.object(
-                GATE.resource,
-                "getrusage",
-                return_value=SimpleNamespace(ru_maxrss=8192),
-            ) as getrusage,
-            mock.patch.object(GATE.subprocess, "Popen", return_value=child),
-            # Distinct synthetic values pin the last sample and max independently.
-            mock.patch.object(
-                GATE, "read_child_hwm", side_effect=[None, 52 * 1024, 48 * 1024, None]
-            ) as read_hwm,
-            mock.patch.object(GATE.time, "sleep") as sleep,
+            mock.patch.object(GATE.os.path, "exists", return_value=True) as exists,
+            mock.patch.object(GATE.subprocess, "Popen", side_effect=launch) as popen,
             mock.patch.object(
                 GATE.os,
                 "wait4",
                 create=True,
                 side_effect=[
                     InterruptedError(),
-                    (0, 0, None),
-                    (0, 0, None),
-                    (4321, 0, SimpleNamespace(ru_maxrss=8192)),
+                    # This is the Python-floored launcher's usage, never the peak.
+                    (4321, exit_code << 8, SimpleNamespace(ru_maxrss=999_999)),
                 ],
             ) as wait4,
         ):
             row = GATE.run_child(
-                self.directory, "wait4", [sys.executable, "-I", "-c", "pass"], []
+                self.directory, label, [sys.executable, "-I", "-c", "pass"], []
             )
-        getrusage.assert_called_once_with(GATE.resource.RUSAGE_SELF)
-        self.assertEqual(wait4.call_args_list, [mock.call(4321, GATE.os.WNOHANG)] * 4)
-        self.assertEqual(sleep.call_args_list, [mock.call(0.001)] * 2)
-        native = GATE.allowed_path(Path(sys.executable))
+        exists.assert_called_once_with("/usr/bin/time")
+        self.assertEqual(wait4.call_args_list, [mock.call(4321, 0)] * 2)
+        self.assertEqual(popen.call_count, 1)
+        self.assertEqual(popen.call_args.args[0], row["command"])
+        self.assertEqual(popen.call_args.kwargs["cwd"], self.directory)
+        self.assertEqual(popen.call_args.kwargs["env"]["TMPDIR"], str(self.directory))
         self.assertEqual(
-            read_hwm.call_args_list,
-            [mock.call(Path("/proc/4321/exe"), Path("/proc/4321/status"), native)] * 4,
+            popen.call_args.kwargs["stdout"].name, str(self.path(f"{label}.stdout"))
         )
-        self.assertEqual(row["pid"], row["waited_pid"])
-        self.assertEqual(row["parent_floor_bytes"], 8192 * 1024)
-        self.assertEqual(row["ru_maxrss"], 8192)
-        self.assertEqual(row["peak_rss_bytes"], 48 * 1024)
-        self.assertEqual(row["peak_source"], "vmhwm_last")
-        self.assertEqual(row["vmhwm_last_bytes"], 48 * 1024)
-        self.assertEqual(row["vmhwm_max_bytes"], 52 * 1024)
-        self.assertEqual(row["vmhwm_samples"], 2)
-        self.assertEqual(row["exit_code"], 0)
-        self.assertEqual(child.returncode, 0)
-        self.assertEqual(self.read_json(Path(row["result_file"])), row)
-
-    def sampled_child(self, *, ru_bytes, last_bytes=BASE // 2, parent_floor=BASE):
-        child = SimpleNamespace(pid=4321, returncode=None)
-        with (
-            mock.patch.object(
-                GATE.resource,
-                "getrusage",
-                return_value=SimpleNamespace(ru_maxrss=parent_floor // 1024),
-            ),
-            mock.patch.object(GATE.subprocess, "Popen", return_value=child),
-            mock.patch.object(GATE, "read_child_hwm", return_value=last_bytes),
-            mock.patch.object(
-                GATE.os,
-                "wait4",
-                create=True,
-                return_value=(4321, 0, SimpleNamespace(ru_maxrss=ru_bytes // 1024)),
-            ),
-        ):
-            row = GATE.run_child(
-                self.directory, "rss-source", [sys.executable, "-I", "-c", "pass"], []
-            )
-        self.assertEqual(row["parent_floor_bytes"], parent_floor)
-        self.assertEqual(row["ru_maxrss"], ru_bytes // 1024)
-        self.assertEqual(row["vmhwm_last_bytes"], last_bytes)
-        self.assertEqual(row["vmhwm_max_bytes"], last_bytes)
-        self.assertEqual(row["vmhwm_samples"], 1)
+        self.assertEqual(
+            popen.call_args.kwargs["stderr"].name, str(self.path(f"{label}.stderr"))
+        )
+        self.assertEqual(child.returncode, exit_code)
         self.assertEqual(self.read_json(Path(row["result_file"])), row)
         return row
 
-    def test_ru_maxrss_above_parent_floor_and_margin_captures_exit_peak(self):
-        ru_bytes = BASE + GATE.RU_MAXRSS_MARGIN_BYTES + 1024
-        row = self.sampled_child(ru_bytes=ru_bytes)
-        self.assertEqual(row["peak_rss_bytes"], ru_bytes)
-        self.assertEqual(row["peak_source"], "ru_maxrss")
+    def test_gnu_time_reaps_exact_child_and_supplies_peak_not_python_wait4(self):
+        row = self.timed_child()
+        self.assertEqual(row["pid"], row["waited_pid"])
+        self.assertEqual(row["peak_rss_bytes"], 12345 * 1024)
+        self.assertEqual(row["peak_source"], "gnu_time_wait4")
+        self.assertEqual(row["gnu_time_output"], "12345\n")
+        self.assertIn("about 1 MiB", row["launcher_floor_note"])
+        self.assertNotIn("parent_floor_bytes", row)
+        self.assertNotIn("ru_maxrss", row)
+        self.assertEqual(
+            row["command"],
+            [
+                "/usr/bin/time",
+                "-f",
+                "%M",
+                "-o",
+                str(self.path("wait4.time")),
+                "--",
+                *row["native_command"],
+            ],
+        )
+        self.assertEqual(row["native_command"], [sys.executable, "-I", "-c", "pass"])
+        self.assertEqual(row["exit_code"], 0)
 
-    def test_ru_maxrss_at_or_below_parent_floor_margin_keeps_last_vmhwm(self):
-        for ru_bytes in (
-            BASE - 1024,
-            BASE,
-            BASE + 1024,
-            BASE + GATE.RU_MAXRSS_MARGIN_BYTES,
-        ):
-            with self.subTest(ru_bytes=ru_bytes):
-                row = self.sampled_child(ru_bytes=ru_bytes)
-                self.assertEqual(row["peak_rss_bytes"], BASE // 2)
-                self.assertEqual(row["peak_source"], "vmhwm_last")
+    def test_signal_diagnostic_before_last_peak_line_is_parsed(self):
+        output = b"Command terminated by signal 9\n12345\n"
+        row = self.timed_child(output, exit_code=128 + signal.SIGKILL)
+        self.assertEqual(row["peak_rss_bytes"], 12345 * 1024)
+        self.assertEqual(row["gnu_time_output"], output.decode("ascii"))
+        self.assertEqual(row["exit_code"], 128 + signal.SIGKILL)
+        (marker,) = GATE.list_paths("mock signal marker read", [Path(row["exit_file"])])
+        self.assertEqual(int(marker.read_text()), row["exit_code"])
 
-    def test_eligible_ru_maxrss_does_not_lower_a_larger_vmhwm_sample(self):
-        ru_bytes = BASE + GATE.RU_MAXRSS_MARGIN_BYTES + 1024
-        last_bytes = ru_bytes + 4096
-        row = self.sampled_child(ru_bytes=ru_bytes, last_bytes=last_bytes)
-        self.assertEqual(row["peak_rss_bytes"], last_bytes)
-        self.assertEqual(row["peak_source"], "vmhwm_last")
+    def test_normal_nonzero_exit_and_diagnostic_preserve_child_status(self):
+        output = b"Command exited with non-zero status 7\n12345\n"
+        row = self.timed_child(output, exit_code=7)
+        self.assertEqual(row["exit_code"], 7)
+        self.assertEqual(row["peak_rss_bytes"], 12345 * 1024)
+        self.assertEqual(row["gnu_time_output"], output.decode("ascii"))
+        (marker,) = GATE.list_paths("mock exit marker read", [Path(row["exit_file"])])
+        self.assertEqual(int(marker.read_text()), 7)
 
-    def test_preexec_samples_are_ignored_before_reading_status(self):
-        executable = self.path("proc-exe")
-        status = self.path("proc-status")
-        native = GATE.allowed_path(Path(sys.executable))
-        with (
-            mock.patch.object(
-                GATE.os, "readlink", return_value=str(self.directory / "forked-python")
-            ),
-            mock.patch.object(
-                Path, "read_text", return_value="VmHWM:\t65536 kB\n"
-            ) as read_status,
-        ):
-            self.assertIsNone(GATE.read_child_hwm(executable, status, native))
-        read_status.assert_not_called()
-
-    def test_postexec_vmhwm_is_converted_from_kib_and_missing_data_is_ignored(self):
-        executable = self.path("proc-exe")
-        status = self.path("proc-status")
-        native = GATE.allowed_path(Path(sys.executable))
-        with mock.patch.object(GATE.os, "readlink", return_value=str(native)):
-            for text, expected in (
-                ("Name:\tnative\nVmHWM:\t12345 kB\nVmRSS:\t42 kB\n", 12345 * 1024),
-                ("VmHWM:\t0 kB\n", 0),
-                ("Name:\tnative\n", None),
-                ("VmHWM:\t12345 MB\n", None),
-                ("VmHWM:\tinvalid kB\n", None),
+    def test_missing_empty_nonnumeric_or_zero_peak_output_is_refused(self):
+        for index, output in enumerate((None, b"", b"invalid\n", b"0\n", b"-1\n")):
+            label = f"invalid-{index}"
+            with (
+                self.subTest(output=output),
+                self.assertRaisesRegex(ValueError, "GNU time peak"),
             ):
-                with self.subTest(text=text):
-                    status.write_text(text, encoding="ascii")
-                    self.assertEqual(
-                        GATE.read_child_hwm(executable, status, native), expected
-                    )
-            with mock.patch.object(Path, "read_text", side_effect=FileNotFoundError):
-                self.assertIsNone(GATE.read_child_hwm(executable, status, native))
-        with mock.patch.object(GATE.os, "readlink", side_effect=ProcessLookupError):
-            self.assertIsNone(GATE.read_child_hwm(executable, status, native))
+                self.timed_child(output, label=label)
+            row = self.read_json(self.path(f"{label}.result.json"))
+            self.assertEqual(row["verdict"], "ERROR")
+            self.assertEqual(row["exit_code"], 0)
+            self.assertEqual(row["peak_rss_bytes"], 0)
+            self.assertEqual(row["gnu_time_output"], (output or b"").decode("ascii"))
+            self.assertEqual(int(self.path(f"{label}.exit").read_text()), 0)
 
-    def test_zero_postexec_samples_are_refused_with_a_mocked_reader(self):
-        child = SimpleNamespace(pid=4321, returncode=None)
-        with (
-            mock.patch.object(
-                GATE.resource,
-                "getrusage",
-                return_value=SimpleNamespace(ru_maxrss=12345),
-            ),
-            mock.patch.object(GATE.subprocess, "Popen", return_value=child),
-            mock.patch.object(GATE, "read_child_hwm", return_value=None),
-            mock.patch.object(GATE.time, "sleep"),
-            mock.patch.object(
-                GATE.os,
-                "wait4",
-                create=True,
-                return_value=(4321, 0, SimpleNamespace(ru_maxrss=12345)),
-            ),
-        ):
-            row = GATE.run_child(
-                self.directory, "no-postexec", [sys.executable, "-I", "-c", "pass"], []
-            )
-        self.assertEqual(row["vmhwm_samples"], 0)
-        self.assertEqual(row["peak_rss_bytes"], 0)
-        with (
-            mock.patch.object(GATE, "run_child", return_value=row),
-            redirect_stdout(io.StringIO()),
-            self.assertRaisesRegex(ValueError, "post-exec VmHWM"),
-        ):
-            GATE.measure(self.directory, Path(sys.executable), SOURCE, SOURCE, 10, 2)
-        result = self.read_json(Path(row["result_file"]))
-        self.assertEqual(result["verdict"], "ERROR")
-        self.assertEqual(result["exit_code"], 0)
+    def test_peak_output_is_bounded_to_four_kib(self):
+        output = b"x" * 4096 + b"\n12345\n"
+        with self.assertRaisesRegex(ValueError, "exceeds 4 KiB"):
+            self.timed_child(output)
+        row = self.read_json(self.path("wait4.result.json"))
+        self.assertEqual(row["gnu_time_output"], "x" * 4096)
+        self.assertEqual(row["verdict"], "ERROR")
 
-    @unittest.skipUnless(
-        HAS_PROC_VMHWM, "requires Linux /proc/self/status VmHWM and os.wait4"
-    )
-    def test_real_child_vmhwm_observes_allocation_below_the_parent_floor(self):
+    def test_non_gnu_launcher_cannot_publish_a_measurement(self):
+        with self.assertRaisesRegex(ValueError, "install the GNU time package"):
+            # A launcher rejecting GNU -f/-o options cannot write a peak file.
+            self.timed_child(None, exit_code=1)
+        row = self.read_json(self.path("wait4.result.json"))
+        self.assertEqual(row["exit_code"], 1)
+        self.assertEqual(row["verdict"], "ERROR")
+        self.assertEqual(int(self.path("wait4.exit").read_text()), 1)
+
+    @unittest.skipIf(GNU_TIME_SKIP_REASON, GNU_TIME_SKIP_REASON or "")
+    def test_real_launcher_measures_child_peaks_below_python_parent_floor(self):
         # Touch the parent's pages so wait4's inherited floor exceeds both children.
         padding = bytearray(96 * 1024 * 1024)
         padding[::4096] = b"x" * (len(padding) // 4096)
+        parent_floor = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
         small = GATE.run_child(
             self.directory,
             "small-child",
-            [sys.executable, "-I", "-c", "import time; time.sleep(0.05)"],
+            [sys.executable, "-I", "-c", "pass"],
             [],
         )
         large = GATE.run_child(
@@ -404,28 +354,25 @@ class MemoryGateProcessTests(unittest.TestCase):
                 sys.executable,
                 "-I",
                 "-c",
-                "import time; data = bytearray(40 * 1024 * 1024); "
-                "data[::4096] = b'x' * (len(data) // 4096); time.sleep(0.05)",
+                "data = bytearray(40 * 1024 * 1024); "
+                "data[::4096] = b'x' * (len(data) // 4096)",
             ],
             [],
         )
         for row in (small, large):
             with self.subTest(command=row["command"]):
                 self.assertEqual(row["exit_code"], 0)
-                self.assertGreater(row["vmhwm_samples"], 0)
                 self.assertGreater(row["peak_rss_bytes"], 0)
-                self.assertEqual(row["peak_rss_bytes"], row["vmhwm_last_bytes"])
-                self.assertEqual(row["peak_source"], "vmhwm_last")
-                self.assertGreaterEqual(row["vmhwm_max_bytes"], row["peak_rss_bytes"])
-                self.assertNotEqual(row["peak_rss_bytes"], row["parent_floor_bytes"])
+                self.assertEqual(row["peak_source"], "gnu_time_wait4")
                 self.assertEqual(self.read_json(Path(row["result_file"])), row)
-        self.assertLess(small["peak_rss_bytes"], small["parent_floor_bytes"])
-        self.assertGreaterEqual(large["peak_rss_bytes"], 35 * 1024 * 1024)
+        self.assertLess(small["peak_rss_bytes"], parent_floor // 2)
+        self.assertGreaterEqual(large["peak_rss_bytes"], 38 * 1024 * 1024)
         self.assertGreaterEqual(
             large["peak_rss_bytes"] - small["peak_rss_bytes"], 35 * 1024 * 1024
         )
+        self.assertEqual(padding[0], ord("x"))
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns wait4 units")
+    @unittest.skipIf(GNU_TIME_SKIP_REASON, GNU_TIME_SKIP_REASON or "")
     def test_real_deliberate_crash_records_the_child_signal(self):
         row = GATE.run_child(
             self.directory,
@@ -438,10 +385,13 @@ class MemoryGateProcessTests(unittest.TestCase):
             ],
             [],
         )
-        self.assertEqual(row["exit_code"], -signal.SIGKILL)
+        self.assertNotEqual(row["exit_code"], 0)
+        self.assertIn(
+            f"Command terminated by signal {signal.SIGKILL}",
+            row["gnu_time_output"].splitlines()[:-1],
+        )
         self.assertEqual(row["pid"], row["waited_pid"])
-        # A deliberate immediate crash need not survive long enough for a proc sample.
-        self.assertGreater(row["ru_maxrss"], 0)
+        self.assertGreater(row["peak_rss_bytes"], 0)
         (marker,) = GATE.list_paths("child crash marker read", [Path(row["exit_file"])])
         self.assertEqual(int(marker.read_text()), row["exit_code"])
         row.update(verdict="PASS", reason="child signal and marker agree")
@@ -514,27 +464,23 @@ class MemoryGateProcessTests(unittest.TestCase):
             with self.subTest(status=status), self.assertRaises(ValueError):
                 GATE.validate_output(self.output_fixture(rows=rows), 10)
 
-    def measurement_row(self, stdout, *, peak=BASE, parent_floor=BASE // 2, samples=3):
+    def measurement_row(self, stdout, *, peak=BASE):
         return {
             "exit_code": 0,
-            "parent_floor_bytes": parent_floor,
-            "ru_maxrss": max(peak, parent_floor) // 1024,
             "peak_rss_bytes": peak,
-            "peak_source": "vmhwm_last",
-            "vmhwm_last_bytes": peak,
-            "vmhwm_samples": samples,
+            "peak_source": "gnu_time_wait4",
             "stdout": str(stdout),
             "result_file": str(self.path("native.result.json")),
             "verdict": "ERROR",
         }
 
-    def test_child_vmhwm_can_be_below_or_at_parent_floor(self):
+    def test_positive_child_peak_requires_complete_trial_rows(self):
         stdout = self.output_fixture()
         arguments = (self.directory, Path(sys.executable), stdout, stdout, 10, 2)
-        for offset in (-4096, 0, 4095, 4096, 4097):
-            row = self.measurement_row(stdout, peak=BASE + offset, parent_floor=BASE)
+        for peak in (1024 * 1024, BASE // 2, BASE):
+            row = self.measurement_row(stdout, peak=peak)
             with (
-                self.subTest(offset=offset),
+                self.subTest(peak=peak),
                 mock.patch.object(GATE, "run_child", return_value=row),
                 redirect_stdout(io.StringIO()),
             ):
@@ -542,21 +488,18 @@ class MemoryGateProcessTests(unittest.TestCase):
                 self.assertEqual(measured["trial_rows"], 10)
             result = self.read_json(Path(row["result_file"]))
             self.assertEqual(result["verdict"], "PASS")
-            self.assertEqual(result["parent_floor_bytes"], BASE)
+            self.assertEqual(result["peak_rss_bytes"], peak)
 
-    def test_zero_samples_or_zero_vmhwm_are_refused_on_both_axes(self):
+    def test_nonpositive_peaks_are_refused_on_both_axes(self):
         stdout = self.output_fixture()
-        for peak, last, samples in ((BASE, BASE, 0), (0, 0, 3), (BASE, 0, 3)):
+        for peak in (0, -1):
             for bars_axis in (False, True):
-                row = self.measurement_row(stdout, peak=peak, samples=samples)
-                row["vmhwm_last_bytes"] = last
+                row = self.measurement_row(stdout, peak=peak)
                 with (
-                    self.subTest(
-                        peak=peak, last=last, samples=samples, bars_axis=bars_axis
-                    ),
+                    self.subTest(peak=peak, bars_axis=bars_axis),
                     mock.patch.object(GATE, "run_child", return_value=row),
                     redirect_stdout(io.StringIO()),
-                    self.assertRaisesRegex(ValueError, "post-exec VmHWM"),
+                    self.assertRaisesRegex(ValueError, "GNU time peak RSS"),
                 ):
                     GATE.measure(
                         self.directory,
@@ -594,8 +537,7 @@ class MemoryGateProcessTests(unittest.TestCase):
         stderr.write_text("deliberate native failure\n")
         result = self.path("failed.result.json")
         row = {
-            "exit_code": -signal.SIGKILL,
-            "parent_floor_bytes": BASE // 2,
+            "exit_code": 128 + signal.SIGKILL,
             "peak_rss_bytes": BASE,
             "stdout": str(stdout),
             "stderr": str(stderr),
@@ -621,11 +563,13 @@ class MemoryGateProcessTests(unittest.TestCase):
             native=Path(sys.executable), plugin=plugin, ohlcv=bars, bars_axis=True
         )
 
-    def crash_control_row(self, marker_exit=-signal.SIGKILL):
+    def crash_control_row(self, marker_exit=128 + signal.SIGKILL):
         marker = self.path("crash.exit")
         marker.write_text(f"{marker_exit}\n", encoding="ascii")
+        output = f"Command terminated by signal {signal.SIGKILL}\n12345\n"
         return {
-            "exit_code": -signal.SIGKILL,
+            "exit_code": 128 + signal.SIGKILL,
+            "gnu_time_output": output,
             "exit_file": str(marker),
             "result_file": str(self.path("crash.result.json")),
         }
@@ -640,11 +584,39 @@ class MemoryGateProcessTests(unittest.TestCase):
         paths.assert_not_called()
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
-    def test_missing_postexec_samples_exit_two_before_any_rss_judgment(self):
+    def test_missing_gnu_time_exits_two_without_launching_a_child(self):
+        args = self.gate_inputs()
+        parent = self.path("missing-time")
+        arguments = self.arguments(parent)
+        arguments[1] = str(args.native)
+        with (
+            mock.patch.object(GATE.os.path, "exists", return_value=False) as exists,
+            mock.patch.object(GATE.subprocess, "Popen") as child,
+            mock.patch.object(GATE, "measure") as measure,
+            mock.patch.object(GATE, "judge_trial_growth") as judge,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(GATE.main(arguments), 2)
+        exists.assert_called_once_with("/usr/bin/time")
+        child.assert_not_called()
+        measure.assert_not_called()
+        judge.assert_not_called()
+        run = next(parent.iterdir())
+        complete = self.read_json(run / "RUN.COMPLETE")
+        self.assertEqual(complete["verdict"], "ERROR")
+        self.assertEqual(complete["exit_code"], 2)
+        self.assertIn("install the time package", complete["reason"])
+        (marker,) = GATE.list_paths(
+            "missing launcher gate marker read", [run / "gate.exit"]
+        )
+        self.assertEqual(int(marker.read_text()), 2)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
+    def test_unmeasurable_peak_exits_two_before_any_rss_judgment(self):
         args = self.gate_inputs()
         parent = self.path("unmeasurable")
         stdout = self.output_fixture()
-        row = self.measurement_row(stdout, samples=0)
+        row = self.measurement_row(stdout, peak=0)
         arguments = self.arguments(parent)
         arguments[1] = str(args.native)
         with (
@@ -660,7 +632,7 @@ class MemoryGateProcessTests(unittest.TestCase):
         complete = self.read_json(next(parent.iterdir()) / "RUN.COMPLETE")
         self.assertEqual(complete["exit_code"], 2)
         self.assertEqual(complete["verdict"], "ERROR")
-        self.assertIn("post-exec VmHWM", complete["reason"])
+        self.assertIn("GNU time peak RSS", complete["reason"])
         self.assertEqual(self.read_json(Path(row["result_file"]))["verdict"], "ERROR")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
@@ -679,11 +651,12 @@ class MemoryGateProcessTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
     def test_main_verdict_records_resolution_and_trial_peak_sources(self):
         args = self.gate_inputs()
-        sources = ["vmhwm_last", "ru_maxrss", "vmhwm_last"]
+        sources = ["gnu_time_wait4"] * 3
         statement = (
-            "a PASS means growth below the thresholds as measured by the last VmHWM "
-            "sample before exit (lower bound) or ru_maxrss when it exceeded the parent "
-            "floor by the margin (upper bound)"
+            "peak is the child's maximum resident set size from GNU time "
+            "(wait4 ru_maxrss of the native child reaped by a ~1 MiB launcher): "
+            "exact including the final milliseconds, floored at the launcher's own "
+            "size (about 1 MiB)"
         )
         for growth, expected in ((0, 0), (512, 1)):
             with self.subTest(growth=growth):
@@ -711,17 +684,12 @@ class MemoryGateProcessTests(unittest.TestCase):
                 self.assertEqual(
                     verdict["verdict"], "PASS" if expected == 0 else "FAIL"
                 )
-                self.assertEqual(verdict["poll_interval_seconds"], 0.001)
-                self.assertEqual(verdict["ru_maxrss_margin_bytes"], 1024 * 1024)
+                self.assertNotIn("poll_interval_seconds", verdict)
+                self.assertNotIn("ru_maxrss_margin_bytes", verdict)
                 self.assertEqual(verdict["peak_sources"], sources)
-                for text in (
-                    "0.001 seconds (about 1 ms)",
-                    "1048576 bytes (1 MiB)",
-                    statement,
-                ):
-                    self.assertIn(text, verdict["measurement_resolution"])
-                    if expected != 0:
-                        self.assertIn(text, verdict["reason"])
+                self.assertEqual(verdict["measurement_resolution"], statement)
+                if expected != 0:
+                    self.assertIn(statement, verdict["reason"])
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
     def test_measured_trial_peaks_drive_the_verdict_and_bar_growth_is_not_gated(self):
@@ -739,15 +707,19 @@ class MemoryGateProcessTests(unittest.TestCase):
                     return {
                         "peak_rss_bytes": peak,
                         "peak_source": (
-                            "vmhwm_last" if kw.get("bars_axis") else "ru_maxrss"
+                            "bar-only" if kw.get("bars_axis") else "gnu_time_wait4"
                         ),
                     }
 
-                measurements = mock.patch.object(GATE, "measure", side_effect=measured)
-                with measurements as measure:
+                with (
+                    mock.patch.object(
+                        GATE, "run_child", return_value=self.crash_control_row()
+                    ),
+                    mock.patch.object(GATE, "measure", side_effect=measured) as measure,
+                ):
                     verdict = GATE.run_gate(args, directory)
                 self.assertEqual(verdict["exit_code"], expected)
-                self.assertEqual(verdict["peak_sources"], ["ru_maxrss"] * 3)
+                self.assertEqual(verdict["peak_sources"], ["gnu_time_wait4"] * 3)
                 self.assertEqual(
                     [call.args[4] for call in measure.call_args_list[:3]],
                     [10, 1_000, 100_000],
@@ -778,6 +750,19 @@ class MemoryGateProcessTests(unittest.TestCase):
             mock.patch.object(GATE, "run_child", return_value={"exit_code": 0}),
             mock.patch.object(GATE, "measure") as measure,
             self.assertRaisesRegex(ValueError, "crash control"),
+        ):
+            GATE.run_gate(args, self.directory)
+        measure.assert_not_called()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
+    def test_nonzero_exit_without_sigkill_diagnostic_fails_crash_control(self):
+        args = self.gate_inputs()
+        crash = self.crash_control_row()
+        crash["gnu_time_output"] = "Command exited with non-zero status 137\n12345\n"
+        with (
+            mock.patch.object(GATE, "run_child", return_value=crash),
+            mock.patch.object(GATE, "measure") as measure,
+            self.assertRaisesRegex(ValueError, "crash control did not record SIGKILL"),
         ):
             GATE.run_gate(args, self.directory)
         measure.assert_not_called()

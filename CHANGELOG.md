@@ -4,14 +4,14 @@
 
 - Gate native child peak RSS growth in CI at 10 / 1,000 / 100,000 trials with
   limits of 256 / 32 bytes per trial and a synthetic growth rejection control.
-- Poll the memory gate child's post-exec `VmHWM` about every 1 ms, taking the
-  maximum with `ru_maxrss` only when it exceeds the immediately pre-spawn parent
-  floor by more than a 1 MiB margin, and record which source won.
-  Include the interval, margin and three trial sources in the verdict and
-  explain the resolution in both the verdict and failure reason: a PASS means
-  growth below the thresholds as measured by the last VmHWM sample before exit
-  (lower bound) or ru_maxrss when it exceeded the parent floor by the margin
-  (upper bound).
+- Measure native child peak RSS through GNU time's `wait4`, including the final
+  milliseconds without polling. The exact reading has the small launcher's floor
+  of about 1 MiB; `ru_maxrss` of a child launched directly from Python includes
+  Python's high-water. Record `gnu_time_wait4`, the launcher command and bounded
+  raw output, and state the floor in the verdict and growth-failure reason.
+  Install the `time` package in the memory-gate job and refuse missing or invalid
+  peaks. Retain complete trial-row validation and a deliberate SIGKILL control
+  whose signal diagnostic, nonzero launcher status and `.exit` marker must agree.
 - Bound `--trials-out all` retention in the native process with an anonymous spool independent
   of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
 - The default `--trials-out all` needs a writable directory for two anonymous files

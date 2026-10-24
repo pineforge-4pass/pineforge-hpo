@@ -66,6 +66,12 @@ class MemoryGateWiringTests(unittest.TestCase):
 
     def test_job_builds_native_fixture_and_runs_the_real_gate_directly(self):
         steps = {step["name"]: step for step in self.jobs["memory-gate"]["steps"]}
+        self.assertEqual(
+            steps["Install native dependencies"]["run"],
+            "sudo apt-get update\n"
+            "sudo apt-get install -y cmake libeigen3-dev libmpfr-dev "
+            "ninja-build time\n",
+        )
         configure = steps["Configure Release native CLI and fixture"]["run"]
         for flag in (
             "-DCMAKE_BUILD_TYPE=Release",
