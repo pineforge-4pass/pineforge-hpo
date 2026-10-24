@@ -3119,8 +3119,7 @@ int main(int argc, char** argv) {
         return 5;
     } catch (const std::exception& error) {
         std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
-        if (!result_publication_started.load())
-            std::cout << pfh::detail::failure_document(error, 1);
+        std::cout << pfh::detail::failure_document(error, 1);
         return 1;
     }
 }
