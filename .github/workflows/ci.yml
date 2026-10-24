@@ -252,7 +252,7 @@ jobs:
   release-notification:
     name: Release notification contract
     needs: [authz, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: github.event.pull_request.draft != true && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
@@ -273,13 +273,13 @@ jobs:
 
       - name: Lint and format release notification code
         run: |
-          ruff check scripts/notify_release_hub.py tests/release
-          ruff format --check scripts/notify_release_hub.py tests/release
+          ruff check scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
+          ruff format --check scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
 
   native:
     name: Native (${{ matrix.os }})
     needs: [authz, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: github.event.pull_request.draft != true && needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.runner }}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
@@ -501,7 +501,7 @@ jobs:
   python:
     name: Python ${{ matrix.python }}
     needs: [authz, changes]
-    if: needs.changes.outputs.code == 'true'
+    if: github.event.pull_request.draft != true && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
@@ -543,8 +543,69 @@ jobs:
           ruff check python tests/python benchmarks
           ruff format --check python tests/python benchmarks
 
+  memory-gate:
+    name: HPO memory growth gate
+    needs: [authz, changes]
+    # LB-387: suites start when a pull request is ready for review.
+    if: github.event.pull_request.draft != true && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the exact head and pinned submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build
+
+      - name: Configure pinned engine headers
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
+
+      - name: Configure Release native CLI and fixture
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_ENGINE_ROOT="$GITHUB_WORKSPACE/external/pineforge-engine" \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON
+
+      - name: Build native CLI and fixture
+        run: >-
+          cmake --build build --target pineforge-hpo-native pineforge_hpo_fake_strategy -j4
+
+      - name: Gate child peak RSS growth
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'timestamp,open,high,low,close,volume' \
+            '1700000000000,100,102,99,101,10' \
+            '1700000060000,100,102,99,101,10' > build/memory-gate-bars.csv
+          python3 -I scripts/ci_memory_gate.py \
+            --native build/bin/pineforge-hpo-native \
+            --plugin build/lib/fake_strategy.so \
+            --ohlcv build/memory-gate-bars.csv \
+            --artifacts build/memory-gate --bars-axis
+
   build-gate:
-    needs: [authz, changes, workflow-lint, release-notification, native, python]
+    needs: [authz, changes, memory-gate, native, python, release-notification, workflow-lint]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
@@ -662,7 +723,7 @@ jobs:
         shell: "bash"
         env:
           NEEDS: "${{ toJSON(needs) }}"
-          HEAVY_JOBS: "[\"native\",\"python\",\"release-notification\"]"
+          HEAVY_JOBS: "[\"memory-gate\",\"native\",\"python\",\"release-notification\"]"
           DOCS_ONLY: "${{ steps.classify.outputs.docs_only }}"
           WORKFLOWS_ONLY: "${{ steps.classify.outputs.workflows_only }}"
         run: |

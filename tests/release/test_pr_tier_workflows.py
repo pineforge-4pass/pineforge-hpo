@@ -121,6 +121,7 @@ class PrTierWorkflowTests(unittest.TestCase):
         routes = (
             ci["release-notification"]["runs-on"],
             ci["python"]["runs-on"],
+            ci["memory-gate"]["runs-on"],
             ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
             benchmark["optuna"]["runs-on"],
         )
@@ -138,12 +139,13 @@ class PrTierWorkflowTests(unittest.TestCase):
     def test_no_route_is_a_conditional_expression(self):
         # Every routed site is now a literal hosted label, so routing can no longer
         # vary by event, actor or fork. Guard that invariant directly: a `${{ }}`
-        # expression creeping back into any of the four routed sites is a regression.
+        # expression creeping back into any of the five routed sites is a regression.
         ci = self.workflows["ci.yml"]["jobs"]
         benchmark = self.workflows["benchmark-smoke.yml"]["jobs"]
         routes = (
             ci["release-notification"]["runs-on"],
             ci["python"]["runs-on"],
+            ci["memory-gate"]["runs-on"],
             ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
             benchmark["optuna"]["runs-on"],
         )
@@ -159,7 +161,7 @@ class PrTierWorkflowTests(unittest.TestCase):
             POOL_ROUTE,
             POOL_ROUTE.replace("'ubuntu-24.04'", f"fromJSON('{json.dumps(POOL)}')"),
         ):
-            for job_id in ("release-notification", "python"):
+            for job_id in ("release-notification", "python", "memory-gate"):
                 with self.subTest(job=job_id, route=bad_route):
                     mutated = copy.deepcopy(self.workflows)
                     mutated["ci.yml"]["jobs"][job_id]["runs-on"] = bad_route
@@ -187,6 +189,7 @@ class PrTierWorkflowTests(unittest.TestCase):
                     "release-notification": "Release notification contract",
                     "native": "Native (${{ matrix.os }})",
                     "python": "Python ${{ matrix.python }}",
+                    "memory-gate": "HPO memory growth gate",
                     "build-gate": "build-gate",
                 },
             ),
@@ -401,6 +404,30 @@ class PrTierWorkflowTests(unittest.TestCase):
                                 cancelled=lambda: False,
                             )
                             self.assertEqual(allowed, code == "true")
+
+    def test_draft_ci_pull_requests_skip_every_suite(self):
+        workflow = self.workflows["ci.yml"]
+        self.assertIn("ready_for_review", workflow["on"]["pull_request"]["types"])
+        for job_id in ("release-notification", "native", "python", "memory-gate"):
+            job = workflow["jobs"][job_id]
+            for draft in (False, True):
+                for code in ("true", "false", ""):
+                    with self.subTest(job=job_id, draft=draft, code=code):
+                        allowed = evaluate(
+                            job["if"],
+                            github=SimpleNamespace(
+                                event_name="pull_request",
+                                event=SimpleNamespace(
+                                    pull_request=SimpleNamespace(draft=draft)
+                                ),
+                            ),
+                            needs=SimpleNamespace(
+                                changes=SimpleNamespace(
+                                    outputs=SimpleNamespace(code=code)
+                                )
+                            ),
+                        )
+                        self.assertEqual(allowed, not draft and code == "true")
 
 
 if __name__ == "__main__":

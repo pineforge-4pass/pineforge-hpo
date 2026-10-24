@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Gate native child peak RSS growth in CI at 10 / 1,000 / 100,000 trials with
+  limits of 256 / 32 bytes per trial and a synthetic growth rejection control.
 - Bound `--trials-out all` retention in the native process with an anonymous spool independent
   of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
 - The default `--trials-out all` needs a writable directory for two anonymous files
