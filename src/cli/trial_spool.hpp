@@ -30,7 +30,7 @@ public:
           first_trial_id_(first_trial_id) {}
 
     void append(std::uint64_t trial_id, const std::string& line) {
-        if (failed_ || sealed_ || line.size() < 2 || line.back() != '\n' ||
+        if (sealed_ || line.size() < 2 || line.back() != '\n' ||
             line.size() > kMaxFileBytes - bytes_)
             fail("invalid terminal trial spool write");
         if (trial_id < first_trial_id_)
