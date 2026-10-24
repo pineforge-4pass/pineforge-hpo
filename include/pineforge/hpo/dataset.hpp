@@ -19,10 +19,19 @@ enum class BinaryVerification { Full, Sidecar };
 /// accepts `pf_bar_t*` rather than `const pf_bar_t*`. Timestamps must be strictly increasing and
 /// owned OHLCV values must be finite. Binary inputs follow the engine's volume contract:
 /// nonnegative or NaN, with finite OHLC prices. Never rewrite a mapped file in place: publish by
-/// rename/os.replace. In-place rewriting or truncation is unsupported. The native runner checks
-/// the open descriptor's device, inode, size and nanosecond mtime at the end of a run, including
-/// the timeout path, before publishing results. Truncation can cause an unrecoverable SIGBUS
-/// before that check and terminate the process without failure JSON.
+/// rename/os.replace. In-place rewriting or truncation is unsupported. The native runner compares
+/// only the open descriptor's `st_dev`, `st_ino`, `st_size` and `st_mtim` (the full
+/// seconds+nanoseconds value the filesystem reports) against their load-time values at the end
+/// of a run, including the timeout path, before publishing results.
+/// Detection resolution is the filesystem's timestamp granularity (some filesystems store a
+/// coarse tick or whole seconds), so a rewrite within one timestamp tick of the load that keeps
+/// the size is not detected. Metadata-only changes (chmod, chown, xattr, extra hard link) are
+/// accepted.
+/// An in-place same-size rewrite (or a truncate-and-rewrite to the same size) followed by restoring
+/// the exact mtime (`touch -r`, `os.utime` with `ns=`) is not detected; this is a deliberate escape
+/// that a fix-up script must take on purpose, and the guard is a change detector, not a lock.
+/// Truncation can cause an unrecoverable SIGBUS before that check and terminate the process
+/// without failure JSON.
 class Dataset final {
 public:
     /// Takes ownership of validated bars.
@@ -65,13 +74,21 @@ public:
     /// @throws std::logic_error for mapped input; use data()/size() for either format.
     const std::vector<pf_bar_t>& bars() const;
 
-    /// Checks the mapped file's open descriptor against its load-time device, inode, size and
-    /// nanosecond mtime.
+    /// Compares only the mapped file's open descriptor's `st_dev`, `st_ino`, `st_size` and
+    /// `st_mtim` (the full seconds+nanoseconds value the filesystem reports) to their load-time
+    /// values.
+    /// Detection resolution is the filesystem's timestamp granularity (some filesystems store a
+    /// coarse tick or whole seconds), so a rewrite within one timestamp tick of the load that
+    /// keeps the size is not detected.
     ///
     /// A no-op for owned input. Replacing the path by rename leaves the mapped inode valid.
     /// Metadata-only changes (chmod, chown, xattr, extra hard link) are accepted. Rewrites that
-    /// change size or mtime are refused; a same-size rewrite restoring the original mtime is
-    /// not detected. This is a change detector, not a lock or protection from SIGBUS on truncation.
+    /// change size or mtime are refused.
+    /// An in-place same-size rewrite (or a truncate-and-rewrite to the same size) followed by
+    /// restoring the exact mtime (`touch -r`, `os.utime` with `ns=`) is not detected; this is a
+    /// deliberate escape that a fix-up script must take on purpose, and the guard is a change
+    /// detector, not a lock.
+    /// Truncation can cause an unrecoverable SIGBUS before the check.
     /// @throws std::runtime_error with code hpo_dataset_invalid when the file changed while mapped
     /// or its descriptor cannot be checked.
     void verify_unchanged() const;

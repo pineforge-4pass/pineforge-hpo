@@ -4,10 +4,13 @@
 
 - Bound `--trials-out all` retention in the native process with an anonymous spool independent
   of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
-- The default `--trials-out all` needs a writable directory for two short-lived anonymous files
+- The default `--trials-out all` needs a writable directory for two anonymous files
   (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`), with no retry elsewhere
-  after selection. Read-only root filesystems need `TMPDIR` or `--output` in a writable place;
-  otherwise use `--trials-out none|best-k`.
+  after selection. Both files are unlinked at creation, but the spool holds the whole trial array
+  on disk until the process exits. On read-only root filesystems, `--output` in a writable place
+  and `--trials-out none|best-k` are remedies for the native CLI only. The Python `run` wrapper
+  forwards neither `--output` nor `--trials-out`, so for `pineforge-hpo run` only a writable
+  `TMPDIR` (or `/tmp`) helps.
 - Attribute result destination write failures to the output file or stdout without marking
   the terminal trial spool failed; retain `hpo_output_io_failed` and the existing exit codes.
 - Add native `--ohlcv-bin` and StudySpec `ohlcv_bin` for shared read-only mapped chart bars.
@@ -19,10 +22,15 @@
   `DatasetSpec.ohlcv` is now `Path | None`, with exactly one of `ohlcv` / `ohlcv_bin` set.
 - Add C++ `Dataset::load_bin`, `BinaryVerification`, and `Dataset::verify_unchanged`.
   `Dataset::bars()` now throws `std::logic_error` for mapped input; use `data()` and `size()`.
-  The mapped-file guard compares device, inode, size and nanosecond mtime, accepting metadata-only
-  changes (chmod, chown, xattr, extra hard link). Rewrites changing size or mtime are refused;
-  a same-size rewrite restoring the original mtime is not detected. This is a change detector,
-  not a lock.
+  The mapped-file guard compares only `st_dev`, `st_ino`, `st_size` and `st_mtim` (the full
+  seconds+nanoseconds value the filesystem reports). Detection resolution is the filesystem's
+  timestamp granularity (some filesystems store a coarse tick or whole seconds), so a rewrite
+  within one timestamp tick of the load that keeps the size is not detected.
+  Metadata-only changes (chmod, chown, xattr, extra hard link) are accepted; rewrites changing
+  size or mtime are refused.
+  An in-place same-size rewrite (or a truncate-and-rewrite to the same size) followed by restoring
+  the exact mtime (`touch -r`, `os.utime` with `ns=`) is not detected; this is a deliberate escape
+  that a fix-up script must take on purpose, and the guard is a change detector, not a lock.
 
 ## 1.6.3 (2026-10-23)
 

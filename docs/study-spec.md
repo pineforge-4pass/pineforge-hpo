@@ -404,13 +404,20 @@ Both modes scan every record:
 OHLC prices must be finite, volume nonnegative or NaN, and timestamps strictly increasing.
 In-place rewriting or truncation of a mapped file is unsupported. Publish a new file by
 write-then-`rename`/`os.replace`, keeping each mapped inode immutable for the dataset's lifetime.
-The native runner keeps the original descriptor open and checks its device, inode, size and
-nanosecond mtime at the end of the run, including the timeout path, before rendering results.
+The native runner keeps the original descriptor open and compares only `st_dev`, `st_ino`,
+`st_size` and `st_mtim` (the full seconds+nanoseconds value the filesystem reports) against their
+load-time values at the end of the run, including the timeout path, before rendering results.
+Detection resolution is the filesystem's timestamp granularity (some filesystems store a coarse
+tick or whole seconds), so a rewrite within one timestamp tick of the load that keeps the size
+is not detected.
 Metadata-only changes (chmod, chown, xattr, extra hard link) are accepted. A rewrite that changes
 size or mtime is refused as `hpo_dataset_invalid` with a `changed while mapped` diagnostic;
-replacing the path with a new inode is accepted. This guard is a change detector, not a lock:
-a same-size rewrite that restores the original mtime is not detected. Truncation can cause an
-unrecoverable SIGBUS before this end-of-run check, terminating the process without failure JSON.
+replacing the path with a new inode is accepted.
+An in-place same-size rewrite (or a truncate-and-rewrite to the same size) followed by restoring
+the exact mtime (`touch -r`, `os.utime` with `ns=`) is not detected; this is a deliberate escape
+that a fix-up script must take on purpose, and the guard is a change detector, not a lock.
+Truncation can cause an unrecoverable SIGBUS before this end-of-run check, terminating the process
+without failure JSON.
 The CSV loader is unchanged.
 The native runner refuses `--trials-file`, `--output` or `--scheduler-stats` paths that alias the
 binary chart or its sidecar with `hpo_cli_usage`. `--verify-bin` requires `--ohlcv-bin`.
@@ -1089,15 +1096,17 @@ paths. `trials_completed` includes the timeout terminal record; coverage and bes
 selection use only the terminal table. Timeout records cannot be feasible and
 make `exhaustive_equivalent` false.
 
-The default `--trials-out all` requires a writable directory for two short-lived anonymous files.
+The default `--trials-out all` requires a writable directory for two anonymous files.
 Terminal rows append in completion order to a data file, with offsets in an index file.
 The program creates and immediately unlinks both files in `--output`'s parent directory when it
 exists and is a writable directory (`.` when the parent path is empty). Otherwise it uses
 non-empty `TMPDIR`, or `/tmp` when `TMPDIR` is unset or empty. The directory is chosen once for both
 files; creation failures do not trigger a retry in another directory. The index is addressed relative
 to the first trial ID of the run, so high continuation IDs and gaps are supported.
-Read-only root filesystems need `TMPDIR` or `--output` in a writable place; otherwise use
-`--trials-out none|best-k`.
+The spool holds the whole trial array on disk until the process exits.
+On read-only root filesystems, `--output` in a writable place and `--trials-out none|best-k` are
+remedies for the native CLI only. The Python `run` wrapper forwards neither `--output` nor
+`--trials-out`, so for `pineforge-hpo run` only a writable `TMPDIR` (or `/tmp`) helps.
 If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
 not in the native process RSS.
 The final `trials` array copies those rendered rows in trial-ID order
