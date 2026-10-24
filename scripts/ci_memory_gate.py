@@ -200,7 +200,7 @@ def run_child(
         "exit_code": child.returncode,
         "parent_floor_bytes": parent_floor_bytes,
         "ru_maxrss": usage.ru_maxrss,  # Linux KiB; can include the parent's floor.
-        "peak_rss_bytes": peak_rss_bytes,
+        "peak_rss_bytes": int(usage.ru_maxrss) * 1024,
         "peak_source": peak_source,
         "vmhwm_last_bytes": vmhwm_last_bytes,
         "vmhwm_max_bytes": max_hwm_bytes,
