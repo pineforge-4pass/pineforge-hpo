@@ -1270,7 +1270,11 @@ private:
 
 class RunState final {
 public:
+#ifdef PINEFORGE_HPO_TEST_EVALUATION_COMPLETION
+    using Clock = evaluation_completion_test::Clock;
+#else
     using Clock = std::chrono::steady_clock;
+#endif
 
     RunState(const Options& options, Clock::time_point started, TrialArchive& archive,
              std::function<void(const std::vector<TrialRecord>&, std::exception_ptr)> timeout_result)
@@ -1393,6 +1397,9 @@ public:
             done_ = true;
             changed_.notify_one();
         }
+#ifdef PINEFORGE_HPO_TEST_EVALUATION_COMPLETION
+        evaluation_completion_test::output_drain();
+#endif
         if (writer_.joinable())
             writer_.join();
     }
@@ -2707,6 +2714,9 @@ int run(Options options) {
             if (!exhausted)
                 submit_batch();
         }
+#ifdef PINEFORGE_HPO_TEST_EVALUATION_COMPLETION
+        evaluation_completion_test::evaluation_complete();
+#endif
     };
     // The rolling schedule keeps every worker busy. It proposes up to one trial per worker with
     // nothing finished, then repeats one pass until nothing is in flight: collect every trial that
@@ -2824,6 +2834,9 @@ int run(Options options) {
                 if (!propose_one())
                     break;
         }
+#ifdef PINEFORGE_HPO_TEST_EVALUATION_COMPLETION
+        evaluation_completion_test::evaluation_complete();
+#endif
     };
     const auto evaluate_loop = [&](auto propose, auto feedback) {
         if (rolling)
