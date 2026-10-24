@@ -273,7 +273,8 @@ class RunStreamingTests(unittest.TestCase):
 
     def test_success_and_no_feasible_exit_preserve_formatted_stdout_bytes(self) -> None:
         # Include escapes, surrogate pairs, exponents, duplicate keys, and values
-        # crossing a 64 KiB read boundary. Compare the previous serializer's bytes.
+        # crossing a 64 KiB read boundary, plus raw DEL, U+2028, and a four-byte
+        # character in a key and value. Compare the previous serializer's bytes.
         payload = (
             '{"z":-0.0,"a":1e-6,"trials":[{"z":"é\\\\\\\"\\n",'
             '"a":"\\ud83d\\ude80","padding":"'
@@ -281,6 +282,7 @@ class RunStreamingTests(unittest.TestCase):
             + '"}],"warm_start_trials":[{"trial_id":7}],'
             '"completion_order":[3,1,2],"completed_before":[0,1,1],'
             '"nested":{"z":[],"a":[{},[],true,null]},'
+            '"unicode\x7f\u2028🚀":"\x7f\u2028🚀",'
             '"duplicate":0,"duplicate":1,"artifact":"replaced","ok":true}'
         )
         expected = json.loads(payload)
@@ -291,7 +293,10 @@ class RunStreamingTests(unittest.TestCase):
             artifact=self.artifact,
         )
         expected_bytes = (
-            json.dumps(expected, indent=2, sort_keys=True, allow_nan=False) + "\n"
+            json.dumps(
+                expected, indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False
+            )
+            + "\n"
         ).encode("utf-8")
         for code in (0, 2):
             with self.subTest(code=code):
@@ -469,6 +474,10 @@ class RunStreamingTests(unittest.TestCase):
             b'{"x":1\x00}',
             b'{"a":"\\\xc3\xa9"}',
             b'{"a":"raw\ttab"}',
+            b'{"a":"\x00"}',
+            b'{"a":"\x1f"}',
+            b'{"a":"\xff"}',
+            b'{"p":"' + b"x" * (70 * 1024) + b'\xff"}',
         ):
             with self.subTest(payload=payload):
                 self.output = io.StringIO()
@@ -476,6 +485,9 @@ class RunStreamingTests(unittest.TestCase):
                 with self.assertRaises(cli.CliError) as caught:
                     self._run_payload(payload, "--output", str(destination))
                 self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
+                self.assertEqual(
+                    caught.exception.failure_args, {"reason": "validation"}
+                )
                 self.assertEqual(self.output.getvalue(), "")
                 self.assertFalse(destination.exists())
                 self._assert_clean()

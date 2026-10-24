@@ -1116,9 +1116,10 @@ The spool holds the whole trial array on disk until the process exits.
 On read-only root filesystems, `--output` in a writable place and `--trials-out none|best-k` are
 remedies for the native CLI only. The Python `run` wrapper forwards neither `--output` nor
 `--trials-out`, so for `pineforge-hpo run` only a writable `TMPDIR` (or `/tmp`) helps.
-The wrapper adds two anonymous spools in `TMPDIR` (or `/tmp`), each about the result size:
-raw stdout and formatted JSON. If `TMPDIR` is on tmpfs, both wrapper spools and the native
-spool live in RAM; their growth appears in system memory, not in process RSS.
+The wrapper adds two anonymous spools in `TMPDIR` (or `/tmp`): raw stdout and the indented
+rendering published as the result. The formatted spool is typically about 1.5 to 2 times
+the raw stdout size. If `TMPDIR` is on tmpfs, both wrapper spools and the native spool live
+in RAM; their growth appears in system memory, not in process RSS.
 The final `trials` array copies those rendered rows in trial-ID order
 without retaining every trial record or the full document in memory. This spool is independent
 of `--trials-file FILE` and `--progress-fd`, which retain their ordered NDJSON stream and

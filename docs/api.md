@@ -309,10 +309,11 @@ pass-throughs. Existing callers retain `--trials-out all` by default.
   process exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
   filesystems, `--output` in a writable place and `--trials-out none|best-k` are remedies for
   the native CLI only; the Python `run` wrapper forwards neither, so for `pineforge-hpo run`
-  only a writable `TMPDIR` (or `/tmp`) helps. The wrapper adds two anonymous spools there,
-  each about the result size: raw stdout and formatted JSON. These consume system RAM when
-  `TMPDIR` is on tmpfs. It closes both on success or failure. An explicitly selected non-empty
-  `TMPDIR` is not retried elsewhere if file creation fails.
+  only a writable `TMPDIR` (or `/tmp`) helps. The wrapper adds two anonymous spools there:
+  raw stdout and the indented rendering published as the result. The formatted spool is
+  typically about 1.5 to 2 times the raw stdout size. These consume system RAM when `TMPDIR`
+  is on tmpfs. It closes both on success or failure. An explicitly selected non-empty `TMPDIR`
+  is not retried elsewhere if file creation fails.
 - `--trials-out best-k --best-k N` retains at most N feasible, finite-objective
   winners in `trials`; ties prefer the lower trial ID. Records are emitted in
   trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.

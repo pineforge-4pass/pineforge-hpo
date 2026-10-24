@@ -8,14 +8,17 @@
   Stderr capture is capped at 64 KiB. Failure lookup scans the whole spool in chunks of at
   most 64 KiB, with each extracted metadata field also capped at 64 KiB; complete trial arrays
   are never loaded into Python memory, including on native process failures.
+  Native stdout that cannot be decoded after exit 0 or 2 now reports `hpo_plugin_invalid`
+  (`{"reason": "validation"}`) instead of `hpo_unclassified_error`.
 - The default `--trials-out all` needs a writable directory for two anonymous files
   (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`), with no retry elsewhere
   after selection. Both files are unlinked at creation, but the spool holds the whole trial array
   on disk until the process exits. On read-only root filesystems, `--output` in a writable place
   and `--trials-out none|best-k` are remedies for the native CLI only. The Python `run` wrapper
   forwards neither `--output` nor `--trials-out`, so for `pineforge-hpo run` only a writable
-  `TMPDIR` (or `/tmp`) helps. The wrapper adds two anonymous spools in that directory, each
-  about the result size: raw stdout and formatted JSON. With a tmpfs `TMPDIR`, these spools
+  `TMPDIR` (or `/tmp`) helps. The wrapper adds two anonymous spools in that directory:
+  raw stdout and the indented rendering published as the result. The formatted spool is
+  typically about 1.5 to 2 times the raw stdout size. With a tmpfs `TMPDIR`, these spools
   consume system RAM. It closes both on every exit and atomically writes its own `--output`
   from the formatted spool.
 - Attribute result destination write failures to the output file or stdout without marking
