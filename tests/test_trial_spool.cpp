@@ -141,7 +141,11 @@ void seal_rethrows_first_failure(const std::filesystem::path& output) {
     TrialSpool spool(output, 0);
     FileSizeLimit limit;
     const std::string line = "{\"payload\":\"" + std::string(1024, 'x') + "\"}\n";
-    limit.apply(static_cast<rlim_t>(line.size() * 3));
+    // An exact row boundary is load-bearing: the fourth write must leave no partial row,
+    // or seal's size validation would hide a missing failed_ guard.
+    const rlim_t whole_row_limit = static_cast<rlim_t>(3 * line.size());
+    require(whole_row_limit % line.size() == 0, "file-size limit must end on a row boundary");
+    limit.apply(whole_row_limit);
     std::uint64_t completed = 0;
     const auto first = output_refusal([&] {
         for (; completed < 4; ++completed)
@@ -167,14 +171,15 @@ void write_failure_keeps_first_message(const std::filesystem::path& output) {
         for (; completed < 32; ++completed)
             spool.append(completed, line);
     }, "failed writing terminal trial spool");
+    // The retry has a writable sink; only the failed_ guard can reject this valid append.
+    require(limit.restore(), "cannot restore file-size controls before retry");
+    limit.require_restored();
     const auto repeated = output_refusal(
         [&] { spool.append(completed + 1, line); }, "failed writing terminal trial spool");
     require(repeated == first, "a later spool failure replaced the first failure");
     const auto sealed = output_refusal([&] { spool.seal(completed); },
                                       "failed writing terminal trial spool");
     require(sealed == first, "seal did not preserve the first spool failure after a retry");
-    require(limit.restore(), "cannot restore file-size controls");
-    limit.require_restored();
     spool.close();
     spool.close();
     std::cout << "PASS spool write failure is typed\n"
