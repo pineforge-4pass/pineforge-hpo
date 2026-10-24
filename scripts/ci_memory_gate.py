@@ -116,8 +116,6 @@ def write_json(path: Path, value: dict) -> None:
 def read_child_hwm(executable: Path, status: Path, native: Path) -> int | None:
     """Read only the expected post-exec address space; exit races yield no sample."""
     try:
-        if os.readlink(executable) != str(native):
-            return None
         for line in status.read_text(encoding="ascii").splitlines():
             if line.startswith("VmHWM:"):
                 fields = line.split()
