@@ -92,6 +92,57 @@ the original message. C++ callers can catch their existing
 standard exception family or inspect the `pineforge::hpo::HpoError` metadata mixin
 declared in `include/pineforge/hpo/error.hpp`.
 
+The Python planner-identity API raises `WindowPlanError` (also `HpoError` and
+`RuntimeError`) and the native planner loader throws a typed runtime error, both
+with `hpo_walkforward_unavailable`, class `environment`, `retryable: false`, and
+one closed string argument, `reason`. The Python identity checks use these reasons:
+
+| Reason | Refusal |
+| --- | --- |
+| `window_plan_path` | The explicit helper path is relative or the selected archive has no derivable companion and no explicit absolute path was supplied. |
+| `window_plan_missing` | The resolved helper file is absent, unreadable or not a regular file. |
+| `window_plan_manifest_missing` | Selected precompiled admission has no `manifest.window_plan`; a path alone cannot supply its expected identity. |
+| `window_plan_manifest_invalid` | The block has the wrong shape, types, schema, hashes, ABI or self-test ID. |
+| `window_plan_identity` | Manifest/provenance disagree, their pair is incomplete, or the helper's engine/platform association differs from the recorded compile identity or local engine. |
+| `window_plan_hash_mismatch` | The helper file's SHA-256 differs from the recorded expected hash. |
+
+The native loader (`WindowPlanHelper::load`, see `docs/native-walkforward.md`) adds
+these reasons. It also reports `window_plan_path` (a relative or NUL-containing helper
+path) and `window_plan_hash_mismatch` (a malformed expected hash, or a snapshot whose
+bytes differ from it), but never `window_plan_missing`: an absent or unreadable source
+is `window_plan_load`.
+
+| Reason | Refusal |
+| --- | --- |
+| `window_plan_changed` | The source or the private snapshot shrank or changed while it was copied, verified or loaded; a retry against a stable source can succeed (the catalog's `retryable` flag is false for the code as a whole). |
+| `window_plan_load` | The source is absent, unreadable or not a regular file, the snapshot could not be created, `dlopen` refused it (for example a `noexec` run directory), the platform has no POSIX loader, or the helper returned an invalid descriptor, option or bridge status. The same reason covers a run directory that is not an absolute, resolvable, private, user-owned directory with safe ancestry, a request string containing NUL, a helper object with no bound bridge (for example moved from), and an unexpected exception while loading. |
+| `window_plan_missing_pf_selected_plan_version` | The loaded library lacks the `pf_selected_plan_version` export. |
+| `window_plan_missing_pf_plan_selected_primary_v1` | The loaded library lacks the `pf_plan_selected_primary_v1` export. |
+| `window_plan_version` | The helper does not report bridge version 1. |
+| `window_plan_self_test` | The load-time golden self-test (`selected-plan-utc-six-hours/v1`) failed. |
+
+The selected-window plugin binding (`StrategyPlugin::require_selected_window` and
+`SelectedEvaluation`, see `docs/native-walkforward.md`) adds these reasons; the setter
+statuses -2 map to the two `*_contract` reasons, while -4 is the engine's `out_of_memory`
+and every other refusal is `hpo_invariant`:
+
+| Reason | Refusal |
+| --- | --- |
+| `missing_pf_selected_window_version`, `missing_strategy_set_selected_window_v1`, `missing_strategy_selected_window_counts_v1`, `missing_pf_execution_observer_version`, `missing_strategy_set_execution_observer_v1`, `missing_strategy_execution_observation_v1` | The plugin does not export that one of the six selected-window / observer entry points; the reason names the first absent one in protocol order and the diagnostic lists them all. |
+| `selected_window_version`, `execution_observer_version` | The plugin's selected-window or execution-observer ABI version is not 1. |
+| `selected_window_contract`, `execution_observer_contract` | The plugin refused the selected-window or observer setter with status -2 (unsupported contract). |
+| `engine_version_missing` | The plugin lacks `pf_version_get` or `pf_version_string`, or the string is null. |
+| `engine_version_invalid` | The embedded version string is malformed (grammar `X.Y.Z[-rc.N][-D-gSHA][-dirty]`) or disagrees numerically with `pf_version_get`. |
+| `engine_revision` | The embedded engine is not a stable 1.x release at least 1.6.2 (any release candidate is refused, dirty or not). |
+| `engine_identity` | The full embedded version string differs from the expected manifest version. |
+
+The Python checks do not load the helper. Diagnostics name affected fields or files;
+paths and diagnostic text are not failure arguments. An existing expected hash
+is never rewritten to accept different bytes. Metadata publication I/O retains
+`hpo_output_io_failed`; an interrupted two-file enrichment leaves selected
+admission refused until enrichment is re-run. Ordinary execution ignores the
+`window_plan` block and does not require a planner companion.
+
 ## Catalog and release diff
 
 The package contains `hpo_failure_codes.json` (schema

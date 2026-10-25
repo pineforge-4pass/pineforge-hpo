@@ -183,6 +183,7 @@ if(PINEFORGE_HPO_BUILD_ENGINE_ADAPTER)
         src/engine_adapter/selected_evaluation.cpp
         src/engine_adapter/strategy_plugin.cpp
         src/engine_adapter/trial_executor.cpp
+        src/engine_adapter/window_plan.cpp
     )
     add_library(PineForgeHPO::engine_adapter ALIAS pineforge_hpo_engine_adapter)
     target_include_directories(pineforge_hpo_engine_adapter

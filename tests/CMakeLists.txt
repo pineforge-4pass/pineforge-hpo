@@ -366,6 +366,16 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_no_version>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_no_settings>)
 
+    add_executable(pineforge_hpo_test_window_plan test_window_plan.cpp)
+    target_link_libraries(pineforge_hpo_test_window_plan PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    target_compile_options(pineforge_hpo_test_window_plan PRIVATE -Wall -Wextra -Wpedantic)
+    add_dependencies(pineforge_hpo_test_window_plan pineforge_hpo_fake_strategy)
+    add_test(NAME pineforge_hpo_window_plan
+        COMMAND pineforge_hpo_test_window_plan
+            "$<TARGET_FILE:pineforge_hpo_fake_strategy>"
+            "${CMAKE_CURRENT_BINARY_DIR}/window-plan-runs")
+
     add_library(pineforge_hpo_fake_strategy_no_timezone SHARED
         test_engine_adapter.cpp)
     target_compile_definitions(pineforge_hpo_fake_strategy_no_timezone PRIVATE
