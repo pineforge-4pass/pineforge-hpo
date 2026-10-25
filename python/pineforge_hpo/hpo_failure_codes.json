@@ -204,7 +204,11 @@
           "values": [
             "window_plan_changed",
             "window_plan_hash_mismatch",
+            "window_plan_identity",
             "window_plan_load",
+            "window_plan_manifest_invalid",
+            "window_plan_manifest_missing",
+            "window_plan_missing",
             "window_plan_missing_pf_plan_selected_primary_v1",
             "window_plan_missing_pf_selected_plan_version",
             "window_plan_path",
@@ -214,7 +218,7 @@
         }
       },
       "templates": [
-        "Walk-forward execution is unavailable ({reason})."
+        "Native walk-forward is unavailable ({reason})."
       ],
       "since": "1.7.1"
     },

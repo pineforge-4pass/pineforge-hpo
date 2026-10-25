@@ -8,7 +8,7 @@
   "to": {
     "version": null,
     "unreleased": true,
-    "catalogSha256": "c1bbc3141cb98e2c1a5847f073c7185ed60d550203cc10d5b75ce49532ea7299"
+    "catalogSha256": "2074e72e8683d480c5bb2b6fe06606234f7f32bd50500792cfb06cbdcafb8229"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
@@ -28,7 +28,11 @@
             "values": [
               "window_plan_changed",
               "window_plan_hash_mismatch",
+              "window_plan_identity",
               "window_plan_load",
+              "window_plan_manifest_invalid",
+              "window_plan_manifest_missing",
+              "window_plan_missing",
               "window_plan_missing_pf_plan_selected_primary_v1",
               "window_plan_missing_pf_selected_plan_version",
               "window_plan_path",
@@ -38,7 +42,7 @@
           }
         },
         "templates": [
-          "Walk-forward execution is unavailable ({reason})."
+          "Native walk-forward is unavailable ({reason})."
         ],
         "since": "1.7.1"
       }

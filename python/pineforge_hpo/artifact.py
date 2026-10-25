@@ -27,6 +27,18 @@ from .transpile import (
     legacy_input_kind_version,
     transpile_source,
 )
+from .window_plan import (
+    WindowPlanError,
+    WindowPlanIdentity,
+    _associate_window_plan_path,
+    _check_compile_identity,
+    _require_engine_layout_identity,
+    associate_window_plan,
+    derive_window_plan_path,
+    require_window_plan_block,
+    resolve_window_plan_path,
+    verify_window_plan,
+)
 
 CACHE_SCHEMA_VERSION = 1
 MANIFEST_SCHEMA_VERSION = 1
@@ -128,6 +140,9 @@ class _EngineLayout:
     abi_version: int
     headers_sha256: str
     library_sha256: str
+    # Retain the chosen candidate even when static_library resolves a symlink.
+    # It is lookup metadata only and must stay outside identity_dict().
+    selected_archive_path: Path | None = None
 
     def identity_dict(self) -> dict[str, Any]:
         return {
@@ -189,6 +204,18 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _platform_link_mode() -> tuple[str, str]:
+    system = platform.system()
+    if system == "Darwin":
+        return ".dylib", "force_load"
+    if system in {"Linux", "FreeBSD"}:
+        return ".so", "whole_archive"
+    raise ArtifactBuildError(
+        "configuration",
+        f"generated strategy compilation is not supported on {system}",
+    )
 
 
 def _tree_sha256(roots: Sequence[Path]) -> str:
@@ -446,6 +473,209 @@ class ArtifactBuilder:
             self._write_request_index(request_key, artifact_key)
             return artifact
 
+    def enrich_window_plan(
+        self,
+        artifact: StrategyArtifact,
+        *,
+        explicit_path: str | os.PathLike[str] | None = None,
+    ) -> dict[str, Any]:
+        """Admit a source-cache artifact for selected execution under its request lock.
+
+        Ordinary builds do not call this method. An existing block is re-resolved
+        and verified without changing its expected hash. An interrupted two-file
+        enrichment leaves selected admission refused until enrichment is re-run.
+        A retry repairs missing or stale metadata from the validating side under
+        the same lock. A validated old cache with a matching local engine may
+        acquire metadata, never new plugin bytes or keys. An explicit path also
+        supports the non-derivable third archive layout. Arbitrary precompiled
+        artifacts cannot acquire an identity here.
+        """
+
+        keys = (artifact.request_key, artifact.artifact_key)
+        if any(
+            len(key) != 64
+            or any(character not in "0123456789abcdef" for character in key)
+            for key in keys
+        ):
+            raise WindowPlanError(
+                "window_plan_identity",
+                "enrichment requires valid source-cache keys",
+            )
+        artifact_dir = self.cache_dir / "artifacts" / artifact.artifact_key
+        output_extension, _ = self._platform_link_mode()
+        expected_paths = (
+            artifact_dir / "manifest.json",
+            artifact_dir / "provenance.json",
+            artifact_dir / "generated.cpp",
+            artifact_dir / f"strategy{output_extension}",
+        )
+        actual_paths = (
+            artifact.manifest_path,
+            artifact.provenance_path,
+            artifact.generated_cpp_path,
+            artifact.plugin_path,
+        )
+        if actual_paths != expected_paths or any(
+            path.resolve().parent != artifact_dir for path in actual_paths
+        ):
+            raise WindowPlanError(
+                "window_plan_identity",
+                "only this builder's validated source-cache artifacts may be enriched",
+            )
+        lock_path = self.cache_dir / "locks" / f"{artifact.request_key}.lock"
+        with _KeyLock(lock_path, self.lock_timeout_seconds):
+            try:
+                manifest = json.loads(
+                    artifact.manifest_path.read_text(encoding="utf-8"),
+                )
+                provenance = json.loads(
+                    artifact.provenance_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as error:
+                raise WindowPlanError(
+                    "window_plan_manifest_invalid",
+                    f"cannot read cached manifest/provenance: {artifact_dir}: {error}",
+                ) from error
+            if not isinstance(manifest, dict) or not isinstance(provenance, dict):
+                raise WindowPlanError(
+                    "window_plan_manifest_invalid",
+                    "source-cache manifest and provenance must be JSON objects",
+                )
+            originals = (dict(manifest), dict(provenance))
+            block = None
+            request_identity = manifest.get("request_identity")
+            if "window_plan" in manifest or "window_plan" in provenance:
+                candidates = []
+                for location, document in (
+                    ("manifest", manifest),
+                    ("provenance", provenance),
+                ):
+                    if "window_plan" not in document:
+                        continue
+                    try:
+                        identity = WindowPlanIdentity.from_dict(document["window_plan"])
+                        _check_compile_identity(
+                            identity,
+                            document.get("request_identity"),
+                            location,
+                        )
+                    except WindowPlanError:
+                        continue
+                    candidates.append((identity, document))
+                if not candidates:
+                    raise WindowPlanError(
+                        "window_plan_manifest_invalid",
+                        "no cached window_plan block validates against its "
+                        "file's request_identity",
+                    )
+                identity = candidates[0][0]
+                if any(candidate != identity for candidate, _ in candidates[1:]):
+                    raise WindowPlanError(
+                        "window_plan_identity",
+                        "manifest.window_plan differs from provenance.window_plan",
+                    )
+                block = identity.to_dict()
+                request_identity = next(
+                    (
+                        document["request_identity"]
+                        for _, document in candidates
+                        if _json_sha256(document["request_identity"])
+                        == artifact.request_key
+                    ),
+                    None,
+                )
+            if (
+                not isinstance(request_identity, Mapping)
+                or _json_sha256(request_identity) != artifact.request_key
+            ):
+                raise WindowPlanError(
+                    "window_plan_identity",
+                    "source-cache request_identity differs from its request_key",
+                )
+            if block is not None:
+                for document in (manifest, provenance):
+                    document["window_plan"] = block
+                    if document.get("request_identity") != request_identity:
+                        document["request_identity"] = request_identity
+                        if document is provenance:
+                            document["compile"] = request_identity["compile"]
+            # Validate the proposed repair before publishing either metadata file.
+            cached = self._load_artifact(
+                artifact_key=artifact.artifact_key,
+                request_key=artifact.request_key,
+                request_identity=request_identity,
+                output_extension=output_extension,
+                cache_hit=True,
+                metadata=(manifest, provenance),
+            )
+            if cached is None:
+                raise ArtifactBuildError(
+                    "cache",
+                    f"cannot enrich an invalid source-cache artifact: {artifact_dir}",
+                )
+            try:
+                engine = self._resolve_engine_layout()
+            except (ArtifactBuildError, OSError, RuntimeError, ValueError) as error:
+                raise WindowPlanError(
+                    "window_plan_identity",
+                    f"cannot verify local engine identity: {self.engine_root}: {error}",
+                ) from error
+            _require_engine_layout_identity(engine, request_identity)
+            if block is not None:
+                path = resolve_window_plan_path(explicit_path, self.engine_root, block)
+                verify_window_plan(block, path)
+            elif explicit_path is not None:
+                block = _associate_window_plan_path(engine, explicit_path)
+            else:
+                block = associate_window_plan(engine)
+                if block is None:
+                    if derive_window_plan_path(engine) is None:
+                        raise WindowPlanError(
+                            "window_plan_path",
+                            "the selected archive requires an explicit absolute "
+                            "window_plan path for source-cache enrichment",
+                        )
+                    raise WindowPlanError(
+                        "window_plan_missing",
+                        "the selected engine archive has no window_plan helper sibling",
+                    )
+            manifest["window_plan"] = block
+            provenance["window_plan"] = block
+            require_window_plan_block(manifest, provenance)
+            try:
+                for destination, payload, original in zip(
+                    (artifact.manifest_path, artifact.provenance_path),
+                    (manifest, provenance),
+                    originals,
+                ):
+                    if payload != original:
+                        self._write_window_plan_metadata(destination, payload)
+            except OSError as error:
+                raise ArtifactBuildError(
+                    "cache",
+                    f"cannot publish window_plan metadata: {artifact_dir}: {error}",
+                ) from error
+            return block
+
+    def _write_window_plan_metadata(
+        self,
+        destination: Path,
+        payload: Mapping[str, Any],
+    ) -> None:
+        # Each replacement is atomic; pair agreement is checked before admission.
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", dir=destination.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(_canonical_json(payload) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def _resolve_engine_layout(self) -> _EngineLayout:
         root = self.engine_root
         source_include = root / "include"
@@ -519,6 +749,7 @@ class ArtifactBuilder:
             abi_version=abi_version,
             headers_sha256=_tree_sha256(header_roots),
             library_sha256=_file_sha256(static_library),
+            selected_archive_path=static_library,
         )
 
     def _resolve_compiler_identity(self) -> _CompilerIdentity:
@@ -625,15 +856,7 @@ class ArtifactBuilder:
         )
 
     def _platform_link_mode(self) -> tuple[str, str]:
-        system = platform.system()
-        if system == "Darwin":
-            return ".dylib", "force_load"
-        if system in {"Linux", "FreeBSD"}:
-            return ".so", "whole_archive"
-        raise ArtifactBuildError(
-            "configuration",
-            f"generated strategy compilation is not supported on {system}",
-        )
+        return _platform_link_mode()
 
     def _lookup_request(
         self,
@@ -672,17 +895,23 @@ class ArtifactBuilder:
         request_identity: Mapping[str, Any],
         output_extension: str,
         cache_hit: bool,
+        metadata: tuple[Mapping[str, Any], Mapping[str, Any]] | None = None,
     ) -> StrategyArtifact | None:
         artifact_dir = self.cache_dir / "artifacts" / artifact_key
         manifest_path = artifact_dir / "manifest.json"
         provenance_path = artifact_dir / "provenance.json"
         generated_cpp_path = artifact_dir / "generated.cpp"
         plugin_path = artifact_dir / f"strategy{output_extension}"
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
+        if metadata is None:
+            documents = []
+            for path in (manifest_path, provenance_path):
+                try:
+                    documents.append(json.loads(path.read_text(encoding="utf-8")))
+                except (OSError, ValueError):
+                    documents.append(None)
+            manifest, provenance = documents
+        else:
+            manifest, provenance = metadata
         if not isinstance(manifest, Mapping) or not isinstance(provenance, Mapping):
             return None
         if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
@@ -855,6 +1084,14 @@ class ArtifactBuilder:
             if input_kind_schema == 1:
                 manifest["input_kind_schema"] = 1
                 provenance["input_kind_schema"] = 1
+            try:
+                window_plan = associate_window_plan(engine)
+            except WindowPlanError:
+                window_plan = None
+            if window_plan is not None:
+                manifest["window_plan"] = window_plan
+                provenance["window_plan"] = window_plan
+                require_window_plan_block(manifest, provenance)
             (staging / "manifest.json").write_text(
                 _canonical_json(manifest) + "\n", encoding="utf-8"
             )
