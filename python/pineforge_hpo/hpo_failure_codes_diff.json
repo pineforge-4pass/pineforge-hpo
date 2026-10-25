@@ -1,20 +1,49 @@
 {
   "schema": "pineforge-hpo-failure-catalog-diff/v1",
   "from": {
-    "version": "1.6.3",
-    "tag": "v1.6.3",
+    "version": "1.7.0",
+    "tag": "v1.7.0",
     "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
   },
   "to": {
-    "version": "1.7.0",
-    "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
+    "version": null,
+    "unreleased": true,
+    "catalogSha256": "c1bbc3141cb98e2c1a5847f073c7185ed60d550203cc10d5b75ce49532ea7299"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
     "after": "pineforge-hpo-failure-catalog/v1"
   },
   "metadataChanges": [],
-  "added": [],
+  "added": [
+    {
+      "code": "hpo_walkforward_unavailable",
+      "collection": "codes",
+      "entry": {
+        "class": "environment",
+        "retryable": false,
+        "args": {
+          "reason": {
+            "kind": "string",
+            "values": [
+              "window_plan_changed",
+              "window_plan_hash_mismatch",
+              "window_plan_load",
+              "window_plan_missing_pf_plan_selected_primary_v1",
+              "window_plan_missing_pf_selected_plan_version",
+              "window_plan_path",
+              "window_plan_self_test",
+              "window_plan_version"
+            ]
+          }
+        },
+        "templates": [
+          "Walk-forward execution is unavailable ({reason})."
+        ],
+        "since": "1.7.1"
+      }
+    }
+  ],
   "changed": [],
   "removed": [],
   "deprecated": []

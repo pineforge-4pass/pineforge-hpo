@@ -195,6 +195,29 @@
       ],
       "since": "0.10.0"
     },
+    "hpo_walkforward_unavailable": {
+      "class": "environment",
+      "retryable": false,
+      "args": {
+        "reason": {
+          "kind": "string",
+          "values": [
+            "window_plan_changed",
+            "window_plan_hash_mismatch",
+            "window_plan_load",
+            "window_plan_missing_pf_plan_selected_primary_v1",
+            "window_plan_missing_pf_selected_plan_version",
+            "window_plan_path",
+            "window_plan_self_test",
+            "window_plan_version"
+          ]
+        }
+      },
+      "templates": [
+        "Walk-forward execution is unavailable ({reason})."
+      ],
+      "since": "1.7.1"
+    },
     "hpo_warm_start_rejected": {
       "class": "continuation",
       "retryable": false,
