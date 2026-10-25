@@ -29,7 +29,9 @@ from .transpile import (
 )
 from .window_plan import (
     WindowPlanError,
+    WindowPlanIdentity,
     _associate_window_plan_path,
+    _check_compile_identity,
     _require_engine_layout_identity,
     associate_window_plan,
     derive_window_plan_path,
@@ -480,10 +482,13 @@ class ArtifactBuilder:
         """Admit a source-cache artifact for selected execution under its request lock.
 
         Ordinary builds do not call this method. An existing block is re-resolved
-        and verified without changing its expected hash. A validated old cache
-        with a matching local engine may acquire metadata, never new plugin bytes
-        or keys. An explicit path also supports the non-derivable third archive
-        layout. Arbitrary precompiled artifacts cannot acquire an identity here.
+        and verified without changing its expected hash. An interrupted two-file
+        enrichment leaves selected admission refused until enrichment is re-run.
+        A retry repairs missing or stale metadata from the validating side under
+        the same lock. A validated old cache with a matching local engine may
+        acquire metadata, never new plugin bytes or keys. An explicit path also
+        supports the non-derivable third archive layout. Arbitrary precompiled
+        artifacts cannot acquire an identity here.
         """
 
         keys = (artifact.request_key, artifact.artifact_key)
@@ -536,10 +541,49 @@ class ArtifactBuilder:
                     "window_plan_manifest_invalid",
                     "source-cache manifest and provenance must be JSON objects",
                 )
+            originals = (dict(manifest), dict(provenance))
             block = None
-            if "window_plan" in manifest or "window_plan" in provenance:
-                block = require_window_plan_block(manifest, provenance)
             request_identity = manifest.get("request_identity")
+            if "window_plan" in manifest or "window_plan" in provenance:
+                candidates = []
+                for location, document in (
+                    ("manifest", manifest),
+                    ("provenance", provenance),
+                ):
+                    if "window_plan" not in document:
+                        continue
+                    try:
+                        identity = WindowPlanIdentity.from_dict(document["window_plan"])
+                        _check_compile_identity(
+                            identity,
+                            document.get("request_identity"),
+                            location,
+                        )
+                    except WindowPlanError:
+                        continue
+                    candidates.append((identity, document))
+                if not candidates:
+                    raise WindowPlanError(
+                        "window_plan_manifest_invalid",
+                        "no cached window_plan block validates against its "
+                        "file's request_identity",
+                    )
+                identity = candidates[0][0]
+                if any(candidate != identity for candidate, _ in candidates[1:]):
+                    raise WindowPlanError(
+                        "window_plan_identity",
+                        "manifest.window_plan differs from provenance.window_plan",
+                    )
+                block = identity.to_dict()
+                request_identity = next(
+                    (
+                        document["request_identity"]
+                        for _, document in candidates
+                        if _json_sha256(document["request_identity"])
+                        == artifact.request_key
+                    ),
+                    None,
+                )
             if (
                 not isinstance(request_identity, Mapping)
                 or _json_sha256(request_identity) != artifact.request_key
@@ -548,12 +592,21 @@ class ArtifactBuilder:
                     "window_plan_identity",
                     "source-cache request_identity differs from its request_key",
                 )
+            if block is not None:
+                for document in (manifest, provenance):
+                    document["window_plan"] = block
+                    if document.get("request_identity") != request_identity:
+                        document["request_identity"] = request_identity
+                        if document is provenance:
+                            document["compile"] = request_identity["compile"]
+            # Validate the proposed repair before publishing either metadata file.
             cached = self._load_artifact(
                 artifact_key=artifact.artifact_key,
                 request_key=artifact.request_key,
                 request_identity=request_identity,
                 output_extension=output_extension,
                 cache_hit=True,
+                metadata=(manifest, provenance),
             )
             if cached is None:
                 raise ArtifactBuildError(
@@ -571,8 +624,7 @@ class ArtifactBuilder:
             if block is not None:
                 path = resolve_window_plan_path(explicit_path, self.engine_root, block)
                 verify_window_plan(block, path)
-                return block
-            if explicit_path is not None:
+            elif explicit_path is not None:
                 block = _associate_window_plan_path(engine, explicit_path)
             else:
                 block = associate_window_plan(engine)
@@ -591,8 +643,13 @@ class ArtifactBuilder:
             provenance["window_plan"] = block
             require_window_plan_block(manifest, provenance)
             try:
-                self._write_window_plan_metadata(artifact.manifest_path, manifest)
-                self._write_window_plan_metadata(artifact.provenance_path, provenance)
+                for destination, payload, original in zip(
+                    (artifact.manifest_path, artifact.provenance_path),
+                    (manifest, provenance),
+                    originals,
+                ):
+                    if payload != original:
+                        self._write_window_plan_metadata(destination, payload)
             except OSError as error:
                 raise ArtifactBuildError(
                     "cache",
@@ -838,32 +895,25 @@ class ArtifactBuilder:
         request_identity: Mapping[str, Any],
         output_extension: str,
         cache_hit: bool,
+        metadata: tuple[Mapping[str, Any], Mapping[str, Any]] | None = None,
     ) -> StrategyArtifact | None:
         artifact_dir = self.cache_dir / "artifacts" / artifact_key
         manifest_path = artifact_dir / "manifest.json"
         provenance_path = artifact_dir / "provenance.json"
         generated_cpp_path = artifact_dir / "generated.cpp"
         plugin_path = artifact_dir / f"strategy{output_extension}"
-        documents = []
-        for path in (manifest_path, provenance_path):
-            try:
-                documents.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, ValueError):
-                documents.append(None)
-        manifest, provenance = documents
-        has_window_plan = any(
-            isinstance(document, Mapping) and "window_plan" in document
-            for document in documents
-        )
+        if metadata is None:
+            documents = []
+            for path in (manifest_path, provenance_path):
+                try:
+                    documents.append(json.loads(path.read_text(encoding="utf-8")))
+                except (OSError, ValueError):
+                    documents.append(None)
+            manifest, provenance = documents
+        else:
+            manifest, provenance = metadata
         if not isinstance(manifest, Mapping) or not isinstance(provenance, Mapping):
-            if has_window_plan:
-                raise WindowPlanError(
-                    "window_plan_manifest_invalid",
-                    f"window_plan requires a readable metadata pair: {artifact_dir}",
-                )
             return None
-        if has_window_plan:
-            require_window_plan_block(manifest, provenance)
         if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
             return None
         if (
@@ -1034,7 +1084,10 @@ class ArtifactBuilder:
             if input_kind_schema == 1:
                 manifest["input_kind_schema"] = 1
                 provenance["input_kind_schema"] = 1
-            window_plan = associate_window_plan(engine)
+            try:
+                window_plan = associate_window_plan(engine)
+            except WindowPlanError:
+                window_plan = None
             if window_plan is not None:
                 manifest["window_plan"] = window_plan
                 provenance["window_plan"] = window_plan

@@ -109,8 +109,8 @@ These checks do not load the helper. Diagnostics name affected fields or files;
 paths and diagnostic text are not failure arguments. An existing expected hash
 is never rewritten to accept different bytes. Metadata publication I/O retains
 `hpo_output_io_failed`; an interrupted two-file enrichment leaves selected
-admission refused until consistent metadata is republished. Ordinary execution
-does not require a planner companion.
+admission refused until enrichment is re-run. Ordinary execution ignores the
+`window_plan` block and does not require a planner companion.
 
 ## Catalog and release diff
 

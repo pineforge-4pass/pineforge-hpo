@@ -104,11 +104,13 @@ builds and cache hits require no helper; selected callers use
 `ArtifactBuilder.enrich_window_plan` to verify an existing block or enrich a
 validated source cache under the same request lock without recompiling. Each
 metadata file is replaced atomically; a partial or disagreeing pair refuses
-admission. Precompiled selected admission requires a recorded block, even with
-an explicit helper path. Runtime lookup accepts an explicit absolute path or
-derives the sibling of the selected `build/lib/` or `lib/` archive from an
-explicit local engine root with matching content; `build/libpineforge.a` has no
-derived companion. The recorded build path never instructs lookup. Python
+selected admission. An interrupted two-file enrichment leaves selected admission
+refused until enrichment is re-run. Ordinary builds and cache hits ignore the
+`window_plan` block. Precompiled selected admission requires a recorded block,
+even with an explicit helper path. Runtime lookup accepts an explicit absolute
+path or derives the sibling of the selected `build/lib/` or `lib/` archive from
+an explicit local engine root with matching content; `build/libpineforge.a` has
+no derived companion. The recorded build path never instructs lookup. Python
 checks only the file hash; native snapshot loading, ABI and behavioral checks
 remain the native consumer's responsibility.
 
