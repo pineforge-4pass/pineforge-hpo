@@ -67,6 +67,7 @@ struct PlanResult {
 /// through every call; concurrent calls borrow immutable rows and retain no caller data.
 /// Destruction closes the library. Snapshot files, including failed-load snapshots, are left
 /// for the assigned run directory's owner to remove after the worker exits.
+/// On hash mismatch, the snapshot contains UNVERIFIED bytes that the owner must clean up.
 class WindowPlanHelper final {
 public:
     /// Snapshots and hashes an absolute source path before loading any of its code.
@@ -74,8 +75,9 @@ public:
     /// @param absolute_path Explicit helper path; relative paths are refused before normalization.
     /// @param expected_sha256_hex Expected content SHA-256, exactly 64 lowercase hex characters.
     /// @param private_run_directory Existing absolute directory owned by the effective user,
-    ///        with no group/other permissions. Its owner must keep its ancestry stable and
-    ///        leave snapshots untouched throughout the worker lifetime.
+    ///        with no group/other permissions. Every ancestor must be root- or user-owned and
+    ///        not writable by others unless sticky. Its owner must keep the ancestry stable
+    ///        and leave snapshots untouched throughout the worker lifetime.
     /// @throws TypedHpoError<std::runtime_error> with hpo_walkforward_unavailable and a reason
     ///         when snapshotting, identity, binding, version or the frozen self-test fails.
     static WindowPlanHelper load(const std::filesystem::path& absolute_path,
@@ -126,12 +128,19 @@ private:
     using PlanFn = decltype(&::pf_plan_selected_primary_v1);
 
     WindowPlanHelper() = default;
-    /// Test-only synchronization hook, called after source open/fstat and before copying.
-    /// Production load() always supplies an empty hook.
+    /// Test-only synchronization; production load() always supplies empty hooks.
+    /// @param absolute_path Absolute source path, as in load().
+    /// @param expected_sha256_hex Trusted digest, as in load().
+    /// @param private_run_directory Private snapshot directory, as in load().
+    /// @param after_source_open Called after source open/fstat and before copying.
+    /// @param after_snapshot_close Called with the snapshot path after closing its writer,
+    ///        before the path identity/mode recheck and dlopen.
     static WindowPlanHelper load_impl(const std::filesystem::path& absolute_path,
                                       const std::string& expected_sha256_hex,
                                       const std::filesystem::path& private_run_directory,
-                                      const std::function<void()>& after_source_open);
+                                      const std::function<void()>& after_source_open,
+                                      const std::function<void(const std::filesystem::path&)>&
+                                          after_snapshot_close);
     static VersionFn bind_version(void* library);
     static PlanFn bind_plan(void* library);
     void self_test() const;

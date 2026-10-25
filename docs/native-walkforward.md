@@ -8,9 +8,12 @@ path, the expected 64-character lowercase SHA-256, and an existing absolute run 
 by the effective user with no group or other permissions. Relative source paths are refused
 before normalization or filesystem access. There is no implicit path search or temporary-directory
 fallback. A worker owns one helper and reuses it for its planning calls.
+The loader requires that every ancestor of the run directory is root- or user-owned and not
+writable by others unless sticky.
 
-The loader opens the source read-only with close-on-exec, requires a regular file, and copies
-from that held descriptor into a new randomly named, exclusive snapshot created with mode 0600.
+The loader opens the source read-only with close-on-exec and `O_NONBLOCK`, so opening a FIFO
+never waits for a writer. It requires a regular file and copies from that held descriptor into
+a new randomly named, exclusive snapshot created with mode 0600.
 It streams SHA-256 over the copied bytes and checks the source descriptor's device, inode, size,
 and full mtime/ctime before and after copying. It refuses changed sources with
 `hpo_walkforward_unavailable{reason:window_plan_changed}` and unequal content with
@@ -20,6 +23,8 @@ the absolute snapshot path with `RTLD_NOW | RTLD_LOCAL`. Source symlinks are fol
 `open`; a later source path or symlink replacement cannot redirect the snapshot copy.
 The helper retains the opened source's device, inode and byte length, its verified SHA-256,
 and the actual snapshot path for runtime provenance.
+`window_plan_changed` is safe to retry. A `noexec` run directory fails `dlopen` with
+`reason:window_plan_load`.
 
 The helper binds `pf_selected_plan_version` and `pf_plan_selected_primary_v1`, requires version 1,
 and executes the frozen `selected-plan-utc-six-hours/v1` self-test once before returning. Every
@@ -44,9 +49,11 @@ Missing exports have separate `window_plan_missing_pf_selected_plan_version` and
 
 Keep the helper alive until all calls finish. Its destructor calls `dlclose` and never deletes
 a file. The run-directory owner keeps the directory ancestry stable and all snapshots untouched
-for the worker lifetime, then owns cleanup of successful and failed-load snapshots. Snapshot
-storage is one helper copy per worker, independent of the number of planner calls. The loader
-does not execute a strategy, admit request-feed inventories, or implement selected execution.
+for the worker lifetime, then owns cleanup of successful and failed-load snapshots.
+Snapshot files left after a hash mismatch contain **UNVERIFIED** bytes and are the run-directory
+owner's to clean up. Snapshot storage is one helper copy per worker, independent of the number
+of planner calls. The loader does not execute a strategy, admit request-feed inventories, or
+implement selected execution.
 
 The `pineforge_hpo_window_plan` CTest test reads the real engine helper from
 `PFH_WINDOW_PLAN_LIB`. It reports `UNAVAILABLE` when the helper is unset or missing, and that
@@ -55,5 +62,7 @@ condition fails when `PFH_REQUIRE_WINDOW_PLAN=1`. Non-PR native CI builds the en
 `.dylib` (macOS) output, and enables the required mode for CTest. PR core CI does not compile
 the adapter. Real helper vectors cover the golden fixture, request and boundary refusals,
 unordered direct arrays, feed range, clock/pairing, pending pre-roll completion, source swaps,
-in-place mutation and loaded symbol origin. Separately labeled unit seams cover exact pointer
-forwarding, descriptor validation and the second missing-export binder on the default fake.
+in-place growth and shrinkage, snapshot replacement and writable-mode refusal, directory swaps,
+and loaded symbol origin. Loader refusal rows also cover unsafe ancestry and FIFO sources.
+Separately labeled unit seams cover exact pointer forwarding, descriptor validation and the
+second missing-export binder on the default fake.

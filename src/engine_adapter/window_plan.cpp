@@ -315,6 +315,25 @@ void require_private_directory(const struct stat& directory) {
     }
 }
 
+void require_safe_ancestry(const std::filesystem::path& directory_path) {
+    const auto owner = ::geteuid();
+    auto ancestor = directory_path.parent_path();
+    while (!ancestor.empty()) {
+        struct stat identity{};
+        if (::stat(ancestor.c_str(), &identity) != 0)
+            io_failure("cannot inspect planner snapshot ancestry", ancestor);
+        if (!S_ISDIR(identity.st_mode) || (identity.st_uid != 0 && identity.st_uid != owner) ||
+            ((identity.st_mode & 0022) != 0 && (identity.st_mode & S_ISVTX) == 0)) {
+            unavailable("window_plan_load",
+                        "planner snapshot ancestry must not be writable by others");
+        }
+        const auto parent = ancestor.parent_path();
+        if (parent == ancestor)
+            break;
+        ancestor = parent;
+    }
+}
+
 std::string snapshot_name() {
     std::random_device random;
     std::string name = ".window-plan";
@@ -351,8 +370,11 @@ std::string copy_and_hash(int source, int snapshot, const struct stat& before,
             const auto result = ::write(snapshot, buffer.data() + written, count - written);
             if (result < 0 && errno == EINTR)
                 continue;
-            if (result <= 0)
+            if (result < 0)
                 io_failure("cannot write planner snapshot", snapshot_path);
+            if (result == 0)
+                unavailable("window_plan_load",
+                            "short write to planner snapshot '" + snapshot_path.string() + "'");
             written += static_cast<std::size_t>(result);
         }
         hash.update(buffer.data(), count);
@@ -409,13 +431,14 @@ void require_result(const pf_selected_plan_result_v1& result) {
 WindowPlanHelper WindowPlanHelper::load(const std::filesystem::path& absolute_path,
                                         const std::string& expected_sha256_hex,
                                         const std::filesystem::path& private_run_directory) {
-    return load_impl(absolute_path, expected_sha256_hex, private_run_directory, {});
+    return load_impl(absolute_path, expected_sha256_hex, private_run_directory, {}, {});
 }
 
 WindowPlanHelper WindowPlanHelper::load_impl(
     const std::filesystem::path& absolute_path, const std::string& expected_sha256_hex,
     const std::filesystem::path& private_run_directory,
-    const std::function<void()>& after_source_open) {
+    const std::function<void()>& after_source_open,
+    const std::function<void(const std::filesystem::path&)>& after_snapshot_close) {
     // No absolute(), canonical() or filesystem access may precede this source-path check.
     if (!absolute_path.is_absolute() || absolute_path.string().find('\0') != std::string::npos)
         unavailable("window_plan_path", "planner helper path must be absolute and NUL-free");
@@ -432,6 +455,7 @@ WindowPlanHelper WindowPlanHelper::load_impl(
         if (error)
             unavailable("window_plan_load", "cannot resolve planner snapshot directory: " +
                                                error.message());
+        require_safe_ancestry(directory_path);
         FileDescriptor directory(::open(directory_path.c_str(),
                                         O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW));
         if (directory.get() < 0)
@@ -440,7 +464,7 @@ WindowPlanHelper WindowPlanHelper::load_impl(
         require_private_directory(directory_before);
 
         // This fd, not a reopened source pathname, supplies every snapshot byte.
-        FileDescriptor source(::open(absolute_path.c_str(), O_RDONLY | O_CLOEXEC));
+        FileDescriptor source(::open(absolute_path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK));
         if (source.get() < 0)
             io_failure("cannot open planner source", absolute_path);
         const auto before = file_identity(source.get(), absolute_path);
@@ -473,9 +497,11 @@ WindowPlanHelper WindowPlanHelper::load_impl(
             io_failure("cannot make planner snapshot read-only", helper.snapshot_path_);
         const auto snapshot_identity = file_identity(snapshot.get(), helper.snapshot_path_);
         snapshot.close_checked();
+        if (after_snapshot_close)
+            after_snapshot_close(helper.snapshot_path_);
 
         // Confirm that the absolute load path still names the private directory and file held
-        // above. Directory ancestry and the user's own mutations remain an owner contract.
+        // above. The owner must keep the checked ancestry and snapshots stable for the worker.
         struct stat directory_now{};
         struct stat snapshot_now{};
         if (::stat(directory_path.c_str(), &directory_now) != 0 ||
@@ -509,6 +535,7 @@ WindowPlanHelper WindowPlanHelper::load_impl(
     }
 #else
     (void)after_source_open;
+    (void)after_snapshot_close;
     unavailable("window_plan_load", "planner helper loading requires a POSIX dynamic loader");
 #endif
 }
@@ -615,6 +642,7 @@ void WindowPlanHelper::self_test() const {
     const PlanRequest request{
         1704078000000LL, 1704088800000LL, 1704067200000LL, 2,
         "1", "60", "UTC", "UTC", "", true};
+    bool matches = false;
     try {
         const auto result = plan_selected_primary(rows.data(), rows.size(), request).raw;
         const bool fields_match =
@@ -641,11 +669,12 @@ void WindowPlanHelper::self_test() const {
         const bool option_empty =
             std::all_of(std::begin(result.option), std::end(result.option),
                         [](char byte) { return byte == 0; });
-        if (!fields_match || !option_empty)
-            unavailable("window_plan_self_test", std::string(self_test_id()) + " differs");
+        matches = fields_match && option_empty;
     } catch (const std::exception& error) {
         unavailable("window_plan_self_test", std::string(self_test_id()) + ": " + error.what());
     }
+    if (!matches)
+        unavailable("window_plan_self_test", std::string(self_test_id()) + " differs");
 }
 
 }  // namespace pineforge::hpo

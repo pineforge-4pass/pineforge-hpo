@@ -33,11 +33,12 @@ namespace pineforge::hpo::detail {
 struct WindowPlanTestAccess {
     using PlanFn = decltype(&::pf_plan_selected_primary_v1);
 
-    static WindowPlanHelper synchronized_load(const std::filesystem::path& path,
-                                               const std::string& digest,
-                                               const std::filesystem::path& directory,
-                                               const std::function<void()>& hook) {
-        return WindowPlanHelper::load_impl(path, digest, directory, hook);
+    static WindowPlanHelper synchronized_load(
+        const std::filesystem::path& path, const std::string& digest,
+        const std::filesystem::path& directory, const std::function<void()>& after_source_open,
+        const std::function<void(const std::filesystem::path&)>& after_snapshot_close = {}) {
+        return WindowPlanHelper::load_impl(path, digest, directory, after_source_open,
+                                           after_snapshot_close);
     }
     static WindowPlanHelper unit_bridge(PlanFn bridge) {
         WindowPlanHelper helper;
@@ -412,6 +413,26 @@ void loader_failure_rows(const fs::path& fake, const fs::path& base) {
             (void)pfh::WindowPlanHelper::load(fake, pfh::detail::sha256(fake_bytes), shared);
         }, "planner snapshot directory must be private and user-owned");
     });
+    row("non-sticky-group-writable-ancestor-refused", [&] {
+        // Red if require_safe_ancestry is removed or accepts a non-sticky group-writable parent.
+        const auto parent = checked_path(
+            private_directory(base, "ancestry-parent"), "ancestry parent chmod");
+        const auto directory = private_directory(parent, "private-child");
+        require(::chmod(parent.c_str(), 0770) == 0, "cannot prepare unsafe ancestor");
+        expect_reason("window_plan_load", [&] {
+            (void)pfh::WindowPlanHelper::load(fake, pfh::detail::sha256(fake_bytes), directory);
+        }, "planner snapshot ancestry must not be writable by others");
+        require(::chmod(parent.c_str(), 0700) == 0, "cannot restore test ancestor permissions");
+    });
+    row("fifo-source-refused-without-writer", [&] {
+        // Red (blocks) if O_NONBLOCK is removed; removing S_ISREG loses this refusal diagnostic.
+        const auto directory = private_directory(base, "fifo");
+        const auto source = checked_path(directory / "source.fifo", "FIFO create");
+        require(::mkfifo(source.c_str(), 0600) == 0, "cannot create FIFO source");
+        expect_reason("window_plan_load", [&] {
+            (void)pfh::WindowPlanHelper::load(source, std::string(64, '0'), directory);
+        }, "planner source must be a regular file");
+    });
     row("fake-library-missing-version-export", [&] {
         const auto directory = private_directory(base, "missing-version");
         expect_reason("window_plan_missing_pf_selected_plan_version", [&] {
@@ -608,7 +629,10 @@ void real_vectors(const pfh::WindowPlanHelper& helper) {
 }
 
 void swap_rows(const std::string& original, const std::string& digest, const fs::path& base) {
-    row("real-source-path-replacement-after-open-barrier", [&] {
+    row("real-source-path-replacement-keeps-original-or-detects-ctime", [&] {
+        // Linux filesystems commonly update the held inode's ctime on rename, so same_source
+        // normally refuses this swap. Both outcomes are valid; the symlink row below proves
+        // that copying uses the opened descriptor even when the source pathname is replaced.
         const auto directory = private_directory(base, "swap");
         const auto source = directory / "source";
         const auto replacement = directory / "replacement";
@@ -637,6 +661,7 @@ void swap_rows(const std::string& original, const std::string& digest, const fs:
         }
     });
     row("real-symlink-swap-keeps-opened-original", [&] {
+        // Red if snapshotting reopens the replaced pathname instead of reading the held fd.
         const auto directory = private_directory(base, "symlink");
         const auto target = directory / "original";
         const auto other = directory / "replacement";
@@ -666,6 +691,7 @@ void swap_rows(const std::string& original, const std::string& digest, const fs:
         expect_exact(helper.plan_selected_primary(input.data(), input.size(), request()), golden());
     });
     row("real-same-inode-mutation-after-open-barrier", [&] {
+        // Red if the final same_source check is removed: appended bytes are outside the copy.
         const auto directory = private_directory(base, "in-place");
         const auto source = directory / "source";
         write_bytes(source, original);
@@ -689,6 +715,99 @@ void swap_rows(const std::string& original, const std::string& digest, const fs:
             });
         });
         require(hooks == 1, "in-place barrier did not run exactly once");
+    });
+    row("real-source-shrink-after-open-barrier", [&] {
+        // Red/nonterminating if the received == 0 refusal is removed: copied stays below size.
+        const auto directory = private_directory(base, "shrink");
+        const auto source = directory / "source";
+        write_bytes(source, original);
+        struct stat before{};
+        require(::stat(source.c_str(), &before) == 0 && before.st_size > 0,
+                "cannot inspect nonempty source before shrinking");
+        unsigned hooks = 0;
+        expect_reason("window_plan_changed", [&] {
+            (void)Access::synchronized_load(source, digest, directory, [&] {
+                ++hooks;
+                const auto named = checked_path(source, "same-inode truncate");
+                const int descriptor = ::open(named.c_str(), O_WRONLY | O_CLOEXEC);
+                require(descriptor >= 0, "cannot open source for shrinking");
+                const int truncated = ::ftruncate(descriptor, before.st_size - 1);
+                struct stat after{};
+                const int inspected = ::fstat(descriptor, &after);
+                const int closed = ::close(descriptor);
+                require(truncated == 0 && inspected == 0 && closed == 0,
+                        "cannot shrink source through second descriptor");
+                require(before.st_dev == after.st_dev && before.st_ino == after.st_ino &&
+                            after.st_size == before.st_size - 1,
+                        "shrink fixture did not truncate the held source inode");
+            });
+        }, "planner source shrank while snapshotting");
+        require(hooks == 1, "shrink barrier did not run exactly once");
+    });
+    row("real-snapshot-replaced-after-close", [&] {
+        // Red if !same_source(snapshot_identity, snapshot_now) is removed: the replacement is
+        // another regular 0400 file containing a valid helper, so dlopen would succeed.
+        const auto directory = private_directory(base, "snapshot-replaced");
+        const auto source = directory / "source";
+        const auto replacement = checked_path(directory / "replacement", "replacement chmod");
+        const auto saved = checked_path(directory / "saved-snapshot", "rename destination");
+        write_bytes(source, original);
+        write_bytes(replacement, original);
+        require(::chmod(replacement.c_str(), 0400) == 0, "cannot make replacement read-only");
+        unsigned hooks = 0;
+        expect_reason("window_plan_changed", [&] {
+            (void)Access::synchronized_load(
+                source, digest, directory, {}, [&](const fs::path& path) {
+                    ++hooks;
+                    const auto snapshot = checked_path(path, "completed snapshot rename source");
+                    fs::rename(snapshot, saved);
+                    fs::rename(replacement, snapshot);
+                });
+        }, "planner snapshot path changed before loading");
+        require(hooks == 1, "snapshot replacement barrier did not run exactly once");
+    });
+    row("real-snapshot-writable-after-close", [&] {
+        // Red if the post-close snapshot identity AND write-bit rejection terms are removed:
+        // chmod may change ctime too, and the unchanged helper bytes remain loadable.
+        const auto directory = private_directory(base, "snapshot-writable");
+        const auto source = directory / "source";
+        write_bytes(source, original);
+        unsigned hooks = 0;
+        expect_reason("window_plan_changed", [&] {
+            (void)Access::synchronized_load(
+                source, digest, directory, {}, [&](const fs::path& path) {
+                    ++hooks;
+                    const auto snapshot = checked_path(path, "completed snapshot chmod");
+                    require(::chmod(snapshot.c_str(), 0600) == 0, "cannot make snapshot writable");
+                });
+        }, "planner snapshot path changed before loading");
+        require(hooks == 1, "snapshot chmod barrier did not run exactly once");
+    });
+    row("real-snapshot-directory-replaced-after-close", [&] {
+        // Red if the whole post-close directory/file identity refusal block is removed:
+        // the decoy is private (0700) and its same-named 0400 file is a loadable helper.
+        const auto directory = checked_path(
+            private_directory(base, "snapshot-directory"), "snapshot directory rename source");
+        const auto saved = checked_path(
+            directory.parent_path() / (directory.filename().string() + "-retained"),
+            "directory rename destination");
+        const auto source = directory / "source";
+        write_bytes(source, original);
+        unsigned hooks = 0;
+        expect_reason("window_plan_changed", [&] {
+            (void)Access::synchronized_load(
+                source, digest, directory, {}, [&](const fs::path& path) {
+                    ++hooks;
+                    const auto snapshot = checked_path(path, "snapshot in directory to replace");
+                    fs::rename(directory, saved);
+                    require(::mkdir(directory.c_str(), 0700) == 0, "cannot create decoy directory");
+                    require(::chmod(directory.c_str(), 0700) == 0, "cannot make decoy private");
+                    write_bytes(snapshot, original);
+                    require(::chmod(snapshot.c_str(), 0400) == 0,
+                            "cannot make decoy file read-only");
+                });
+        }, "planner snapshot path changed before loading");
+        require(hooks == 1, "directory replacement barrier did not run exactly once");
     });
     row("real-snapshot-lifetime-and-move-ownership", [&] {
         const auto directory = private_directory(base, "lifetime");
