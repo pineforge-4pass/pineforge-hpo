@@ -26,6 +26,25 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def first_difference(actual, reference, structure):
+    """Name the first differing record and its differing fields, with both values."""
+    size = ctypes.sizeof(structure)
+    for base in range(0, min(len(actual), len(reference)), size):
+        if actual[base : base + size] == reference[base : base + size]:
+            continue
+        parts = []
+        for name, field_type in structure._fields_:
+            start = base + getattr(structure, name).offset
+            stop = start + ctypes.sizeof(field_type)
+            if actual[start:stop] != reference[start:stop]:
+                parts.append(
+                    f"{name}@{start - base} native={actual[start:stop].hex()}"
+                    f" reference={reference[start:stop].hex()}"
+                )
+        return f"first differing record {base // size}: " + "; ".join(parts)
+    return f"no differing record in common length ({len(actual)}/{len(reference)})"
+
+
 def canonical_abi_bytes(raw, structure):
     size = ctypes.sizeof(structure)
     require(len(raw) % size == 0, "C-ABI record size differs from the release harness")
@@ -56,9 +75,24 @@ def oracle_probe():
     module = importlib.util.spec_from_file_location("release_harness", harness)
     oracle = importlib.util.module_from_spec(module)
     module.loader.exec_module(oracle)
+    # Engine 1.7.0's harness turns the report sink on by default, and a sink report has
+    # NULL trade arrays. The native side reads the owning-array route, so the reference
+    # must too: this keeps the legacy route the C ABI still supports.
+    if hasattr(oracle, "_new_report_sink"):
+        oracle._new_report_sink = lambda *args, **kwargs: None
     original = oracle.build_report_dict
 
     def capture(report, *args, **kwargs):
+        # A NULL array would make string_at return uninitialized bytes, not trades.
+        if report.total_trades > 0 and not report.trades:
+            raise AssertionError("the reference report has no trade array to compare")
+        # 1.7.0 documents total_trades as the logical count and trades_len as the
+        # resident length of the array; they are equal only on the owning-array route.
+        if report.trades_len != report.total_trades:
+            raise AssertionError(
+                f"the reference report is not the owning-array route: trades_len "
+                f"{report.trades_len} != total_trades {report.total_trades}"
+            )
         output.mkdir(parents=True, exist_ok=True)
         (output / "metrics.bin").write_bytes(
             ctypes.string_at(
@@ -67,7 +101,7 @@ def oracle_probe():
         )
         (output / "trades.bin").write_bytes(
             ctypes.string_at(
-                report.trades, report.total_trades * ctypes.sizeof(oracle.TradeC)
+                report.trades, report.trades_len * ctypes.sizeof(oracle.TradeC)
             )
         )
         return original(report, *args, **kwargs)
@@ -830,7 +864,9 @@ if eth4 < threshold or eth4 <= ethD
             (native_dir / f"{kind}.canonical.bin").write_bytes(actual)
             (oracle_dir / f"{kind}.canonical.bin").write_bytes(reference)
             require(
-                actual == reference, f"candidate {candidate}: C-ABI {kind} bytes differ"
+                actual == reference,
+                f"candidate {candidate}: C-ABI {kind} bytes differ: "
+                + first_difference(actual, reference, structure),
             )
             row[kind + "_bytes"] = len(actual)
             row[kind + "_sha256"] = hashlib.sha256(actual).hexdigest()
