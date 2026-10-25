@@ -6,8 +6,11 @@ export in protocol order and lists all missing exports in its diagnostic, then c
 versions are 1. It next reads `pf_version_get` and `pf_version_string` from the loaded plugin:
 numeric components must agree, the runtime must be stable engine 1.x at least 1.6.2, and any
 supplied expected manifest version must exactly match the full embedded version. Release
-candidates are refused. Git-describe suffixes are parsed as part of the full version. This
-release gate does not attest a custom build's provenance or replace real-plugin parity evidence.
+candidates are refused, including dirty release candidates. Git-describe versions use
+`X.Y.Z[-rc.N][-D-gSHA][-dirty]`: dirty trees are admitted with or without a distance/SHA suffix,
+including an exactly tagged dirty tree such as `1.7.0-dirty`. The exact full string is the
+attribution recorded in the manifest and compared by `engine_identity`. This release gate does
+not attest a custom build's provenance or replace real-plugin parity evidence.
 
 The six exports, in admission order, are `pf_selected_window_version`,
 `strategy_set_selected_window_v1`, `strategy_selected_window_counts_v1`,
@@ -25,7 +28,8 @@ row pointer/count, and six expected counts. It neither loads nor calls the plann
 creates one fresh handle and applies the same timezone, overrides, inputs, symbol metadata and
 feed setter sequence as an ordinary trial. It optionally reads version-1 effective-settings JSON
 from that handle using BUFFER_TOO_SMALL then OK, with a 16 MiB bound. An absent or unusable
-receipt stays unavailable; it is not a settings attestation.
+receipt yields `effective_settings == nullopt`; consumers must treat that as **UNATTESTED**,
+never as a settings attestation.
 
 The helper configures selection, installs a native observer and invokes `run_backtest_full`
 once on the retained pointer. Fresh handles keep the engine's full owning report mode; this
@@ -37,6 +41,12 @@ three nonzero count/observation identities, six plan/count equalities, Results/R
 boundary delivery and absence of faults, callback identity, processed **fed** counts and
 `window_script_bars + 1` equity points. Only then does shared report capture create a snapshot.
 The objective layer can score only a returned snapshot.
+
+The engine harness also checks `report.input_tf_seconds` against the request; this helper has no
+equivalent check. Timeframe and feed admission belong to the planner lanes (4a/4b).
+
+When `pbo_blocks` is requested, the block layout and moments depend on the selected window's
+curve length. Blocks are comparable only across trials of the **same window**.
 
 Cleanup removes the observer while its context is alive, clears pending selection, then frees
 the report before the handle. If removal fails, the context survives handle destruction.

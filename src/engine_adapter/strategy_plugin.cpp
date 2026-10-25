@@ -117,10 +117,10 @@ EngineVersion validate_selected_engine_version(
                                  (!numbers ? " pf_version_get" : "") +
                                  (!full ? " pf_version_string" : ""));
     }
-    // Match the whole documented MAJOR.MINOR.PATCH[-rc.N][-N-gSHA[-dirty]] form.
+    // Match the generator's MAJOR.MINOR.PATCH[-rc.N][-D-gSHA][-dirty] form.
     static const std::regex pattern(
         R"((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))"
-        R"((-rc\.([1-9][0-9]*))?(-([0-9]+)-g[0-9a-fA-F]+(-dirty)?)?)");
+        R"((-rc\.([1-9][0-9]*))?(-([0-9]+)-g[0-9a-fA-F]+)?(-dirty)?)");
     std::smatch match;
     if (!std::regex_match(*full, match, pattern))
         selected_unavailable("engine_version_invalid", "invalid embedded engine version: " + *full);

@@ -30,9 +30,10 @@ struct EngineVersion {
 
 /// Parses and cross-checks embedded metadata without loading a plugin or consulting build headers.
 ///
-/// Requires stable engine 1.x at least 1.6.2. Accepts the engine's documented git-describe
-/// suffix, but refuses release candidates. A supplied manifest version must match the full
-/// embedded string exactly. Missing, malformed, unsupported and mismatched identities raise
+/// Requires stable engine 1.x at least 1.6.2. Parses `X.Y.Z[-rc.N][-D-gSHA][-dirty]`;
+/// dirty suffixes are admitted with or without git distance, but release candidates are refused.
+/// A supplied manifest version must match the full embedded string exactly.
+/// Missing, malformed, unsupported and mismatched identities raise
 /// `hpo_walkforward_unavailable` with the corresponding engine reason.
 EngineVersion validate_selected_engine_version(
     const std::optional<pf_version_t>& numbers,
@@ -158,19 +159,29 @@ public:
 
     /// Configures the next selected run's half-open interval using the engine's v1 descriptor.
     /// Setter -2 is unavailable, -4 is engine `out_of_memory`; other refusals are invariants.
+    /// Callers outside `SelectedEvaluation::evaluate` must call require_selected_window() first;
+    /// this method does not enforce admission when its own symbol exists.
     void set_selected_window(pf_strategy_t strategy, std::int64_t start_ms,
                              std::int64_t end_ms) const;
     /// Clears pending selection; subject to the same checked status rules as its setter.
+    /// Callers outside `SelectedEvaluation::evaluate` must call require_selected_window() first;
+    /// this method does not enforce admission when its own symbol exists.
     void clear_selected_window(pf_strategy_t strategy) const;
     /// Reads native counts with initialized and checked engine headers.
     /// Any getter refusal, including -2 after a successful run, is `hpo_invariant`.
+    /// Callers outside `SelectedEvaluation::evaluate` must call require_selected_window() first;
+    /// this method does not enforce admission when its own symbol exists.
     pf_selected_window_counts_v1 selected_window_counts(pf_strategy_t strategy) const;
     /// Registers an observer, or removes it when @p observer is null.
     /// Borrowed callback/context lifetime follows the engine header, including removal refusal.
     /// Setter -2 is unavailable, -4 is engine `out_of_memory`; other refusals are invariants.
+    /// Callers outside `SelectedEvaluation::evaluate` must call require_selected_window() first;
+    /// this method does not enforce admission when its own symbol exists.
     void set_execution_observer(pf_strategy_t strategy,
                                 const pf_execution_observer_v1* observer) const;
     /// Reads the execution snapshot; a refusal or changed header is `hpo_invariant`.
+    /// Callers outside `SelectedEvaluation::evaluate` must call require_selected_window() first;
+    /// this method does not enforce admission when its own symbol exists.
     pf_execution_observation_v1 execution_observation(pf_strategy_t strategy) const;
     /// Returns optional version-1 effective-settings JSON using the bounded two-call protocol.
     /// An absent getter or unusable receipt is nullopt, never a settings attestation.

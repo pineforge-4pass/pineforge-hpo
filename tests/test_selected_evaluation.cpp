@@ -309,6 +309,8 @@ PF_API pf_version_t pf_version_get() {
         return {1, 6, 1, "fixture"};
     if (hit("engine_revision_rc"))
         return {1, 6, 2, "fixture"};
+    if (hit("engine_revision_rc_above_floor"))
+        return {1, 7, 0, "fixture"};
     return {1, 7, hit("numeric_version_mismatch") ? 1 : 0, "fixture"};
 }
 PF_API const char* pf_version_string() {
@@ -318,6 +320,8 @@ PF_API const char* pf_version_string() {
         return "1.6.1";
     if (hit("engine_revision_rc"))
         return "1.6.2-rc.1";
+    if (hit("engine_revision_rc_above_floor"))
+        return "1.7.0-rc.1";
     if (hit("engine_string_invalid"))
         return "1.7.0-malformed";
     return "1.7.0";
@@ -427,13 +431,16 @@ PF_API int pf_abi_version() { return PF_ABI_VERSION; }
 #include <pineforge/hpo/selected_evaluation.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <dlfcn.h>
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -586,11 +593,20 @@ void require_cleanup(Fixture& fixture, bool ran = true) {
     require(fixture.counter("bad_run") == 0, "fixture refused forwarded configuration");
 }
 
+void require_not_started(Fixture& fixture, const std::string& row) {
+    require(fixture.counter("create") == 0, row + ": refusal created a handle");
+    // Every fake setter and work entry records an event, including wrong setter arguments.
+    const std::string log = fixture.events();
+    require(log.empty(), row + ": refusal called a setter or started work: " + log);
+}
+
 void test_version_parser() {
     // Literal outcomes catch lexical comparisons, parity-era admission and build-header metadata.
     for (const auto& row : std::vector<std::pair<pf_version_t, std::string>>{
              {{1, 6, 2, ""}, "1.6.2"}, {{1, 6, 12, ""}, "1.6.12"}, {{1, 7, 0, ""}, "1.7.0"},
-             {{1, 10, 0, ""}, "1.10.0"}, {{1, 7, 0, "abc"}, "1.7.0-2-gabc-dirty"}}) {
+             {{1, 10, 0, ""}, "1.10.0"}, {{1, 6, 2, ""}, "1.6.2-dirty"},
+             {{1, 7, 0, ""}, "1.7.0-dirty"}, {{1, 7, 0, "abc"}, "1.7.0-2-gabc"},
+             {{1, 7, 0, "abc"}, "1.7.0-2-gabc-dirty"}}) {
         const auto result = validate_selected_engine_version(row.first, row.second, row.second);
         require(result.major == 1 && result.minor == static_cast<std::uint32_t>(row.first.minor) &&
                     result.patch == static_cast<std::uint32_t>(row.first.patch) &&
@@ -602,17 +618,27 @@ void test_version_parser() {
                        "hpo_walkforward_unavailable", reason);
     };
     refused({1, 6, 1, ""}, "1.6.1", "engine_revision");
+    refused({1, 6, 1, ""}, "1.6.1-dirty", "engine_revision");
     refused({1, 5, 999, ""}, "1.5.999", "engine_revision");
     refused({1, 6, 2, ""}, "1.6.2-rc.1", "engine_revision");
+    refused({1, 6, 2, ""}, "1.6.2-rc.1-dirty", "engine_revision");
     refused({1, 7, 0, ""}, "1.7.0-rc.1", "engine_revision");
+    refused({1, 7, 0, ""}, "1.7.0-rc.1-dirty", "engine_revision");
+    refused({1, 7, 0, ""}, "1.7.0-rc.1-2-gabc", "engine_revision");
+    refused({1, 7, 0, ""}, "1.7.0-rc.1-2-gabc-dirty", "engine_revision");
     refused({2, 0, 0, ""}, "2.0.0", "engine_revision");
     refused({1, 7, 1, ""}, "1.7.0", "engine_version_invalid");
     refused({-1, 7, 0, ""}, "1.7.0", "engine_version_invalid");
     for (const char* text : {"", "v1.7.0", "1.07.0", "1.7", "1.7.0extra", "1.7.0-rc.",
-                             "1.7.0-1-gZZZ", "1.7.0-dirty", "999999999999.7.0"})
+                             "1.7.0-1-gZZZ", "1.7.0-gZZZ", "1.7.0-dirty-dirty",
+                             "1.7.0-2-gabc-dirty-dirty", "999999999999.7.0"})
         refused({1, 7, 0, ""}, text, "engine_version_invalid");
     expect_failure([] {
         (void)validate_selected_engine_version(pf_version_t{1, 7, 0, ""}, "1.7.0", "1.6.2");
+    }, "hpo_walkforward_unavailable", "engine_identity");
+    expect_failure([] {
+        (void)validate_selected_engine_version(
+            pf_version_t{1, 7, 0, ""}, "1.7.0-dirty", "1.7.0");
     }, "hpo_walkforward_unavailable", "engine_identity");
     expect_failure([] { (void)validate_selected_engine_version(std::nullopt, "1.7.0"); },
                    "hpo_walkforward_unavailable", "engine_version_missing");
@@ -664,6 +690,7 @@ void test_admission(const char* path, const char* no_version) {
              {"wrong_observer_version,engine_revision_old", "execution_observer_version"},
              {"engine_revision_old", "engine_revision"},
              {"engine_revision_rc", "engine_revision"},
+             {"engine_revision_rc_above_floor", "engine_revision"},
              {"numeric_version_mismatch", "engine_version_invalid"},
              {"engine_string_invalid", "engine_version_invalid"},
              {"engine_string_missing", "engine_version_missing"}}) {
@@ -743,6 +770,166 @@ void test_success(const char* path) {
                     std::string::npos,
             "false pass: symbol feeds were skipped or installed after the settings receipt");
     require_cleanup(fixture);
+}
+
+void test_request_validation(const char* path) {
+    Fixture fixture(path);
+    StrategyPlugin plugin(path);
+    const auto bars = input_bars();
+    struct Request {
+        const pf_bar_t* pointer;
+        std::size_t count;
+        std::int64_t start_ms;
+        std::int64_t end_ms;
+        SelectedExpectedCounts expected;
+        BacktestConfiguration config;
+    };
+    const Request valid{bars.data() + 1, 6, 1'704'067'320'000LL, 1'704'067'560'000LL,
+                        {6, 3, 2, 1, 4, 2}, configuration()};
+    const auto run_request = [&](const Request& request) {
+        return SelectedEvaluation::evaluate(
+            plugin, request.pointer, request.count, request.start_ms, request.end_ms,
+            request.expected, {{"Length", "7"}}, {{"initial_capital", "1000"}},
+            request.config, std::string("1.7.0"));
+    };
+    // The same baseline used by every invalid row must first complete real helper execution.
+    fixture.reset("");
+    (void)run_request(valid);
+    require_cleanup(fixture);
+
+    struct InvalidRequest {
+        const char* name;
+        const char* diagnostic;
+        std::function<void(Request&)> change;
+    };
+    const std::vector<InvalidRequest> rows{
+        {"null_bars", "invalid retained input pointer/count",
+         [](Request& request) { request.pointer = nullptr; }},
+        {"zero_count", "invalid retained input pointer/count",
+         [](Request& request) {
+             request.count = 0;
+             request.expected = {};
+         }},
+        {"equal_bounds", "invalid planned selected bounds",
+         [](Request& request) { request.start_ms = request.end_ms; }},
+        {"reversed_bounds", "invalid planned selected bounds",
+         [](Request& request) { request.start_ms = request.end_ms + 1; }},
+        {"start_below_json_safe", "invalid planned selected bounds",
+         [](Request& request) { request.start_ms = -9'007'199'254'740'992LL; }},
+        {"end_above_json_safe", "invalid planned selected bounds",
+         [](Request& request) { request.end_ms = 9'007'199'254'740'992LL; }},
+        {"fed_input_not_count", "inconsistent planned selected counts",
+         [](Request& request) { request.expected = {7, 3, 2, 1, 5, 2}; }},
+        {"preroll_input_above_fed", "inconsistent planned selected counts",
+         [](Request& request) {
+             // Match the unsigned subtraction so removing this clause reaches handle creation.
+             request.expected = {6, 3, 7, 1, std::numeric_limits<std::uint64_t>::max(), 2};
+         }},
+        {"window_input_difference", "inconsistent planned selected counts",
+         [](Request& request) { request.expected = {6, 3, 2, 1, 5, 2}; }},
+        {"preroll_script_above_fed", "inconsistent planned selected counts",
+         [](Request& request) {
+             // 3 - UINT64_MAX wraps to 4, below the later INT64_MAX guard.
+             request.expected = {6, 3, 2, std::numeric_limits<std::uint64_t>::max(), 4, 4};
+         }},
+        {"window_script_difference", "inconsistent planned selected counts",
+         [](Request& request) { request.expected = {6, 3, 2, 1, 4, 3}; }},
+        {"fed_script_above_count", "inconsistent planned selected counts",
+         [](Request& request) { request.expected = {6, 7, 2, 1, 4, 6}; }},
+        {"zero_magnifier_samples", "magnifier_samples must be positive",
+         [](Request& request) { request.config.magnifier_samples = 0; }},
+        {"negative_magnifier_samples", "magnifier_samples must be positive",
+         [](Request& request) { request.config.magnifier_samples = -1; }},
+        {"invalid_magnifier_distribution", "invalid magnifier distribution",
+         [](Request& request) {
+             // 6 is representable by this enum's range but is not a named distribution.
+             request.config.magnifier_distribution = static_cast<pf_magnifier_distribution_t>(6);
+         }}};
+    for (const auto& row : rows) {
+        fixture.reset("");
+        auto request = valid;
+        row.change(request);
+        const auto message = expect_failure([&] { (void)run_request(request); },
+                                            "hpo_invariant", "", FailureOrigin::Hpo);
+        require(message == std::string("selected evaluation: ") + row.diagnostic,
+                std::string(row.name) + ": an unrelated invariant hid the missing clause");
+        require_not_started(fixture, row.name);
+    }
+    // No row claims the dominated window_script_bars >= INT64_MAX clause: all earlier
+    // predicates being false implies window_script_bars <= fed_script_bars <= count <= INT_MAX.
+}
+
+void test_return_statistics(const char* path) {
+    Fixture fixture(path);
+    StrategyPlugin plugin(path);
+    const auto bars = input_bars();
+    std::optional<std::string> identity_refusal;
+    try {
+        require_return_stats_identity();
+    } catch (const HpoError& error) {
+        require(error.code() == "hpo_toolchain_unavailable" && error.origin() == FailureOrigin::Hpo,
+                "unexpected return-statistics identity failure");
+        const auto reason = error.args().find("reason");
+        require(reason != error.args().end(), "identity refusal has no typed reason");
+        const auto* value = std::get_if<std::string>(&reason->second.value());
+        require(value && *value == "native_runner", "unexpected identity refusal reason");
+        identity_refusal = error.what();
+    }
+    const bool contraction_free = !identity_refusal && return_stats_contraction_free();
+    struct StatsRequest {
+        const char* name;
+        bool bar;
+        bool monthly;
+        std::uint32_t blocks;
+    };
+    for (const auto& row : std::vector<StatsRequest>{
+             {"bar", true, false, 0}, {"monthly", false, true, 0},
+             {"pbo_blocks", false, false, 2}}) {
+        fixture.reset("");
+        auto config = configuration();
+        config.return_stats_bar = row.bar;
+        config.return_stats_monthly = row.monthly;
+        config.pbo_blocks = row.blocks;
+        // Use the same build-admission functions as the helper; every branch asserts its result.
+        if (identity_refusal) {
+            const auto message = expect_failure([&] { (void)evaluate(plugin, bars, config); },
+                "hpo_toolchain_unavailable", "native_runner", FailureOrigin::Hpo);
+            require(message == *identity_refusal, "helper did not propagate the identity refusal");
+            require_not_started(fixture, row.name);
+            std::cout << "selected return statistics " << row.name << ": identity refused\n";
+        } else if (!contraction_free) {
+            const auto message = expect_failure([&] { (void)evaluate(plugin, bars, config); },
+                                                "hpo_invariant", "", FailureOrigin::Hpo);
+            require(message == "selected evaluation: return statistics need a build without "
+                               "floating-point contraction",
+                    "an unrelated invariant hid the contraction refusal");
+            require_not_started(fixture, row.name);
+            std::cout << "selected return statistics " << row.name << ": contraction refused\n";
+        } else {
+            const auto result = evaluate(plugin, bars, config);
+            require(result.report.return_bar.computed == row.bar &&
+                        result.report.return_monthly.computed == row.monthly,
+                    std::string(row.name) + ": requested return series was not captured");
+            require(result.counts.window_script_bars == 2 && result.report.equity_curve.size() == 3,
+                    "return statistics did not use the selected three-point curve");
+            if (row.blocks != 0) {
+                // K=2 intervals, S=2: the smallest half holds 1 interval, below the required 2.
+                // A skipped reduction leaves NotRequested, so it cannot satisfy this assertion.
+                const auto& layout = result.report.return_block_layout;
+                const auto& moments = result.report.return_blocks;
+                require(!layout.usable && layout.blocks == 0 && layout.intervals == 0 &&
+                            layout.n_b.empty() && layout.boundary_time_ms.empty() &&
+                            moments.status == ReturnBlocksStatus::UnusableLayout &&
+                            moments.count.empty() && moments.sum.empty() && moments.m2.empty(),
+                        "short selected curve must compute UnusableLayout with no block arrays");
+            } else {
+                require(result.report.return_blocks.status == ReturnBlocksStatus::NotRequested,
+                        "unrequested blocks were reduced");
+            }
+            require_cleanup(fixture);
+            std::cout << "selected return statistics " << row.name << ": accepted\n";
+        }
+    }
 }
 
 void test_faults(const char* path) {
@@ -903,6 +1090,8 @@ int main(int argc, char** argv) {
             test_missing_export(argv[3 + index], reasons[index]);
         test_admission(argv[2], argv[9]);
         test_success(argv[2]);
+        test_request_validation(argv[2]);
+        test_return_statistics(argv[2]);
         test_faults(argv[2]);
         test_cleanup_failures(argv[2]);
         test_settings(argv[2], argv[10]);
