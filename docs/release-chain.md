@@ -98,6 +98,17 @@ short-lived token scoped only to that hub repository. Source metadata uses the
 HPO job's read-only `GITHUB_TOKEN`; public asset downloads carry no credential.
 No new variable, PAT or consumer deployment credential is used.
 
+App-token jobs use `release` for human-dispatched jobs (owner review required)
+and `release-bot` for automatic-only jobs (no reviewer), both restricted to `main`.
+The mixed release-event/manual `notify-hub` job uses `release`; that environment
+must also allow release tags such as `v*`, since release events use a tag ref.
+Copy the existing App secrets under the same names into these environments;
+keep this PR in draft until the owner confirms setup and retain repository
+copies until the owner deletes them after dry runs. `workflow-lint` requires
+literal job environments for minting. Rollback removes the job's `environment:`
+line and reverts the preflight enforcing it; the repository secret copies still
+serve the unchanged secret references.
+
 The workflow and replay entry point must land on the default branch before use.
 Add `Release notification contract` to the branch's required status checks and
 retain all existing checks and pull-request protection. This lane neither
