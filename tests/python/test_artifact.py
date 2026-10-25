@@ -541,16 +541,21 @@ class RequestInventoryArtifactTests(unittest.TestCase):
         rename.assert_called_once()
         manifest, provenance = self.documents(artifact)
         # Inspect source dicts: parsing the published JSON loses alias identity.
-        manifest_source = next(
-            call.args[0]
-            for call in serialize.call_args_list
-            if call.args[0] == manifest
-        )
-        provenance_source = next(
-            call.args[0]
-            for call in serialize.call_args_list
-            if call.args[0] == provenance
-        )
+        def source_of(document):
+            # Type-blind match: compare the JSON round trip, not the Python value.
+            return next(
+                (
+                    call.args[0]
+                    for call in serialize.call_args_list
+                    if json.loads(_canonical_json(call.args[0])) == document
+                ),
+                None,
+            )
+
+        manifest_source = source_of(manifest)
+        provenance_source = source_of(provenance)
+        self.assertIsNotNone(manifest_source)
+        self.assertIsNotNone(provenance_source)
         self.assertEqual(
             manifest_source["request_feed_inventory"],
             provenance_source["request_feed_inventory"],
