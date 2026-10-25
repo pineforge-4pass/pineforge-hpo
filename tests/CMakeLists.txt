@@ -485,7 +485,6 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     add_test(NAME pineforge_hpo_study_split COMMAND pineforge_hpo_test_study_split
         ${PFH_STUDY_PIN_NATIVE} $<TARGET_FILE:pineforge_hpo_fake_strategy>
         "${CMAKE_CURRENT_BINARY_DIR}/study-split")
-    set_tests_properties(pineforge_hpo_study_split PROPERTIES TIMEOUT 300)
     if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
         set_property(TEST pineforge_hpo_study_split APPEND PROPERTY
             ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
