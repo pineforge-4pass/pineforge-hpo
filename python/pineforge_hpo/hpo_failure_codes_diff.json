@@ -8,7 +8,7 @@
   "to": {
     "version": null,
     "unreleased": true,
-    "catalogSha256": "601c11157a705828acae5a79931f8a93fdae7a3218598ed7daed90575c3a33b4"
+    "catalogSha256": "1a7798ad99fd38c3013ae6281d23073001ecf424a78d7a4dfa6cec4644a6dc00"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
@@ -44,7 +44,7 @@
           }
         },
         "templates": [
-          "Invalid request-feed inventory ({reason})."
+          "Invalid request-feed inventory ({capability}: {reason})."
         ],
         "since": "1.7.1"
       }

@@ -153,7 +153,7 @@ Since 1.7.1 the selected-study Python API raises `RequestTimeframeError` or
 | Code | Arguments | Template |
 | --- | --- | --- |
 | `hpo_walkforward_timeframe_unsupported` | `capability`: `selected_window_chart_timeframe` or `selected_window_request_feed_timeframe` | Unsupported selected-window timeframe ({capability}). |
-| `hpo_walkforward_inventory_invalid` | `capability`: `selected_window_request_feed_inventory`; `reason`: the closed list below | Invalid request-feed inventory ({reason}). |
+| `hpo_walkforward_inventory_invalid` | `capability`: `selected_window_request_feed_inventory`; `reason`: the closed list below | Invalid request-feed inventory ({capability}: {reason}). |
 
 | Inventory reason | Refusal |
 | --- | --- |

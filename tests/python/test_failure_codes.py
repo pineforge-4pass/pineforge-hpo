@@ -546,7 +546,9 @@ class FailureCodeTests(unittest.TestCase):
                         ],
                     },
                 },
-                "templates": ["Invalid request-feed inventory ({reason})."],
+                "templates": [
+                    "Invalid request-feed inventory ({capability}: {reason})."
+                ],
                 "since": "1.7.1",
             },
         )
