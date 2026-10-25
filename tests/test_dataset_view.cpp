@@ -56,11 +56,13 @@ std::filesystem::path checked_plugin(const std::filesystem::path& path) {
 }
 
 template <typename Function>
-void require_typed(Function function, const std::string& code) {
+void require_typed(Function function, const std::string& code, const std::string& message = {}) {
     try {
         function();
     } catch (const pfh::TypedHpoError<std::invalid_argument>& error) {
         require(error.code() == code, "unexpected view failure code: " + error.code());
+        require(message.empty() || std::string(error.what()) == message,
+                "unexpected view failure message: " + std::string(error.what()));
         return;
     }
     throw std::runtime_error("view operation did not throw a typed invalid_argument");
@@ -132,6 +134,15 @@ void check_execution(const std::string& plugin_path) {
     configuration.bar_magnifier = true;
     configuration.magnifier_samples = 6;
     configuration.magnifier_distribution = PF_MAGNIFIER_TRIANGLE;
+    require_typed([&] {
+        pfh::TrialExecutor invalid(nullptr, owner, configuration);
+    }, "hpo_invariant", "TrialExecutor requires a strategy plugin");
+    require_typed([&] {
+        pfh::TrialExecutor invalid(plugin, std::shared_ptr<const pfh::Dataset>{}, configuration);
+    }, "hpo_invariant", "TrialExecutor requires a dataset");
+    require_typed([&] {
+        pfh::TrialExecutor invalid(nullptr, std::shared_ptr<const pfh::Dataset>{}, configuration);
+    }, "hpo_invariant", "TrialExecutor requires a strategy plugin");
     const pfh::ParameterValues inputs{
         {"Length", "3"}, {"BatchPrefixTest", "1"}, {"BatchPrefixJitter", "0"},
         {"ChartBarsTest", "1"}};

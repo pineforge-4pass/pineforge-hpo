@@ -305,7 +305,11 @@ private:
     pf_strategy_t strategy_;
 };
 
-DatasetView whole_dataset(std::shared_ptr<const Dataset> dataset) {
+DatasetView whole_dataset(const std::shared_ptr<const StrategyPlugin>& plugin,
+                         std::shared_ptr<const Dataset> dataset) {
+    if (!plugin)
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "TrialExecutor requires a strategy plugin");
     if (!dataset)
         throw TypedHpoError<std::invalid_argument>(
             "hpo_invariant", {}, "TrialExecutor requires a dataset");
@@ -420,7 +424,7 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
 TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
                              std::shared_ptr<const Dataset> dataset,
                              BacktestConfiguration configuration)
-    : TrialExecutor(std::move(plugin), whole_dataset(std::move(dataset)),
+    : TrialExecutor(plugin, whole_dataset(plugin, std::move(dataset)),
                     std::move(configuration)) {}
 
 TrialExecutionResult TrialExecutor::execute(const ParameterValues& inputs,

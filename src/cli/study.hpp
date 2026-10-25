@@ -35,6 +35,8 @@ enum class Direction { kMaximize, kMinimize };
 class ProofCurveWriter;
 #endif
 
+// Single-TU rule: every translation unit that sees Options must include this header with the
+// same PINEFORGE_HPO_PROOF_CURVES setting.
 struct Options {
     std::filesystem::path strategy;
     std::filesystem::path ohlcv;
@@ -122,6 +124,8 @@ struct Options {
 
 // Admission is performed once. No sampler, archive, worker pool or spool lives here. The pruner
 // is the admitted initial history (including warm-start rungs), copied into each study.
+// The proof-curve writer and --trials-file destination are shared across sequential run_study
+// calls; they must become per-study before walk-forward.
 struct PreparedStudy {
     Options options;
     SearchSpace space;

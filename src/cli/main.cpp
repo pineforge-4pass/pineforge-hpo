@@ -158,7 +158,7 @@ static_assert(std::atomic<bool>::is_always_lock_free);
 std::atomic<bool> signal_cancelled{false};
 std::atomic<bool> result_publication_started{false};
 
-extern "C" void request_stop(int) {
+extern "C" void pfh_request_stop(int) {
     signal_cancelled.store(true, std::memory_order_relaxed);
 }
 
@@ -1470,6 +1470,8 @@ private:
                     auto trials = archive_.retained();
                     lock.unlock();
                     timeout_result_(trials, error_exception_);
+                    // The outer handler exits the process.
+                    std::abort();
                     return;
                 }
                 if (done_)
@@ -1478,6 +1480,8 @@ private:
         } catch (const std::exception& error) {
             if (timed_out_) {
                 timeout_failure_(error);
+                // The outer handler exits the process.
+                std::abort();
                 return;
             }
             std::lock_guard<std::mutex> lock(mutex_);
@@ -3095,7 +3099,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         struct sigaction action {};
-        action.sa_handler = request_stop;
+        action.sa_handler = pfh_request_stop;
         action.sa_flags = SA_RESTART;
         sigemptyset(&action.sa_mask);
         if (::sigaction(SIGTERM, &action, nullptr) != 0 ||

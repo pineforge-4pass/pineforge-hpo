@@ -224,6 +224,9 @@ std::vector<std::string> ordinary_command(const Path& native, const Path& plugin
 // For v=1..9 the fixture contributes 16*v+20 per bar: sum=900. With capital=100000,
 // candidate Length=L scores 1000+L; IDs are L-1. Every number below is integer-exact.
 std::string ordinary_expected() {
+    // SHA-256 independently computed with Python hashlib; AR-CX recomputed it on 2026-10-25
+    // and matched the literal below. Canonical preimage bytes (no trailing newline):
+    // {"objective":{"constraints":[],"direction":"maximize","expression":"metrics.all.net_profit"},"parameters":{"Length":{"high":"9","kind":"integer","log":false,"low":"1","step":"1"}},"space_hash_version":1}
     const std::string hash = "1eec48bb94bd90a78c98a39c757b9b1fc6a9c73198e6159ed1259f5cb4d30868";
     const std::string space =
         R"({"objective":{"constraints":[],"direction":"maximize",)"
@@ -644,6 +647,32 @@ void suite(const Path& self, const Path& native, const Path& plugin, const Path&
             }
         }
     }
+
+    // num_trades=Length: abs(1-1.5)=abs(2-1.5)=0.5. Delay id=0 so id=1 finishes first;
+    // assert the recorded order so an in-order tie cannot pass without exercising replacement.
+    const auto tie_result = root / "selection-out-of-order-tie.json";
+    const auto tie = run_child(root, "selection-out-of-order-tie",
+        {self.string(), "native-entry", "run", "--strategy", plugin.string(),
+         "--ohlcv", csv.string(), "--output", tie_result.string(),
+         "--objective", "abs(metrics.all.num_trades-1.5)", "--sampler", "grid", "--seed", "17",
+         "--workers", "2", "--schedule", "rolling", "--max-trials", "2",
+         "--int-dim", "Length", "1", "2", "1", "--fixed-input", "DelayAtLength", "1",
+         "--fixed-input", "DelayAtLengthMs", "500"}, {plugin, manifest, csv, tie_result});
+    require(tie.code == 0 && read_file(tie.errors).empty(), "out-of-order tie changed exit/stderr");
+    const auto tie_document = detail::parse_json(read_file(tie.output));
+    const auto& tie_order = detail::field(tie_document, "completion_order").items;
+    const auto& tied_trials = detail::field(tie_document, "trials").items;
+    require(tie_order.size() == 2 && tied_trials.size() == 2 &&
+                detail::json_integer(tie_order[0]) == 1 && detail::json_integer(tie_order[1]) == 0,
+            "tie fixture did not finish the higher id first");
+    for (const auto& trial : tied_trials)
+        require(detail::field(trial, "status").text() == "ok" &&
+                    detail::field(trial, "objective").real() == 0.5,
+                "out-of-order tie scores disagree with fixture arithmetic");
+    require(detail::json_integer(detail::field(tie_document, "best_trial_id")) == 0 &&
+                detail::field(tie_document, "best_value").real() == 0.5,
+            "equal-score replacement did not prefer the lower trial id");
+    row_verdict(tie, "PASS", "higher id finished first with score 0.5; lower id won the tie");
 
     // (d) Each child admits the dataset/plugin once, then invokes run_study sequentially in the
     // SAME process. False pass: one CLI subprocess per study, checking fds before teardown only,

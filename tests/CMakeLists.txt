@@ -476,6 +476,9 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         target_compile_definitions(pineforge_hpo_test_study_split PRIVATE
             PINEFORGE_HPO_STUDY_RSS_GATE=1)
     endif()
+    # The ordinary pin runs the real pineforge-hpo-native only when that target exists.
+    # Otherwise it uses the same production entry point compiled into the private test target
+    # with PINEFORGE_HPO_PROOF_CURVES=1 and main renamed.
     if(TARGET pineforge-hpo-native)
         set(PFH_STUDY_PIN_NATIVE $<TARGET_FILE:pineforge-hpo-native>)
         add_dependencies(pineforge_hpo_test_study_split pineforge-hpo-native)
