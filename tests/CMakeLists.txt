@@ -278,6 +278,9 @@ target_compile_options(pineforge_hpo_test_ordinal_set PRIVATE -Wall -Wextra -Wpe
 add_test(NAME pineforge_hpo_ordinal_set COMMAND pineforge_hpo_test_ordinal_set)
 
 if(UNIX AND TARGET PineForgeHPO::engine_adapter)
+    # Selected support is opt-in on separately named fixtures. The default fake must never
+    # acquire the six selected/observer exports, even through accidental engine linkage.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
     # The engine-adapter fixture is compiled four ways from one source:
     #   1. a test executable;
     #   2. a complete strategy plugin;
@@ -298,6 +301,70 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     set_target_properties(pineforge_hpo_fake_strategy PROPERTIES
         PREFIX ""
         OUTPUT_NAME "fake_strategy")
+    add_custom_command(TARGET pineforge_hpo_fake_strategy POST_BUILD
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_fake_strategy_exports.py"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/test_engine_adapter.cpp"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/test_selected_evaluation.cpp"
+            --plugin "$<TARGET_FILE:pineforge_hpo_fake_strategy>"
+        VERBATIM)
+    add_test(NAME pineforge_hpo_fake_strategy_exports
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_fake_strategy_exports.py"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/test_engine_adapter.cpp"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/test_selected_evaluation.cpp"
+            --plugin "$<TARGET_FILE:pineforge_hpo_fake_strategy>")
+
+    set(PFH_SELECTED_FAKE_TARGETS pineforge_hpo_fake_strategy_selected)
+    foreach(omission RANGE 1 6)
+        list(APPEND PFH_SELECTED_FAKE_TARGETS
+            pineforge_hpo_fake_strategy_selected_omit_${omission})
+    endforeach()
+    list(APPEND PFH_SELECTED_FAKE_TARGETS
+        pineforge_hpo_fake_strategy_selected_no_version
+        pineforge_hpo_fake_strategy_selected_no_settings)
+    foreach(plugin IN LISTS PFH_SELECTED_FAKE_TARGETS)
+        add_library(${plugin} SHARED test_engine_adapter.cpp)
+        target_compile_definitions(${plugin} PRIVATE PINEFORGE_HPO_FAKE_SELECTED=1)
+        target_include_directories(${plugin} PRIVATE
+            "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+        target_compile_options(${plugin} PRIVATE -Wall -Wextra -Wpedantic)
+        set_target_properties(${plugin} PROPERTIES PREFIX "" OUTPUT_NAME "${plugin}")
+        if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+            target_compile_options(${plugin} PRIVATE
+                -fsanitize=address,undefined -fno-omit-frame-pointer)
+            target_link_options(${plugin} PRIVATE -fsanitize=address,undefined)
+        elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+            target_compile_options(${plugin} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(${plugin} PRIVATE -fsanitize=thread)
+        endif()
+    endforeach()
+    foreach(omission RANGE 1 6)
+        target_compile_definitions(pineforge_hpo_fake_strategy_selected_omit_${omission} PRIVATE
+            PINEFORGE_HPO_FAKE_SELECTED_OMIT=${omission})
+    endforeach()
+    target_compile_definitions(pineforge_hpo_fake_strategy_selected_no_version PRIVATE
+        PINEFORGE_HPO_FAKE_SELECTED_NO_VERSION=1)
+    target_compile_definitions(pineforge_hpo_fake_strategy_selected_no_settings PRIVATE
+        PINEFORGE_HPO_FAKE_SELECTED_NO_SETTINGS=1)
+    add_executable(pineforge_hpo_test_selected_evaluation test_selected_evaluation.cpp)
+    target_link_libraries(pineforge_hpo_test_selected_evaluation PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    target_compile_options(pineforge_hpo_test_selected_evaluation PRIVATE -Wall -Wextra -Wpedantic)
+    add_dependencies(pineforge_hpo_test_selected_evaluation
+        pineforge_hpo_fake_strategy ${PFH_SELECTED_FAKE_TARGETS})
+    add_test(NAME pineforge_hpo_selected_evaluation
+        COMMAND pineforge_hpo_test_selected_evaluation
+            $<TARGET_FILE:pineforge_hpo_fake_strategy>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_1>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_2>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_3>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_4>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_5>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_6>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_no_version>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_no_settings>)
 
     add_executable(pineforge_hpo_test_window_plan test_window_plan.cpp)
     target_link_libraries(pineforge_hpo_test_window_plan PRIVATE

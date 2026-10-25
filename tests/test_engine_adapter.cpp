@@ -1,6 +1,11 @@
 #include <pineforge/pineforge.h>
 
-#if defined(PINEFORGE_HPO_FAKE_PLUGIN)
+#if defined(PINEFORGE_HPO_FAKE_SELECTED)
+
+// A separate, explicitly opted-in fixture. The default fake below keeps no selected exports.
+#include "test_selected_evaluation.cpp"
+
+#elif defined(PINEFORGE_HPO_FAKE_PLUGIN)
 
 #include <atomic>
 #include <cerrno>
