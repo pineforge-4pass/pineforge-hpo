@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a native planner-helper loader with verified private snapshots, engine ABI pins,
+  a frozen golden self-test, and a typed C planner wrapper that borrows OHLCV rows in place.
 - Record optional planner-helper identity in additive `window_plan` artifact metadata,
   outside the compile keys. Add Python hash verification, explicit-path relocation,
   locked source-cache enrichment and typed `hpo_walkforward_unavailable` refusals.

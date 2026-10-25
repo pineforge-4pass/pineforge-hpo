@@ -336,6 +336,19 @@ jobs:
             -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
             -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
 
+      - name: Build PineForge window planner helper
+        if: github.event_name != 'pull_request'
+        run: |
+          cmake --build external/pineforge-engine/build --target pineforge_window_plan
+          case "${{ runner.os }}" in
+            Linux) planner_suffix=so ;;
+            macOS) planner_suffix=dylib ;;
+            *) echo "::error::unsupported planner helper platform"; exit 1 ;;
+          esac
+          planner_helper="${{ github.workspace }}/external/pineforge-engine/build/lib/libpineforge_window_plan.${planner_suffix}"
+          test -f "$planner_helper"
+          echo "PFH_WINDOW_PLAN_LIB=$planner_helper" >> "$GITHUB_ENV"
+
       # The complete build/proof suite stays on main and dispatch. PRs configure the
       # core-only tree (no engine adapter, no native CLI, no submodules), build its
       # default target and run every CTest test that tree registers. The engine tests
@@ -379,6 +392,8 @@ jobs:
 
       - name: Test
         if: github.event_name != 'pull_request'
+        env:
+          PFH_REQUIRE_WINDOW_PLAN: '1'
         run: |
           ctest --test-dir build -V \
             -R '^pineforge_hpo_(serial_golden|portable_math_accuracy|portable_math_contraction)$'

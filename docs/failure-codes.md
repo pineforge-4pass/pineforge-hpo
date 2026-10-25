@@ -93,8 +93,9 @@ standard exception family or inspect the `pineforge::hpo::HpoError` metadata mix
 declared in `include/pineforge/hpo/error.hpp`.
 
 The Python planner-identity API raises `WindowPlanError` (also `HpoError` and
-`RuntimeError`) with `hpo_walkforward_unavailable`, class `environment`,
-`retryable: false`, and one closed string argument, `reason`:
+`RuntimeError`) and the native planner loader throws a typed runtime error, both
+with `hpo_walkforward_unavailable`, class `environment`, `retryable: false`, and
+one closed string argument, `reason`. The Python identity checks use these reasons:
 
 | Reason | Refusal |
 | --- | --- |
@@ -105,7 +106,22 @@ The Python planner-identity API raises `WindowPlanError` (also `HpoError` and
 | `window_plan_identity` | Manifest/provenance disagree, their pair is incomplete, or the helper's engine/platform association differs from the recorded compile identity or local engine. |
 | `window_plan_hash_mismatch` | The helper file's SHA-256 differs from the recorded expected hash. |
 
-These checks do not load the helper. Diagnostics name affected fields or files;
+The native loader (`WindowPlanHelper::load`, see `docs/native-walkforward.md`) adds
+these reasons. It also reports `window_plan_path` (a relative or NUL-containing helper
+path) and `window_plan_hash_mismatch` (a malformed expected hash, or a snapshot whose
+bytes differ from it), but never `window_plan_missing`: an absent or unreadable source
+is `window_plan_load`.
+
+| Reason | Refusal |
+| --- | --- |
+| `window_plan_changed` | The source or the private snapshot shrank or changed while it was copied, verified or loaded; safe to retry. |
+| `window_plan_load` | The source is absent, unreadable or not a regular file, the snapshot could not be created, `dlopen` refused it (for example a `noexec` run directory), the platform has no POSIX loader, or the helper returned an invalid descriptor, option or bridge status. |
+| `window_plan_missing_pf_selected_plan_version` | The loaded library lacks the `pf_selected_plan_version` export. |
+| `window_plan_missing_pf_plan_selected_primary_v1` | The loaded library lacks the `pf_plan_selected_primary_v1` export. |
+| `window_plan_version` | The helper does not report bridge version 1. |
+| `window_plan_self_test` | The load-time golden self-test (`selected-plan-utc-six-hours/v1`) failed. |
+
+The Python checks do not load the helper. Diagnostics name affected fields or files;
 paths and diagnostic text are not failure arguments. An existing expected hash
 is never rewritten to accept different bytes. Metadata publication I/O retains
 `hpo_output_io_failed`; an interrupted two-file enrichment leaves selected

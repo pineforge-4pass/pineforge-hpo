@@ -8,7 +8,7 @@
   "to": {
     "version": null,
     "unreleased": true,
-    "catalogSha256": "380336b9d2bdb1c1b8005e46aa5e6036fbd2def26c178b125bead8c6df6ddcda"
+    "catalogSha256": "2074e72e8683d480c5bb2b6fe06606234f7f32bd50500792cfb06cbdcafb8229"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
@@ -26,12 +26,18 @@
           "reason": {
             "kind": "string",
             "values": [
+              "window_plan_changed",
               "window_plan_hash_mismatch",
               "window_plan_identity",
+              "window_plan_load",
               "window_plan_manifest_invalid",
               "window_plan_manifest_missing",
               "window_plan_missing",
-              "window_plan_path"
+              "window_plan_missing_pf_plan_selected_primary_v1",
+              "window_plan_missing_pf_selected_plan_version",
+              "window_plan_path",
+              "window_plan_self_test",
+              "window_plan_version"
             ]
           }
         },
