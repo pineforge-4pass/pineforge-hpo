@@ -11,6 +11,8 @@
   retention, including `summary.best_k` and retained winner rows in timeout results, with the
   existing direction and lowest-trial-ID tie rule. A post-scoring `trial_error` stays in all-mode
   `trials`, `--trials-file` / `--progress-fd` output and `counts_by_status`.
+- Accept color-typed input manifests as packed `0xAARRGGBB` integers in `0..4294967295`,
+  including integer sweeps, while preserving legacy string-typed color inputs.
 
 ## 1.7.0 (2026-10-25)
 

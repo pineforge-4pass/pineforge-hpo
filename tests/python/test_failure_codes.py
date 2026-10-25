@@ -18,14 +18,24 @@ from unittest import mock
 from pineforge_hpo import ArtifactBuildError, HpoError, StudySpecError, ValidationIssue
 from pineforge_hpo.cli import (
     CliError,
+    _native_command,
     _validate_manifest_inputs,
     _validate_strategy_overrides,
+    _validate_value_against_manifest,
     _write_json,
     main,
 )
 from pineforge_hpo.continuation import SpaceExhaustedError, WarmStartError
 from pineforge_hpo.error import failure_document
-from pineforge_hpo.study_spec import StrategySpec, StudySpec
+from pineforge_hpo.study_spec import (
+    DatasetSpec,
+    ExecutionSpec,
+    ObjectiveSpec,
+    ParameterSpec,
+    SamplerSpec,
+    StrategySpec,
+    StudySpec,
+)
 from pineforge_hpo.transpile import TranspileFailure, TranspileResult
 
 
@@ -38,6 +48,245 @@ SPEC = importlib.util.spec_from_file_location(
 )
 DIFF = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DIFF)
+
+
+class ColorInputTests(unittest.TestCase):
+    def setUp(self):
+        self.manifest = {
+            "title": "Line color",
+            "type": "color",
+            "default": 4294063685,
+        }
+        self.inputs = [{"title": "Length", "type": "int"}, self.manifest]
+
+    def study(self, *, fixed_inputs=None, search_space=None):
+        return StudySpec(
+            schema_version=1,
+            mode="single_strategy",
+            strategy=StrategySpec(
+                id="strategy",
+                source=None,
+                artifact=Path("plugin.so"),
+                dataset_ids=("bars",),
+                fixed_inputs={} if fixed_inputs is None else fixed_inputs,
+                search_space=(
+                    {"Length": ParameterSpec(kind="integer", low=1, high=1, step=1)}
+                    if search_space is None
+                    else search_space
+                ),
+                strategy_overrides={},
+            ),
+            datasets=(
+                DatasetSpec(
+                    id="bars",
+                    ohlcv=Path("bars.csv"),
+                    input_tf="1",
+                    script_tf="1",
+                    chart_timezone="UTC",
+                ),
+            ),
+            objective=ObjectiveSpec(
+                kind="expression",
+                direction="maximize",
+                expression="metrics.all.net_profit",
+            ),
+            sampler=SamplerSpec(kind="grid", seed=17, trials=1),
+            execution=ExecutionSpec(workers=1, isolation="threads"),
+            spec_path=Path("study.json"),
+        )
+
+    def test_color_manifest_accepts_packed_uint32_values(self):
+        # Proves the packed default and both inclusive uint32 endpoints are valid.
+        # False pass: only the named color literal works, or fixed/choice paths reject it.
+        for value in (4294063685, 0, 4294967295):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    _validate_value_against_manifest(
+                        value, self.manifest, where="search_space.Line color.choices[0]"
+                    )
+                )
+                self.assertIsNone(
+                    _validate_manifest_inputs(
+                        self.study(fixed_inputs={"Line color": value}), self.inputs
+                    )
+                )
+                self.assertIsNone(
+                    _validate_manifest_inputs(
+                        self.study(
+                            search_space={
+                                "Line color": ParameterSpec(
+                                    kind="categorical", choices=(value,)
+                                )
+                            }
+                        ),
+                        self.inputs,
+                    )
+                )
+
+    def test_color_manifest_rejects_non_uint32_values_with_integer_reason(self):
+        # Proves strict integer typing/range and the engine failure reason/title.
+        # False pass: coercion, bool-as-int, unchecked bounds, bypassed validation,
+        # or a generic error instead of the required integer reason.
+        for value in (
+            True,
+            False,
+            1.5,
+            4294063685.0,
+            "color.red",
+            None,
+            -1,
+            4294967296,
+        ):
+            for route in ("value", "fixed", "categorical"):
+                with self.subTest(value=value, route=route):
+                    with self.assertRaises(CliError) as caught:
+                        if route == "value":
+                            _validate_value_against_manifest(
+                                value,
+                                self.manifest,
+                                where="search_space.Line color.choices[0]",
+                            )
+                        elif route == "fixed":
+                            _validate_manifest_inputs(
+                                self.study(fixed_inputs={"Line color": value}),
+                                self.inputs,
+                            )
+                        else:
+                            _validate_manifest_inputs(
+                                self.study(
+                                    search_space={
+                                        "Line color": ParameterSpec(
+                                            kind="categorical", choices=(value,)
+                                        )
+                                    }
+                                ),
+                                self.inputs,
+                            )
+                    self.assertEqual(caught.exception.code, "setting_rejected")
+                    self.assertEqual(caught.exception.origin, "engine")
+                    self.assertEqual(
+                        caught.exception.failure_args,
+                        {
+                            "entrypoint": "strategy_set_input",
+                            "reason": "expected_integer",
+                            "input": "Line color",
+                        },
+                    )
+
+    def test_legacy_string_color_manifest_keeps_string_validation(self):
+        # Proves the old manifest still accepts strings and rejects packed integers.
+        # False pass: migrating color support silently changes string input semantics.
+        manifest = {"title": "Line color", "type": "string", "default": "color.red"}
+        inputs = [{"title": "Length", "type": "int"}, manifest]
+        self.assertIsNone(
+            _validate_value_against_manifest(
+                "color.red", manifest, where="fixed_inputs.Line color"
+            )
+        )
+        self.assertIsNone(
+            _validate_manifest_inputs(
+                self.study(fixed_inputs={"Line color": "color.red"}), inputs
+            )
+        )
+        self.assertIsNone(
+            _validate_manifest_inputs(
+                self.study(
+                    search_space={
+                        "Line color": ParameterSpec(
+                            kind="categorical", choices=("color.red",)
+                        )
+                    }
+                ),
+                [manifest],
+                input_kinds_emitted=True,
+            )
+        )
+        with self.assertRaises(CliError) as caught:
+            _validate_value_against_manifest(
+                4294063685, manifest, where="fixed_inputs.Line color"
+            )
+        self.assertEqual(caught.exception.code, "setting_rejected")
+        self.assertEqual(caught.exception.origin, "engine")
+        self.assertEqual(
+            caught.exception.failure_args,
+            {
+                "entrypoint": "strategy_set_input",
+                "reason": "unparseable_value",
+                "input": "Line color",
+            },
+        )
+
+    def test_color_manifest_default_round_trips_into_sweep_validation(self):
+        # Proves a JSON-reported packed default can be reused as a sweep choice.
+        # False pass: comparing a default to itself without validating the sweep value.
+        manifest = json.loads(json.dumps(self.manifest))
+        self.assertEqual(manifest["default"], 4294063685)
+        self.assertIs(type(manifest["default"]), int)
+        self.assertIsNone(
+            _validate_value_against_manifest(
+                manifest["default"],
+                manifest,
+                where="search_space.Line color.choices[0]",
+            )
+        )
+        self.assertIsNone(
+            _validate_manifest_inputs(
+                self.study(
+                    search_space={
+                        "Line color": ParameterSpec(
+                            kind="categorical", choices=(manifest["default"],)
+                        )
+                    }
+                ),
+                [manifest],
+            )
+        )
+
+    def test_color_integer_dimension_preserves_packed_bounds(self):
+        # Proves integer sweeps accept uint32 bounds and serialize them losslessly.
+        # False pass: scalar validation works but dimension admission or argv truncates them.
+        study = self.study(
+            search_space={
+                "Line color": ParameterSpec(
+                    kind="integer", low=0, high=4294967295, step=1
+                )
+            }
+        )
+        self.assertIsNone(_validate_manifest_inputs(study, self.inputs))
+        command = _native_command(
+            study,
+            native=Path("native"),
+            plugin=Path("plugin.so"),
+            artifact_key="a" * 64,
+        )
+        self.assertEqual(
+            command[-5:], ["--int-dim", "Line color", "0", "4294967295", "1"]
+        )
+
+    def test_color_integer_dimension_rejects_bounds_outside_uint32(self):
+        # Proves both dimension endpoints use the same packed-word range check.
+        # False pass: integer dimension admission bypasses low/high validation.
+        for low, high in ((-1, 0), (0, 4294967296)):
+            with self.subTest(low=low, high=high):
+                study = self.study(
+                    search_space={
+                        "Line color": ParameterSpec(
+                            kind="integer", low=low, high=high, step=1
+                        )
+                    }
+                )
+                with self.assertRaises(CliError) as caught:
+                    _validate_manifest_inputs(study, self.inputs)
+                self.assertEqual(caught.exception.code, "setting_rejected")
+                self.assertEqual(caught.exception.origin, "engine")
+                self.assertEqual(
+                    caught.exception.failure_args,
+                    {
+                        "entrypoint": "strategy_set_input",
+                        "reason": "expected_integer",
+                        "input": "Line color",
+                    },
+                )
 
 
 class FailureCodeTests(unittest.TestCase):

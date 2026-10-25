@@ -286,6 +286,12 @@ def _is_number(value: object) -> bool:
 def _value_matches_input_type(value: object, input_type: str) -> bool:
     if input_type == "int":
         return isinstance(value, int) and not isinstance(value, bool)
+    if input_type == "color":
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= 0xFFFFFFFF
+        )
     if input_type == "float":
         return _is_number(value)
     if input_type == "bool":
@@ -313,6 +319,7 @@ def _validate_value_against_manifest(
             "strategy_set_input",
             {
                 "int": "expected_integer",
+                "color": "expected_integer",
                 "float": "expected_finite_decimal",
                 "bool": "invalid_boolean",
             }.get(input_type, "unparseable_value")
@@ -710,6 +717,7 @@ def _validate_manifest_inputs(
             continue
         expected_kind = {
             "int": "integer",
+            "color": "integer",
             "float": "real",
             "bool": "boolean",
         }.get(input_type)
