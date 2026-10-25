@@ -37,6 +37,7 @@ from pineforge_hpo.study_spec import (
     StudySpec,
 )
 from pineforge_hpo.transpile import TranspileFailure, TranspileResult
+from pineforge_hpo.window_plan import WindowPlanError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -314,6 +315,12 @@ class FailureCodeTests(unittest.TestCase):
             (WarmStartError("original"), ValueError, "hpo_warm_start_rejected", {}),
             (SpaceExhaustedError("original"), ValueError, "hpo_space_exhausted", {}),
             (
+                WindowPlanError("window_plan_path", "original"),
+                RuntimeError,
+                "hpo_walkforward_unavailable",
+                {"reason": "window_plan_path"},
+            ),
+            (
                 TranspileFailure(TranspileResult(None)),
                 RuntimeError,
                 "hpo_transpile_failed",
@@ -441,6 +448,32 @@ class FailureCodeTests(unittest.TestCase):
                     _write_json(Path(temporary) / "result.json", {"ok": True})
         self.assertEqual(caught.exception.code, "hpo_output_io_failed")
         self.assertEqual(str(caught.exception), "original")
+
+    def test_window_plan_catalog_declares_only_implemented_reasons(self):
+        # Proves this lane publishes exactly its six closed refusal reasons.
+        # False pass: a generic string argument admits future unimplemented reasons.
+        self.assertEqual(
+            CATALOG["codes"]["hpo_walkforward_unavailable"],
+            {
+                "class": "environment",
+                "retryable": False,
+                "args": {
+                    "reason": {
+                        "kind": "string",
+                        "values": [
+                            "window_plan_hash_mismatch",
+                            "window_plan_identity",
+                            "window_plan_manifest_invalid",
+                            "window_plan_manifest_missing",
+                            "window_plan_missing",
+                            "window_plan_path",
+                        ],
+                    }
+                },
+                "templates": ["Native walk-forward is unavailable ({reason})."],
+                "since": "1.7.1",
+            },
+        )
 
     def test_catalog_and_checked_in_diff(self):
         DIFF.validate_catalog(CATALOG)
