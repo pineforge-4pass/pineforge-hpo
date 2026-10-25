@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +27,14 @@ from pineforge_hpo.transpile import (  # noqa: E402
     CodegenIdentity,
     TranspileDiagnostic,
     TranspileResult,
+)
+from pineforge_hpo.window_plan import (  # noqa: E402
+    WindowPlanError,
+    associate_window_plan,
+    derive_window_plan_path,
+    require_window_plan_block,
+    resolve_window_plan_path,
+    verify_window_plan,
 )
 
 REQUIRED_SYMBOLS = [
@@ -412,6 +422,469 @@ class ArtifactBuilderTest(unittest.TestCase):
             with self.assertRaises(ArtifactBuildError) as caught:
                 builder.build("source")
         self.assertEqual(caught.exception.stage, "plugin_validation")
+
+
+class WindowPlanArtifactTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.engine = make_engine(self.root)
+        self.eigen = make_eigen(self.root)
+        self.compiler, self.log = make_compiler(self.root)
+        self.cache = self.root / "cache"
+        self.helper = self.engine / "build/lib/libpineforge_window_plan.so"
+        self.codegen = CodegenIdentity("1.1.0", "c" * 64, "/fake/codegen/__init__.py")
+        self.transpiled = TranspileResult(
+            generated_cpp='extern "C" int generated_strategy = 1;\n',
+            inputs=({"title": "Length", "type": "int", "default": 14},),
+            strategy_params={"initial_capital": 10000},
+        )
+        self.addCleanup(patch.stopall)
+        patch.dict(os.environ, {"FAKE_COMPILER_LOG": str(self.log)}).start()
+        patch("pineforge_hpo.artifact.platform.system", return_value="Linux").start()
+        patch("pineforge_hpo.artifact.platform.machine", return_value="x86_64").start()
+        patch(
+            "pineforge_hpo.artifact.codegen_identity",
+            return_value=self.codegen,
+        ).start()
+        self.transpile = patch(
+            "pineforge_hpo.artifact.transpile_source",
+            return_value=self.transpiled,
+        ).start()
+        self.builder = self.make_builder(self.cache)
+
+    def make_builder(self, cache: Path) -> ArtifactBuilder:
+        return ArtifactBuilder(
+            engine_root=self.engine,
+            cache_dir=cache,
+            compiler=self.compiler,
+            eigen_include=self.eigen,
+            plugin_validator=validator,
+        )
+
+    def expected_block(self, helper: Path) -> dict:
+        return {
+            "schema": "pineforge-hpo-window-plan/v1",
+            "build_path": str(helper),
+            "sha256": (
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            ),
+            "planner_abi_version": 1,
+            "engine_version": "0.11.0",
+            "engine_abi_version": 2,
+            "engine_headers_sha256": hashlib.sha256(
+                b"0:engine.hpp\0// fake public header\n\0"
+                b"0:pineforge.h\0#define PF_ABI_VERSION 2\n\0"
+                b'1:version.h\0#define PINEFORGE_VERSION_STRING "0.11.0"\n\0'
+            ).hexdigest(),
+            "engine_static_library_sha256": hashlib.sha256(b"fake archive").hexdigest(),
+            "platform_system": "Linux",
+            "platform_machine": "x86_64",
+            "self_test_id": "selected-plan-utc-six-hours/v1",
+        }
+
+    def documents(self, artifact) -> tuple[dict, dict]:
+        return (
+            json.loads(artifact.manifest_path.read_text(encoding="utf-8")),
+            json.loads(artifact.provenance_path.read_text(encoding="utf-8")),
+        )
+
+    def assert_reason(self, caught, reason: str) -> None:
+        self.assertEqual(caught.exception.code, "hpo_walkforward_unavailable")
+        self.assertEqual(caught.exception.failure_args, {"reason": reason})
+
+    def test_new_build_writes_exact_block_outside_compile_identity(self) -> None:
+        # Proves normal publication writes the exact independently specified block.
+        # False pass: a round-trip comparison accepts a missing or misplaced block.
+        self.helper.write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        manifest, provenance = self.documents(artifact)
+        expected = self.expected_block(self.helper)
+        self.assertEqual(manifest["window_plan"], expected)
+        self.assertEqual(provenance["window_plan"], expected)
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertNotIn("window_plan", manifest["request_identity"])
+        self.assertEqual(
+            set(manifest["request_identity"]["engine"]),
+            {
+                "root",
+                "version",
+                "abi_version",
+                "include_dirs",
+                "headers_sha256",
+                "static_library",
+                "static_library_sha256",
+            },
+        )
+        self.assertIn(
+            "-ffp-contract=off",
+            manifest["request_identity"]["compile"]["flags"],
+        )
+
+    def test_missing_helper_leaves_ordinary_build_and_hit_unchanged(self) -> None:
+        # Proves helper absence is optional for ordinary source builds and cache hits.
+        # False pass: tests only see a stubbed successful association or skip the hit.
+        first = self.builder.build("source")
+        hit = self.builder.build("source")
+        self.assertTrue(hit.cache_hit)
+        for document in self.documents(first):
+            self.assertNotIn("window_plan", document)
+        self.assertIsNone(associate_window_plan(self.builder._resolve_engine_layout()))
+        with self.assertRaises(WindowPlanError) as caught:
+            self.builder.enrich_window_plan(hit)
+        self.assert_reason(caught, "window_plan_missing")
+        self.assertEqual(self.transpile.call_count, 1)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_candidate_three_never_derives_a_companion(self) -> None:
+        # Proves candidate three ignores both the flat and build/lib helper guesses.
+        # False pass: a basename search finds either deliberately planted helper.
+        archive = self.engine / "build/lib/libpineforge.a"
+        archive.rename(self.engine / "build/libpineforge.a")
+        self.helper.write_bytes(b"abc")
+        (self.engine / "build/libpineforge_window_plan.so").write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        for document in self.documents(artifact):
+            self.assertNotIn("window_plan", document)
+        self.assertIsNone(
+            derive_window_plan_path(self.builder._resolve_engine_layout())
+        )
+
+    def test_candidate_three_source_enrichment_requires_an_explicit_path(self) -> None:
+        # Proves source authority can record an explicit path for candidate three.
+        # False pass: the ordinary build guessed a sibling or runtime derivation works.
+        (self.engine / "build/lib/libpineforge.a").rename(
+            self.engine / "build/libpineforge.a"
+        )
+        self.helper.write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        self.assertNotIn("window_plan", self.documents(artifact)[0])
+        with self.assertRaises(WindowPlanError) as caught:
+            self.builder.enrich_window_plan(artifact)
+        self.assert_reason(caught, "window_plan_path")
+        block = self.builder.enrich_window_plan(artifact, explicit_path=self.helper)
+        self.assertEqual(block, self.expected_block(self.helper))
+        with self.assertRaises(WindowPlanError) as caught:
+            resolve_window_plan_path(None, self.engine, block)
+        self.assert_reason(caught, "window_plan_path")
+        self.assertEqual(
+            resolve_window_plan_path(self.helper, self.engine, block),
+            self.helper,
+        )
+
+    def test_install_archive_uses_only_its_own_sibling(self) -> None:
+        # Proves candidate two uses lib/, independently of build/lib/ helper bytes.
+        # False pass: derivation always chooses the build directory.
+        installed = self.engine / "lib"
+        installed.mkdir()
+        (self.engine / "build/lib/libpineforge.a").rename(installed / "libpineforge.a")
+        helper = installed / "libpineforge_window_plan.so"
+        helper.write_bytes(b"abc")
+        self.helper.write_bytes(b"wrong sibling")
+        artifact = self.builder.build("source")
+        for document in self.documents(artifact):
+            self.assertEqual(document["window_plan"], self.expected_block(helper))
+
+    def test_archive_symlink_preserves_the_selected_candidate_for_derivation(
+        self,
+    ) -> None:
+        # Proves canonicalizing the archive cannot lose its selected layout candidate.
+        # False pass: derivation follows the archive target and records another helper.
+        archive = self.engine / "build/lib/libpineforge.a"
+        target = self.engine / "archive-target.a"
+        archive.rename(target)
+        archive.symlink_to(target)
+        self.helper.write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        for document in self.documents(artifact):
+            self.assertEqual(document["window_plan"], self.expected_block(self.helper))
+            self.assertEqual(
+                document["request_identity"]["engine"]["static_library"],
+                str(target),
+            )
+
+    def test_selected_archive_does_not_search_other_helper_locations(self) -> None:
+        # Proves an unselected install tree cannot supply the build tree's helper.
+        # False pass: searching all sibling candidates accidentally finds this decoy.
+        installed = self.engine / "lib"
+        installed.mkdir()
+        (installed / "libpineforge.a").write_bytes(b"fake archive")
+        (installed / "libpineforge_window_plan.so").write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        for document in self.documents(artifact):
+            self.assertNotIn("window_plan", document)
+
+    def test_derivation_uses_darwin_and_freebsd_suffixes(self) -> None:
+        # Proves the shared platform suffix rule covers both supported suffixes.
+        # False pass: a Linux-only hard-coded basename passes every other fixture.
+        layout = self.builder._resolve_engine_layout()
+        for system, filename in (
+            ("Darwin", "libpineforge_window_plan.dylib"),
+            ("FreeBSD", "libpineforge_window_plan.so"),
+        ):
+            with (
+                self.subTest(system=system),
+                patch("pineforge_hpo.artifact.platform.system", return_value=system),
+            ):
+                self.assertEqual(
+                    derive_window_plan_path(layout),
+                    self.engine / "build/lib" / filename,
+                )
+
+    def test_helper_does_not_change_any_compile_key_bytes(self) -> None:
+        # Proves fresh builds with/without the helper have byte-identical identities.
+        # False pass: a cache hit hides a helper-dependent key in a fresh build.
+        before = self.builder.build("source")
+        before_manifest, _ = self.documents(before)
+        self.helper.write_bytes(b"abc")
+        after = self.make_builder(self.root / "separate-cache").build("source")
+        after_manifest, _ = self.documents(after)
+        self.assertFalse(after.cache_hit)
+        self.assertNotIn("window_plan", before_manifest)
+        self.assertIn("window_plan", after_manifest)
+        for field in ("request_key", "artifact_key", "request_identity"):
+            self.assertEqual(
+                json.dumps(
+                    before_manifest[field],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode(),
+                json.dumps(
+                    after_manifest[field],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode(),
+            )
+        self.assertEqual(self.transpile.call_count, 2)
+        self.assertEqual(len(self.log.read_text().splitlines()), 2)
+
+    def test_old_cache_enrichment_is_locked_and_idempotent(self) -> None:
+        # Proves fast-hit enrichment uses the same lock and publishes both files once.
+        # False pass: recompilation, one-file publication, or a rewrite on retry.
+        artifact = self.builder.build("source")
+        plugin_bytes = artifact.plugin_path.read_bytes()
+        before, _ = self.documents(artifact)
+        self.helper.write_bytes(b"abc")
+        hit = self.builder.build("source")
+        self.assertTrue(hit.cache_hit)
+        self.assertNotIn("window_plan", self.documents(hit)[0])
+        with (
+            patch("pineforge_hpo.artifact._KeyLock", wraps=_KeyLock) as lock,
+            patch.object(
+                self.builder,
+                "_write_window_plan_metadata",
+                wraps=self.builder._write_window_plan_metadata,
+            ) as publish,
+        ):
+            self.assertEqual(
+                self.builder.enrich_window_plan(hit),
+                self.expected_block(self.helper),
+            )
+            published_bytes = (
+                hit.manifest_path.read_bytes(),
+                hit.provenance_path.read_bytes(),
+            )
+            self.assertEqual(
+                self.builder.enrich_window_plan(hit),
+                self.expected_block(self.helper),
+            )
+        self.assertEqual(publish.call_count, 2)
+        self.assertEqual(lock.call_count, 2)
+        for call in lock.call_args_list:
+            self.assertEqual(
+                call.args,
+                (
+                    self.cache / "locks" / f"{artifact.request_key}.lock",
+                    120.0,
+                ),
+            )
+        self.assertEqual(
+            published_bytes,
+            (hit.manifest_path.read_bytes(), hit.provenance_path.read_bytes()),
+        )
+        for document in self.documents(hit):
+            self.assertEqual(document["window_plan"], self.expected_block(self.helper))
+            for field in ("request_key", "artifact_key", "request_identity"):
+                self.assertEqual(document[field], before[field])
+        self.assertEqual(hit.plugin_path.read_bytes(), plugin_bytes)
+        self.assertEqual(plugin_bytes, b"fake strategy plugin")
+        self.assertEqual(self.transpile.call_count, 1)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_second_metadata_write_failure_leaves_selected_execution_refused(
+        self,
+    ) -> None:
+        # Proves a real first publication followed by failure cannot admit a half pair.
+        # False pass: both writes are mocked away or only the exception is tested.
+        artifact = self.builder.build("source")
+        self.helper.write_bytes(b"abc")
+        original = self.builder._write_window_plan_metadata
+
+        def publish(path, payload):
+            if path == artifact.provenance_path:
+                raise OSError("intentional second publication failure")
+            original(path, payload)
+
+        with patch.object(
+            self.builder,
+            "_write_window_plan_metadata",
+            side_effect=publish,
+        ):
+            with self.assertRaises(ArtifactBuildError) as caught:
+                self.builder.enrich_window_plan(artifact)
+        self.assertEqual(caught.exception.code, "hpo_output_io_failed")
+        manifest, provenance = self.documents(artifact)
+        self.assertEqual(manifest["window_plan"], self.expected_block(self.helper))
+        self.assertNotIn("window_plan", provenance)
+        with self.assertRaises(WindowPlanError) as caught:
+            require_window_plan_block(manifest, provenance)
+        self.assert_reason(caught, "window_plan_identity")
+        for operation in (
+            lambda: self.builder.build("source"),
+            lambda: self.builder.enrich_window_plan(artifact),
+        ):
+            with self.assertRaises(WindowPlanError) as caught:
+                operation()
+            self.assert_reason(caught, "window_plan_identity")
+        self.assertEqual(artifact.plugin_path.read_bytes(), b"fake strategy plugin")
+        self.assertEqual(self.transpile.call_count, 1)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_existing_block_reverifies_bytes_without_reassociation(self) -> None:
+        # Proves a selected cache hit retains its expected hash when the helper changes.
+        # False pass: a new hash is silently associated and the metadata is rewritten.
+        self.helper.write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        before = (
+            artifact.manifest_path.read_bytes(),
+            artifact.provenance_path.read_bytes(),
+        )
+        self.helper.write_bytes(b"abd")
+        hit = self.builder.build("source")
+        self.assertTrue(hit.cache_hit)
+        with self.assertRaises(WindowPlanError) as caught:
+            self.builder.enrich_window_plan(hit)
+        self.assert_reason(caught, "window_plan_hash_mismatch")
+        self.assertEqual(
+            before,
+            (
+                artifact.manifest_path.read_bytes(),
+                artifact.provenance_path.read_bytes(),
+            ),
+        )
+        self.assertEqual(self.transpile.call_count, 1)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_invalid_cache_blocks_are_refusals_instead_of_cache_misses(self) -> None:
+        # Proves malformed, disagreeing and misassociated metadata never recompiles.
+        # False pass: the builder converts the refusal to a cache miss and repairs it.
+        self.helper.write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        original_manifest, original_provenance = self.documents(artifact)
+        for case, reason in (
+            ("malformed", "window_plan_manifest_invalid"),
+            ("disagreement", "window_plan_identity"),
+            ("association", "window_plan_identity"),
+        ):
+            manifest = copy.deepcopy(original_manifest)
+            provenance = copy.deepcopy(original_provenance)
+            if case == "malformed":
+                manifest["window_plan"]["schema"] = "unexpected"
+            elif case == "disagreement":
+                provenance["window_plan"]["sha256"] = "0" * 64
+            else:
+                for document in (manifest, provenance):
+                    document["request_identity"]["engine"]["headers_sha256"] = "0" * 64
+            artifact.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            artifact.provenance_path.write_text(
+                json.dumps(provenance),
+                encoding="utf-8",
+            )
+            with self.subTest(case=case):
+                with self.assertRaises(WindowPlanError) as caught:
+                    self.builder.build("source")
+                self.assert_reason(caught, reason)
+        self.assertEqual(self.transpile.call_count, 1)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_unreadable_metadata_cannot_hide_an_existing_companion_block(self) -> None:
+        # Proves one valid companion block prevents corrupt JSON becoming a cache miss.
+        # False pass: either read failure silently recompiles and associates new bytes.
+        self.helper.write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        original = (
+            artifact.manifest_path.read_bytes(),
+            artifact.provenance_path.read_bytes(),
+        )
+        for path, corrupt in (
+            (artifact.manifest_path, b"{"),
+            (artifact.provenance_path, b"{"),
+            (artifact.provenance_path, b"[]"),
+        ):
+            artifact.manifest_path.write_bytes(original[0])
+            artifact.provenance_path.write_bytes(original[1])
+            path.write_bytes(corrupt)
+            with self.subTest(path=path, corrupt=corrupt):
+                with self.assertRaises(WindowPlanError) as caught:
+                    self.builder.build("source")
+                self.assert_reason(caught, "window_plan_manifest_invalid")
+        self.assertEqual(self.transpile.call_count, 1)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_old_cache_requires_matching_current_engine_before_association(
+        self,
+    ) -> None:
+        # Proves metadata enrichment checks current archive and headers before writes.
+        # False pass: co-location alone associates the helper to a different engine.
+        artifact = self.builder.build("source")
+        self.helper.write_bytes(b"abc")
+        for path in (
+            self.engine / "build/lib/libpineforge.a",
+            self.engine / "include/pineforge/engine.hpp",
+        ):
+            original = path.read_bytes()
+            path.write_bytes(original + b"changed")
+            with self.subTest(path=path):
+                with self.assertRaises(WindowPlanError) as caught:
+                    self.builder.enrich_window_plan(artifact)
+                self.assert_reason(caught, "window_plan_identity")
+                for document in self.documents(artifact):
+                    self.assertNotIn("window_plan", document)
+            path.write_bytes(original)
+        self.assertEqual(self.transpile.call_count, 1)
+
+    def test_runtime_derivation_accepts_a_matching_relocated_engine_root(self) -> None:
+        # Proves only an explicitly supplied root with matching content may derive.
+        # False pass: the resolver silently opens the recorded build-machine root.
+        self.helper.write_bytes(b"abc")
+        artifact = self.builder.build("source")
+        block = self.documents(artifact)[0]["window_plan"]
+        relocated = self.root / "relocated-engine"
+        self.engine.rename(relocated)
+        path = resolve_window_plan_path(None, relocated, block)
+        self.assertEqual(path, relocated / "build/lib/libpineforge_window_plan.so")
+        self.assertIsNone(verify_window_plan(block, path))
+        (relocated / "build/lib/libpineforge.a").write_bytes(b"different archive")
+        with self.assertRaises(WindowPlanError) as caught:
+            resolve_window_plan_path(None, relocated, block)
+        self.assert_reason(caught, "window_plan_identity")
+
+    def test_builder_cannot_enrich_a_precompiled_artifact_outside_its_cache(
+        self,
+    ) -> None:
+        # Proves source-cache authority does not extend to arbitrary precompiled files.
+        # False pass: passing any StrategyArtifact authorizes creating expected hashes.
+        artifact = self.builder.build("source")
+        foreign = replace(
+            artifact,
+            manifest_path=self.root / "precompiled/manifest.json",
+            provenance_path=self.root / "precompiled/provenance.json",
+        )
+        self.helper.write_bytes(b"abc")
+        with self.assertRaises(WindowPlanError) as caught:
+            self.builder.enrich_window_plan(foreign)
+        self.assert_reason(caught, "window_plan_identity")
 
 
 if __name__ == "__main__":

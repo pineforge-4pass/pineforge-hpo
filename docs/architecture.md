@@ -95,6 +95,23 @@ Per-key advisory locks serialize the first build. Artifact directories and
 request indexes are published atomically. Cache hits re-hash the plugin and
 generated C++ and verify their manifest/provenance identities.
 
+New builds with an engine planner companion record an additive top-level
+`window_plan` block in both version-1 metadata files: its absolute build path
+(audit only), expected SHA-256, planner ABI, engine version/ABI/header/archive
+hashes, platform and frozen self-test ID. This runtime companion stays outside
+`request_identity`, so its presence does not change either compile key. Ordinary
+builds and cache hits require no helper; selected callers use
+`ArtifactBuilder.enrich_window_plan` to verify an existing block or enrich a
+validated source cache under the same request lock without recompiling. Each
+metadata file is replaced atomically; a partial or disagreeing pair refuses
+admission. Precompiled selected admission requires a recorded block, even with
+an explicit helper path. Runtime lookup accepts an explicit absolute path or
+derives the sibling of the selected `build/lib/` or `lib/` archive from an
+explicit local engine root with matching content; `build/libpineforge.a` has no
+derived companion. The recorded build path never instructs lookup. Python
+checks only the file hash; native snapshot loading, ABI and behavioral checks
+remain the native consumer's responsibility.
+
 The compile contract is:
 
 ```text

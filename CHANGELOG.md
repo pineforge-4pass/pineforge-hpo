@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Record optional planner-helper identity in additive `window_plan` artifact metadata,
+  outside the compile keys. Add Python hash verification, explicit-path relocation,
+  locked source-cache enrichment and typed `hpo_walkforward_unavailable` refusals.
 - Add immutable `DatasetView` ranges and a view-based trial-execution seam; const members make
   `DatasetView` and therefore `TrialExecutor` no longer assignable. The ordinary native CLI still
   uses the whole dataset. Split admission, study execution and publication so sequential native

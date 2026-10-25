@@ -92,6 +92,26 @@ the original message. C++ callers can catch their existing
 standard exception family or inspect the `pineforge::hpo::HpoError` metadata mixin
 declared in `include/pineforge/hpo/error.hpp`.
 
+The Python planner-identity API raises `WindowPlanError` (also `HpoError` and
+`RuntimeError`) with `hpo_walkforward_unavailable`, class `environment`,
+`retryable: false`, and one closed string argument, `reason`:
+
+| Reason | Refusal |
+| --- | --- |
+| `window_plan_path` | The explicit helper path is relative or the selected archive has no derivable companion and no explicit absolute path was supplied. |
+| `window_plan_missing` | The resolved helper file is absent, unreadable or not a regular file. |
+| `window_plan_manifest_missing` | Selected precompiled admission has no `manifest.window_plan`; a path alone cannot supply its expected identity. |
+| `window_plan_manifest_invalid` | The block has the wrong shape, types, schema, hashes, ABI or self-test ID. |
+| `window_plan_identity` | Manifest/provenance disagree, their pair is incomplete, or the helper's engine/platform association differs from the recorded compile identity or local engine. |
+| `window_plan_hash_mismatch` | The helper file's SHA-256 differs from the recorded expected hash. |
+
+These checks do not load the helper. Diagnostics name affected fields or files;
+paths and diagnostic text are not failure arguments. An existing expected hash
+is never rewritten to accept different bytes. Metadata publication I/O retains
+`hpo_output_io_failed`; an interrupted two-file enrichment leaves selected
+admission refused until consistent metadata is republished. Ordinary execution
+does not require a planner companion.
+
 ## Catalog and release diff
 
 The package contains `hpo_failure_codes.json` (schema
