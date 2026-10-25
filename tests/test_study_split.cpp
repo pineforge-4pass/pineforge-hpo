@@ -648,16 +648,21 @@ void suite(const Path& self, const Path& native, const Path& plugin, const Path&
         }
     }
 
-    // num_trades=Length: abs(1-1.5)=abs(2-1.5)=0.5. Delay id=0 so id=1 finishes first;
-    // assert the recorded order so an in-order tie cannot pass without exercising replacement.
+    // ChartBarsTest adds sum_{v=1..9}(16*v+20)=900 to profit; num_trades remains Length.
+    // Grid ids 0,1 have Length 1,2: abs(1-1.5)=abs(2-1.5)=0.5 exactly. Delay id=0 by
+    // 2000 ms so id=1 finishes first; assert the recorded order to exercise replacement.
     const auto tie_result = root / "selection-out-of-order-tie.json";
     const auto tie = run_child(root, "selection-out-of-order-tie",
         {self.string(), "native-entry", "run", "--strategy", plugin.string(),
          "--ohlcv", csv.string(), "--output", tie_result.string(),
          "--objective", "abs(metrics.all.num_trades-1.5)", "--sampler", "grid", "--seed", "17",
          "--workers", "2", "--schedule", "rolling", "--max-trials", "2",
-         "--int-dim", "Length", "1", "2", "1", "--fixed-input", "DelayAtLength", "1",
-         "--fixed-input", "DelayAtLengthMs", "500"}, {plugin, manifest, csv, tie_result});
+         "--input-tf", "1", "--script-tf", "5", "--bar-magnifier", "true",
+         "--magnifier-samples", "6", "--magnifier-distribution", "triangle",
+         "--int-dim", "Length", "1", "2", "1", "--fixed-input", "BatchPrefixTest", "1",
+         "--fixed-input", "BatchPrefixJitter", "0", "--fixed-input", "ChartBarsTest", "1",
+         "--fixed-input", "DelayAtLength", "1", "--fixed-input", "DelayAtLengthMs", "2000"},
+        {plugin, manifest, csv, tie_result});
     require(tie.code == 0 && read_file(tie.errors).empty(), "out-of-order tie changed exit/stderr");
     const auto tie_document = detail::parse_json(read_file(tie.output));
     const auto& tie_order = detail::field(tie_document, "completion_order").items;
