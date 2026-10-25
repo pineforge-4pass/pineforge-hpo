@@ -8,7 +8,7 @@
   "to": {
     "version": null,
     "unreleased": true,
-    "catalogSha256": "4caf5d4e2a38b9057f7de5a85826f99152262b3e99f084a18909d5c1e2c333ac"
+    "catalogSha256": "1a7798ad99fd38c3013ae6281d23073001ecf424a78d7a4dfa6cec4644a6dc00"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
@@ -16,6 +16,60 @@
   },
   "metadataChanges": [],
   "added": [
+    {
+      "code": "hpo_walkforward_inventory_invalid",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "capability": {
+            "kind": "string",
+            "values": [
+              "selected_window_request_feed_inventory"
+            ]
+          },
+          "reason": {
+            "kind": "string",
+            "values": [
+              "artifact_mismatch",
+              "chart_mismatch",
+              "input_unresolved",
+              "invalid",
+              "missing",
+              "producer_unavailable",
+              "unbound",
+              "unknown"
+            ]
+          }
+        },
+        "templates": [
+          "Invalid request-feed inventory ({capability}: {reason})."
+        ],
+        "since": "1.7.1"
+      }
+    },
+    {
+      "code": "hpo_walkforward_timeframe_unsupported",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "capability": {
+            "kind": "string",
+            "values": [
+              "selected_window_chart_timeframe",
+              "selected_window_request_feed_timeframe"
+            ]
+          }
+        },
+        "templates": [
+          "Unsupported selected-window timeframe ({capability})."
+        ],
+        "since": "1.7.1"
+      }
+    },
     {
       "code": "hpo_walkforward_unavailable",
       "collection": "codes",

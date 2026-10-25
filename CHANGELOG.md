@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Produce and publish source- and plugin-bound request-feed inventories when codegen
+  supports them, include the producer schema in cache identity, and add pure Python
+  selected-study inventory/timeframe admission with typed refusals.
 - Add optional selected-window/observer plugin bindings with embedded engine revision admission
   and a fresh-handle OOS evaluation helper that checks callback identities and plan counts before
   returning a full owning report snapshot.

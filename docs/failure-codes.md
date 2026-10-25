@@ -143,6 +143,37 @@ is never rewritten to accept different bytes. Metadata publication I/O retains
 admission refused until enrichment is re-run. Ordinary execution ignores the
 `window_plan` block and does not require a planner companion.
 
+### Request-feed inventory admission
+
+Since 1.7.1 the selected-study Python API raises `RequestTimeframeError` or
+`RequestInventoryError` (both `HpoError` and `RuntimeError`). Both codes are class
+`request`, `retryable: false`. They translate the engine's
+`window_mode_unsupported` admission vocabulary into closed HPO arguments:
+
+| Code | Arguments | Template |
+| --- | --- | --- |
+| `hpo_walkforward_timeframe_unsupported` | `capability`: `selected_window_chart_timeframe` or `selected_window_request_feed_timeframe` | Unsupported selected-window timeframe ({capability}). |
+| `hpo_walkforward_inventory_invalid` | `capability`: `selected_window_request_feed_inventory`; `reason`: the closed list below | Invalid request-feed inventory ({capability}: {reason}). |
+
+| Inventory reason | Refusal |
+| --- | --- |
+| `missing` | The manifest or inventory block is absent, including an older artifact whose request identity has no inventory-producer key. A sidecar alone cannot supply the block. |
+| `invalid` | JSON has duplicate keys or is malformed, schema/shape/token/hash spelling is invalid, a present block is null, or a present sidecar disagrees with the manifest block. |
+| `unbound` | `artifact_sha256` is null. |
+| `artifact_mismatch` | Source or plugin digest differs from the supplied generated-C++ or linked-plugin identity. |
+| `chart_mismatch` | A non-null primary binding differs from the study's canonical chart token. |
+| `unknown` | At least one entry is unknown, including a chart-timeframe request compiled without a chart binding. |
+| `input_unresolved` | A present fixed value or the effective default is not a string timeframe token, or a referenced swept domain cannot prove that every reachable value is a token. |
+| `producer_unavailable` | The inventory block is absent and `request_identity.request_feed_inventory` explicitly records null (that build had no producer), or admission cannot import `pineforge_codegen.request_feed_inventory`. |
+
+Empty `entries` is a complete declaration and is admitted. The reader compares
+an optional adjacent sidecar after strict JSON parsing; the manifest block remains
+required. Offending tokens, input keys and file paths appear in bounded diagnostic
+text, never as extra catalog arguments. Binding failures during compilation use
+`ArtifactBuildError(stage="inventory")` with the existing
+`hpo_toolchain_unavailable{reason:transpile_internal}` classification.
+Ordinary artifact loading and cache hits ignore inventory metadata.
+
 ## Catalog and release diff
 
 The package contains `hpo_failure_codes.json` (schema

@@ -21,6 +21,7 @@ from pineforge_hpo.artifact import (  # noqa: E402
     ArtifactBuildError,
     ArtifactBuilder,
     CANONICAL_COMPILE_FLAGS,
+    _canonical_json,
     _KeyLock,
 )
 from pineforge_hpo.transpile import (  # noqa: E402
@@ -127,6 +128,12 @@ class ArtifactBuilderTest(unittest.TestCase):
             os.environ, {"FAKE_COMPILER_LOG": str(self.log)}, clear=False
         )
         self.environment.start()
+        producer = patch(
+            "pineforge_hpo.artifact.codegen_supports_request_inventory",
+            return_value=False,
+        )
+        producer.start()
+        self.addCleanup(producer.stop)
 
     def tearDown(self) -> None:
         self.environment.stop()
@@ -424,6 +431,454 @@ class ArtifactBuilderTest(unittest.TestCase):
         self.assertEqual(caught.exception.stage, "plugin_validation")
 
 
+class RequestInventoryArtifactTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.engine = make_engine(self.root)
+        self.eigen = make_eigen(self.root)
+        self.compiler, self.log = make_compiler(self.root)
+        self.cache = self.root / "cache"
+        self.generated = "// exact generated UTF-8: café\n"
+        self.inventory = {
+            "schema": "pineforge-request-feed-inventory/v1",
+            "source_sha256": hashlib.sha256(self.generated.encode("utf-8")).hexdigest(),
+            "artifact_sha256": None,
+            "primary_chart_timeframe": None,
+            "entries": [{"kind": "token", "timeframe": "D"}],
+        }
+        self.transpiled = TranspileResult(
+            generated_cpp=self.generated,
+            inputs=({"title": "Length", "type": "int", "default": 14},),
+            request_feed_inventory=self.inventory,
+        )
+        patches = (
+            patch.dict(os.environ, {"FAKE_COMPILER_LOG": str(self.log)}),
+            patch(
+                "pineforge_hpo.artifact.codegen_identity",
+                return_value=CodegenIdentity(
+                    "1.7.0",
+                    "c" * 64,
+                    "/fake/codegen/__init__.py",
+                ),
+            ),
+            patch(
+                "pineforge_hpo.artifact.codegen_supports_request_inventory",
+                return_value=True,
+            ),
+            patch(
+                "pineforge_hpo.artifact.transpile_source",
+                return_value=self.transpiled,
+            ),
+        )
+        started = []
+        for item in patches:
+            started.append(item.start())
+            self.addCleanup(item.stop)
+        self.supports = started[2]
+        self.transpile = started[3]
+        self.builder = self.make_builder(self.cache)
+
+    def make_builder(self, cache: Path) -> ArtifactBuilder:
+        return ArtifactBuilder(
+            engine_root=self.engine,
+            cache_dir=cache,
+            compiler=self.compiler,
+            eigen_include=self.eigen,
+            plugin_validator=validator,
+        )
+
+    def documents(self, artifact) -> tuple[dict, dict]:
+        return (
+            json.loads(artifact.manifest_path.read_text(encoding="utf-8")),
+            json.loads(artifact.provenance_path.read_text(encoding="utf-8")),
+        )
+
+    def test_publication_binds_once_to_exact_bytes_in_one_directory_rename(
+        self,
+    ) -> None:
+        # Proves real binder use, exact bytes/hashes, and complete atomic publication.
+        # False pass: fake binding echoes expected hashes or metadata appears later.
+        from pineforge_codegen.request_feed_inventory import bind_request_feed_inventory
+
+        original_rename = os.rename
+
+        def publish(source, destination):
+            staging = Path(source)
+            manifest = json.loads((staging / "manifest.json").read_text())
+            provenance = json.loads((staging / "provenance.json").read_text())
+            sidecar = json.loads((staging / "request_feed_inventory.json").read_text())
+            self.assertEqual(manifest["request_feed_inventory"], sidecar)
+            self.assertEqual(provenance["request_feed_inventory"], sidecar)
+            self.assertEqual(
+                (staging / "generated.cpp").read_bytes(),
+                b"// exact generated UTF-8: caf\xc3\xa9\n",
+            )
+            self.assertEqual(
+                (staging / manifest["plugin_filename"]).read_bytes(),
+                b"fake strategy plugin",
+            )
+            self.assertFalse((staging / ".request_feed_inventory.json.tmp").exists())
+            original_rename(source, destination)
+
+        with (
+            patch(
+                "pineforge_codegen.request_feed_inventory.bind_request_feed_inventory",
+                wraps=bind_request_feed_inventory,
+            ) as bind,
+            patch(
+                "pineforge_hpo.artifact._canonical_json", wraps=_canonical_json
+            ) as serialize,
+            patch("pineforge_hpo.artifact.os.rename", side_effect=publish) as rename,
+        ):
+            artifact = self.builder.build("inventory source")
+        bind.assert_called_once_with(
+            self.inventory,
+            b"// exact generated UTF-8: caf\xc3\xa9\n",
+            b"fake strategy plugin",
+        )
+        rename.assert_called_once()
+        manifest, provenance = self.documents(artifact)
+
+        # Inspect source dicts: parsing the published JSON loses alias identity.
+        def source_of(document):
+            # Type-blind match: compare the JSON round trip, not the Python value.
+            return next(
+                (
+                    call.args[0]
+                    for call in serialize.call_args_list
+                    if json.loads(_canonical_json(call.args[0])) == document
+                ),
+                None,
+            )
+
+        manifest_source = source_of(manifest)
+        provenance_source = source_of(provenance)
+        self.assertIsNotNone(manifest_source)
+        self.assertIsNotNone(provenance_source)
+        self.assertEqual(
+            manifest_source["request_feed_inventory"],
+            provenance_source["request_feed_inventory"],
+        )
+        self.assertIsNot(
+            manifest_source["request_feed_inventory"],
+            provenance_source["request_feed_inventory"],
+        )
+        self.assertIsNot(
+            manifest_source["request_feed_inventory"]["entries"],
+            provenance_source["request_feed_inventory"]["entries"],
+        )
+        expected = {
+            "schema": "pineforge-request-feed-inventory/v1",
+            "source_sha256": hashlib.sha256(
+                b"// exact generated UTF-8: caf\xc3\xa9\n"
+            ).hexdigest(),
+            "artifact_sha256": hashlib.sha256(b"fake strategy plugin").hexdigest(),
+            "primary_chart_timeframe": None,
+            "entries": [{"kind": "token", "timeframe": "D"}],
+        }
+        self.assertEqual(manifest["request_feed_inventory"], expected)
+        self.assertEqual(provenance["request_feed_inventory"], expected)
+        self.assertEqual(manifest["generated_cpp_sha256"], expected["source_sha256"])
+        self.assertEqual(manifest["plugin_sha256"], expected["artifact_sha256"])
+        self.assertEqual(
+            manifest["request_identity"]["request_feed_inventory"],
+            "pineforge-request-feed-inventory/v1",
+        )
+        self.assertIsNone(self.inventory["artifact_sha256"])
+        self.transpile.assert_called_once()
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_binder_errors_and_each_hash_mismatch_publish_nothing(self) -> None:
+        # Proves each binding failure is an inventory-stage build failure.
+        # False pass: reporting an error after publication leaves a reusable artifact.
+        from pineforge_codegen.request_feed_inventory import (
+            RequestFeedInventoryError,
+            bind_request_feed_inventory,
+        )
+
+        for fault in ("binder", "source_sha256", "artifact_sha256"):
+            with self.subTest(fault=fault):
+                builder = self.make_builder(self.root / fault)
+                bound = bind_request_feed_inventory(
+                    self.inventory,
+                    self.generated.encode("utf-8"),
+                    b"fake strategy plugin",
+                )
+                if fault != "binder":
+                    bound[fault] = "0" * 64
+                with (
+                    patch(
+                        "pineforge_codegen.request_feed_inventory."
+                        "bind_request_feed_inventory",
+                        return_value=bound,
+                        side_effect=(
+                            RequestFeedInventoryError("intentional binder failure")
+                            if fault == "binder"
+                            else None
+                        ),
+                    ) as bind,
+                    patch.object(builder, "plugin_validator") as validate,
+                ):
+                    with self.assertRaises(ArtifactBuildError) as caught:
+                        builder.build("inventory source")
+                self.assertEqual(caught.exception.stage, "inventory")
+                self.assertIn("request_feed_inventory", str(caught.exception))
+                bind.assert_called_once()
+                validate.assert_not_called()
+                self.assertEqual(list((builder.cache_dir / "artifacts").iterdir()), [])
+                self.assertFalse((builder.cache_dir / "requests").exists())
+
+    def test_plugin_change_after_binding_cannot_publish_a_stale_digest(self) -> None:
+        # Proves the final recorded plugin digest still matches the bound inventory.
+        # False pass: a validation callback changes bytes after the binder's check.
+        def change_plugin(path, abi):
+            path.write_bytes(b"changed after binding")
+            return validator(path, abi)
+
+        self.builder.plugin_validator = change_plugin
+        with self.assertRaises(ArtifactBuildError) as caught:
+            self.builder.build("changed plugin")
+        self.assertEqual(caught.exception.stage, "inventory")
+        self.assertEqual(list((self.cache / "artifacts").iterdir()), [])
+        self.assertFalse((self.cache / "requests").exists())
+
+    def test_unavailable_producer_publishes_no_block_or_sidecar(self) -> None:
+        # Proves the null identity marker differs from an invented empty inventory.
+        # False pass: a null/empty top-level placeholder still claims publication.
+        self.supports.return_value = False
+        self.transpile.return_value = replace(
+            self.transpiled,
+            request_feed_inventory=None,
+        )
+        with patch(
+            "pineforge_codegen.request_feed_inventory.bind_request_feed_inventory"
+        ) as bind:
+            artifact = self.builder.build("legacy source")
+            hit = self.builder.build("legacy source")
+        bind.assert_not_called()
+        self.assertTrue(hit.cache_hit)
+        for document in self.documents(artifact):
+            self.assertIn("request_feed_inventory", document["request_identity"])
+            self.assertIsNone(document["request_identity"]["request_feed_inventory"])
+            self.assertNotIn("request_feed_inventory", document)
+        self.assertFalse(
+            (artifact.plugin_path.parent / "request_feed_inventory.json").exists()
+        )
+
+    def test_null_producer_identity_cannot_hit_a_capable_request(self) -> None:
+        # Proves producer capability participates in the key independently of version.
+        # False pass: a cache built without a producer is relabeled as having one.
+        self.supports.return_value = False
+        self.transpile.return_value = replace(
+            self.transpiled,
+            request_feed_inventory=None,
+        )
+        old = self.builder.build("same source")
+        self.supports.return_value = True
+        self.transpile.return_value = self.transpiled
+        rebuilt = self.builder.build("same source")
+        self.assertFalse(rebuilt.cache_hit)
+        self.assertNotEqual(old.request_key, rebuilt.request_key)
+        self.assertNotEqual(old.artifact_key, rebuilt.artifact_key)
+        self.assertEqual(self.transpile.call_count, 2)
+        self.assertEqual(len(self.log.read_text().splitlines()), 2)
+
+    def test_helper_repair_preserves_the_inventory_schema_identity(self) -> None:
+        # Proves lane-1 repair copies the whole new identity from its valid side.
+        # False pass: losing the schema marker silently changes the request key.
+        artifact = self.builder.build("repair source")
+        helper = (
+            self.engine
+            / "build/lib"
+            / f"libpineforge_window_plan{artifact.plugin_path.suffix}"
+        )
+        helper.write_bytes(b"abc")
+        self.builder.enrich_window_plan(artifact)
+        manifest, provenance = self.documents(artifact)
+        original_identity = copy.deepcopy(manifest["request_identity"])
+        provenance["request_identity"]["request_feed_inventory"] = None
+        artifact.provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
+        self.builder.enrich_window_plan(artifact)
+        for document in self.documents(artifact):
+            self.assertEqual(document["request_identity"], original_identity)
+            self.assertEqual(document["request_key"], artifact.request_key)
+            self.assertEqual(
+                document["request_feed_inventory"],
+                manifest["request_feed_inventory"],
+            )
+        self.assertEqual(self.transpile.call_count, 1)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_old_identity_without_marker_is_not_reused_but_precompiled_loads(
+        self,
+    ) -> None:
+        # Proves an actual valid old cache is missed, while ordinary relocation works.
+        # False pass: an invalid fixture misses because of another corrupt identity.
+        from pineforge_hpo.cli import _precompiled_artifact
+
+        self.supports.return_value = False
+        self.transpile.return_value = replace(
+            self.transpiled,
+            request_feed_inventory=None,
+        )
+        current = self.builder.build("old source")
+        manifest, provenance = self.documents(current)
+        identity = copy.deepcopy(manifest["request_identity"])
+        identity.pop("request_feed_inventory")
+        request_key = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        artifact_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "request_identity": identity,
+                    "generated_cpp_sha256": hashlib.sha256(
+                        self.generated.encode("utf-8")
+                    ).hexdigest(),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        legacy_cache = self.root / "legacy-cache"
+        directory = legacy_cache / "artifacts" / artifact_key
+        directory.mkdir(parents=True)
+        (directory / current.plugin_path.name).write_bytes(b"fake strategy plugin")
+        (directory / "generated.cpp").write_bytes(self.generated.encode("utf-8"))
+        for name, document in (
+            ("manifest.json", manifest),
+            ("provenance.json", provenance),
+        ):
+            document.update(
+                request_identity=identity,
+                request_key=request_key,
+                artifact_key=artifact_key,
+            )
+            (directory / name).write_text(json.dumps(document), encoding="utf-8")
+        (legacy_cache / "requests").mkdir()
+        (legacy_cache / "requests" / f"{request_key}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "request_key": request_key,
+                    "artifact_key": artifact_key,
+                }
+            ),
+            encoding="utf-8",
+        )
+        builder = self.make_builder(legacy_cache)
+        # Establish validity through the old-key loader before asking for a new key.
+        old = builder._lookup_request(request_key, identity, current.plugin_path.suffix)
+        self.assertIsNotNone(old)
+        directory.rename(self.root / "relocated-artifact")
+        relocated = self.root / "relocated-artifact"
+        ordinary, inputs = _precompiled_artifact(relocated / current.plugin_path.name)
+        self.assertEqual(ordinary["artifact_key"], artifact_key)
+        self.assertEqual(inputs, ({"title": "Length", "type": "int", "default": 14},))
+        # Restore the valid legacy cache, so the miss cannot be due to relocation.
+        relocated.rename(directory)
+        helper = (
+            self.engine
+            / "build/lib"
+            / f"libpineforge_window_plan{current.plugin_path.suffix}"
+        )
+        helper.write_bytes(b"abc")
+        builder.enrich_window_plan(old)
+        for document in self.documents(old):
+            self.assertEqual(document["request_identity"], identity)
+            self.assertNotIn("request_feed_inventory", document["request_identity"])
+        self.supports.return_value = True
+        self.transpile.return_value = self.transpiled
+        rebuilt = builder.build("old source")
+        self.assertFalse(rebuilt.cache_hit)
+        self.assertNotEqual(rebuilt.request_key, request_key)
+        self.assertNotEqual(rebuilt.artifact_key, artifact_key)
+        self.assertEqual(self.transpile.call_count, 2)
+        self.assertEqual(len(self.log.read_text().splitlines()), 2)
+
+    def test_ordinary_load_and_hits_ignore_damaged_inventory_metadata(self) -> None:
+        # Proves absent/corrupt/disagreeing additive data cannot affect ordinary paths.
+        # False pass: _load_artifact validates it and a build silently recompiles.
+        from pineforge_hpo.cli import _precompiled_artifact, prepare_run
+
+        artifact = self.builder.build("ordinary source")
+        originals = self.documents(artifact)
+        ordinary = _precompiled_artifact(artifact.plugin_path)
+        bars = self.root / "bars.csv"
+        bars.write_text("timestamp,open,high,low,close,volume\n", encoding="utf-8")
+        study = self.root / "ordinary-study.json"
+        study.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "mode": "single_strategy",
+                    "strategies": [
+                        {
+                            "id": "strategy",
+                            "artifact": str(artifact.plugin_path),
+                            "datasets": ["bars"],
+                            "search_space": {
+                                "Length": {"kind": "integer", "low": 2, "high": 3},
+                            },
+                        },
+                    ],
+                    "datasets": [
+                        {
+                            "id": "bars",
+                            "ohlcv": str(bars),
+                            "input_tf": "1",
+                            "script_tf": "1",
+                            "chart_timezone": "UTC",
+                        },
+                    ],
+                    "objective": {
+                        "kind": "expression",
+                        "direction": "maximize",
+                        "expression": "metrics.all.net_profit",
+                    },
+                    "sampler": {"kind": "grid", "seed": 17, "trials": 2},
+                    "execution": {"workers": 1, "isolation": "threads"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        prepared = prepare_run(study, native=self.compiler)
+        sidecar = artifact.plugin_path.parent / "request_feed_inventory.json"
+        saved = sidecar.with_name("saved-inventory.json")
+        for state in ("missing", "corrupt", "disagreeing"):
+            with self.subTest(state=state):
+                manifest, provenance = copy.deepcopy(originals)
+                if state == "missing":
+                    manifest.pop("request_feed_inventory")
+                    provenance.pop("request_feed_inventory")
+                    sidecar.rename(saved)
+                elif state == "corrupt":
+                    manifest["request_feed_inventory"] = ["broken"]
+                    provenance["request_feed_inventory"] = None
+                    sidecar.write_text("{", encoding="utf-8")
+                else:
+                    manifest["request_feed_inventory"]["entries"] = []
+                    sidecar.write_text('{"different":true}', encoding="utf-8")
+                artifact.manifest_path.write_text(
+                    json.dumps(manifest),
+                    encoding="utf-8",
+                )
+                artifact.provenance_path.write_text(
+                    json.dumps(provenance), encoding="utf-8"
+                )
+                hit = self.builder.build("ordinary source")
+                self.assertTrue(hit.cache_hit)
+                self.assertEqual(hit, replace(artifact, cache_hit=True))
+                self.assertEqual(_precompiled_artifact(artifact.plugin_path), ordinary)
+                self.assertEqual(prepare_run(study, native=self.compiler), prepared)
+                if state == "missing":
+                    saved.rename(sidecar)
+        self.assertEqual(self.transpile.call_count, 1)
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+
 class WindowPlanArtifactTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -447,6 +902,10 @@ class WindowPlanArtifactTests(unittest.TestCase):
         patch(
             "pineforge_hpo.artifact.codegen_identity",
             return_value=self.codegen,
+        ).start()
+        patch(
+            "pineforge_hpo.artifact.codegen_supports_request_inventory",
+            return_value=False,
         ).start()
         self.transpile = patch(
             "pineforge_hpo.artifact.transpile_source",
@@ -719,7 +1178,7 @@ class WindowPlanArtifactTests(unittest.TestCase):
         self.assertEqual(len(self.log.read_text().splitlines()), 2)
 
     def test_compile_keys_match_independently_derived_fixture_identity(self) -> None:
-        # Proves both keys retain the pre-window-plan canonical identity.
+        # Proves both keys exclude window_plan and include the inventory marker.
         # False pass: deriving expectations from the builder accepts new fields.
         # The exact engine key set is already pinned by
         # test_new_build_writes_exact_block_outside_compile_identity.
@@ -729,6 +1188,7 @@ class WindowPlanArtifactTests(unittest.TestCase):
         ]
         request_identity = {
             "input_metadata_revision": 2,
+            "request_feed_inventory": None,
             "source_sha256": hashlib.sha256(b"source").hexdigest(),
             "codegen": {
                 "version": "1.1.0",

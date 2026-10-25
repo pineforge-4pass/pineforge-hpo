@@ -114,6 +114,17 @@ no derived companion. The recorded build path never instructs lookup. Python
 checks only the file hash; native snapshot loading, ABI and behavioral checks
 remain the native consumer's responsibility.
 
+When codegen provides `transpile_with_request_inventory`, the bridge uses that
+single generation and the builder binds its inventory to the generated UTF-8
+and linked plugin through codegen's binder. The optional top-level
+`request_feed_inventory` object is identical in manifest/provenance and the
+adjacent `request_feed_inventory.json`. The object stays outside the compile
+identity; `request_identity.request_feed_inventory` records only the producer's
+schema string or null, forcing one cache rebuild for the new key. Ordinary
+loading ignores the block and sidecar. Selected callers explicitly use the
+Python [inventory admission API](native-walkforward.md)
+to validate their bindings, inputs and timeframe policy.
+
 The compile contract is:
 
 ```text
