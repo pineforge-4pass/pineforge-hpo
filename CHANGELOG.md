@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.7.0 (2026-10-25)
+
+- Final 1.7.0 release (PEP 440 `1.7.0`, tag `v1.7.0`), paired with `pineforge-engine` v1.7.0 and
+  `pineforge-codegen` 1.7.0 (tags `v1.7.0`). The `transpile` extra keeps
+  `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.7.0`. The optional submodule gitlinks in
+  `external/pineforge-engine` (`ed9e08e`) and `external/pineforge-codegen-oss` (`3218bb9`) pin
+  the `v1.7.0` release commits.
 - Bound `--trials-out all` retention in the native process with an anonymous spool independent
   of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
 - The default `--trials-out all` needs a writable directory for two anonymous files
