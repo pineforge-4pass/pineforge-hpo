@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add optional selected-window/observer plugin bindings with embedded engine revision admission
+  and a fresh-handle OOS evaluation helper that checks callback identities and plan counts before
+  returning a full owning report snapshot.
 - Add immutable `DatasetView` ranges and a view-based trial-execution seam; const members make
   `DatasetView` and therefore `TrialExecutor` no longer assignable. The ordinary native CLI still
   uses the whole dataset. Split admission, study execution and publication so sequential native

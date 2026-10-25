@@ -180,6 +180,7 @@ target_link_libraries(pineforge_hpo_core PUBLIC
 if(PINEFORGE_HPO_BUILD_ENGINE_ADAPTER)
     add_library(pineforge_hpo_engine_adapter STATIC
         src/engine_adapter/dataset.cpp
+        src/engine_adapter/selected_evaluation.cpp
         src/engine_adapter/strategy_plugin.cpp
         src/engine_adapter/trial_executor.cpp
     )

@@ -1,14 +1,20 @@
 #include <pineforge/hpo/error.hpp>
 #include <pineforge/hpo/strategy_plugin.hpp>
 
+#include "../core/json.hpp"
+
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <locale>
+#include <regex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <dlfcn.h>
@@ -78,7 +84,76 @@ void check_settings(const StrategyPlugin& plugin,
                           {}, message, FailureOrigin::Engine);
 }
 
+[[noreturn]] void selected_unavailable(const char* reason, const std::string& message) {
+    throw TypedHpoError<>("hpo_walkforward_unavailable", {{"reason", reason}}, message);
+}
+
+void require_handle(pf_strategy_t strategy) {
+    if (!strategy)
+        throw TypedHpoError<>("hpo_invariant", {}, "selected execution requires a strategy handle");
+}
+
+void check_selected_setter(int status, const char* entrypoint, const char* contract_reason) {
+    if (status == 0)
+        return;
+    const std::string message =
+        std::string(entrypoint) + " refused with status " + std::to_string(status);
+    if (status == -4)
+        throw EngineError(std::string("out_of_memory"), std::string("{}"), message);
+    if (status == -2)
+        selected_unavailable(contract_reason, message);
+    throw TypedHpoError<>("hpo_invariant", {}, message);
+}
+
 }  // namespace
+
+EngineVersion validate_selected_engine_version(
+    const std::optional<pf_version_t>& numbers,
+    const std::optional<std::string>& full,
+    const std::optional<std::string>& expected_manifest_version) {
+    if (!numbers || !full) {
+        selected_unavailable("engine_version_missing",
+                             std::string("missing embedded engine metadata:") +
+                                 (!numbers ? " pf_version_get" : "") +
+                                 (!full ? " pf_version_string" : ""));
+    }
+    // Match the whole documented MAJOR.MINOR.PATCH[-rc.N][-N-gSHA[-dirty]] form.
+    static const std::regex pattern(
+        R"((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))"
+        R"((-rc\.([1-9][0-9]*))?(-([0-9]+)-g[0-9a-fA-F]+(-dirty)?)?)");
+    std::smatch match;
+    if (!std::regex_match(*full, match, pattern))
+        selected_unavailable("engine_version_invalid", "invalid embedded engine version: " + *full);
+    const auto component = [&](std::size_t index) {
+        const std::string text = match[index].str();
+        std::uint32_t value = 0;
+        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+            value > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
+            selected_unavailable("engine_version_invalid", "engine version component overflow");
+        return value;
+    };
+    EngineVersion version;
+    version.major = component(1);
+    version.minor = component(2);
+    version.patch = component(3);
+    if (numbers->major < 0 || numbers->minor < 0 || numbers->patch < 0 ||
+        version.major != static_cast<std::uint32_t>(numbers->major) ||
+        version.minor != static_cast<std::uint32_t>(numbers->minor) ||
+        version.patch != static_cast<std::uint32_t>(numbers->patch))
+        selected_unavailable("engine_version_invalid",
+                             "pf_version_get disagrees with pf_version_string");
+    if (version.major != 1 || version.minor < 6 ||
+        (version.minor == 6 && version.patch < 2) || match[4].matched)
+        selected_unavailable("engine_revision",
+                             "selected execution requires stable engine 1.x >= 1.6.2: " + *full);
+    if (expected_manifest_version && *expected_manifest_version != *full)
+        selected_unavailable("engine_identity",
+                             "embedded engine version differs from the expected manifest version");
+    version.full = *full;
+    version.commit_sha = numbers->commit_sha ? numbers->commit_sha : "";
+    return version;
+}
 
 StrategyPlugin::StrategyPlugin(std::filesystem::path path) : path_(std::move(path)) {
 #if defined(__unix__) || defined(__APPLE__)
@@ -134,6 +209,23 @@ StrategyPlugin::StrategyPlugin(std::filesystem::path path) : path_(std::move(pat
             library_handle_, "strategy_set_input_checked");
         strategy_set_override_checked_ = load_optional_symbol<StrategySetCheckedFn>(
             library_handle_, "strategy_set_override_checked");
+        pf_selected_window_version_ = load_optional_symbol<ProtocolVersionFn>(
+            library_handle_, "pf_selected_window_version");
+        strategy_set_selected_window_v1_ = load_optional_symbol<SetSelectedWindowFn>(
+            library_handle_, "strategy_set_selected_window_v1");
+        strategy_selected_window_counts_v1_ = load_optional_symbol<SelectedWindowCountsFn>(
+            library_handle_, "strategy_selected_window_counts_v1");
+        pf_execution_observer_version_ = load_optional_symbol<ProtocolVersionFn>(
+            library_handle_, "pf_execution_observer_version");
+        strategy_set_execution_observer_v1_ = load_optional_symbol<SetExecutionObserverFn>(
+            library_handle_, "strategy_set_execution_observer_v1");
+        strategy_execution_observation_v1_ = load_optional_symbol<ExecutionObservationFn>(
+            library_handle_, "strategy_execution_observation_v1");
+        pf_version_get_ = load_optional_symbol<VersionGetFn>(library_handle_, "pf_version_get");
+        pf_version_string_ =
+            load_optional_symbol<VersionStringFn>(library_handle_, "pf_version_string");
+        strategy_get_effective_settings_ = load_optional_symbol<EffectiveSettingsFn>(
+            library_handle_, "strategy_get_effective_settings");
         report_free_ = load_required_symbol<ReportFreeFn>(library_handle_, path_, "report_free");
         pf_abi_version_ =
             load_required_symbol<AbiVersionFn>(library_handle_, path_, "pf_abi_version");
@@ -187,7 +279,16 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
       strategy_set_input_checked_(other.strategy_set_input_checked_),
       strategy_set_override_checked_(other.strategy_set_override_checked_),
       report_free_(other.report_free_),
-      pf_abi_version_(other.pf_abi_version_) {
+      pf_abi_version_(other.pf_abi_version_),
+      pf_selected_window_version_(other.pf_selected_window_version_),
+      strategy_set_selected_window_v1_(other.strategy_set_selected_window_v1_),
+      strategy_selected_window_counts_v1_(other.strategy_selected_window_counts_v1_),
+      pf_execution_observer_version_(other.pf_execution_observer_version_),
+      strategy_set_execution_observer_v1_(other.strategy_set_execution_observer_v1_),
+      strategy_execution_observation_v1_(other.strategy_execution_observation_v1_),
+      pf_version_get_(other.pf_version_get_),
+      pf_version_string_(other.pf_version_string_),
+      strategy_get_effective_settings_(other.strategy_get_effective_settings_) {
     other.library_handle_ = nullptr;
     other.abi_version_value_ = 0;
     other.strategy_create_ = nullptr;
@@ -212,6 +313,15 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
     other.strategy_set_override_checked_ = nullptr;
     other.report_free_ = nullptr;
     other.pf_abi_version_ = nullptr;
+    other.pf_selected_window_version_ = nullptr;
+    other.strategy_set_selected_window_v1_ = nullptr;
+    other.strategy_selected_window_counts_v1_ = nullptr;
+    other.pf_execution_observer_version_ = nullptr;
+    other.strategy_set_execution_observer_v1_ = nullptr;
+    other.strategy_execution_observation_v1_ = nullptr;
+    other.pf_version_get_ = nullptr;
+    other.pf_version_string_ = nullptr;
+    other.strategy_get_effective_settings_ = nullptr;
 }
 
 StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
@@ -244,6 +354,15 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     strategy_set_override_checked_ = other.strategy_set_override_checked_;
     report_free_ = other.report_free_;
     pf_abi_version_ = other.pf_abi_version_;
+    pf_selected_window_version_ = other.pf_selected_window_version_;
+    strategy_set_selected_window_v1_ = other.strategy_set_selected_window_v1_;
+    strategy_selected_window_counts_v1_ = other.strategy_selected_window_counts_v1_;
+    pf_execution_observer_version_ = other.pf_execution_observer_version_;
+    strategy_set_execution_observer_v1_ = other.strategy_set_execution_observer_v1_;
+    strategy_execution_observation_v1_ = other.strategy_execution_observation_v1_;
+    pf_version_get_ = other.pf_version_get_;
+    pf_version_string_ = other.pf_version_string_;
+    strategy_get_effective_settings_ = other.strategy_get_effective_settings_;
 
     other.library_handle_ = nullptr;
     other.abi_version_value_ = 0;
@@ -269,6 +388,15 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     other.strategy_set_override_checked_ = nullptr;
     other.report_free_ = nullptr;
     other.pf_abi_version_ = nullptr;
+    other.pf_selected_window_version_ = nullptr;
+    other.strategy_set_selected_window_v1_ = nullptr;
+    other.strategy_selected_window_counts_v1_ = nullptr;
+    other.pf_execution_observer_version_ = nullptr;
+    other.strategy_set_execution_observer_v1_ = nullptr;
+    other.strategy_execution_observation_v1_ = nullptr;
+    other.pf_version_get_ = nullptr;
+    other.pf_version_string_ = nullptr;
+    other.strategy_get_effective_settings_ = nullptr;
     return *this;
 }
 
@@ -509,6 +637,138 @@ std::optional<std::int32_t> StrategyPlugin::last_run_status(pf_strategy_t strate
     if (!strategy_last_run_status_)
         return std::nullopt;
     return strategy_last_run_status_(strategy);
+}
+
+bool StrategyPlugin::selected_window_available() const noexcept {
+    return pf_selected_window_version_ && strategy_set_selected_window_v1_ &&
+        strategy_selected_window_counts_v1_ && pf_execution_observer_version_ &&
+        strategy_set_execution_observer_v1_ && strategy_execution_observation_v1_;
+}
+
+void StrategyPlugin::require_selected_window(
+    const std::optional<std::string>& expected_manifest_version) const {
+    const std::array<std::pair<bool, const char*>, 6> exports{{
+        {pf_selected_window_version_ != nullptr, "pf_selected_window_version"},
+        {strategy_set_selected_window_v1_ != nullptr, "strategy_set_selected_window_v1"},
+        {strategy_selected_window_counts_v1_ != nullptr, "strategy_selected_window_counts_v1"},
+        {pf_execution_observer_version_ != nullptr, "pf_execution_observer_version"},
+        {strategy_set_execution_observer_v1_ != nullptr, "strategy_set_execution_observer_v1"},
+        {strategy_execution_observation_v1_ != nullptr, "strategy_execution_observation_v1"}}};
+    std::string first;
+    std::string missing;
+    for (const auto& entry : exports) {
+        if (!entry.first) {
+            if (first.empty())
+                first = "missing_" + std::string(entry.second);
+            missing += " " + std::string(entry.second);
+        }
+    }
+    if (!missing.empty())
+        selected_unavailable(first.c_str(), "missing selected execution exports:" + missing);
+    if (pf_selected_window_version_() != 1)
+        selected_unavailable("selected_window_version", "selected-window ABI version is not 1");
+    if (pf_execution_observer_version_() != 1)
+        selected_unavailable("execution_observer_version",
+                             "execution-observer ABI version is not 1");
+    (void)engine_version(expected_manifest_version);
+}
+
+EngineVersion StrategyPlugin::engine_version(
+    const std::optional<std::string>& expected_manifest_version) const {
+    const std::optional<pf_version_t> numbers =
+        pf_version_get_ ? std::optional<pf_version_t>(pf_version_get_()) : std::nullopt;
+    const char* const full = pf_version_string_ ? pf_version_string_() : nullptr;
+    return validate_selected_engine_version(
+        numbers, full ? std::optional<std::string>(full) : std::nullopt,
+        expected_manifest_version);
+}
+
+void StrategyPlugin::set_selected_window(pf_strategy_t strategy, std::int64_t start_ms,
+                                          std::int64_t end_ms) const {
+    require_handle(strategy);
+    if (!strategy_set_selected_window_v1_)
+        require_selected_window();
+    const pf_selected_window_config_v1 config{
+        sizeof(pf_selected_window_config_v1), 1, start_ms, end_ms};
+    check_selected_setter(strategy_set_selected_window_v1_(strategy, &config),
+                          "strategy_set_selected_window_v1", "selected_window_contract");
+}
+
+void StrategyPlugin::clear_selected_window(pf_strategy_t strategy) const {
+    require_handle(strategy);
+    if (!strategy_set_selected_window_v1_)
+        require_selected_window();
+    check_selected_setter(strategy_set_selected_window_v1_(strategy, nullptr),
+                          "strategy_set_selected_window_v1(clear)", "selected_window_contract");
+}
+
+pf_selected_window_counts_v1 StrategyPlugin::selected_window_counts(pf_strategy_t strategy) const {
+    require_handle(strategy);
+    if (!strategy_selected_window_counts_v1_)
+        require_selected_window();
+    pf_selected_window_counts_v1 counts{};
+    counts.struct_size = sizeof(counts);
+    counts.version = 1;
+    const int status = strategy_selected_window_counts_v1_(strategy, &counts);
+    if (status != 0 || counts.struct_size != sizeof(counts) || counts.version != 1)
+        throw TypedHpoError<>("hpo_invariant", {},
+                              "selected counts refused or changed header: " +
+                                  std::to_string(status));
+    return counts;
+}
+
+void StrategyPlugin::set_execution_observer(pf_strategy_t strategy,
+                                            const pf_execution_observer_v1* observer) const {
+    require_handle(strategy);
+    if (!strategy_set_execution_observer_v1_)
+        require_selected_window();
+    check_selected_setter(strategy_set_execution_observer_v1_(strategy, observer),
+                          "strategy_set_execution_observer_v1", "execution_observer_contract");
+}
+
+pf_execution_observation_v1 StrategyPlugin::execution_observation(pf_strategy_t strategy) const {
+    require_handle(strategy);
+    if (!strategy_execution_observation_v1_)
+        require_selected_window();
+    pf_execution_observation_v1 observation{};
+    observation.struct_size = sizeof(observation);
+    observation.version = 1;
+    const int status = strategy_execution_observation_v1_(strategy, &observation);
+    if (status != 0 || observation.struct_size != sizeof(observation) || observation.version != 1)
+        throw TypedHpoError<>("hpo_invariant", {},
+                              "execution observation refused or changed header: " +
+                                  std::to_string(status));
+    return observation;
+}
+
+std::optional<std::string> StrategyPlugin::effective_settings(pf_strategy_t strategy) const {
+    require_handle(strategy);
+    if (!strategy_get_effective_settings_)
+        return std::nullopt;
+    constexpr std::size_t limit = 16 * 1024 * 1024;
+    std::size_t required = 0;
+    std::array<char, 4096> error{};
+    if (strategy_get_effective_settings_(strategy, nullptr, 0, &required, error.data(),
+                                         error.size()) != PF_SETTINGS_BUFFER_TOO_SMALL ||
+        required == 0 || required > limit)
+        return std::nullopt;
+    std::vector<char> buffer(required);
+    if (strategy_get_effective_settings_(strategy, buffer.data(), buffer.size(), &required,
+                                         error.data(), error.size()) != PF_SETTINGS_OK ||
+        required == 0 || required > buffer.size() || buffer[required - 1] != '\0')
+        return std::nullopt;
+    const std::string text(buffer.data(), required - 1);
+    try {
+        const auto receipt = detail::parse_json(text, limit);
+        if (receipt.kind != detail::Json::Kind::Object)
+            return std::nullopt;
+        const auto* version = receipt.find("version");
+        if (!version || version->kind != detail::Json::Kind::Number || version->real() != 1)
+            return std::nullopt;
+    } catch (const HpoError&) {
+        return std::nullopt;
+    }
+    return text;
 }
 
 void StrategyPlugin::close() noexcept {

@@ -195,6 +195,35 @@
       ],
       "since": "0.10.0"
     },
+    "hpo_walkforward_unavailable": {
+      "class": "environment",
+      "retryable": false,
+      "args": {
+        "reason": {
+          "kind": "string",
+          "values": [
+            "engine_identity",
+            "engine_revision",
+            "engine_version_invalid",
+            "engine_version_missing",
+            "execution_observer_contract",
+            "execution_observer_version",
+            "missing_pf_execution_observer_version",
+            "missing_pf_selected_window_version",
+            "missing_strategy_execution_observation_v1",
+            "missing_strategy_selected_window_counts_v1",
+            "missing_strategy_set_execution_observer_v1",
+            "missing_strategy_set_selected_window_v1",
+            "selected_window_contract",
+            "selected_window_version"
+          ]
+        }
+      },
+      "templates": [
+        "Native walk-forward execution is unavailable ({reason})."
+      ],
+      "since": "1.7.1"
+    },
     "hpo_warm_start_rejected": {
       "class": "continuation",
       "retryable": false,

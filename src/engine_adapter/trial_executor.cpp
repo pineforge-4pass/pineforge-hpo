@@ -198,6 +198,10 @@ void compute_report_return_blocks(const pf_report_t& report,
     snapshot->return_blocks = reduce_return_blocks(view, snapshot->return_block_layout);
 }
 
+}  // namespace
+
+namespace detail {
+
 ReportSnapshot copy_report(const pf_report_t& report,
                            const BacktestConfiguration& configuration,
                            bool reduce_blocks) {
@@ -268,6 +272,26 @@ ReportSnapshot copy_report(const pf_report_t& report,
     return snapshot;
 }
 
+void apply_trial_settings(const StrategyPlugin& plugin, pf_strategy_t strategy,
+                          const ParameterValues& inputs, const ParameterValues& overrides,
+                          const BacktestConfiguration& configuration) {
+    plugin.set_chart_timezone(strategy, configuration.chart_timezone);
+    for (const auto& entry : overrides) {
+        plugin.set_override(strategy, entry.first, entry.second);
+    }
+    for (const auto& entry : inputs) {
+        plugin.set_input(strategy, entry.first, entry.second);
+    }
+    if (configuration.symbol_info)
+        plugin.set_symbol_info(strategy, *configuration.symbol_info);
+    if (configuration.symbol_feeds)
+        plugin.set_symbol_feeds(strategy, *configuration.symbol_feeds);
+}
+
+}  // namespace detail
+
+namespace {
+
 bool valid_magnifier_distribution(pf_magnifier_distribution_t distribution) noexcept {
     switch (distribution) {
     case PF_MAGNIFIER_UNIFORM:
@@ -280,30 +304,6 @@ bool valid_magnifier_distribution(pf_magnifier_distribution_t distribution) noex
     }
     return false;
 }
-
-// One resource owner makes the required teardown order structural rather than
-// dependent on local declaration order: report arrays first, handle second.
-class TrialResources final {
-public:
-    TrialResources(const StrategyPlugin& plugin, pf_strategy_t strategy)
-        : plugin_(plugin), strategy_(strategy) {}
-
-    ~TrialResources() {
-        plugin_.free_report(&report);
-        plugin_.free_strategy(strategy_);
-    }
-
-    TrialResources(const TrialResources&) = delete;
-    TrialResources& operator=(const TrialResources&) = delete;
-
-    pf_strategy_t strategy() const noexcept { return strategy_; }
-
-    pf_report_t report{};
-
-private:
-    const StrategyPlugin& plugin_;
-    pf_strategy_t strategy_;
-};
 
 DatasetView whole_dataset(const std::shared_ptr<const StrategyPlugin>& plugin,
                          std::shared_ptr<const Dataset> dataset) {
@@ -393,7 +393,7 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
                 "return statistics need a build without floating-point contraction");
     }
     if (configuration_.symbol_feeds && !configuration_.symbol_feeds->empty()) {
-        TrialResources validation(*plugin_, plugin_->create_strategy());
+        detail::TrialResources validation(*plugin_, plugin_->create_strategy());
         plugin_->set_symbol_feeds(validation.strategy(), *configuration_.symbol_feeds);
         const auto error = plugin_->last_error(validation.strategy());
         const auto code = plugin_->last_error_code(validation.strategy());
@@ -438,18 +438,9 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
     if (bar_count == 0 || bar_count > view_.size())
         throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
                                                    "prefix size must be within the dataset");
-    TrialResources resources(*plugin_, plugin_->create_strategy());
-    plugin_->set_chart_timezone(resources.strategy(), configuration_.chart_timezone);
-    for (const auto& entry : strategy_overrides) {
-        plugin_->set_override(resources.strategy(), entry.first, entry.second);
-    }
-    for (const auto& entry : inputs) {
-        plugin_->set_input(resources.strategy(), entry.first, entry.second);
-    }
-    if (configuration_.symbol_info)
-        plugin_->set_symbol_info(resources.strategy(), *configuration_.symbol_info);
-    if (configuration_.symbol_feeds)
-        plugin_->set_symbol_feeds(resources.strategy(), *configuration_.symbol_feeds);
+    detail::TrialResources resources(*plugin_, plugin_->create_strategy());
+    detail::apply_trial_settings(*plugin_, resources.strategy(), inputs, strategy_overrides,
+                                 configuration_);
 
     plugin_->run_backtest_full(resources.strategy(), view_.data(),
                                static_cast<int>(bar_count), configuration_.input_timeframe,
@@ -476,7 +467,7 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
 
     TrialExecutionResult succeeded;
     succeeded.status = TrialExecutionStatus::kSucceeded;
-    succeeded.report = copy_report(resources.report, configuration_, reduce_blocks);
+    succeeded.report = detail::copy_report(resources.report, configuration_, reduce_blocks);
     return succeeded;
 }
 

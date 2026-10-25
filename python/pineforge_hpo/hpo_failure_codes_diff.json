@@ -1,20 +1,55 @@
 {
   "schema": "pineforge-hpo-failure-catalog-diff/v1",
   "from": {
-    "version": "1.6.3",
-    "tag": "v1.6.3",
+    "version": "1.7.0",
+    "tag": "v1.7.0",
     "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
   },
   "to": {
-    "version": "1.7.0",
-    "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
+    "version": null,
+    "unreleased": true,
+    "catalogSha256": "3bc3be9d24a183819a6a97aa147406376511ab6f400312a27e7559ebf7d529df"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
     "after": "pineforge-hpo-failure-catalog/v1"
   },
   "metadataChanges": [],
-  "added": [],
+  "added": [
+    {
+      "code": "hpo_walkforward_unavailable",
+      "collection": "codes",
+      "entry": {
+        "class": "environment",
+        "retryable": false,
+        "args": {
+          "reason": {
+            "kind": "string",
+            "values": [
+              "engine_identity",
+              "engine_revision",
+              "engine_version_invalid",
+              "engine_version_missing",
+              "execution_observer_contract",
+              "execution_observer_version",
+              "missing_pf_execution_observer_version",
+              "missing_pf_selected_window_version",
+              "missing_strategy_execution_observation_v1",
+              "missing_strategy_selected_window_counts_v1",
+              "missing_strategy_set_execution_observer_v1",
+              "missing_strategy_set_selected_window_v1",
+              "selected_window_contract",
+              "selected_window_version"
+            ]
+          }
+        },
+        "templates": [
+          "Native walk-forward execution is unavailable ({reason})."
+        ],
+        "since": "1.7.1"
+      }
+    }
+  ],
   "changed": [],
   "removed": [],
   "deprecated": []

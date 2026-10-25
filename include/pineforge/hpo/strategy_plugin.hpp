@@ -1,14 +1,43 @@
 #pragma once
 
 #include <pineforge/pineforge.h>
+#include <pineforge/execution_observer.h>
+#include <pineforge/selected_window.h>
 #include <pineforge/hpo/symbol_feeds.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
 
 namespace pineforge {
 namespace hpo {
+
+/// Embedded runtime identity admitted for selected-window execution.
+struct EngineVersion {
+    /// Numeric major release from the plugin's own metadata.
+    std::uint32_t major = 0;
+    /// Numeric minor release from the plugin's own metadata.
+    std::uint32_t minor = 0;
+    /// Numeric patch release from the plugin's own metadata.
+    std::uint32_t patch = 0;
+    /// Complete version, including any git-describe suffix.
+    std::string full;
+    /// Commit reported by the plugin; empty when the runtime does not know it.
+    std::string commit_sha;
+};
+
+/// Parses and cross-checks embedded metadata without loading a plugin or consulting build headers.
+///
+/// Requires stable engine 1.x at least 1.6.2. Accepts the engine's documented git-describe
+/// suffix, but refuses release candidates. A supplied manifest version must match the full
+/// embedded string exactly. Missing, malformed, unsupported and mismatched identities raise
+/// `hpo_walkforward_unavailable` with the corresponding engine reason.
+EngineVersion validate_selected_engine_version(
+    const std::optional<pf_version_t>& numbers,
+    const std::optional<std::string>& full,
+    const std::optional<std::string>& expected_manifest_version = std::nullopt);
 
 /// Optional instrument metadata applied after trial inputs and runtime overrides.
 struct SymbolInfo {
@@ -113,6 +142,40 @@ public:
     /// Returns the optional run status; status 1 denotes a failed execution.
     std::optional<std::int32_t> last_run_status(pf_strategy_t strategy) const;
 
+    /// Returns whether all six selected-window/observer exports exist; does not admit a revision.
+    bool selected_window_available() const noexcept;
+
+    /// Requires all six exports in protocol order, ABI versions 1, then an admitted engine.
+    /// The diagnostic lists every absent protocol export; the reason names the first.
+    /// @throws HpoError with code `hpo_walkforward_unavailable` on admission failure.
+    void require_selected_window(
+        const std::optional<std::string>& expected_manifest_version = std::nullopt) const;
+
+    /// Reads and validates this plugin's embedded runtime identity, optionally against a manifest.
+    /// @throws HpoError with code `hpo_walkforward_unavailable` for invalid metadata or revision.
+    EngineVersion engine_version(
+        const std::optional<std::string>& expected_manifest_version = std::nullopt) const;
+
+    /// Configures the next selected run's half-open interval using the engine's v1 descriptor.
+    /// Setter -2 is unavailable, -4 is engine `out_of_memory`; other refusals are invariants.
+    void set_selected_window(pf_strategy_t strategy, std::int64_t start_ms,
+                             std::int64_t end_ms) const;
+    /// Clears pending selection; subject to the same checked status rules as its setter.
+    void clear_selected_window(pf_strategy_t strategy) const;
+    /// Reads native counts with initialized and checked engine headers.
+    /// Any getter refusal, including -2 after a successful run, is `hpo_invariant`.
+    pf_selected_window_counts_v1 selected_window_counts(pf_strategy_t strategy) const;
+    /// Registers an observer, or removes it when @p observer is null.
+    /// Borrowed callback/context lifetime follows the engine header, including removal refusal.
+    /// Setter -2 is unavailable, -4 is engine `out_of_memory`; other refusals are invariants.
+    void set_execution_observer(pf_strategy_t strategy,
+                                const pf_execution_observer_v1* observer) const;
+    /// Reads the execution snapshot; a refusal or changed header is `hpo_invariant`.
+    pf_execution_observation_v1 execution_observation(pf_strategy_t strategy) const;
+    /// Returns optional version-1 effective-settings JSON using the bounded two-call protocol.
+    /// An absent getter or unusable receipt is nullopt, never a settings attestation.
+    std::optional<std::string> effective_settings(pf_strategy_t strategy) const;
+
     /// Releases report-owned allocations populated by run_backtest_full().
     void free_report(pf_report_t* report) const noexcept;
 
@@ -144,6 +207,15 @@ private:
         int (*)(pf_strategy_t, const char*, const char*, char*, std::size_t);
     using ReportFreeFn = void (*)(pf_report_t*);
     using AbiVersionFn = int (*)();
+    using ProtocolVersionFn = std::uint32_t (*)();
+    using SetSelectedWindowFn = int (*)(pf_strategy_t, const pf_selected_window_config_v1*);
+    using SelectedWindowCountsFn = int (*)(pf_strategy_t, pf_selected_window_counts_v1*);
+    using SetExecutionObserverFn = int (*)(pf_strategy_t, const pf_execution_observer_v1*);
+    using ExecutionObservationFn = int (*)(pf_strategy_t, pf_execution_observation_v1*);
+    using VersionGetFn = pf_version_t (*)();
+    using VersionStringFn = const char* (*)();
+    using EffectiveSettingsFn =
+        int (*)(pf_strategy_t, char*, std::size_t, std::size_t*, char*, std::size_t);
 
     void close() noexcept;
 
@@ -172,6 +244,15 @@ private:
     StrategySetCheckedFn strategy_set_override_checked_ = nullptr;
     ReportFreeFn report_free_ = nullptr;
     AbiVersionFn pf_abi_version_ = nullptr;
+    ProtocolVersionFn pf_selected_window_version_ = nullptr;
+    SetSelectedWindowFn strategy_set_selected_window_v1_ = nullptr;
+    SelectedWindowCountsFn strategy_selected_window_counts_v1_ = nullptr;
+    ProtocolVersionFn pf_execution_observer_version_ = nullptr;
+    SetExecutionObserverFn strategy_set_execution_observer_v1_ = nullptr;
+    ExecutionObservationFn strategy_execution_observation_v1_ = nullptr;
+    VersionGetFn pf_version_get_ = nullptr;
+    VersionStringFn pf_version_string_ = nullptr;
+    EffectiveSettingsFn strategy_get_effective_settings_ = nullptr;
 };
 
 }  // namespace hpo

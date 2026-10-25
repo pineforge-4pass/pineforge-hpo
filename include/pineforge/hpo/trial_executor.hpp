@@ -162,6 +162,44 @@ struct ReportSnapshot {
     std::optional<double> metric(std::string_view path) const noexcept;
 };
 
+namespace detail {
+
+/// Internal adapter owner shared by ordinary trials and selected evaluations.
+/// Report allocations always die before their strategy handle.
+class TrialResources final {
+public:
+    /// Takes ownership of an already-created handle belonging to @p plugin.
+    TrialResources(const StrategyPlugin& plugin, pf_strategy_t strategy)
+        : plugin_(plugin), strategy_(strategy) {}
+    /// Releases the report first and then the handle.
+    ~TrialResources() {
+        plugin_.free_report(&report);
+        plugin_.free_strategy(strategy_);
+    }
+    /// Resource ownership cannot be copied.
+    TrialResources(const TrialResources&) = delete;
+    /// Resource ownership cannot be assigned.
+    TrialResources& operator=(const TrialResources&) = delete;
+    /// Returns the owned handle.
+    pf_strategy_t strategy() const noexcept { return strategy_; }
+    /// Zero-initialized engine report, also released after a failed run.
+    pf_report_t report{};
+
+private:
+    const StrategyPlugin& plugin_;
+    pf_strategy_t strategy_;
+};
+
+/// Internal common setter sequence; preserves the ordinary trial's exact call order.
+void apply_trial_settings(const StrategyPlugin& plugin, pf_strategy_t strategy,
+                          const ParameterValues& inputs, const ParameterValues& overrides,
+                          const BacktestConfiguration& configuration);
+/// Internal checked snapshot capture while the engine report is still alive.
+ReportSnapshot copy_report(const pf_report_t& report, const BacktestConfiguration& configuration,
+                           bool reduce_blocks);
+
+}  // namespace detail
+
 /// Terminal status of one native strategy execution.
 enum class TrialExecutionStatus : std::uint8_t {
     kSucceeded = 0,   ///< Backtest completed and a detached snapshot is available.
