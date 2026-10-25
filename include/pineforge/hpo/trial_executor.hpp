@@ -188,14 +188,20 @@ struct TrialExecutionResult {
 /// @brief Deterministic one-shot adapter from serialized parameters to a detached report.
 ///
 /// execute() is const and may be called concurrently: every call creates a fresh strategy handle
-/// while all calls share only the immutable plugin function table and Dataset. Report-owned
+/// while all calls share only the immutable plugin function table and DatasetView. Report-owned
 /// resources are released before the strategy handle on every path.
 class TrialExecutor final {
 public:
-    /// Binds a validated plugin, immutable dataset, and execution configuration.
+    /// Binds a validated plugin, immutable dataset view, and execution configuration.
     ///
-    /// @throws std::invalid_argument for null dependencies, an ABI-incompatible dataset size,
+    /// @throws std::invalid_argument for a null plugin, an ABI-incompatible view size,
     /// non-positive magnifier samples, or an unknown magnifier distribution.
+    TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
+                  DatasetView view,
+                  BacktestConfiguration configuration = {});
+
+    /// Binds the whole dataset as a view, preserving existing callers' pointer and length.
+    /// @throws std::invalid_argument for null dependencies or invalid execution settings.
     TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
                   std::shared_ptr<const Dataset> dataset,
                   BacktestConfiguration configuration = {});
@@ -208,21 +214,23 @@ public:
                                  const ParameterValues& strategy_overrides = {}) const;
 
     /// Runs the exact full-backtest engine path on an immutable bar prefix.
-    /// The prefix must contain between one and dataset().size() bars.
+    /// The prefix must contain between one and view().size() bars. An empty view cannot run.
     TrialExecutionResult execute_prefix(const ParameterValues& inputs,
                                         const ParameterValues& strategy_overrides,
                                         std::size_t bar_count) const;
 
     /// Returns the immutable per-execution configuration.
     const BacktestConfiguration& configuration() const noexcept { return configuration_; }
-    /// Returns the shared immutable dataset.
-    const Dataset& dataset() const noexcept { return *dataset_; }
+    /// Returns the shared immutable owner; its size may exceed the execution view.
+    const Dataset& dataset() const noexcept { return *view_.owner; }
+    /// Returns the immutable execution range.
+    const DatasetView& view() const noexcept { return view_; }
     /// Returns the loaded strategy plugin.
     const StrategyPlugin& plugin() const noexcept { return *plugin_; }
 
 private:
     std::shared_ptr<const StrategyPlugin> plugin_;
-    std::shared_ptr<const Dataset> dataset_;
+    DatasetView view_;
     BacktestConfiguration configuration_;
 };
 

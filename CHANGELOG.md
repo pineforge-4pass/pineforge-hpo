@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add immutable `DatasetView` ranges and a view-based trial-execution seam; const members make
+  `DatasetView` and therefore `TrialExecutor` no longer assignable. The ordinary native CLI still
+  uses the whole dataset. Split admission, study execution and publication so sequential native
+  studies release their samplers, archives, workers and anonymous trial spools on return, and
+  return an owned best candidate.
+- Require status `ok`, feasibility and a finite objective for best-trial selection and best-k
+  retention, including `summary.best_k` and retained winner rows in timeout results, with the
+  existing direction and lowest-trial-ID tie rule. A post-scoring `trial_error` stays in all-mode
+  `trials`, `--trials-file` / `--progress-fd` output and `counts_by_status`.
 - Accept color-typed input manifests as packed `0xAARRGGBB` integers in `0..4294967295`,
   including integer sweeps, while preserving legacy string-typed color inputs.
 

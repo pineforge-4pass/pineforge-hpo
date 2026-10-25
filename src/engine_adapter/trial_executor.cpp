@@ -305,6 +305,17 @@ private:
     pf_strategy_t strategy_;
 };
 
+DatasetView whole_dataset(const std::shared_ptr<const StrategyPlugin>& plugin,
+                         std::shared_ptr<const Dataset> dataset) {
+    if (!plugin)
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "TrialExecutor requires a strategy plugin");
+    if (!dataset)
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "TrialExecutor requires a dataset");
+    return DatasetView(std::move(dataset));
+}
+
 }  // namespace
 
 std::optional<double> ReportSnapshot::metric(std::string_view path) const noexcept {
@@ -346,20 +357,16 @@ std::optional<double> ReportSnapshot::metric(std::string_view path) const noexce
 }
 
 TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
-                             std::shared_ptr<const Dataset> dataset,
+                             DatasetView view,
                              BacktestConfiguration configuration)
     : plugin_(std::move(plugin)),
-      dataset_(std::move(dataset)),
+      view_(std::move(view)),
       configuration_(std::move(configuration)) {
     if (!plugin_) {
         throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
                                                    "TrialExecutor requires a strategy plugin");
     }
-    if (!dataset_) {
-        throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
-                                                   "TrialExecutor requires a dataset");
-    }
-    if (dataset_->size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    if (view_.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw TypedHpoError<std::invalid_argument>(
             "hpo_dataset_invalid", {}, "dataset exceeds the PineForge C ABI bar-count limit");
     }
@@ -414,15 +421,21 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
     }
 }
 
+TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
+                             std::shared_ptr<const Dataset> dataset,
+                             BacktestConfiguration configuration)
+    : TrialExecutor(plugin, whole_dataset(plugin, std::move(dataset)),
+                    std::move(configuration)) {}
+
 TrialExecutionResult TrialExecutor::execute(const ParameterValues& inputs,
                                             const ParameterValues& strategy_overrides) const {
-    return execute_prefix(inputs, strategy_overrides, dataset_->size());
+    return execute_prefix(inputs, strategy_overrides, view_.size());
 }
 
 TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs,
                                                    const ParameterValues& strategy_overrides,
                                                    std::size_t bar_count) const {
-    if (bar_count == 0 || bar_count > dataset_->size())
+    if (bar_count == 0 || bar_count > view_.size())
         throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
                                                    "prefix size must be within the dataset");
     TrialResources resources(*plugin_, plugin_->create_strategy());
@@ -438,7 +451,7 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
     if (configuration_.symbol_feeds)
         plugin_->set_symbol_feeds(resources.strategy(), *configuration_.symbol_feeds);
 
-    plugin_->run_backtest_full(resources.strategy(), dataset_->data(),
+    plugin_->run_backtest_full(resources.strategy(), view_.data(),
                                static_cast<int>(bar_count), configuration_.input_timeframe,
                                configuration_.script_timeframe, configuration_.bar_magnifier,
                                configuration_.magnifier_samples,
@@ -459,7 +472,7 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
     // Blocks describe one curve: the full window. A prefix rung is a different, shorter series, so
     // it is never reduced against the S of the full window, and the request is local to this call.
     const bool reduce_blocks =
-        configuration_.pbo_blocks != 0 && bar_count == dataset_->size();
+        configuration_.pbo_blocks != 0 && bar_count == view_.size();
 
     TrialExecutionResult succeeded;
     succeeded.status = TrialExecutionStatus::kSucceeded;
