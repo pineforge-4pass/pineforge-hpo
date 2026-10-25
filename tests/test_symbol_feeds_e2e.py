@@ -584,6 +584,8 @@ def main():
     args = parser.parse_args()
     module = importlib.util.spec_from_file_location("release_abi", args.harness)
     abi = importlib.util.module_from_spec(module)
+    # Same as oracle_probe: the harness imports its sibling pf_sink lazily.
+    sys.path.insert(0, str(args.harness.resolve().parent))
     module.loader.exec_module(abi)
     directory = args.output.resolve()
     directory.mkdir(parents=True, exist_ok=True)
