@@ -486,8 +486,7 @@ class RequestInventoryReaderTests(unittest.TestCase):
             '"entries": []', '"entries":[{"kind":"unknown","kind":"unknown"}]'
         )
         duplicate_block = (
-            f'{{"request_feed_inventory":{encoded},'
-            f'"request_feed_inventory":{encoded}}}'
+            f'{{"request_feed_inventory":{encoded},"request_feed_inventory":{encoded}}}'
         )
         for raw in (
             duplicate_block,
