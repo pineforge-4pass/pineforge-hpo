@@ -86,6 +86,13 @@ def oracle_probe():
         # A NULL array would make string_at return uninitialized bytes, not trades.
         if report.total_trades > 0 and not report.trades:
             raise AssertionError("the reference report has no trade array to compare")
+        # 1.7.0 documents total_trades as the logical count and trades_len as the
+        # resident length of the array; they are equal only on the owning-array route.
+        if report.trades_len != report.total_trades:
+            raise AssertionError(
+                f"the reference report is not the owning-array route: trades_len "
+                f"{report.trades_len} != total_trades {report.total_trades}"
+            )
         output.mkdir(parents=True, exist_ok=True)
         (output / "metrics.bin").write_bytes(
             ctypes.string_at(
@@ -94,7 +101,7 @@ def oracle_probe():
         )
         (output / "trades.bin").write_bytes(
             ctypes.string_at(
-                report.trades, report.total_trades * ctypes.sizeof(oracle.TradeC)
+                report.trades, report.trades_len * ctypes.sizeof(oracle.TradeC)
             )
         )
         return original(report, *args, **kwargs)
