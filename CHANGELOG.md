@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Accept color-typed input manifests as packed `0xAARRGGBB` integers in `0..4294967295`,
+  including integer sweeps, while preserving legacy string-typed color inputs.
+
 ## 1.7.0 (2026-10-25)
 
 - Final 1.7.0 release (PEP 440 `1.7.0`, tag `v1.7.0`), paired with `pineforge-engine` v1.7.0 and
