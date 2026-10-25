@@ -143,6 +143,32 @@ is never rewritten to accept different bytes. Metadata publication I/O retains
 admission refused until enrichment is re-run. Ordinary execution ignores the
 `window_plan` block and does not require a planner companion.
 
+`plan_selected_window` throws `TypedHpoError<std::invalid_argument>` with
+`hpo_walkforward_plan_refused`, class `request`, `retryable: false`, since `1.7.1`.
+Its template is `Selected-window plan refused ({status}: {option}).`; both arguments
+are required closed strings. The `option` values are `calendar`, `end_ms`,
+`engine_timezone`, `fed_start_ms`, `input_tf`, `none`, `preroll_bars`, `rows`,
+`script_tf`, `session`, `start_ms`, `timeframes`, and `timezone`. `none` represents
+an empty engine option.
+
+| Status | Planner refusal |
+| --- | --- |
+| `boundary_unaligned` | T, E or F is not a nominal script open; boundaries are never snapped. |
+| `calendar_unsupported` | The clock, session, native calendar or timeframe pairing cannot serve the request. |
+| `feed_range_invalid` | A supplied row is below F or at/after E; the bounded DatasetView route excludes these rows before calling the planner. |
+| `internal_error` | The engine planner reports an internal exception or disagreement. |
+| `request_invalid` | A request member or row descriptor is invalid. |
+| `rows_unordered` | Supplied timestamps are not strictly increasing; Dataset construction already refuses such tapes. |
+
+Diagnostics include `value_ms`, numeric `bound` and its T/E/F word (or `none`),
+`previous_boundary_ms` and `next_boundary_ms`, plus affected request strings where
+applicable. Those values are diagnostic text, never extra catalog arguments.
+An undocumented refusal option and inconsistent successful plans are
+`hpo_invariant`; the raw-result test seam also guards unknown statuses.
+Loader and C bridge failures, including malformed status words, propagate as
+`hpo_walkforward_unavailable`, including reason `window_plan_load`. A valid
+pre-roll shortfall is returned for caller policy.
+
 ## Catalog and release diff
 
 The package contains `hpo_failure_codes.json` (schema

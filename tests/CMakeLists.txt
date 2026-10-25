@@ -376,6 +376,14 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             "$<TARGET_FILE:pineforge_hpo_fake_strategy>"
             "${CMAKE_CURRENT_BINARY_DIR}/window-plan-runs")
 
+    add_executable(pineforge_hpo_test_selected_planning test_selected_planning.cpp)
+    target_link_libraries(pineforge_hpo_test_selected_planning PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    target_compile_options(pineforge_hpo_test_selected_planning PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME pineforge_hpo_selected_planning
+        COMMAND pineforge_hpo_test_selected_planning
+            "${CMAKE_CURRENT_BINARY_DIR}/selected-planning-runs")
+
     add_library(pineforge_hpo_fake_strategy_no_timezone SHARED
         test_engine_adapter.cpp)
     target_compile_definitions(pineforge_hpo_fake_strategy_no_timezone PRIVATE

@@ -67,6 +67,87 @@ and loaded symbol origin. Loader refusal rows also cover unsafe ancestry and FIF
 Separately labeled unit seams cover exact pointer forwarding, descriptor validation and the
 second missing-export binder on the default fake.
 
+## Selected-window planning over a DatasetView
+
+Include `pineforge/hpo/selected_planning.hpp` and call
+`plan_selected_window(helper, tape, request)` with an already loaded `WindowPlanHelper`,
+an immutable `DatasetView`, and one `PlanRequest`. The returned `SelectedPlan` owns the complete
+`PlanResult`, a retained `DatasetView`, the six `SelectedExpectedCounts`, and
+`supplied_first_index` (the owner-relative first supplied row, before trimming).
+Supply `retained.data()`, `retained.size()` and `expected` to `SelectedEvaluation::evaluate`
+with the same T/E and strategy clock/settings.
+
+The tape may span later folds or be a prefix or subview of its owner. Two binary searches
+cut the supplied rows to **F <= timestamp < E**. Rows before F and at/after E are excluded
+before calling the engine, which refuses out-of-range rows rather than truncating them.
+The request, including T/E/F/N, timeframes, clock, session and feed-tolerant flag, reaches
+the helper unchanged; no boundary is snapped. An empty cut is passed to the planner, including
+a possibly null pointer with zero count. An invalid F/E relationship also reaches request
+admission without unsigned range underflow.
+
+Binary search relies on Dataset's existing strict timestamp ordering: the owned constructor
+checks it in `src/engine_adapter/dataset.cpp:205-208`, CSV loading uses that constructor, and
+mapped loading scans it at `:449-452`. Preserve the owner's immutability, including mapped
+bytes; mapped-file verification remains the owner's run-boundary duty. Valid Dataset inputs
+cannot reach `rows_unordered`, and the bounded cut prevents `feed_range_invalid`. Their
+refusal mappings remain defined for every engine status.
+
+Planner refusals throw `TypedHpoError<std::invalid_argument>` with
+`hpo_walkforward_plan_refused` and exactly two closed string arguments, `status` and `option`.
+An empty engine option becomes `none`. Diagnostics preserve the offending value, bound and
+T/E/F word, previous/next boundaries, and relevant request strings. Helper load/bridge errors
+propagate unchanged. A successful result with inconsistent counts, masks, timestamp ranges
+or row endpoints throws `hpo_invariant` naming the field.
+
+Validation checks supplied count against the bounded view, the retained-tail equality, the
+input and script partitions, supplied script groups, used/trimmed pre-roll groups, shortfall,
+both Boolean words and optional timestamp presence/order/ranges. It also independently
+searches the first row at/after T and checks the exact supplied/fed/window row endpoints.
+The helper already admits descriptor size/version/reserved, status/bound/mask encoding,
+option encoding and zero absent timestamps. Planning repeats Boolean and absent-timestamp
+checks for its separately testable raw-result seam; it adds the semantic checks above.
+
+Pre-roll optional timestamps are **script open labels**, so the first can precede the first
+retained input row. Supplied, fed and window optional timestamps are **input row timestamps**.
+Window timestamp presence follows `window_input_bars`, even when the last window group is
+unsealed and `window_script_bars` is zero. No equality between script and input counts is
+assumed.
+
+| SelectedExpectedCounts field | PlanResult::raw source |
+| --- | --- |
+| `fed_input_bars` | `fed_input_bars` |
+| `fed_script_bars` | `fed_script_bars` |
+| `preroll_input_bars` | `preroll_input_bars` |
+| `preroll_script_bars` | `used_script_bars` |
+| `window_input_bars` | `window_input_bars` |
+| `window_script_bars` | `window_script_bars` |
+
+`retained` is exactly the tail beginning at `trim_index` of the bounded cut, with
+`fed_input_bars == supplied_input_bars - trim_index`. Its pointer is the bounded pointer plus
+that offset (preserving a possibly null empty-owner pointer at offset zero). Bars are never
+copied or repacked, and the view retains the original owner. Index additions are bounded by
+DatasetView's constructor checks, and count identities use guarded subtraction.
+Cutting and endpoint checking take O(log n) time with constant auxiliary storage; the engine
+planner still walks the bounded rows. Calls are thread-compatible with immutable input and a
+helper whose lifetime spans every call.
+
+The six execution expectations omit `trimmed_script_bars`, `available_script_bars`,
+`shortfall` and `complete_pending_preroll_at_horizon`; these remain in `plan.raw` for logging
+and caller policy. **A pre-roll shortfall is returned, not thrown.** An empty plan is also
+valid planner output; `SelectedEvaluation` separately requires nonempty executable input.
+This library function plans one request; inventory admission, CLI/StudySpec forwarding,
+objective scoring and the loop over windows belong to later integration.
+
+The `pineforge_hpo_selected_planning` test uses the real helper with the same
+`PFH_WINDOW_PLAN_LIB` / `PFH_REQUIRE_WINDOW_PLAN=1` convention and private run directories
+as `pineforge_hpo_window_plan`. Missing helpers report `UNAVAILABLE` and fail in required
+mode. Hand-derived five-minute fixtures cover two folds, bounded-view equivalence, exact
+pointer offsets and owner lifetime, empty input, zero pre-roll, shortfall, pending pre-roll
+and an unsealed window tail. Direct real-helper arrays establish out-of-range and unordered
+refusals, with conversion through a labeled internal seam. Separate hand-built results
+exercise validation failures and internal-error vocabulary. These are predictions; real-plugin
+execution and native count/trade parity remain separate gates.
+
 ## Selected-window plugin binding and OOS evaluation
 
 `StrategyPlugin` optionally binds the engine's six selected-window and execution-observer

@@ -195,6 +195,45 @@
       ],
       "since": "0.10.0"
     },
+    "hpo_walkforward_plan_refused": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "option": {
+          "kind": "string",
+          "values": [
+            "calendar",
+            "end_ms",
+            "engine_timezone",
+            "fed_start_ms",
+            "input_tf",
+            "none",
+            "preroll_bars",
+            "rows",
+            "script_tf",
+            "session",
+            "start_ms",
+            "timeframes",
+            "timezone"
+          ]
+        },
+        "status": {
+          "kind": "string",
+          "values": [
+            "boundary_unaligned",
+            "calendar_unsupported",
+            "feed_range_invalid",
+            "internal_error",
+            "request_invalid",
+            "rows_unordered"
+          ]
+        }
+      },
+      "templates": [
+        "Selected-window plan refused ({status}: {option})."
+      ],
+      "since": "1.7.1"
+    },
     "hpo_walkforward_unavailable": {
       "class": "environment",
       "retryable": false,

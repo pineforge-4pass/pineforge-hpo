@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add native selected-window planning over an immutable `DatasetView`, with bounded input,
+  typed planner refusals, plan validation and retained rows/counts for OOS evaluation.
 - Add optional selected-window/observer plugin bindings with embedded engine revision admission
   and a fresh-handle OOS evaluation helper that checks callback identities and plan counts before
   returning a full owning report snapshot.
