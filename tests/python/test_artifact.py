@@ -540,6 +540,7 @@ class RequestInventoryArtifactTests(unittest.TestCase):
         )
         rename.assert_called_once()
         manifest, provenance = self.documents(artifact)
+
         # Inspect source dicts: parsing the published JSON loses alias identity.
         def source_of(document):
             # Type-blind match: compare the JSON round trip, not the Python value.
