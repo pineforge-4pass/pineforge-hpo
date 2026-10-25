@@ -320,6 +320,8 @@ Grid order is `false`, then `true`.
 significant for deterministic grid enumeration. String, integer, real, and
 boolean choice types are preserved in native trial JSON and must match the
 compiled Pine input type.
+Color-typed manifest inputs accept only packed `0xAARRGGBB` integers in `0..4294967295`
+(excluding booleans), while legacy string-typed color inputs retain string values.
 
 Conditional search spaces are not implemented. `log` is valid only on integer
 and real dimensions under the contracts above.
