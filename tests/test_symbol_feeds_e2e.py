@@ -75,9 +75,17 @@ def oracle_probe():
     module = importlib.util.spec_from_file_location("release_harness", harness)
     oracle = importlib.util.module_from_spec(module)
     module.loader.exec_module(oracle)
+    # Engine 1.7.0's harness turns the report sink on by default, and a sink report has
+    # NULL trade arrays. The native side reads the owning-array route, so the reference
+    # must too: this keeps the legacy route the C ABI still supports.
+    if hasattr(oracle, "_new_report_sink"):
+        oracle._new_report_sink = lambda *args, **kwargs: None
     original = oracle.build_report_dict
 
     def capture(report, *args, **kwargs):
+        # A NULL array would make string_at return uninitialized bytes, not trades.
+        if report.total_trades > 0 and not report.trades:
+            raise AssertionError("the reference report has no trade array to compare")
         output.mkdir(parents=True, exist_ok=True)
         (output / "metrics.bin").write_bytes(
             ctypes.string_at(
