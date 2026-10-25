@@ -224,7 +224,9 @@ class ColorInputTests(unittest.TestCase):
         self.assertIs(type(manifest["default"]), int)
         self.assertIsNone(
             _validate_value_against_manifest(
-                manifest["default"], manifest, where="search_space.Line color.choices[0]"
+                manifest["default"],
+                manifest,
+                where="search_space.Line color.choices[0]",
             )
         )
         self.assertIsNone(
