@@ -3,6 +3,8 @@
 
 #include "../src/core/sha256.hpp"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
