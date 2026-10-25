@@ -8,7 +8,7 @@
   "to": {
     "version": null,
     "unreleased": true,
-    "catalogSha256": "86f2cf891b540d3bc280af7bf4a95e66bcc00a5d1291c228fa2b27b436d6ecf0"
+    "catalogSha256": "52374f0841c8305a6cb1b003de981cc0f331398f488c9e7642080b3fde3e8638"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
@@ -16,6 +16,39 @@
   },
   "metadataChanges": [],
   "added": [
+    {
+      "code": "hpo_walkforward_inventory_invalid",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "capability": {
+            "kind": "string",
+            "values": [
+              "selected_window_request_feed_inventory"
+            ]
+          },
+          "reason": {
+            "kind": "string",
+            "values": [
+              "artifact_mismatch",
+              "chart_mismatch",
+              "input_unresolved",
+              "invalid",
+              "missing",
+              "producer_unavailable",
+              "unbound",
+              "unknown"
+            ]
+          }
+        },
+        "templates": [
+          "Invalid request-feed inventory ({capability}: {reason})."
+        ],
+        "since": "1.7.1"
+      }
+    },
     {
       "code": "hpo_walkforward_plan_refused",
       "collection": "codes",
@@ -55,6 +88,27 @@
         },
         "templates": [
           "Selected-window plan refused ({status}: {option})."
+        ],
+        "since": "1.7.1"
+      }
+    },
+    {
+      "code": "hpo_walkforward_timeframe_unsupported",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "capability": {
+            "kind": "string",
+            "values": [
+              "selected_window_chart_timeframe",
+              "selected_window_request_feed_timeframe"
+            ]
+          }
+        },
+        "templates": [
+          "Unsupported selected-window timeframe ({capability})."
         ],
         "since": "1.7.1"
       }

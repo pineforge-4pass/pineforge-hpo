@@ -27,6 +27,7 @@ from pineforge_hpo.cli import (
 )
 from pineforge_hpo.continuation import SpaceExhaustedError, WarmStartError
 from pineforge_hpo.error import failure_document
+from pineforge_hpo.request_inventory import RequestInventoryError, RequestTimeframeError
 from pineforge_hpo.study_spec import (
     DatasetSpec,
     ExecutionSpec,
@@ -312,6 +313,12 @@ class FailureCodeTests(unittest.TestCase):
                 "hpo_plugin_invalid",
                 {"reason": "validation"},
             ),
+            (
+                ArtifactBuildError("inventory", "original"),
+                RuntimeError,
+                "hpo_toolchain_unavailable",
+                {"reason": "transpile_internal"},
+            ),
             (WarmStartError("original"), ValueError, "hpo_warm_start_rejected", {}),
             (SpaceExhaustedError("original"), ValueError, "hpo_space_exhausted", {}),
             (
@@ -319,6 +326,21 @@ class FailureCodeTests(unittest.TestCase):
                 RuntimeError,
                 "hpo_walkforward_unavailable",
                 {"reason": "window_plan_path"},
+            ),
+            (
+                RequestInventoryError("missing", "original"),
+                RuntimeError,
+                "hpo_walkforward_inventory_invalid",
+                {
+                    "capability": "selected_window_request_feed_inventory",
+                    "reason": "missing",
+                },
+            ),
+            (
+                RequestTimeframeError("selected_window_chart_timeframe", "original"),
+                RuntimeError,
+                "hpo_walkforward_timeframe_unsupported",
+                {"capability": "selected_window_chart_timeframe"},
             ),
             (
                 TranspileFailure(TranspileResult(None)),
@@ -538,6 +560,62 @@ class FailureCodeTests(unittest.TestCase):
                     }
                 },
                 "templates": ["Native walk-forward is unavailable ({reason})."],
+                "since": "1.7.1",
+            },
+        )
+
+    def test_inventory_catalog_pins_the_complete_closed_entry(self):
+        # Proves both capability and every reason stay closed, typed and versioned.
+        # False pass: testing just one argument accepts extras or an arbitrary string.
+        self.assertEqual(
+            CATALOG["codes"]["hpo_walkforward_inventory_invalid"],
+            {
+                "class": "request",
+                "retryable": False,
+                "args": {
+                    "capability": {
+                        "kind": "string",
+                        "values": ["selected_window_request_feed_inventory"],
+                    },
+                    "reason": {
+                        "kind": "string",
+                        "values": [
+                            "artifact_mismatch",
+                            "chart_mismatch",
+                            "input_unresolved",
+                            "invalid",
+                            "missing",
+                            "producer_unavailable",
+                            "unbound",
+                            "unknown",
+                        ],
+                    },
+                },
+                "templates": [
+                    "Invalid request-feed inventory ({capability}: {reason})."
+                ],
+                "since": "1.7.1",
+            },
+        )
+
+    def test_timeframe_catalog_pins_the_complete_closed_entry(self):
+        # Proves only the two implemented policy capabilities are public arguments.
+        # False pass: free-form timeframe tokens or diagnostic paths enter the catalog.
+        self.assertEqual(
+            CATALOG["codes"]["hpo_walkforward_timeframe_unsupported"],
+            {
+                "class": "request",
+                "retryable": False,
+                "args": {
+                    "capability": {
+                        "kind": "string",
+                        "values": [
+                            "selected_window_chart_timeframe",
+                            "selected_window_request_feed_timeframe",
+                        ],
+                    },
+                },
+                "templates": ["Unsupported selected-window timeframe ({capability})."],
                 "since": "1.7.1",
             },
         )

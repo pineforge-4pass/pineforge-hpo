@@ -216,3 +216,68 @@ Darwin. These tests do not establish real-engine selected behavior. Real current
 an older missing-export archive and a parity-era revision refusal require the separate real-plugin
 gate. The adapter and these native tests require the full dispatched CI build on Ubuntu and
 macOS or a box; PR core CI does not compile this path.
+
+## Request-feed inventory (producer and admission)
+
+When the loaded codegen module provides `transpile_with_request_inventory`,
+the Python bridge calls it once for the strategy in place of `transpile_full`.
+Its generated C++, inputs, strategy parameters, diagnostics and input-kind
+capability retain their existing behavior. The inventory describes every compiled
+bar-request timeframe, including requests for the chart's symbol; it is not a
+list of installed symbol-feed files. Older supported codegens without that
+function still build ordinary artifacts and carry no inventory.
+
+After linking, the builder calls codegen's `bind_request_feed_inventory` once
+with the exact generated UTF-8 and plugin bytes. It verifies both recorded
+digests before publishing `request_feed_inventory.json` beside the plugin and
+the identical `request_feed_inventory` object in `manifest.json` and
+`provenance.json`, inside the artifact directory's atomic publication. Binding
+errors fail the build at stage `inventory`. Without a producer, no sidecar or
+top-level block is published, including no null placeholder.
+
+`request_identity.request_feed_inventory` records
+`"pineforge-request-feed-inventory/v1"` when the loaded producer exists and null
+otherwise. This additive key causes existing source caches to rebuild once.
+The inventory object stays outside the key, as does the independent `window_plan`
+block. Older precompiled artifacts retain ordinary loading and relocation.
+Ordinary builds, cache hits and study preparation ignore missing, malformed or
+disagreeing inventory blocks and sidecars.
+
+`pineforge_hpo.request_inventory.read_request_feed_inventory` reads the manifest
+block and requires an adjacent sidecar, when present, to agree after strict JSON
+parsing. It distinguishes missing legacy metadata from an explicit null producer
+identity (`producer_unavailable`). A missing block refuses selected execution;
+an empty `entries` array is a complete assertion of no request feeds.
+`admit_request_feed_inventory` is pure: it validates the exact five-key schema,
+source/plugin hashes, optional chart binding and every entry before any trial.
+Callers must pass the verified SHA-256 of the plugin file that will be loaded and
+of its generated C++ (manifest values verified against the files by the artifact
+loader). Admission performs no I/O and compares the inventory's hashes only with
+the hashes it is given, so its identity check is only as good as those arguments.
+It uses codegen's `canonical_wire_timeframe` without invoking the transpiler.
+The Python admission helper therefore needs the codegen inventory module;
+an unavailable module refuses with `producer_unavailable`. Ordinary precompiled
+execution has no such dependency.
+
+Input entries resolve from an effective fixed value or their declared default.
+An invalid present value never falls back. For a swept input, every categorical
+choice must resolve, independently of other dimensions; numeric, Boolean,
+continuous, empty or otherwise non-enumerable domains cannot prove string
+timeframe admission. Input aliases such as `1D` resolve to `D`; literal token
+entries must already be canonical. Unknown entries and non-null primary bindings
+that differ from the study's canonical chart token refuse admission.
+
+Compilation omits `primary_chart_timeframe`, just as the engine's selected Pine
+entrypoint does. A request using `timeframe.period` or the chart-timeframe empty
+string is consequently `unknown` and is refused by the restrictive policy.
+This is a documented selected-mode limit, even when ordinary execution works.
+
+The current Python support policy admits primary chart tokens
+`1 3 5 15 30 60 120 240` and request-feed tokens `1 D`.
+These mirror the candidate implementation constants in engine
+`docker/selected_window_report.py:78-90`, as recorded in spike report-v2 section 2.
+The engine's own admission stays authoritative; policy drift can move a refusal
+later, and the lane-5 box gate re-proves the constants against the engine.
+The Python helper provides admission only; native selected execution and planner
+admission have separate contracts. See [failure codes](failure-codes.md) for the
+two typed request refusals and their closed arguments.
