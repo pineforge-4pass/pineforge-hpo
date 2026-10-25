@@ -50,6 +50,9 @@ def canonical_abi_bytes(raw, structure):
 
 def oracle_probe():
     harness, output = Path(sys.argv[2]), Path(sys.argv[3])
+    # Engine 1.7.0's harness imports its sibling pf_sink lazily; running it as a script
+    # puts its directory on sys.path, so loading it by path must do the same.
+    sys.path.insert(0, str(harness.resolve().parent))
     module = importlib.util.spec_from_file_location("release_harness", harness)
     oracle = importlib.util.module_from_spec(module)
     module.loader.exec_module(oracle)
@@ -581,6 +584,8 @@ def main():
     args = parser.parse_args()
     module = importlib.util.spec_from_file_location("release_abi", args.harness)
     abi = importlib.util.module_from_spec(module)
+    # Same as oracle_probe: the harness imports its sibling pf_sink lazily.
+    sys.path.insert(0, str(args.harness.resolve().parent))
     module.loader.exec_module(abi)
     directory = args.output.resolve()
     directory.mkdir(parents=True, exist_ok=True)
