@@ -10,6 +10,13 @@
   `pineforge-codegen==1.7.0`. The optional submodule gitlinks in
   `external/pineforge-engine` (`ed9e08e`) and `external/pineforge-codegen-oss` (`3218bb9`) pin
   the `v1.7.0` release commits.
+- The trial snapshot now copies captured trades by the engine report's `trades_len` and refuses
+  a report whose `trades_len` differs from `total_trades` with `hpo_report_invalid`. Engine
+  1.7.0 defines `total_trades` as the logical closed-trade count and `trades_len` as the
+  resident length of the trades array. On the owning-array route that HPO uses (it installs no
+  report sink) the two are equal, so results are unchanged; a sink or resident-window report
+  would now be refused instead of being copied past the end of the array. Covered by
+  `test_trades_snapshot` in `tests/test_engine_adapter.cpp`.
 - Bound `--trials-out all` retention in the native process with an anonymous spool independent
   of ordered streams. The Python `run` wrapper still reads the child's stdout into memory.
 - The default `--trials-out all` needs a writable directory for two anonymous files

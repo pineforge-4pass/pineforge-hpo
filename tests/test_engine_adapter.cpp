@@ -290,6 +290,28 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
             state->error_code.clear();
             state->error_args.clear();
             report->total_trades = -1;
+        } else if (mode->second == "invalid_trades_len" || mode->second == "owning_trades") {
+            state->run_status = 0;
+            state->error_code.clear();
+            state->error_args.clear();
+            report->total_trades =
+                static_cast<std::int32_t>(parse_or(state->inputs, "Length", 0.0));
+            report->trades_len = report->total_trades - (mode->second == "invalid_trades_len");
+            report->trades = new pf_trade_t[static_cast<std::size_t>(report->trades_len)]{};
+            ++outstanding_reports;
+            for (std::int32_t index = 0; index < report->trades_len; ++index) {
+                auto& trade = report->trades[index];
+                trade.entry_price = std::strtod(
+                    sequence_value(*state, "TradeEntryPrices", index).c_str(), nullptr);
+                trade.exit_price = std::strtod(
+                    sequence_value(*state, "TradeExitPrices", index).c_str(), nullptr);
+                trade.qty = static_cast<double>(index + 1);
+                trade.pnl = (trade.exit_price - trade.entry_price) * trade.qty;
+                trade.is_long = index % 2 == 0;
+                trade.entry_bar_index = index * 2;
+                trade.exit_bar_index = index * 2 + 1;
+                trade.open_at_end = index == report->trades_len - 1;
+            }
         } else if (mode->second == "text_only") {
             state->run_status = 0;
             state->error_code.clear();
@@ -576,6 +598,12 @@ PF_API int strategy_set_override_checked(
 #endif
 
 PF_API void report_free(pf_report_t* report) {
+    if (report != nullptr && report->trades != nullptr) {
+        delete[] report->trades;
+        report->trades = nullptr;
+        report->trades_len = 0;
+        --outstanding_reports;
+    }
     if (report == nullptr || report->equity_curve == nullptr) {
         return;
     }
@@ -960,6 +988,64 @@ void test_trial_executor(const std::filesystem::path& plugin_path) {
     require(counters.reused_handle_runs() == 0, "a strategy handle was reused across trials");
 }
 
+void test_trades_snapshot(const std::filesystem::path& plugin_path) {
+    auto plugin = std::make_shared<const StrategyPlugin>(plugin_path);
+    FakeCounters counters(plugin_path);
+    auto configuration = test_configuration();
+    configuration.capture_trades = true;
+    TrialExecutor executor(plugin, test_dataset(), configuration);
+
+    const std::vector<std::pair<double, double>> prices = {
+        {101.25, 110.5}, {203.5, 198.25}, {307.75, 315.0}, {409.0, 400.75}};
+    std::string entry_prices;
+    std::string exit_prices;
+    for (const auto& price : prices) {
+        if (!entry_prices.empty()) {
+            entry_prices += ',';
+            exit_prices += ',';
+        }
+        entry_prices += std::to_string(price.first);
+        exit_prices += std::to_string(price.second);
+    }
+    ParameterValues inputs = {{"Length", std::to_string(prices.size())},
+                              {"TradeEntryPrices", entry_prices},
+                              {"TradeExitPrices", exit_prices},
+                              {"FailureMode", "invalid_trades_len"}};
+    bool refused = false;
+    try {
+        (void)executor.execute(inputs);
+    } catch (const pineforge::hpo::TypedHpoError<std::runtime_error>& error) {
+        refused = error.code() == "hpo_report_invalid" && error.args().empty() &&
+                  error.origin() == pineforge::hpo::FailureOrigin::Hpo;
+    }
+    require(refused, "a non-null trades array shorter than total_trades was accepted");
+    require(counters.active_handles() == 0 && counters.outstanding_reports() == 0,
+            "invalid trades length leaked a handle or report");
+
+    inputs["FailureMode"] = "owning_trades";
+    const auto result = executor.execute(inputs);
+    require(result.succeeded(), "owning-array trades trial failed: " + result.error);
+    require(result.report.trades.size() == prices.size(), "trade snapshot has the wrong length");
+    for (std::size_t index = 0; index < prices.size(); ++index) {
+        const auto& trade = result.report.trades[index];
+        require_near(trade.entry_price, prices[index].first, "trade entry price was not copied");
+        require_near(trade.exit_price, prices[index].second, "trade exit price was not copied");
+        const double qty = static_cast<double>(index + 1);
+        require_near(trade.qty, qty, "trade quantity was not copied");
+        require_near(trade.pnl, (prices[index].second - prices[index].first) * qty,
+                     "trade profit was not copied");
+        require(trade.is_long == (index % 2 == 0), "trade direction was not copied");
+        require(trade.entry_bar_index == static_cast<std::int32_t>(index * 2) &&
+                    trade.exit_bar_index == static_cast<std::int32_t>(index * 2 + 1),
+                "trade bar indices were not copied");
+        require(trade.open_at_end == (index == prices.size() - 1),
+                "the final trade flag was not copied");
+    }
+    require(counters.active_handles() == 0 && counters.outstanding_reports() == 0,
+            "trade snapshot leaked a handle or report");
+    require(counters.lifetime_violations() == 0, "trades were not freed before the strategy");
+}
+
 void test_return_blocks_snapshot(const std::filesystem::path& plugin_path) {
     using pineforge::hpo::ReturnBlocksStatus;
 
@@ -1239,6 +1325,7 @@ int main(int argc, char** argv) {
                            "<coded> <status> <checked-no-getters> <bad-abi>");
         test_dataset_loader();
         test_trial_executor(argv[1]);
+        test_trades_snapshot(argv[4]);
         test_return_blocks_snapshot(argv[1]);
         test_lot_grid_metadata(argv[1]);
         test_missing_timezone_symbol(argv[2]);

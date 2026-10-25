@@ -207,6 +207,10 @@ ReportSnapshot copy_report(const pf_report_t& report,
         throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
                                                 "strategy returned a negative total_trades value");
     }
+    if (report.trades_len < 0) {
+        throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
+                                                "strategy returned a negative trades_len value");
+    }
     if (report.equity_curve_len < 0) {
         throw TypedHpoError<std::runtime_error>(
             "hpo_report_invalid", {}, "strategy returned a negative equity_curve_len value");
@@ -243,9 +247,15 @@ ReportSnapshot copy_report(const pf_report_t& report,
             throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
                                                     "strategy returned null non-empty trades");
         }
-        snapshot.trades.resize(static_cast<std::size_t>(report.total_trades));
-        std::memcpy(snapshot.trades.data(), report.trades,
-                    snapshot.trades.size() * sizeof(pf_trade_t));
+        if (report.trades_len != report.total_trades) {
+            throw TypedHpoError<std::runtime_error>(
+                "hpo_report_invalid", {},
+                "strategy returned trades_len (resident length) different from "
+                "total_trades (logical count)");
+        }
+        const auto trades_size = static_cast<std::size_t>(report.trades_len);
+        snapshot.trades.resize(trades_size);
+        std::memcpy(snapshot.trades.data(), report.trades, trades_size * sizeof(pf_trade_t));
     }
     if (capture_equity_curve && report.equity_curve_len > 0) {
         snapshot.equity_curve.assign(report.equity_curve,
