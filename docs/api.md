@@ -289,6 +289,12 @@ the sampler; failures leave it unchanged. `reset()` returns to the original empt
 
 `dlib_global` continuation is not supported and fails closed with exit 4.
 
+Best-trial selection requires status `ok`, feasibility and a finite objective. The configured
+direction ranks eligible trials, and equal objectives prefer the lowest trial ID.
+`constraint_violation` and `trial_error` rows cannot win, even if an exception after scoring left
+a finite objective and feasibility on the row. Terminal trial output retains these rows under the
+existing retention and streaming rules; excluding them from selection does not discard them.
+
 ## Contract changes in 0.4.0
 
 These controls are native `run` flags, not new StudySpec fields or Python wrapper

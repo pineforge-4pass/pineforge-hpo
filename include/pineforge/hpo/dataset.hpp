@@ -117,5 +117,37 @@ private:
     std::size_t mapped_count_ = 0;
 };
 
+/// @brief Immutable, non-copying range of bars retaining its Dataset owner.
+///
+/// Bounds are checked once at construction without adding begin and length (so overflow cannot
+/// admit an invalid range). An explicit empty view is allowed, including at owner->size(); it is
+/// useful for range arithmetic but cannot be executed by TrialExecutor. A whole view preserves
+/// the owner's exact data pointer. Mapped-file verification belongs to the owner at the run
+/// boundary; constructing or reading a view never calls Dataset::verify_unchanged().
+struct DatasetView final {
+    /// Constructs a view of the entire owner.
+    /// @throws std::invalid_argument with code hpo_dataset_invalid for a null owner.
+    explicit DatasetView(std::shared_ptr<const Dataset> dataset);
+
+    /// Constructs the range [first, first + count).
+    /// @throws std::invalid_argument with code hpo_dataset_invalid for a null owner or bounds
+    /// outside that owner's bars.
+    DatasetView(std::shared_ptr<const Dataset> dataset, std::size_t first, std::size_t count);
+
+    /// Keeps owned bars or the mapping and its descriptor alive.
+    const std::shared_ptr<const Dataset> owner;
+    /// First bar's index in owner.
+    const std::size_t begin;
+    /// Number of bars in this view.
+    const std::size_t length;
+
+    /// Returns owner->data() + begin, preserving the pointer even for an empty owner.
+    const pf_bar_t* data() const noexcept;
+    /// Returns the number of bars in this view.
+    std::size_t size() const noexcept { return length; }
+    /// Returns whether this view contains no bars.
+    bool empty() const noexcept { return length == 0; }
+};
+
 }  // namespace hpo
 }  // namespace pineforge

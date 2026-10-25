@@ -21,6 +21,7 @@
 #include "sobol_continuation.hpp"
 #include "symbol_feeds.hpp"
 #include "trial_spool.hpp"
+#include "study.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -74,9 +75,7 @@ static_assert(pfh::return_stats_contract() == pfh::kReturnStatsContract,
 #define PINEFORGE_HPO_VERSION "unknown"
 #endif
 
-namespace {
-
-enum class Direction { kMaximize, kMinimize };
+namespace pineforge::hpo::cli {
 
 #ifdef PINEFORGE_HPO_PROOF_CURVES
 // Owns only the proof artifact. Each call receives the original full-window snapshot while
@@ -120,91 +119,6 @@ private:
     std::mutex mutex_;
 };
 #endif
-
-struct Options {
-    std::filesystem::path strategy;
-    std::filesystem::path ohlcv;
-    std::filesystem::path ohlcv_bin;
-    pfh::BinaryVerification verify_bin = pfh::BinaryVerification::Full;
-    std::filesystem::path output;
-    std::filesystem::path trials_file;
-    std::filesystem::path warm_start;
-    std::shared_ptr<const pfh::detail::WarmHistory> warm_history;
-    std::filesystem::path candidates;
-    std::shared_ptr<const pfh::detail::CandidateList> candidate_list;
-    std::shared_ptr<const std::string> space_json;
-    std::string space_hash;
-    bool tpe_warm_restored = false;
-    std::string tpe_sampler_state;
-    std::string numeric_build_identity;
-    std::string parent_numeric_build_identity;
-    std::string trials_out = "all";
-    std::uint64_t best_k = 10;
-    std::filesystem::path syminfo;
-    std::filesystem::path symbol_feeds_path;
-    std::filesystem::path symbol_feeds_spec;
-    std::shared_ptr<const pfh::SymbolFeeds> symbol_feeds;
-    std::optional<pfh::detail::Json> symbol_feeds_record;
-    std::string objective;
-    std::vector<std::string> constraints;
-    std::vector<std::string> recorded_metrics;
-    std::vector<pfh::Dimension> dimensions;
-    std::map<std::string, std::vector<pfh::ParameterValue>> categorical_choices;
-    std::vector<std::string> categorical_order;
-    pfh::ParameterValues fixed_inputs;
-    pfh::ParameterValues strategy_overrides;
-    std::string sampler = "grid";
-    pfh::CandidatePolicy candidate_policy = pfh::CandidatePolicy::SamplerDefault;
-    std::string artifact_key;
-    std::string input_timeframe;
-    std::string script_timeframe;
-    std::string chart_timezone;
-    std::uint64_t seed = 0;
-    std::uint64_t max_trials = 0;
-    // Presence of --max-trials, kept apart from the zero that means "not given" elsewhere.
-    bool max_trials_given = false;
-    // Sobol sampler: the scramble spelling, the run's descriptor (identity, columns, numeric
-    // identity), the part's first index (the parent's next ID, 0 when fresh) and whether the
-    // admitted parent holds exactly the IDs 0..first_index-1.
-    std::string sobol_scramble = "digital_shift";
-    bool sobol_scramble_given = false;
-    std::shared_ptr<const pfh::detail::SobolDescriptor> sobol_descriptor;
-    std::uint64_t sobol_first_index = 0;
-    bool sobol_parent_exact = true;
-    // Return-statistics series named by an objective, constraint or recorded metric.
-    bool return_stats_bar = false;
-    bool return_stats_monthly = false;
-    std::uint32_t pbo_blocks = 0;
-#ifdef PINEFORGE_HPO_PROOF_CURVES
-    std::filesystem::path proof_curves;
-    std::shared_ptr<ProofCurveWriter> proof_curve_writer;
-#endif
-    std::uint64_t no_improvement_trials = 0;
-    unsigned workers = 1;
-    int progress_fd = -1;
-    double max_wall_seconds = 0.0;
-    double trial_timeout_seconds = 0.0;
-    std::uint64_t batch_size = 0;
-    unsigned batch_lag = 0;
-    // execution.schedule, forwarded as --schedule. "batches" is the default and keeps the bytes of
-    // 0.12.0; "rolling" refills a free worker slot at once. The *_given flags record that a flag
-    // was present, so --schedule rolling can refuse an explicit --batch-size or --batch-lag even
-    // when its value is the default (presence, not value).
-    std::string schedule = "batches";
-    bool batch_size_given = false;
-    bool batch_lag_given = false;
-    std::filesystem::path scheduler_stats;
-    pfh::PrunerKind pruner = pfh::PrunerKind::None;
-    std::string pruner_name = "none";
-    std::vector<double> pruner_rungs{0.25, 0.5};
-    unsigned pruner_eta = 2;
-    bool bar_magnifier = false;
-    int magnifier_samples = 4;
-    pf_magnifier_distribution_t magnifier_distribution = PF_MAGNIFIER_ENDPOINTS;
-    Direction direction = Direction::kMaximize;
-    pfh::EvaluationPolicy evaluation_policy;
-    pfh::TpeSamplerConfig tpe_config;
-};
 
 struct TrialRecord {
     std::shared_ptr<const std::string> space_json;
@@ -1162,7 +1076,8 @@ public:
         if (finite_ && (options_.warm_history || (options_.sampler != "grid" &&
             options_.candidate_policy == pfh::CandidatePolicy::SamplerDefault)))
             ordinals_.insert(space_.candidate_ordinal(record.candidate));
-        if (!record.feasible || !record.objective || !std::isfinite(*record.objective))
+        if (record.status != "ok" || !record.feasible || !record.objective ||
+            !std::isfinite(*record.objective))
             return;
         if (!best_value ||
             (options_.direction == Direction::kMaximize ? *record.objective > *best_value
@@ -1195,6 +1110,17 @@ public:
             return left.trial_id < right.trial_id;
         });
         return records;
+    }
+
+    std::optional<pfh::Candidate> selected_candidate() const {
+        if (!best_trial_id)
+            return std::nullopt;
+        for (const auto& record : best_) {
+            if (record.trial_id == *best_trial_id)
+                return record.candidate;  // Deep copy of Candidate.values; no archive borrowing.
+        }
+        throw pfh::TypedHpoError<std::logic_error>(
+            "hpo_invariant", {}, "selected trial is absent from the retained winners");
     }
 
     std::optional<std::uint64_t> unique() const {
@@ -1271,11 +1197,16 @@ private:
 class RunState final {
 public:
     using Clock = std::chrono::steady_clock;
+    using TimeoutResult =
+        std::function<void(const std::vector<TrialRecord>&, std::exception_ptr)>;
 
     RunState(const Options& options, Clock::time_point started, TrialArchive& archive,
-             std::function<void(const std::vector<TrialRecord>&, std::exception_ptr)> timeout_result)
+             std::function<bool()> cancelled,
+             TimeoutResult timeout_result,
+             std::function<void(const std::exception&)> timeout_failure)
         : options_(options), started_(started), archive_(archive),
-          timeout_result_(std::move(timeout_result)),
+          cancelled_(std::move(cancelled)), timeout_result_(std::move(timeout_result)),
+          timeout_failure_(std::move(timeout_failure)),
           has_trials_file_(!options_.trials_file.empty()) {
         if (options.warm_history)
             next_progress_id_ = options.warm_history->next_id;
@@ -1313,7 +1244,7 @@ public:
 
     bool stopped() {
         StopReason expected = StopReason::kNone;
-        if (signal_cancelled.load(std::memory_order_relaxed)) {
+        if (cancelled_ && cancelled_()) {
             reason_.compare_exchange_strong(expected, StopReason::kCancelled);
         } else if (options_.max_wall_seconds > 0.0 &&
                    seconds_since(started_) >= options_.max_wall_seconds) {
@@ -1539,19 +1470,15 @@ private:
                     auto trials = archive_.retained();
                     lock.unlock();
                     timeout_result_(trials, error_exception_);
-                    ::_exit(3);
+                    return;
                 }
                 if (done_)
                     return;
             }
         } catch (const std::exception& error) {
             if (timed_out_) {
-                std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
-                std::cerr.flush();
-                if (!result_publication_started.load())
-                    std::cout << pfh::detail::failure_document(error, 3);
-                std::cout.flush();
-                ::_exit(3);
+                timeout_failure_(error);
+                return;
             }
             std::lock_guard<std::mutex> lock(mutex_);
             error_ = error.what();
@@ -1565,7 +1492,9 @@ private:
     const Options& options_;
     Clock::time_point started_;
     TrialArchive& archive_;
-    std::function<void(const std::vector<TrialRecord>&, std::exception_ptr)> timeout_result_;
+    std::function<bool()> cancelled_;
+    TimeoutResult timeout_result_;
+    std::function<void(const std::exception&)> timeout_failure_;
     std::atomic<StopReason> reason_{StopReason::kNone};
     std::mutex mutex_;
     std::condition_variable changed_;
@@ -1588,7 +1517,7 @@ private:
 };
 
 pfh::MetricMap collect_metrics(const pfh::ReportSnapshot& report,
-                               const std::vector<pfh::MetricExpression*>& expressions,
+                               const std::vector<const pfh::MetricExpression*>& expressions,
                                std::map<std::string, double>* ordered) {
     pfh::MetricMap metrics;
     for (const auto* expression : expressions) {
@@ -1606,7 +1535,7 @@ pfh::MetricMap collect_metrics(const pfh::ReportSnapshot& report,
     return metrics;
 }
 
-void validate_metric_identifiers(const std::vector<pfh::MetricExpression*>& expressions) {
+void validate_metric_identifiers(const std::vector<const pfh::MetricExpression*>& expressions) {
     const pfh::ReportSnapshot schema;
     for (const auto* expression : expressions) {
         for (const auto& identifier : expression->identifiers()) {
@@ -1625,7 +1554,7 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
                                const pfh::TrialExecutor& executor,
                                const pfh::MetricExpression& objective,
                                const std::vector<pfh::MetricExpression>& constraints,
-                               const std::vector<pfh::MetricExpression*>& expressions,
+                               const std::vector<const pfh::MetricExpression*>& expressions,
                                const pfh::EvaluationPolicy& constraint_policy,
                                const pfh::Pruner& pruner,
                                const std::vector<std::size_t>& bar_counts,
@@ -1641,7 +1570,7 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
             }
         }
         for (std::size_t rung = 0; rung < bar_counts.size(); ++rung) {
-            const bool full_window = bar_counts[rung] == executor.dataset().size();
+            const bool full_window = bar_counts[rung] == executor.view().size();
             const auto execution = executor.execute_prefix(
                 serialized, options.strategy_overrides, bar_counts[rung]);
             record.bars_processed_total += execution.report.input_bars_processed;
@@ -2377,8 +2306,7 @@ void refuse_mapped_output_aliases(const Options& options) {
     }
 }
 
-int run(Options options) {
-    const auto started = RunState::Clock::now();
+PreparedStudy prepare(Options options) {
     refuse_mapped_output_aliases(options);
     validate_search_input_kinds(options);
     pfh::Pruner pruner(options.pruner, options.pruner_rungs, options.pruner_eta,
@@ -2525,7 +2453,7 @@ int run(Options options) {
     constraints.reserve(options.constraints.size());
     for (const auto& source : options.constraints)
         constraints.emplace_back(source);
-    std::vector<pfh::MetricExpression*> expressions{&objective};
+    std::vector<const pfh::MetricExpression*> expressions{&objective};
     for (auto& constraint : constraints)
         expressions.push_back(&constraint);
     std::vector<pfh::MetricExpression> recorded_metrics;
@@ -2583,8 +2511,31 @@ int run(Options options) {
     configuration.symbol_feeds = options.symbol_feeds;
     if (!options.syminfo.empty())
         configuration.symbol_info = read_symbol_info(options.syminfo);
-    const pfh::TrialExecutor executor(plugin, dataset, configuration);
-    const auto bar_counts = pruner.bar_counts(dataset->size());
+    return {std::move(options), std::move(space), finite_cardinality, std::move(pruner),
+            std::move(objective), std::move(constraints), std::move(recorded_metrics),
+            std::move(plugin), std::move(dataset), std::move(configuration)};
+}
+
+StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
+                      const StudyCallbacks& callbacks, StudyClock::time_point started) {
+    auto options = prepared.options;
+    const auto& space = prepared.space;
+    const auto& finite_cardinality = prepared.finite_cardinality;
+    auto pruner = prepared.pruner;
+    const auto& objective = prepared.objective;
+    const auto& constraints = prepared.constraints;
+    std::vector<const pfh::MetricExpression*> expressions{&objective};
+    for (const auto& constraint : constraints)
+        expressions.push_back(&constraint);
+    for (const auto& metric : prepared.recorded_metrics)
+        expressions.push_back(&metric);
+    const bool rolling = options.schedule == "rolling";
+    if (options.trial_timeout_seconds > 0.0 &&
+        (!callbacks.timeout_publish || !callbacks.timeout_exit || !callbacks.timeout_failure))
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "trial timeout requires outer publication and exit handlers");
+    const pfh::TrialExecutor executor(prepared.plugin, std::move(view), prepared.configuration);
+    const auto bar_counts = pruner.bar_counts(executor.view().size());
     pfh::EvaluationPolicy constraint_policy = options.evaluation_policy;
     constraint_policy.division_by_zero = pfh::DivisionByZeroPolicy::Reject;
     constraint_policy.non_finite_metric = pfh::NonFinitePolicy::Reject;
@@ -2607,18 +2558,19 @@ int run(Options options) {
     const auto rolling_log_ptr = [&]() -> const CompletionLog* {
         return rolling ? &rolling_log : nullptr;
     };
-    RunState state(options, started, archive, [&](const std::vector<TrialRecord>& completed,
-                                                std::exception_ptr failure) {
-        dataset->verify_unchanged();
-        write_results(options, append_process_failure(
+    RunState state(options, started, archive, callbacks.cancelled,
+                   [&](const std::vector<TrialRecord>& completed, std::exception_ptr failure) {
+        if (callbacks.before_publish)
+            callbacks.before_publish();
+        callbacks.timeout_publish(append_process_failure(
             render_results(options, space, finite_cardinality, completed, archive,
                            duplicate_proposals_skipped.load(),
                            "trial_timeout", no_improvement.snapshot(),
                            rolling_log_ptr()), failure, 3));
         if (auto* spool = archive.spool())
             spool->close();
-        print_process_failure(failure);
-    });
+        callbacks.timeout_exit(failure);
+    }, callbacks.timeout_failure);
     const auto direction = options.direction == Direction::kMaximize
                                ? pfh::ObjectiveDirection::Maximize
                                : pfh::ObjectiveDirection::Minimize;
@@ -2958,12 +2910,32 @@ int run(Options options) {
     std::string stop_reason = state.stop_reason();
     if (stop_reason.empty() && early_stop.trigger_trial_id)
         stop_reason = "no_improvement";
-    dataset->verify_unchanged();
+    StudyResult result;
+    result.best_candidate = archive.selected_candidate();
+    result.best_value = archive.best_value;
+    result.trials_completed = archive.completed;
+    result.progress_failure = progress_failure;
+    result.exit_code = progress_failure ? 1 : (archive.best_trial_id ? 0 : 2);
+    if (callbacks.before_publish)
+        callbacks.before_publish();
     const auto json = append_process_failure(
         render_results(options, space, finite_cardinality, trials, archive,
                        duplicate_proposals_skipped.load(), stop_reason, early_stop,
                        rolling_log_ptr()),
         progress_failure, 1);
+    const StudyStatistics statistics{
+        capacity, workers.busy_seconds(), proposal_seconds, barrier_seconds,
+        state.serialization_seconds(), state.progress_write_seconds(), state.progress_bytes(),
+        render_start};
+    if (callbacks.publish)
+        callbacks.publish(json, statistics);
+    if (auto* spool = archive.spool())
+        spool->close();
+    return result;
+}
+
+void publish(const Options& options, const pfh::detail::ResultDocument& json,
+             const StudyStatistics& statistics) {
     const auto write_start = RunState::Clock::now();
     write_result_file(options, json);
     const auto write_end = RunState::Clock::now();
@@ -2972,19 +2944,20 @@ int run(Options options) {
         if (!stats)
             throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
                                                          "cannot open scheduler stats file");
-        stats << "{\"worker_seconds\":" << json_number(capacity)
-              << ",\"busy_seconds\":" << json_number(workers.busy_seconds())
+        stats << "{\"worker_seconds\":" << json_number(statistics.worker_seconds)
+              << ",\"busy_seconds\":" << json_number(statistics.busy_seconds)
               << ",\"idle_seconds\":"
-              << json_number(std::max(0.0, capacity - workers.busy_seconds()))
-              << ",\"proposal_seconds\":" << json_number(proposal_seconds)
-              << ",\"barrier_seconds\":" << json_number(barrier_seconds)
+              << json_number(std::max(0.0, statistics.worker_seconds - statistics.busy_seconds))
+              << ",\"proposal_seconds\":" << json_number(statistics.proposal_seconds)
+              << ",\"barrier_seconds\":" << json_number(statistics.barrier_seconds)
               << ",\"progress_serialization_seconds\":"
-              << json_number(state.serialization_seconds())
-              << ",\"progress_write_seconds\":" << json_number(state.progress_write_seconds())
-              << ",\"progress_bytes\":" << state.progress_bytes()
+              << json_number(statistics.progress_serialization_seconds)
+              << ",\"progress_write_seconds\":" << json_number(statistics.progress_write_seconds)
+              << ",\"progress_bytes\":" << statistics.progress_bytes
               << ",\"final_json_bytes\":" << json.size()
               << ",\"final_json_render_seconds\":"
-              << json_number(std::chrono::duration<double>(write_start - render_start).count())
+              << json_number(std::chrono::duration<double>(
+                     write_start - statistics.render_started).count())
               << ",\"final_json_write_seconds\":"
               << json_number(std::chrono::duration<double>(write_end - write_start).count())
               << "}\n";
@@ -2993,18 +2966,43 @@ int run(Options options) {
                                                          "failed writing scheduler stats file");
     }
     publish_result(json);
-    if (auto* spool = archive.spool())
-        spool->close();
-    if (progress_failure) {
-        print_process_failure(progress_failure);
-        return 1;
-    }
-    return archive.best_trial_id ? 0 : 2;
 }
 
-}  // namespace
+int run(Options options) {
+    const auto started = StudyClock::now();
+    const auto prepared = prepare(std::move(options));
+    StudyCallbacks callbacks;
+    callbacks.cancelled = [] { return signal_cancelled.load(std::memory_order_relaxed); };
+    callbacks.before_publish = [&] { prepared.dataset->verify_unchanged(); };
+    callbacks.publish = [&](const pfh::detail::ResultDocument& json,
+                            const StudyStatistics& statistics) {
+        publish(prepared.options, json, statistics);
+    };
+    callbacks.timeout_publish = [&](const pfh::detail::ResultDocument& json) {
+        write_results(prepared.options, json);
+    };
+    callbacks.timeout_exit = [](std::exception_ptr failure) {
+        print_process_failure(failure);
+        ::_exit(3);
+    };
+    callbacks.timeout_failure = [](const std::exception& error) {
+        std::cerr << "pineforge-hpo-native: " << error.what() << '\n';
+        std::cerr.flush();
+        if (!result_publication_started.load())
+            std::cout << pfh::detail::failure_document(error, 3);
+        std::cout.flush();
+        ::_exit(3);
+    };
+    const auto result = run_study(prepared, pfh::DatasetView(prepared.dataset), callbacks, started);
+    if (result.progress_failure)
+        print_process_failure(result.progress_failure);
+    return result.exit_code;
+}
+
+}  // namespace pineforge::hpo::cli
 
 int main(int argc, char** argv) {
+    using namespace pineforge::hpo::cli;
     try {
         if (argc > 1 && std::string(argv[1]) == "warm-encode") {
             std::filesystem::path spec;

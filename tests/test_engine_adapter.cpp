@@ -48,6 +48,7 @@ std::atomic<int> active_handles{0};
 std::atomic<int> outstanding_reports{0};
 std::atomic<int> lifetime_violations{0};
 std::atomic<int> reused_handle_runs{0};
+std::atomic<const pf_bar_t*> last_bars{nullptr};
 
 FakeStrategy* fake(pf_strategy_t strategy) {
     return static_cast<FakeStrategy*>(strategy);
@@ -235,6 +236,7 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
                               int magnifier_samples,
                               pf_magnifier_distribution_t magnifier_distribution,
                               pf_report_t* report) {
+    last_bars.store(bars);
     FakeStrategy* const state = fake(strategy);
     state->error.clear();
     state->error_code.clear();
@@ -632,6 +634,9 @@ PF_API int fake_lifetime_violations(void) {
 }
 PF_API int fake_reused_handle_runs(void) {
     return reused_handle_runs.load();
+}
+PF_API const pf_bar_t* fake_last_bars(void) {
+    return last_bars.load();
 }
 PF_API int fake_metadata_count(void) {
     const std::lock_guard<std::mutex> lock(metadata_mutex);

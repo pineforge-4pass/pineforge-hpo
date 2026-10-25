@@ -448,6 +448,49 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
     endif()
 
+    add_executable(pineforge_hpo_test_dataset_view test_dataset_view.cpp)
+    target_link_libraries(pineforge_hpo_test_dataset_view PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    add_dependencies(pineforge_hpo_test_dataset_view pineforge_hpo_fake_strategy)
+    target_compile_options(pineforge_hpo_test_dataset_view PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME pineforge_hpo_dataset_view COMMAND pineforge_hpo_test_dataset_view
+        $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_property(TEST pineforge_hpo_dataset_view APPEND PROPERTY
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
+
+    # The private native hook includes the production entry point, like the existing
+    # signal-macro fixture. No public CLI flag or installation target is added.
+    add_executable(pineforge_hpo_test_study_split test_study_split.cpp)
+    target_compile_definitions(pineforge_hpo_test_study_split PRIVATE
+        PINEFORGE_HPO_PROOF_CURVES=1 PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
+    target_link_libraries(pineforge_hpo_test_study_split PRIVATE PineForgeHPO::engine_adapter)
+    add_dependencies(pineforge_hpo_test_study_split
+        ${PFH_RETURN_STATS_IDENTITY_TARGET} pineforge_hpo_fake_strategy)
+    target_include_directories(pineforge_hpo_test_study_split PRIVATE
+        "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
+    target_compile_options(pineforge_hpo_test_study_split PRIVATE -Wall -Wextra -Wpedantic)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT PINEFORGE_HPO_ENABLE_SANITIZERS
+            AND NOT PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+        target_compile_definitions(pineforge_hpo_test_study_split PRIVATE
+            PINEFORGE_HPO_STUDY_RSS_GATE=1)
+    endif()
+    if(TARGET pineforge-hpo-native)
+        set(PFH_STUDY_PIN_NATIVE $<TARGET_FILE:pineforge-hpo-native>)
+        add_dependencies(pineforge_hpo_test_study_split pineforge-hpo-native)
+    else()
+        set(PFH_STUDY_PIN_NATIVE $<TARGET_FILE:pineforge_hpo_test_study_split>)
+    endif()
+    add_test(NAME pineforge_hpo_study_split COMMAND pineforge_hpo_test_study_split
+        ${PFH_STUDY_PIN_NATIVE} $<TARGET_FILE:pineforge_hpo_fake_strategy>
+        "${CMAKE_CURRENT_BINARY_DIR}/study-split")
+    set_tests_properties(pineforge_hpo_study_split PROPERTIES TIMEOUT 300)
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_property(TEST pineforge_hpo_study_split APPEND PROPERTY
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
+
     add_executable(pineforge_hpo_test_dataset_bin test_dataset_bin.cpp)
     target_link_libraries(pineforge_hpo_test_dataset_bin PRIVATE PineForgeHPO::engine_adapter)
     target_compile_options(pineforge_hpo_test_dataset_bin PRIVATE -Wall -Wextra -Wpedantic)
