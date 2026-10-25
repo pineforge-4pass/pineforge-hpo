@@ -21,9 +21,11 @@ from typing import Any, Callable, Mapping, Sequence
 from .error import HpoError
 
 from .transpile import (
+    REQUEST_FEED_INVENTORY_SCHEMA,
     TranspileDiagnostic,
     TranspileFailure,
     codegen_identity,
+    codegen_supports_request_inventory,
     legacy_input_kind_version,
     transpile_source,
 )
@@ -73,7 +75,7 @@ _REQUIRED_PLUGIN_SYMBOLS = (
 
 
 class ArtifactBuildError(HpoError, RuntimeError):
-    """A configuration, transpile, compile, or cache publication failure."""
+    """A configuration, transpile, compile, inventory, or publication failure."""
 
     def __init__(
         self,
@@ -95,6 +97,10 @@ class ArtifactBuildError(HpoError, RuntimeError):
             "configuration": ("hpo_toolchain_unavailable", {"reason": "configuration"}),
             "transpile": ("hpo_transpile_failed", {}),
             "compile": ("hpo_toolchain_unavailable", {"reason": "compile"}),
+            "inventory": (
+                "hpo_toolchain_unavailable",
+                {"reason": "transpile_internal"},
+            ),
             "plugin_validation": ("hpo_plugin_invalid", {"reason": "validation"}),
             "cache": ("hpo_output_io_failed", {}),
         }.get(stage, ("hpo_unclassified_error", {}))
@@ -386,6 +392,11 @@ class ArtifactBuilder:
         }
         request_identity = {
             "input_metadata_revision": INPUT_METADATA_REVISION,
+            "request_feed_inventory": (
+                REQUEST_FEED_INVENTORY_SCHEMA
+                if codegen_supports_request_inventory()
+                else None
+            ),
             "source_sha256": hashlib.sha256(pine_source.encode("utf-8")).hexdigest(),
             "codegen": codegen.to_dict(),
             "engine": engine.identity_dict(),
@@ -465,6 +476,7 @@ class ArtifactBuilder:
                 input_kind_schema=transpile_result.input_kind_schema,
                 strategy_params=transpile_result.strategy_params,
                 diagnostics=transpile_result.diagnostics,
+                request_feed_inventory=transpile_result.request_feed_inventory,
                 source_name=filename,
                 compiler=compiler,
                 engine=engine,
@@ -993,6 +1005,7 @@ class ArtifactBuilder:
         input_kind_schema: int | None,
         strategy_params: Mapping[str, Any],
         diagnostics: Sequence[TranspileDiagnostic],
+        request_feed_inventory: Mapping[str, Any] | None,
         source_name: str,
         compiler: _CompilerIdentity,
         engine: _EngineLayout,
@@ -1005,7 +1018,8 @@ class ArtifactBuilder:
         generated_path = staging / "generated.cpp"
         plugin_path = staging / f"strategy{output_extension}"
         try:
-            generated_path.write_text(generated_cpp, encoding="utf-8")
+            generated_bytes = generated_cpp.encode("utf-8")
+            generated_path.write_bytes(generated_bytes)
             command = self._compile_command(
                 compiler=compiler,
                 engine=engine,
@@ -1036,6 +1050,35 @@ class ArtifactBuilder:
                     stderr=completed.stderr,
                 )
 
+            bound_inventory = None
+            if request_feed_inventory is not None:
+                try:
+                    from pineforge_codegen.request_feed_inventory import (
+                        bind_request_feed_inventory,
+                    )
+
+                    plugin_hash = _file_sha256(plugin_path)
+                    bound_inventory = bind_request_feed_inventory(
+                        request_feed_inventory,
+                        generated_bytes,
+                        plugin_path.read_bytes(),
+                    )
+                    if (
+                        not isinstance(bound_inventory, Mapping)
+                        or bound_inventory.get("source_sha256") != generated_cpp_sha256
+                        or bound_inventory.get("artifact_sha256") != plugin_hash
+                    ):
+                        raise ValueError(
+                            "bound request_feed_inventory hashes differ from "
+                            "generated.cpp or the linked plugin"
+                        )
+                except Exception as error:
+                    raise ArtifactBuildError(
+                        "inventory",
+                        "cannot bind request_feed_inventory for "
+                        f"{plugin_path}: {error}",
+                    ) from error
+
             try:
                 plugin_validation = dict(
                     self.plugin_validator(plugin_path, engine.abi_version)
@@ -1053,6 +1096,14 @@ class ArtifactBuilder:
                 )
 
             plugin_hash = _file_sha256(plugin_path)
+            if (
+                bound_inventory is not None
+                and bound_inventory["artifact_sha256"] != plugin_hash
+            ):
+                raise ArtifactBuildError(
+                    "inventory",
+                    f"request_feed_inventory binding changed for {plugin_path}",
+                )
             created_at = datetime.now(timezone.utc).isoformat()
             manifest = {
                 "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -1081,6 +1132,15 @@ class ArtifactBuilder:
                 "plugin_validation": plugin_validation,
                 "compile": request_identity["compile"],
             }
+            if bound_inventory is not None:
+                manifest["request_feed_inventory"] = bound_inventory
+                provenance["request_feed_inventory"] = bound_inventory
+                inventory_temp = staging / ".request_feed_inventory.json.tmp"
+                inventory_temp.write_text(
+                    _canonical_json(bound_inventory) + "\n",
+                    encoding="utf-8",
+                )
+                os.replace(inventory_temp, staging / "request_feed_inventory.json")
             if input_kind_schema == 1:
                 manifest["input_kind_schema"] = 1
                 provenance["input_kind_schema"] = 1

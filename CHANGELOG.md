@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Produce and publish source- and plugin-bound request-feed inventories when codegen
+  supports them, include the producer schema in cache identity, and add pure Python
+  selected-study inventory/timeframe admission with typed refusals.
 - Add a native planner-helper loader with verified private snapshots, engine ABI pins,
   a frozen golden self-test, and a typed C planner wrapper that borrows OHLCV rows in place.
 - Record optional planner-helper identity in additive `window_plan` artifact metadata,

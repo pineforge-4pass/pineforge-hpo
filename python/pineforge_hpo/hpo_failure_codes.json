@@ -195,6 +195,52 @@
       ],
       "since": "0.10.0"
     },
+    "hpo_walkforward_inventory_invalid": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "capability": {
+          "kind": "string",
+          "values": [
+            "selected_window_request_feed_inventory"
+          ]
+        },
+        "reason": {
+          "kind": "string",
+          "values": [
+            "artifact_mismatch",
+            "chart_mismatch",
+            "input_unresolved",
+            "invalid",
+            "missing",
+            "producer_unavailable",
+            "unbound",
+            "unknown"
+          ]
+        }
+      },
+      "templates": [
+        "Invalid request-feed inventory ({reason})."
+      ],
+      "since": "1.7.1"
+    },
+    "hpo_walkforward_timeframe_unsupported": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "capability": {
+          "kind": "string",
+          "values": [
+            "selected_window_chart_timeframe",
+            "selected_window_request_feed_timeframe"
+          ]
+        }
+      },
+      "templates": [
+        "Unsupported selected-window timeframe ({capability})."
+      ],
+      "since": "1.7.1"
+    },
     "hpo_walkforward_unavailable": {
       "class": "environment",
       "retryable": false,
