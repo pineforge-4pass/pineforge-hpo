@@ -450,8 +450,9 @@ class FailureCodeTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "original")
 
     def test_window_plan_catalog_declares_only_implemented_reasons(self):
-        # Proves the catalog publishes exactly the twelve closed reasons implemented by the
-        # Python identity checks and the native loader.
+        # Proves the catalog publishes exactly the twenty-six closed reasons implemented by
+        # the Python identity checks, the native planner loader and the selected-window plugin
+        # binding / engine-revision gate.
         # False pass: a generic string argument admits future unimplemented reasons.
         self.assertEqual(
             CATALOG["codes"]["hpo_walkforward_unavailable"],
@@ -462,6 +463,20 @@ class FailureCodeTests(unittest.TestCase):
                     "reason": {
                         "kind": "string",
                         "values": [
+                            "engine_identity",
+                            "engine_revision",
+                            "engine_version_invalid",
+                            "engine_version_missing",
+                            "execution_observer_contract",
+                            "execution_observer_version",
+                            "missing_pf_execution_observer_version",
+                            "missing_pf_selected_window_version",
+                            "missing_strategy_execution_observation_v1",
+                            "missing_strategy_selected_window_counts_v1",
+                            "missing_strategy_set_execution_observer_v1",
+                            "missing_strategy_set_selected_window_v1",
+                            "selected_window_contract",
+                            "selected_window_version",
                             "window_plan_changed",
                             "window_plan_hash_mismatch",
                             "window_plan_identity",

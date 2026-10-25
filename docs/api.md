@@ -28,7 +28,7 @@ into two conceptual libraries:
   coordinator-owned \ref pineforge::hpo::Pruner cut snapshots.
 - **Engine adapter:** \ref pineforge::hpo::Dataset, \ref pineforge::hpo::DatasetView,
   \ref pineforge::hpo::StrategyPlugin, \ref pineforge::hpo::WindowPlanHelper,
-  \ref pineforge::hpo::TrialExecutor, and
+  \ref pineforge::hpo::TrialExecutor, \ref pineforge::hpo::SelectedEvaluation, and
   detached report snapshots.
 - **Portfolio contracts:** \ref pineforge::hpo::PortfolioObservation and
   related account-level observation types. These are extension contracts; the
