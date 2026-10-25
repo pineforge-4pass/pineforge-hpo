@@ -66,6 +66,19 @@ class RequestInventoryAdmissionTests(unittest.TestCase):
             self.admit(None)
         self.assert_reason(caught.exception, "missing")
 
+    def test_unavailable_codegen_inventory_module_is_a_typed_refusal(self) -> None:
+        # Proves the local import runs again after successful use with cached codegen.
+        # False pass: a raw ImportError escapes without typed failure metadata.
+        self.assertEqual(self.admit(self.inventory), ("1",))
+        with patch.dict(
+            sys.modules, {"pineforge_codegen.request_feed_inventory": None}
+        ):
+            with self.assertRaises(RequestInventoryError) as caught:
+                self.admit(self.inventory)
+        self.assert_reason(caught.exception, "producer_unavailable")
+        self.assertIsInstance(caught.exception.__cause__, ImportError)
+        self.assertIn("pineforge_codegen.request_feed_inventory", str(caught.exception))
+
     def test_empty_entries_are_complete_and_all_primary_tokens_are_admitted(
         self,
     ) -> None:

@@ -185,7 +185,14 @@ def _validate_shape(
     inventory: Any,
     canonical: Callable[[Any], str | None],
 ) -> Mapping[str, Any]:
-    """Exact five keys/shapes: E/docker/request_feed_inventory.py:190-221."""
+    """Exact five keys/shapes: E/docker/request_feed_inventory.py:190-221.
+
+    Token entries and non-null ``primary_chart_timeframe`` must already be
+    canonical. This is stricter than the engine resolver, which accepts any
+    spelling that canonicalizes, and matches codegen's binder ``_is_wire_token``
+    (canonical == value). Codegen never emits aliases here, so this rule only
+    refuses hand-edited inventories.
+    """
 
     def invalid(message: str) -> None:
         raise RequestInventoryError("invalid", f"request_feed_inventory.{message}")
@@ -291,9 +298,13 @@ def admit_request_feed_inventory(
     ``artifact_mismatch``. :239-280 accepts a null primary (chart-unbound),
     otherwise requires its canonical token to match the supplied canonical chart.
     An ``unknown`` entry always refuses; empty entries is complete and admitted.
-    Token entries must already equal codegen's canonical_wire_timeframe result
-    (:99-157). Input values may use aliases, resolve from effective fixed values
-    or declared defaults, and invalid present values never fall back (:239-280).
+    Token entries and non-null ``primary_chart_timeframe`` must already equal
+    codegen's ``canonical_wire_timeframe`` result (:99-157). This is stricter than
+    the engine resolver, which accepts any spelling that canonicalizes, and
+    matches codegen's binder ``_is_wire_token`` (canonical == value). Codegen
+    never emits aliases here, so this rule only refuses hand-edited inventories.
+    Input values may use aliases, resolve from effective fixed values or declared
+    defaults, and invalid present values never fall back (:239-280).
 
     Study admission additionally checks every choice of each referenced finite
     ParameterSpec domain, independently, before trials. A swept input takes
@@ -301,9 +312,22 @@ def admit_request_feed_inventory(
     prove admission. No Cartesian products are constructed. :283-321 checks the
     primary chart policy first, then resolved feed policy; the engine's own
     admission remains authoritative. No artifact/feed I/O or library load occurs.
+
+    Callers must pass the verified SHA-256 of the plugin file that will be loaded
+    as ``plugin_sha256`` and of its generated C++ as ``generated_cpp_sha256``
+    (manifest values verified against the files by the artifact loader).
+    Admission performs no I/O and compares inventory hashes only with these
+    supplied values, so its identity check is only as good as those arguments.
     """
 
-    from pineforge_codegen.request_feed_inventory import canonical_wire_timeframe
+    try:
+        from pineforge_codegen.request_feed_inventory import canonical_wire_timeframe
+    except ImportError as error:
+        raise RequestInventoryError(
+            "producer_unavailable",
+            "cannot import pineforge_codegen.request_feed_inventory; "
+            "admission needs pineforge-codegen with request_feed_inventory",
+        ) from error
 
     chart = canonical_wire_timeframe(chart_timeframe)
     if chart not in SUPPORT_POLICY["primary_chart_timeframes"]:

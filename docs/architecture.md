@@ -122,7 +122,7 @@ adjacent `request_feed_inventory.json`. The object stays outside the compile
 identity; `request_identity.request_feed_inventory` records only the producer's
 schema string or null, forcing one cache rebuild for the new key. Ordinary
 loading ignores the block and sidecar. Selected callers explicitly use the
-Python [inventory admission API](native-walkforward.md#request-feed-inventory-producer-and-admission)
+Python [inventory admission API](native-walkforward.md)
 to validate their bindings, inputs and timeframe policy.
 
 The compile contract is:

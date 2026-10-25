@@ -169,9 +169,14 @@ identity (`producer_unavailable`). A missing block refuses selected execution;
 an empty `entries` array is a complete assertion of no request feeds.
 `admit_request_feed_inventory` is pure: it validates the exact five-key schema,
 source/plugin hashes, optional chart binding and every entry before any trial.
+Callers must pass the verified SHA-256 of the plugin file that will be loaded and
+of its generated C++ (manifest values verified against the files by the artifact
+loader). Admission performs no I/O and compares the inventory's hashes only with
+the hashes it is given, so its identity check is only as good as those arguments.
 It uses codegen's `canonical_wire_timeframe` without invoking the transpiler.
 The Python admission helper therefore needs the codegen inventory module;
-ordinary precompiled execution has no such dependency.
+an unavailable module refuses with `producer_unavailable`. Ordinary precompiled
+execution has no such dependency.
 
 Input entries resolve from an effective fixed value or their declared default.
 An invalid present value never falls back. For a swept input, every categorical

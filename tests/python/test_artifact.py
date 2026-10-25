@@ -21,6 +21,7 @@ from pineforge_hpo.artifact import (  # noqa: E402
     ArtifactBuildError,
     ArtifactBuilder,
     CANONICAL_COMPILE_FLAGS,
+    _canonical_json,
     _KeyLock,
 )
 from pineforge_hpo.transpile import (  # noqa: E402
@@ -526,6 +527,9 @@ class RequestInventoryArtifactTests(unittest.TestCase):
                 "pineforge_codegen.request_feed_inventory.bind_request_feed_inventory",
                 wraps=bind_request_feed_inventory,
             ) as bind,
+            patch(
+                "pineforge_hpo.artifact._canonical_json", wraps=_canonical_json
+            ) as serialize,
             patch("pineforge_hpo.artifact.os.rename", side_effect=publish) as rename,
         ):
             artifact = self.builder.build("inventory source")
@@ -536,6 +540,29 @@ class RequestInventoryArtifactTests(unittest.TestCase):
         )
         rename.assert_called_once()
         manifest, provenance = self.documents(artifact)
+        # Inspect source dicts: parsing the published JSON loses alias identity.
+        manifest_source = next(
+            call.args[0]
+            for call in serialize.call_args_list
+            if call.args[0] == manifest
+        )
+        provenance_source = next(
+            call.args[0]
+            for call in serialize.call_args_list
+            if call.args[0] == provenance
+        )
+        self.assertEqual(
+            manifest_source["request_feed_inventory"],
+            provenance_source["request_feed_inventory"],
+        )
+        self.assertIsNot(
+            manifest_source["request_feed_inventory"],
+            provenance_source["request_feed_inventory"],
+        )
+        self.assertIsNot(
+            manifest_source["request_feed_inventory"]["entries"],
+            provenance_source["request_feed_inventory"]["entries"],
+        )
         expected = {
             "schema": "pineforge-request-feed-inventory/v1",
             "source_sha256": hashlib.sha256(

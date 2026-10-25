@@ -164,7 +164,7 @@ Since 1.7.1 the selected-study Python API raises `RequestTimeframeError` or
 | `chart_mismatch` | A non-null primary binding differs from the study's canonical chart token. |
 | `unknown` | At least one entry is unknown, including a chart-timeframe request compiled without a chart binding. |
 | `input_unresolved` | A present fixed value or the effective default is not a string timeframe token, or a referenced swept domain cannot prove that every reachable value is a token. |
-| `producer_unavailable` | The inventory block is absent and `request_identity.request_feed_inventory` explicitly records null: that build had no producer. |
+| `producer_unavailable` | The inventory block is absent and `request_identity.request_feed_inventory` explicitly records null (that build had no producer), or admission cannot import `pineforge_codegen.request_feed_inventory`. |
 
 Empty `entries` is a complete declaration and is admitted. The reader compares
 an optional adjacent sidecar after strict JSON parsing; the manifest block remains

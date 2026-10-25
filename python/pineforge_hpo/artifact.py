@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+import copy
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1134,7 +1135,7 @@ class ArtifactBuilder:
             }
             if bound_inventory is not None:
                 manifest["request_feed_inventory"] = bound_inventory
-                provenance["request_feed_inventory"] = bound_inventory
+                provenance["request_feed_inventory"] = copy.deepcopy(bound_inventory)
                 inventory_temp = staging / ".request_feed_inventory.json.tmp"
                 inventory_temp.write_text(
                     _canonical_json(bound_inventory) + "\n",
