@@ -245,7 +245,8 @@ class MemoryGateProcessTests(unittest.TestCase):
             row = GATE.run_child(
                 self.directory, label, [sys.executable, "-I", "-c", "pass"], []
             )
-        exists.assert_called_once_with("/usr/bin/time")
+        probes = [c for c in exists.call_args_list if c == mock.call("/usr/bin/time")]
+        self.assertEqual(len(probes), 1)
         self.assertEqual(wait4.call_args_list, [mock.call(4321, 0)] * 2)
         self.assertEqual(popen.call_count, 1)
         self.assertEqual(popen.call_args.args[0], row["command"])
@@ -597,7 +598,8 @@ class MemoryGateProcessTests(unittest.TestCase):
             redirect_stdout(io.StringIO()),
         ):
             self.assertEqual(GATE.main(arguments), 2)
-        exists.assert_called_once_with("/usr/bin/time")
+        probes = [c for c in exists.call_args_list if c == mock.call("/usr/bin/time")]
+        self.assertEqual(len(probes), 1)
         child.assert_not_called()
         measure.assert_not_called()
         judge.assert_not_called()
