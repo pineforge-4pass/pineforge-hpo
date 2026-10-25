@@ -26,6 +26,25 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def first_difference(actual, reference, structure):
+    """Name the first differing record and its differing fields, with both values."""
+    size = ctypes.sizeof(structure)
+    for base in range(0, min(len(actual), len(reference)), size):
+        if actual[base : base + size] == reference[base : base + size]:
+            continue
+        parts = []
+        for name, field_type in structure._fields_:
+            start = base + getattr(structure, name).offset
+            stop = start + ctypes.sizeof(field_type)
+            if actual[start:stop] != reference[start:stop]:
+                parts.append(
+                    f"{name}@{start - base} native={actual[start:stop].hex()}"
+                    f" reference={reference[start:stop].hex()}"
+                )
+        return f"first differing record {base // size}: " + "; ".join(parts)
+    return f"no differing record in common length ({len(actual)}/{len(reference)})"
+
+
 def canonical_abi_bytes(raw, structure):
     size = ctypes.sizeof(structure)
     require(len(raw) % size == 0, "C-ABI record size differs from the release harness")
@@ -830,7 +849,9 @@ if eth4 < threshold or eth4 <= ethD
             (native_dir / f"{kind}.canonical.bin").write_bytes(actual)
             (oracle_dir / f"{kind}.canonical.bin").write_bytes(reference)
             require(
-                actual == reference, f"candidate {candidate}: C-ABI {kind} bytes differ"
+                actual == reference,
+                f"candidate {candidate}: C-ABI {kind} bytes differ: "
+                + first_difference(actual, reference, structure),
             )
             row[kind + "_bytes"] = len(actual)
             row[kind + "_sha256"] = hashlib.sha256(actual).hexdigest()
