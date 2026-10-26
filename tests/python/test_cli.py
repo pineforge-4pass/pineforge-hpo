@@ -1059,7 +1059,9 @@ class CliTests(unittest.TestCase):
                         self.assertNotIn(option, command)
 
     @mock.patch("pineforge_hpo.cli.subprocess.run")
-    def test_trial_retention_parser_rejects_invalid_values(self, run: mock.Mock) -> None:
+    def test_trial_retention_parser_rejects_invalid_values(
+        self, run: mock.Mock
+    ) -> None:
         cases = [
             ("--trials-out", value, "--trials-out must be all, best-k, or none")
             for value in ("ALL", "bestk", "", "summary")
