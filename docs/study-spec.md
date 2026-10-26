@@ -160,7 +160,7 @@ strategy receives identical immutable facts/bars/closes before running. Index/CS
 errors use `--symbol-feeds:` and identify the symbol/timeframe before terminal trial output.
 Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted).
 `input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
-Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.6.3).
+Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.7.0).
 `input.source` and `input.enum` search dimensions are supported and cannot be symbols.
 String dimensions require the manifest-level `"input_kind_schema": 1` marker. HPO's builder
 requires a valid modern codegen `requests` list and a separate cached one-line
@@ -320,6 +320,8 @@ Grid order is `false`, then `true`.
 significant for deterministic grid enumeration. String, integer, real, and
 boolean choice types are preserved in native trial JSON and must match the
 compiled Pine input type.
+Color-typed manifest inputs accept only packed `0xAARRGGBB` integers in `0..4294967295`
+(excluding booleans), while legacy string-typed color inputs retain string values.
 
 Conditional search spaces are not implemented. `log` is valid only on integer
 and real dimensions under the contracts above.
@@ -369,9 +371,68 @@ OHLCV rows with timestamps compatible with PineForge's public bar contract.
 
 - `id`: unique non-empty ID referenced by the strategy;
 - `ohlcv`: CSV path relative to the StudySpec;
+- `ohlcv_bin`: alternative binary chart path relative to the StudySpec; exactly one of
+  `ohlcv` and `ohlcv_bin` is required;
+- `verify_bin`: `full` (default) or `sidecar`; requires `ohlcv_bin` and is forwarded as
+  `--verify-bin`;
 - `input_tf`: chart/input timeframe passed to `run_backtest_full()`;
 - `script_tf`: script timeframe; defaults to `input_tf` in the loader;
 - `chart_timezone`: chart timezone; defaults to `UTC`.
+
+`ohlcv_bin` is forwarded as `--ohlcv-bin` to the native runner. It maps a regular file
+read-only (`PROT_READ`, `MAP_PRIVATE`) and passes the mapped records directly to the engine.
+The file has no header: each 48-byte record is little-endian `<5dq` (open, high, low,
+close, volume as binary64, then signed int64 bar-open Unix milliseconds). A big-endian
+host is refused. The file must contain 1 through 2147483647 records and its appended
+`<file>.json` sidecar must be a regular file of at most 1 MiB containing a JSON object with:
+
+- `format`: `"pf_bar_t/v1"`;
+- `record_size`: integer `48`;
+- `symbol`: a string, including an empty string;
+- `tf`: a string matching the whole canonical value
+  `[1-9][0-9]{0,4}|[1-9][0-9]{0,3}[DWMS]`;
+- `count`: integer equal to file size divided by 48;
+- `first_ts` and `last_ts`: integers equal to the mapped signed int64 timestamps at
+  byte `40` and `48*(count-1)+40`;
+- `sha256`: exactly 64 lowercase hexadecimal characters.
+
+Booleans are not integers. Symbol and timeframe are descriptive and are not compared to
+the run configuration; extra metadata keys are allowed. Metadata or digest mismatches
+are refused as `sidecar` (`hpo_dataset_invalid`, with the engine's cause text
+`sidecar does not match the bar/close files`) before a Dataset is returned.
+`full` is the default and compares SHA-256 of the entire mapped file, without a prefix.
+`sidecar` checks all metadata and digest shapes but skips the digest comparison.
+Both modes scan every record:
+OHLC prices must be finite, volume nonnegative or NaN, and timestamps strictly increasing.
+In-place rewriting or truncation of a mapped file is unsupported. Publish a new file by
+write-then-`rename`/`os.replace`, keeping each mapped inode immutable for the dataset's lifetime.
+The native runner keeps the original descriptor open and compares `st_dev`, `st_ino`, `st_size`,
+`st_mtim` and `st_ctim` against their load-time values at the end of the run, including the timeout
+path, before rendering results. Timestamps use the full seconds+nanoseconds values the filesystem
+reports. A change to device, inode, size or mtime is refused as `hpo_dataset_invalid` with a
+`changed while mapped` diagnostic. When only ctime moves (chmod, chown, xattr, an extra hard link,
+or rename-over), the bytes in the held mapping are re-hashed against the sidecar digest parsed
+at load and accepted only if equal; without a digest a ctime change is refused.
+Rename-over hashes the original mapped inode, without reopening the replacement path.
+In `sidecar` mode the bytes were not compared to the digest at load, so even a metadata-only
+change can refuse if the re-hash finds that the bytes never matched it.
+The run's results are computed only from the bytes verified at load: a change that the mapped
+bytes show is refused (the held mapping is re-hashed against the sidecar digest when ctime moved).
+On platforms where a private read-only mapping does not show later in-place writes (observed on
+macOS), the run keeps using the original verified bytes and is accepted. This also applies to a
+same-size rewrite followed by exact mtime restoration (`touch -r`, `os.utime` with `ns=`):
+POSIX writes and mtime updates advance ctime.
+Residual: a rewrite that is fully restored (content and mtime) before the end-of-run re-hash can go
+undetected if trials read the changed pages in between; the guard covers changes still present at
+the end of the run, and the scenario needs a deliberate local writer.
+Detection resolution is the filesystem's timestamp granularity: a filesystem with coarse ctime
+can miss a rewrite within one tick that keeps size, mtime and ctime unchanged.
+Truncation can cause an unrecoverable SIGBUS before this end-of-run check, terminating the process
+without failure JSON.
+The CSV loader is unchanged.
+The native runner refuses `--trials-file`, `--output` or `--scheduler-stats` paths that alias the
+binary chart or its sidecar with `hpo_cli_usage`. `--verify-bin` requires `--ohlcv-bin`.
+Optional `symbol_feeds` remain CSV and can accompany a binary chart.
 
 Multi-dataset train/validation/test roles and walk-forward folds are not
 executable yet. A post hoc analysis of finished per-window studies exists as a library function (`pineforge_hpo.walkforward`); v1 analyses finished studies; native in-loop walk-forward comes later.
@@ -1045,6 +1106,27 @@ Final JSON is emitted to stdout and to native `--output FILE`, including stop
 paths. `trials_completed` includes the timeout terminal record; coverage and best
 selection use only the terminal table. Timeout records cannot be feasible and
 make `exhaustive_equivalent` false.
+
+The default `--trials-out all` requires a writable directory for two anonymous files.
+Terminal rows append in completion order to a data file, with offsets in an index file.
+The program creates and immediately unlinks both files in `--output`'s parent directory when it
+exists and is a writable directory (`.` when the parent path is empty). Otherwise it uses
+non-empty `TMPDIR`, or `/tmp` when `TMPDIR` is unset or empty. The directory is chosen once for both
+files; creation failures do not trigger a retry in another directory. The index is addressed relative
+to the first trial ID of the run, so high continuation IDs and gaps are supported.
+The spool holds the whole trial array on disk until the process exits.
+On read-only root filesystems, `--output` in a writable place and `--trials-out none|best-k` are
+remedies for the native CLI only. The Python `run` wrapper forwards neither `--output` nor
+`--trials-out`, so for `pineforge-hpo run` only a writable `TMPDIR` (or `/tmp`) helps.
+If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
+not in the native process RSS.
+The final `trials` array copies those rendered rows in trial-ID order
+without retaining every trial record or the full document in memory. This spool is independent
+of `--trials-file FILE` and `--progress-fd`, which retain their ordered NDJSON stream and
+backpressure only when requested; `--trials-file` may still be a pipe. Spool creation, writing,
+finalization or reading failures report `hpo_output_io_failed`; an incomplete spool is refused
+instead of being published as a complete trial array. `best-k` and `none` continue to retain
+only the bounded best-k heap.
 
 The wall and per-trial timeout controls are not forwarded by the Python CLI.
 The Python `run` wrapper does forward `--no-improvement-trials` when nonzero.

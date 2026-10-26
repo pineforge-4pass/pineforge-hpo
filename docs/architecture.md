@@ -95,6 +95,36 @@ Per-key advisory locks serialize the first build. Artifact directories and
 request indexes are published atomically. Cache hits re-hash the plugin and
 generated C++ and verify their manifest/provenance identities.
 
+New builds with an engine planner companion record an additive top-level
+`window_plan` block in both version-1 metadata files: its absolute build path
+(audit only), expected SHA-256, planner ABI, engine version/ABI/header/archive
+hashes, platform and frozen self-test ID. This runtime companion stays outside
+`request_identity`, so its presence does not change either compile key. Ordinary
+builds and cache hits require no helper; selected callers use
+`ArtifactBuilder.enrich_window_plan` to verify an existing block or enrich a
+validated source cache under the same request lock without recompiling. Each
+metadata file is replaced atomically; a partial or disagreeing pair refuses
+selected admission. An interrupted two-file enrichment leaves selected admission
+refused until enrichment is re-run. Ordinary builds and cache hits ignore the
+`window_plan` block. Precompiled selected admission requires a recorded block,
+even with an explicit helper path. Runtime lookup accepts an explicit absolute
+path or derives the sibling of the selected `build/lib/` or `lib/` archive from
+an explicit local engine root with matching content; `build/libpineforge.a` has
+no derived companion. The recorded build path never instructs lookup. Python
+checks only the file hash; native snapshot loading, ABI and behavioral checks
+remain the native consumer's responsibility.
+
+When codegen provides `transpile_with_request_inventory`, the bridge uses that
+single generation and the builder binds its inventory to the generated UTF-8
+and linked plugin through codegen's binder. The optional top-level
+`request_feed_inventory` object is identical in manifest/provenance and the
+adjacent `request_feed_inventory.json`. The object stays outside the compile
+identity; `request_identity.request_feed_inventory` records only the producer's
+schema string or null, forcing one cache rebuild for the new key. Ordinary
+loading ignores the block and sidecar. Selected callers explicitly use the
+Python [inventory admission API](native-walkforward.md)
+to validate their bindings, inputs and timeframe policy.
+
 The compile contract is:
 
 ```text
@@ -269,7 +299,8 @@ domain if normalized double precision cannot keep every bin distinct.
 ### Strategy plugin and trial executor
 
 One `StrategyPlugin` loads the dynamic library and resolves its function table.
-One immutable `Dataset` loads the OHLCV CSV. Each trial independently performs:
+One immutable `Dataset` loads the OHLCV CSV or maps a binary `.bin` chart.
+Each trial independently performs:
 
 ```text
 strategy_create()

@@ -26,6 +26,25 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def first_difference(actual, reference, structure):
+    """Name the first differing record and its differing fields, with both values."""
+    size = ctypes.sizeof(structure)
+    for base in range(0, min(len(actual), len(reference)), size):
+        if actual[base : base + size] == reference[base : base + size]:
+            continue
+        parts = []
+        for name, field_type in structure._fields_:
+            start = base + getattr(structure, name).offset
+            stop = start + ctypes.sizeof(field_type)
+            if actual[start:stop] != reference[start:stop]:
+                parts.append(
+                    f"{name}@{start - base} native={actual[start:stop].hex()}"
+                    f" reference={reference[start:stop].hex()}"
+                )
+        return f"first differing record {base // size}: " + "; ".join(parts)
+    return f"no differing record in common length ({len(actual)}/{len(reference)})"
+
+
 def canonical_abi_bytes(raw, structure):
     size = ctypes.sizeof(structure)
     require(len(raw) % size == 0, "C-ABI record size differs from the release harness")
@@ -49,13 +68,36 @@ def canonical_abi_bytes(raw, structure):
 
 
 def oracle_probe():
-    harness, output = Path(sys.argv[2]), Path(sys.argv[3])
+    from test_jailed_profile_e2e import checked_path
+
+    harness = checked_path(sys.argv[2], stream=sys.stderr)
+    output = checked_path(sys.argv[3], stream=sys.stderr)
+    for value in sys.argv[4:]:
+        checked_path(value, stream=sys.stderr)
+    # Engine 1.7.0's harness imports its sibling pf_sink lazily; running it as a script
+    # puts its directory on sys.path, so loading it by path must do the same.
+    sys.path.insert(0, str(harness.resolve().parent))
     module = importlib.util.spec_from_file_location("release_harness", harness)
     oracle = importlib.util.module_from_spec(module)
     module.loader.exec_module(oracle)
+    # Engine 1.7.0's harness turns the report sink on by default, and a sink report has
+    # NULL trade arrays. The native side reads the owning-array route, so the reference
+    # must too: this keeps the legacy route the C ABI still supports.
+    if hasattr(oracle, "_new_report_sink"):
+        oracle._new_report_sink = lambda *args, **kwargs: None
     original = oracle.build_report_dict
 
     def capture(report, *args, **kwargs):
+        # A NULL array would make string_at return uninitialized bytes, not trades.
+        if report.total_trades > 0 and not report.trades:
+            raise AssertionError("the reference report has no trade array to compare")
+        # 1.7.0 documents total_trades as the logical count and trades_len as the
+        # resident length of the array; they are equal only on the owning-array route.
+        if report.trades_len != report.total_trades:
+            raise AssertionError(
+                f"the reference report is not the owning-array route: trades_len "
+                f"{report.trades_len} != total_trades {report.total_trades}"
+            )
         output.mkdir(parents=True, exist_ok=True)
         (output / "metrics.bin").write_bytes(
             ctypes.string_at(
@@ -64,7 +106,7 @@ def oracle_probe():
         )
         (output / "trades.bin").write_bytes(
             ctypes.string_at(
-                report.trades, report.total_trades * ctypes.sizeof(oracle.TradeC)
+                report.trades, report.trades_len * ctypes.sizeof(oracle.TradeC)
             )
         )
         return original(report, *args, **kwargs)
@@ -142,7 +184,7 @@ if selected <= open
     require({trial["parameters"]["Side"] for trial in trials} == {0, 1}, trials)
     (directory / "input-kinds-result.json").write_bytes(result.stdout)
     print(
-        "PASS input.source/input.enum: real v1.6.3 artifact, Python + native, 12 trials",
+        "PASS input.source/input.enum: real v1.7.0 artifact, Python + native, 12 trials",
         flush=True,
     )
 
@@ -276,7 +318,7 @@ if selected <= open
     require({trial["parameters"]["Side"] for trial in trials} == {1, 2}, trials)
     (directory / "enum-subset-result.json").write_bytes(result.stdout)
     print(
-        "PASS input.enum options subset: real v1.6.3 artifact, Python + native, "
+        "PASS input.enum options subset: real v1.7.0 artifact, Python + native, "
         "12 trials, ordinals 1 and 2",
         flush=True,
     )
@@ -372,7 +414,7 @@ def enum_tag_probe(args, directory, document):
     )
     (directory / "enum-tag-result.json").write_bytes(result.stdout)
     print(
-        "PASS input.enum tag strings: real v1.6.3 artifact, Python + native, "
+        "PASS input.enum tag strings: real v1.7.0 artifact, Python + native, "
         "tag choices reach the runner",
         flush=True,
     )
@@ -491,7 +533,7 @@ if selected <= open
     )
     (directory / "symbol-free-strings-result.json").write_bytes(result.stdout)
     print(
-        "PASS symbol-free input.string/input.timeframe: real v1.6.3 artifact, "
+        "PASS symbol-free input.string/input.timeframe: real v1.7.0 artifact, "
         "Python + native, 8 trials, no input kinds",
         flush=True,
     )
@@ -572,6 +614,7 @@ if selected <= open
 
 def main():
     from pineforge_hpo.cli import prepare_run
+    from test_jailed_profile_e2e import checked_path
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--native", type=Path, required=True)
@@ -579,8 +622,14 @@ def main():
     parser.add_argument("--harness", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    args.native = checked_path(args.native)
+    args.probe = checked_path(args.probe)
+    args.harness = checked_path(args.harness)
+    args.output = checked_path(args.output)
     module = importlib.util.spec_from_file_location("release_abi", args.harness)
     abi = importlib.util.module_from_spec(module)
+    # Same as oracle_probe: the harness imports its sibling pf_sink lazily.
+    sys.path.insert(0, str(args.harness.resolve().parent))
     module.loader.exec_module(abi)
     directory = args.output.resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -743,7 +792,7 @@ if eth4 < threshold or eth4 <= ethD
         refused.stderr.decode(),
     )
     print(
-        "PASS D7: real codegen v1.6.3 input.symbol artifact refused by Python and native",
+        "PASS D7: real codegen v1.7.0 input.symbol artifact refused by Python and native",
         flush=True,
     )
     run = subprocess.run(command, capture_output=True)
@@ -825,7 +874,9 @@ if eth4 < threshold or eth4 <= ethD
             (native_dir / f"{kind}.canonical.bin").write_bytes(actual)
             (oracle_dir / f"{kind}.canonical.bin").write_bytes(reference)
             require(
-                actual == reference, f"candidate {candidate}: C-ABI {kind} bytes differ"
+                actual == reference,
+                f"candidate {candidate}: C-ABI {kind} bytes differ: "
+                + first_difference(actual, reference, structure),
             )
             row[kind + "_bytes"] = len(actual)
             row[kind + "_sha256"] = hashlib.sha256(actual).hexdigest()
@@ -854,6 +905,33 @@ if eth4 < threshold or eth4 <= ethD
     (directory / "equality-evidence.json").write_text(
         json.dumps(metadata, indent=2) + "\n"
     )
+    # Reuse this gate's real artifact: no second codegen/compiler run in the jail.
+    # CI builds the engine and installs the Python packages before entering this gate.
+    jailed_document = copy.deepcopy(document)
+    jailed_document["strategies"][0].pop("source")
+    jailed_document["strategies"][0]["artifact"] = artifact["plugin"]
+    jailed_document["execution"]["workers"] = 2
+    jailed_spec = checked_path(directory / "jailed-study.json")
+    jailed_spec.write_text(json.dumps(jailed_document), encoding="utf-8")
+    jailed_script = checked_path(ROOT / "tests/test_jailed_profile_e2e.py")
+    jailed = subprocess.run(
+        [
+            sys.executable,
+            str(jailed_script),
+            "--native",
+            str(args.native),
+            "--probe",
+            str(args.probe),
+            "--harness",
+            str(args.harness),
+            "--study",
+            str(jailed_spec),
+            "--output",
+            str(checked_path(directory / "jailed-profile")),
+        ],
+        check=False,
+    )
+    require(jailed.returncode == 0, "real jailed-profile gate failed")
 
 
 if __name__ == "__main__":

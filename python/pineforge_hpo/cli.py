@@ -286,6 +286,12 @@ def _is_number(value: object) -> bool:
 def _value_matches_input_type(value: object, input_type: str) -> bool:
     if input_type == "int":
         return isinstance(value, int) and not isinstance(value, bool)
+    if input_type == "color":
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= 0xFFFFFFFF
+        )
     if input_type == "float":
         return _is_number(value)
     if input_type == "bool":
@@ -313,6 +319,7 @@ def _validate_value_against_manifest(
             "strategy_set_input",
             {
                 "int": "expected_integer",
+                "color": "expected_integer",
                 "float": "expected_finite_decimal",
                 "bool": "invalid_boolean",
             }.get(input_type, "unparseable_value")
@@ -710,6 +717,7 @@ def _validate_manifest_inputs(
             continue
         expected_kind = {
             "int": "integer",
+            "color": "integer",
             "float": "real",
             "bool": "boolean",
         }.get(input_type)
@@ -882,8 +890,8 @@ def _native_command(
         "run",
         "--strategy",
         str(plugin),
-        "--ohlcv",
-        str(dataset.ohlcv),
+        "--ohlcv-bin" if dataset.ohlcv_bin is not None else "--ohlcv",
+        str(dataset.ohlcv_bin if dataset.ohlcv_bin is not None else dataset.ohlcv),
         "--objective",
         study.objective.expression,
         "--sampler",
@@ -911,6 +919,8 @@ def _native_command(
         "--non-finite",
         "allow" if study.objective.nan_policy == "propagate" else "reject",
     ]
+    if dataset.ohlcv_bin is not None:
+        command.extend(("--verify-bin", dataset.verify_bin))
     if isinstance(study.symbol_feeds, Path):
         command.extend(("--symbol-feeds", str(study.symbol_feeds)))
     elif study.symbol_feeds is not None:
@@ -1186,6 +1196,13 @@ def prepare_run(
 
 
 def _run(args: argparse.Namespace) -> int:
+    jailed = "PF_SCRATCH_ARENA_FD" in os.environ
+    if jailed and args.progress_fd == 5:
+        raise _cli_error(
+            "hpo_cli_usage",
+            {},
+            "--progress-fd 5 conflicts with the engine's inherited scratch arena",
+        )
     study = load_study_spec(args.study, continuation=args.warm_start is not None)
     command, artifact = prepare_run(
         study.spec_path,
@@ -1205,17 +1222,20 @@ def _run(args: argparse.Namespace) -> int:
         )
     if args.no_improvement_trials:
         command.extend(("--no-improvement-trials", str(args.no_improvement_trials)))
+    if jailed and args.output:
+        # The native trial spool needs the writable output parent even though Python
+        # adds metadata and publishes the final document after the child returns.
+        command.extend(("--output", str(Path(args.output).expanduser().resolve())))
+    inherited_fds = (args.progress_fd,) if args.progress_fd is not None else ()
+    if jailed:
+        inherited_fds = tuple(dict.fromkeys((*inherited_fds, 5)))
     try:
         completed = subprocess.run(
             command,
             text=True,
             capture_output=True,
             check=False,
-            **(
-                {"pass_fds": (args.progress_fd,)}
-                if args.progress_fd is not None
-                else {}
-            ),
+            **({"pass_fds": inherited_fds} if inherited_fds else {}),
         )
     except OSError as error:
         raise _cli_error(

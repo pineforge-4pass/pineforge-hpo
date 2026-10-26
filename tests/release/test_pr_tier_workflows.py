@@ -29,6 +29,7 @@ OLD_ROUTE = """${{ github.event_name != 'pull_request_target' &&
 POST_MERGE_STEPS = (
     "Configure PineForge Engine headers",
     "Configure PineForge HPO",
+    "Build PineForge window planner helper",
     "Build",
     "Test",
     "Cross-vendor reproducibility and Intel checkpoint restore",
@@ -561,6 +562,24 @@ class PrTierWorkflowTests(unittest.TestCase):
         self.assertEqual(tuple(pr_test), PR_CORE_TEST)
         self.assertEqual(pr_test[1], main_test[1] + " --no-tests=error")
         self.assertEqual(steps["Build"]["run"].strip(), "cmake --build build -j4")
+        planner = steps["Build PineForge window planner helper"]["run"]
+        self.assertIn(
+            "cmake --build external/pineforge-engine/build --target pineforge_window_plan",
+            planner,
+        )
+        self.assertIn("Linux) planner_suffix=so", planner)
+        self.assertIn("macOS) planner_suffix=dylib", planner)
+        self.assertIn(
+            "${{ github.workspace }}/external/pineforge-engine/build/lib/"
+            "libpineforge_window_plan.${planner_suffix}",
+            planner,
+        )
+        self.assertIn('test -f "$planner_helper"', planner)
+        self.assertIn(
+            'echo "PFH_WINDOW_PLAN_LIB=$planner_helper" >> "$GITHUB_ENV"',
+            planner,
+        )
+        self.assertEqual(steps["Test"]["env"]["PFH_REQUIRE_WINDOW_PLAN"], "1")
         self.assertIn(
             "ctest --test-dir build --output-on-failure", steps["Test"]["run"]
         )

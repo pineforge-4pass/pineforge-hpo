@@ -4,6 +4,14 @@ target_compile_options(pineforge_hpo_test_core PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME pineforge_hpo_core COMMAND pineforge_hpo_test_core)
 
+add_executable(pineforge_hpo_test_trial_spool test_trial_spool.cpp)
+target_include_directories(pineforge_hpo_test_trial_spool PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/cli")
+target_link_libraries(pineforge_hpo_test_trial_spool PRIVATE PineForgeHPO::core)
+target_compile_options(pineforge_hpo_test_trial_spool PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_trial_spool COMMAND pineforge_hpo_test_trial_spool
+    "${CMAKE_CURRENT_BINARY_DIR}/trial-spool")
+
 add_executable(pineforge_hpo_test_portable_math_canary test_portable_math_canary.cpp)
 target_link_libraries(pineforge_hpo_test_portable_math_canary PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_portable_math_canary PRIVATE
@@ -270,6 +278,9 @@ target_compile_options(pineforge_hpo_test_ordinal_set PRIVATE -Wall -Wextra -Wpe
 add_test(NAME pineforge_hpo_ordinal_set COMMAND pineforge_hpo_test_ordinal_set)
 
 if(UNIX AND TARGET PineForgeHPO::engine_adapter)
+    # Selected support is opt-in on separately named fixtures. The default fake must never
+    # acquire the six selected/observer exports, even through accidental engine linkage.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
     # The engine-adapter fixture is compiled four ways from one source:
     #   1. a test executable;
     #   2. a complete strategy plugin;
@@ -290,6 +301,92 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     set_target_properties(pineforge_hpo_fake_strategy PROPERTIES
         PREFIX ""
         OUTPUT_NAME "fake_strategy")
+    add_custom_command(TARGET pineforge_hpo_fake_strategy POST_BUILD
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_fake_strategy_exports.py"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/test_engine_adapter.cpp"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/test_selected_evaluation.cpp"
+            --plugin "$<TARGET_FILE:pineforge_hpo_fake_strategy>"
+        VERBATIM)
+    add_test(NAME pineforge_hpo_fake_strategy_exports
+        COMMAND "${Python3_EXECUTABLE}" -I
+            "${CMAKE_CURRENT_SOURCE_DIR}/test_fake_strategy_exports.py"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/test_engine_adapter.cpp"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}/test_selected_evaluation.cpp"
+            --plugin "$<TARGET_FILE:pineforge_hpo_fake_strategy>")
+
+    set(PFH_SELECTED_FAKE_TARGETS pineforge_hpo_fake_strategy_selected)
+    foreach(omission RANGE 1 6)
+        list(APPEND PFH_SELECTED_FAKE_TARGETS
+            pineforge_hpo_fake_strategy_selected_omit_${omission})
+    endforeach()
+    list(APPEND PFH_SELECTED_FAKE_TARGETS
+        pineforge_hpo_fake_strategy_selected_no_version
+        pineforge_hpo_fake_strategy_selected_no_settings)
+    foreach(plugin IN LISTS PFH_SELECTED_FAKE_TARGETS)
+        add_library(${plugin} SHARED test_engine_adapter.cpp)
+        target_compile_definitions(${plugin} PRIVATE PINEFORGE_HPO_FAKE_SELECTED=1)
+        target_include_directories(${plugin} PRIVATE
+            "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+        target_compile_options(${plugin} PRIVATE -Wall -Wextra -Wpedantic)
+        set_target_properties(${plugin} PROPERTIES PREFIX "" OUTPUT_NAME "${plugin}")
+        if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+            target_compile_options(${plugin} PRIVATE
+                -fsanitize=address,undefined -fno-omit-frame-pointer)
+            target_link_options(${plugin} PRIVATE -fsanitize=address,undefined)
+        elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+            target_compile_options(${plugin} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
+            target_link_options(${plugin} PRIVATE -fsanitize=thread)
+        endif()
+    endforeach()
+    foreach(omission RANGE 1 6)
+        target_compile_definitions(pineforge_hpo_fake_strategy_selected_omit_${omission} PRIVATE
+            PINEFORGE_HPO_FAKE_SELECTED_OMIT=${omission})
+    endforeach()
+    target_compile_definitions(pineforge_hpo_fake_strategy_selected_no_version PRIVATE
+        PINEFORGE_HPO_FAKE_SELECTED_NO_VERSION=1)
+    target_compile_definitions(pineforge_hpo_fake_strategy_selected_no_settings PRIVATE
+        PINEFORGE_HPO_FAKE_SELECTED_NO_SETTINGS=1)
+    add_executable(pineforge_hpo_test_selected_evaluation test_selected_evaluation.cpp)
+    target_link_libraries(pineforge_hpo_test_selected_evaluation PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    target_compile_options(pineforge_hpo_test_selected_evaluation PRIVATE -Wall -Wextra -Wpedantic)
+    add_dependencies(pineforge_hpo_test_selected_evaluation
+        pineforge_hpo_fake_strategy ${PFH_SELECTED_FAKE_TARGETS})
+    add_test(NAME pineforge_hpo_selected_evaluation
+        COMMAND pineforge_hpo_test_selected_evaluation
+            $<TARGET_FILE:pineforge_hpo_fake_strategy>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_1>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_2>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_3>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_4>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_5>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_6>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_no_version>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_no_settings>)
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_tests_properties(pineforge_hpo_selected_evaluation PROPERTIES
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
+
+    add_executable(pineforge_hpo_test_window_plan test_window_plan.cpp)
+    target_link_libraries(pineforge_hpo_test_window_plan PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    target_compile_options(pineforge_hpo_test_window_plan PRIVATE -Wall -Wextra -Wpedantic)
+    add_dependencies(pineforge_hpo_test_window_plan pineforge_hpo_fake_strategy)
+    add_test(NAME pineforge_hpo_window_plan
+        COMMAND pineforge_hpo_test_window_plan
+            "$<TARGET_FILE:pineforge_hpo_fake_strategy>"
+            "${CMAKE_CURRENT_BINARY_DIR}/window-plan-runs")
+
+    add_executable(pineforge_hpo_test_selected_planning test_selected_planning.cpp)
+    target_link_libraries(pineforge_hpo_test_selected_planning PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    target_compile_options(pineforge_hpo_test_selected_planning PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME pineforge_hpo_selected_planning
+        COMMAND pineforge_hpo_test_selected_planning
+            "${CMAKE_CURRENT_BINARY_DIR}/selected-planning-runs")
 
     add_library(pineforge_hpo_fake_strategy_no_timezone SHARED
         test_engine_adapter.cpp)
@@ -331,7 +428,7 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         endif()
     endforeach()
 
-    foreach(extension CODED STATUS CHECKED BAD_ABI)
+    foreach(extension CODED STATUS CHECKED BAD_ABI SCRATCH SCRATCH_NO_TABLES SCRATCH_NO_ARENA)
         string(TOLOWER "${extension}" extension_name)
         add_library(pineforge_hpo_fake_strategy_${extension_name} SHARED test_engine_adapter.cpp)
         target_compile_definitions(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
@@ -354,6 +451,16 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 -fsanitize=thread)
         endif()
     endforeach()
+    foreach(plugin pineforge_hpo_fake_strategy_scratch
+                   pineforge_hpo_fake_strategy_scratch_no_tables
+                   pineforge_hpo_fake_strategy_scratch_no_arena)
+        target_compile_definitions(${plugin} PRIVATE
+            PINEFORGE_HPO_FAKE_PLUGIN_SCRATCH=1 PINEFORGE_HPO_FAKE_PLUGIN_CODED=1)
+    endforeach()
+    target_compile_definitions(pineforge_hpo_fake_strategy_scratch_no_tables PRIVATE
+        PINEFORGE_HPO_FAKE_PLUGIN_NO_TABLES=1)
+    target_compile_definitions(pineforge_hpo_fake_strategy_scratch_no_arena PRIVATE
+        PINEFORGE_HPO_FAKE_PLUGIN_NO_ARENA=1)
 
     add_executable(pineforge_hpo_test_engine_adapter test_engine_adapter.cpp)
     target_link_libraries(pineforge_hpo_test_engine_adapter PRIVATE
@@ -424,7 +531,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         pineforge_hpo_fake_strategy_coded
         pineforge_hpo_fake_strategy_status
         pineforge_hpo_fake_strategy_checked
-        pineforge_hpo_fake_strategy_bad_abi)
+        pineforge_hpo_fake_strategy_bad_abi
+        pineforge_hpo_fake_strategy_scratch
+        pineforge_hpo_fake_strategy_scratch_no_tables
+        pineforge_hpo_fake_strategy_scratch_no_arena)
 
     add_test(NAME pineforge_hpo_engine_adapter
         COMMAND pineforge_hpo_test_engine_adapter
@@ -434,11 +544,63 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_coded>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
-            $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_scratch>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_scratch_no_tables>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_scratch_no_arena>)
     if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
         set_property(TEST pineforge_hpo_engine_adapter APPEND PROPERTY
             ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
     endif()
+
+    add_executable(pineforge_hpo_test_dataset_view test_dataset_view.cpp)
+    target_link_libraries(pineforge_hpo_test_dataset_view PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    add_dependencies(pineforge_hpo_test_dataset_view pineforge_hpo_fake_strategy)
+    target_compile_options(pineforge_hpo_test_dataset_view PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME pineforge_hpo_dataset_view COMMAND pineforge_hpo_test_dataset_view
+        $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_property(TEST pineforge_hpo_dataset_view APPEND PROPERTY
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
+
+    # The private native hook includes the production entry point, like the existing
+    # signal-macro fixture. No public CLI flag or installation target is added.
+    add_executable(pineforge_hpo_test_study_split test_study_split.cpp)
+    target_compile_definitions(pineforge_hpo_test_study_split PRIVATE
+        PINEFORGE_HPO_PROOF_CURVES=1 PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
+    target_link_libraries(pineforge_hpo_test_study_split PRIVATE PineForgeHPO::engine_adapter)
+    add_dependencies(pineforge_hpo_test_study_split
+        ${PFH_RETURN_STATS_IDENTITY_TARGET} pineforge_hpo_fake_strategy)
+    target_include_directories(pineforge_hpo_test_study_split PRIVATE
+        "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
+    target_compile_options(pineforge_hpo_test_study_split PRIVATE -Wall -Wextra -Wpedantic)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT PINEFORGE_HPO_ENABLE_SANITIZERS
+            AND NOT PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+        target_compile_definitions(pineforge_hpo_test_study_split PRIVATE
+            PINEFORGE_HPO_STUDY_RSS_GATE=1)
+    endif()
+    # The ordinary pin runs the real pineforge-hpo-native only when that target exists.
+    # Otherwise it uses the same production entry point compiled into the private test target
+    # with PINEFORGE_HPO_PROOF_CURVES=1 and main renamed.
+    if(TARGET pineforge-hpo-native)
+        set(PFH_STUDY_PIN_NATIVE $<TARGET_FILE:pineforge-hpo-native>)
+        add_dependencies(pineforge_hpo_test_study_split pineforge-hpo-native)
+    else()
+        set(PFH_STUDY_PIN_NATIVE $<TARGET_FILE:pineforge_hpo_test_study_split>)
+    endif()
+    add_test(NAME pineforge_hpo_study_split COMMAND pineforge_hpo_test_study_split
+        ${PFH_STUDY_PIN_NATIVE} $<TARGET_FILE:pineforge_hpo_fake_strategy>
+        "${CMAKE_CURRENT_BINARY_DIR}/study-split")
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_property(TEST pineforge_hpo_study_split APPEND PROPERTY
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
+
+    add_executable(pineforge_hpo_test_dataset_bin test_dataset_bin.cpp)
+    target_link_libraries(pineforge_hpo_test_dataset_bin PRIVATE PineForgeHPO::engine_adapter)
+    target_compile_options(pineforge_hpo_test_dataset_bin PRIVATE -Wall -Wextra -Wpedantic)
 
     add_executable(pineforge_hpo_test_symbol_feeds test_symbol_feeds.cpp)
     target_include_directories(pineforge_hpo_test_symbol_feeds PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
@@ -451,7 +613,14 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
 
     add_executable(pineforge_hpo_symbol_feed_report symbol_feed_report.cpp)
     target_include_directories(pineforge_hpo_symbol_feed_report PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
-    target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE PineForgeHPO::engine_adapter)
+    target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME pineforge_hpo_jailed_profile_e2e
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_jailed_profile_e2e.py")
+        set_tests_properties(pineforge_hpo_jailed_profile_e2e PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIP: jailed profile requires Linux sealed memfds")
+    endif()
 
     # Rolling-schedule replay: the test runs the real native binary on the rolling schedule at
     # several worker counts, reads each result file and replays every proposal from it.
@@ -468,7 +637,33 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     endif()
 
     find_package(Python3 COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        set(PFH_DATASET_BIN_FIXTURES "${CMAKE_CURRENT_BINARY_DIR}/dataset-bin-fixtures")
+        add_test(NAME pineforge_hpo_dataset_bin_fixtures
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/generate_dataset_bin_fixtures.py"
+                "${PFH_DATASET_BIN_FIXTURES}")
+        set_tests_properties(pineforge_hpo_dataset_bin_fixtures PROPERTIES
+            FIXTURES_SETUP dataset_bin_inputs)
+        add_test(NAME pineforge_hpo_dataset_bin COMMAND pineforge_hpo_test_dataset_bin
+            "${PFH_DATASET_BIN_FIXTURES}")
+        # R4 uses the same C++ executable and real mapping, with unconditional seam references.
+        add_test(NAME pineforge_hpo_dataset_bin_identity COMMAND pineforge_hpo_test_dataset_bin
+            "${PFH_DATASET_BIN_FIXTURES}" --mapped-identity)
+        set_tests_properties(pineforge_hpo_dataset_bin pineforge_hpo_dataset_bin_identity PROPERTIES
+            FIXTURES_REQUIRED dataset_bin_inputs)
+    else()
+        message(WARNING "SKIP: Python not found; binary-loader tests will not run")
+        add_test(NAME pineforge_hpo_dataset_bin_requires_python
+            COMMAND "${CMAKE_COMMAND}" -E false)
+    endif()
     if(Python3_Interpreter_FOUND AND TARGET pineforge-hpo-native)
+        add_test(NAME pineforge_hpo_dataset_bin_sidecars
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_dataset_bin_sidecars.py"
+                $<TARGET_FILE:pineforge-hpo-native> $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                "${PFH_DATASET_BIN_FIXTURES}" --modes)
+        set_tests_properties(pineforge_hpo_dataset_bin_sidecars PROPERTIES
+            FIXTURES_REQUIRED dataset_bin_inputs)
         add_test(NAME pineforge_hpo_pbo_proof_build
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --config $<CONFIG>
                 --target pineforge-hpo-native-proof pineforge_hpo_pbo_proof_strategy
@@ -632,6 +827,15 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_streamed_trial_retention
+            COMMAND "${Python3_EXECUTABLE}" -I
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_streamed_trial_retention.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                "${CMAKE_CURRENT_BINARY_DIR}/streamed-trial-retention")
+        # Keep other CTest cases from contending with this small RSS-delta gate.
+        # It is always run on Linux; no skip code or sanitizer-specific threshold is supplied.
+        set_tests_properties(pineforge_hpo_streamed_trial_retention PROPERTIES RUN_SERIAL TRUE)
         add_test(NAME pineforge_hpo_warm_start_contract
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_warm_start_contract.py"

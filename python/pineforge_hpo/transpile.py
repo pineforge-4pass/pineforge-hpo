@@ -22,6 +22,8 @@ except ModuleNotFoundError:
     transpile_full = None
     CompileError = None
 
+REQUEST_FEED_INVENTORY_SCHEMA = "pineforge-request-feed-inventory/v1"
+
 
 @dataclass(frozen=True)
 class TranspileDiagnostic:
@@ -58,6 +60,7 @@ class TranspileResult:
     strategy_params: Mapping[str, Any] = field(default_factory=dict)
     diagnostics: tuple[TranspileDiagnostic, ...] = ()
     input_kind_schema: int | None = None
+    request_feed_inventory: Mapping[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -185,7 +188,9 @@ def transpile_source(pine_source: str, *, filename: str = "<input>") -> Transpil
     Pine language errors are returned in ``TranspileResult`` rather than being
     conflated with native compiler failures. Unexpected bridge failures are also
     represented as an ``INTERNAL`` diagnostic so a CLI can emit one stable JSON
-    envelope.
+    envelope. When available, the inventory producer replaces ``transpile_full``
+    for this source. It stays chart-unbound; requests for the chart's timeframe
+    therefore remain unknown. The input-kind canary still uses its own source.
     """
 
     try:
@@ -206,8 +211,14 @@ def transpile_source(pine_source: str, *, filename: str = "<input>") -> Transpil
             ),
         )
 
+    produces_inventory = codegen_supports_request_inventory()
+    strategy_transpiler = (
+        pineforge_codegen.transpile_with_request_inventory
+        if produces_inventory
+        else transpiler
+    )
     try:
-        payload = transpiler(pine_source, filename=filename)
+        payload = strategy_transpiler(pine_source, filename=filename)
     except compile_error as error:
         return TranspileResult(
             generated_cpp=None,
@@ -275,6 +286,26 @@ def transpile_source(pine_source: str, *, filename: str = "<input>") -> Transpil
             )
         normalized_inputs.append(dict(item))
 
+    inventory = payload.get("request_feed_inventory") if produces_inventory else None
+    if produces_inventory and (
+        not isinstance(inventory, Mapping)
+        or inventory.get("schema") != REQUEST_FEED_INVENTORY_SCHEMA
+    ):
+        return TranspileResult(
+            generated_cpp=None,
+            diagnostics=(
+                TranspileDiagnostic(
+                    severity="error",
+                    phase="INTERNAL",
+                    message=(
+                        "transpile_with_request_inventory returned an invalid "
+                        "request_feed_inventory object or schema"
+                    ),
+                    filename=filename,
+                ),
+            ),
+        )
+
     return TranspileResult(
         generated_cpp=cpp,
         inputs=tuple(normalized_inputs),
@@ -287,6 +318,19 @@ def transpile_source(pine_source: str, *, filename: str = "<input>") -> Transpil
             and _input_kind_canary(transpiler)
             else None
         ),
+        request_feed_inventory=inventory,
+    )
+
+
+def codegen_supports_request_inventory() -> bool:
+    """Feature-detect the loaded producer, including older supported codegens."""
+
+    try:
+        _load_codegen()
+    except ModuleNotFoundError:
+        return False
+    return callable(
+        getattr(pineforge_codegen, "transpile_with_request_inventory", None)
     )
 
 
@@ -349,5 +393,6 @@ __all__ = [
     "TranspileFailure",
     "TranspileResult",
     "codegen_identity",
+    "codegen_supports_request_inventory",
     "transpile_source",
 ]
