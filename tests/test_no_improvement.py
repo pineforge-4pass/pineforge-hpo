@@ -10,7 +10,6 @@ never fetch/build a reference or normalize version/build fields.
 
 from __future__ import annotations
 
-import array
 import errno
 import fcntl
 import functools
@@ -25,10 +24,9 @@ import signal
 import subprocess
 import sys
 import tempfile
-import termios
-import threading
 import time
 import unittest
+from unittest import mock
 
 
 NATIVE: Path
@@ -44,11 +42,107 @@ class AdmissionError(AssertionError):
     """The intended process ordering was not established; never a product RED."""
 
 
+class AdmissionWaitExpired(AdmissionError):
+    """Release the blocked sink before checking for a genuine product deadline."""
+
+
+class AdmissionClosed(AdmissionError):
+    """The native process or its control stream ended before admission."""
+
+
 class AdmissionExpired(Exception):
     """The feature period was consumed before the required ordering; retry, never pass."""
 
     def __init__(self, elapsed_seconds):
         self.elapsed_seconds = elapsed_seconds
+
+
+class CapabilityUnavailable(Exception):
+    """A named host facility could not be used for this test fixture."""
+
+    def __init__(self, name, reason):
+        self.name = name
+        self.reason = reason
+        super().__init__(f"{name}: {reason}")
+
+
+def classify_capability_failure(capability, failure):
+    """Only a named unavailable capability can produce an environment skip."""
+    if (failure == "capability_unavailable"
+            and capability.get("status") == "unavailable"
+            and capability.get("available") is False):
+        return "skip"
+    return "fail"
+
+
+def skip_capability(capability, reason=None):
+    """Print and raise the only skip classification accepted by this admission."""
+    detail = reason or capability["reason"]
+    message = f"SKIP capability={capability['name']} reason={detail}"
+    print(message, flush=True)
+    raise unittest.SkipTest(message)
+
+
+@functools.lru_cache(maxsize=1)
+def report_capabilities():
+    """Report host facilities; only fifo-handshake is required by late-output admission."""
+    task_directory = Path(f"/proc/{os.getpid()}/task")
+    reports = {}
+
+    try:
+        task_entries = list(task_directory.iterdir())
+        thread_shape = bool(task_entries)
+        thread_shape_reason = "per-thread task directory is listable; exact shape is not required"
+    except (FileNotFoundError, PermissionError, OSError) as error:
+        thread_shape = False
+        thread_shape_reason = f"/proc task directory unavailable: {error}"
+    reports["thread-shape"] = thread_shape, thread_shape_reason
+
+    wchan_path = task_directory / str(os.getpid()) / "wchan"
+    try:
+        wchan_path.read_text(encoding="utf-8")
+        wchan = True
+        wchan_reason = "current thread wait-channel file is readable"
+    except (FileNotFoundError, PermissionError, OSError, UnicodeError) as error:
+        wchan = False
+        wchan_reason = f"per-thread wait-channel file unavailable: {error}"
+    reports["wchan"] = wchan, wchan_reason
+
+    pipe_resize = False
+    pipe_resize_reason = "fcntl pipe-resize operations unavailable"
+    read_fd = write_fd = None
+    try:
+        if hasattr(fcntl, "F_GETPIPE_SZ") and hasattr(fcntl, "F_SETPIPE_SZ"):
+            read_fd, write_fd = os.pipe()
+            capacity = fcntl.fcntl(read_fd, fcntl.F_GETPIPE_SZ)
+            fcntl.fcntl(read_fd, fcntl.F_SETPIPE_SZ, capacity)
+            pipe_resize = True
+            pipe_resize_reason = "F_GETPIPE_SZ and F_SETPIPE_SZ accepted a pipe capacity"
+    except (OSError, ValueError) as error:
+        pipe_resize_reason = f"pipe-resize operation unavailable: {error}"
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
+    reports["pipe-resize"] = pipe_resize, pipe_resize_reason
+
+    reports["fifo-handshake"] = probe_fifo_handshake()
+
+    result = {}
+    for name in ("wchan", "pipe-resize", "thread-shape", "fifo-handshake"):
+        available, reason = reports[name]
+        capability = {
+            "name": name,
+            "status": "available" if available else "unavailable",
+            "available": available,
+            "reason": reason,
+            "platform": sys.platform,
+        }
+        result[name] = capability
+        print("NO_IMPROVEMENT_CAPABILITY " + json.dumps(capability, sort_keys=True),
+              flush=True)
+    return result
 
 
 def retry_expired_admission(run):
@@ -57,7 +151,7 @@ def retry_expired_admission(run):
     First establish the same event without a product timeout, then give the
     feature three seconds plus twice that admission cost. If it still prevents
     admission, budget the next run from the entire observed attempt. There
-    is no retry count or elapsed-time limit that can fail a slow correct run.
+    is no retry count limit; missing protocol events have a bounded admission wait.
     """
     @functools.wraps(run)
     def retry(self, *args):
@@ -75,110 +169,174 @@ def retry_expired_admission(run):
     return retry
 
 
-def process_threads(pid):
-    tasks = Path(f"/proc/{pid}/task")
-    try:
-        return {int(path.name): (path / "wchan").read_text().strip()
-                for path in tasks.iterdir()}
-    except (FileNotFoundError, ProcessLookupError):
-        return {}
-
-
 def wait_for_output(child, directory):
     """Admission uses files for output so publication cannot block child exit."""
     child.wait()
     return (directory / "stdout").read_bytes(), (directory / "stderr").read_bytes()
 
 
-@functools.lru_cache(maxsize=1)
-def late_reader_capability():
-    """Probe OS facilities with a helper, never the product's admission outcome."""
-    def report(status, reason, **details):
-        result = dict(status=status, available=status == "available", reason=reason,
-                      platform=sys.platform, **details)
-        print("NO_IMPROVEMENT_LATE_READER_CAPABILITY " + json.dumps(result), flush=True)
-        return result
-
-    if not sys.platform.startswith("linux"):
-        return report("unavailable", "Linux /proc task wait channels required")
-    missing = [name for module, name in ((fcntl, "F_SETPIPE_SZ"),
-               (fcntl, "F_GETPIPE_SZ"), (termios, "FIONREAD")) if not hasattr(module, name)]
-    if missing:
-        return report("unavailable", "pipe controls missing", missing=missing)
-    if not Path("/proc/self/task").is_dir():
-        return report("unavailable", "/proc task directory unavailable")
-
-    read_fd, write_fd = os.pipe()
-    child = None
-    try:
+def fill_nonblocking_pipe(write_fd):
+    """Fill a pipe until the kernel gives the portable full-pipe signal, EAGAIN."""
+    chunk = b"F" * 65536
+    written = 0
+    while True:
         try:
-            fcntl.fcntl(read_fd, fcntl.F_SETPIPE_SZ, 4096)
-            capacity = fcntl.fcntl(read_fd, fcntl.F_GETPIPE_SZ)
-            queued = array.array("i", [0])
-            fcntl.ioctl(read_fd, termios.FIONREAD, queued, True)
-        except OSError as error:
-            if error.errno not in {errno.EACCES, errno.EPERM, errno.EINVAL, errno.ENOSYS,
-                                  errno.ENOTTY, errno.ENOTSUP}:
+            count = os.write(write_fd, chunk)
+        except BlockingIOError as error:
+            if error.errno not in {errno.EAGAIN, errno.EWOULDBLOCK}:
                 raise
-            return report("unavailable", "pipe controls unavailable", errno=error.errno)
-        if capacity != 4096:
-            return report("unavailable", "4096-byte pipe capacity unavailable", capacity=capacity)
+            if written == 0:
+                raise AdmissionError("pipe reported EAGAIN before accepting any bytes")
+            return written
+        if count <= 0:
+            raise AdmissionError("non-blocking pipe accepted no bytes")
+        written += count
 
-        # A full pipe blocks the helper's writer while its main thread joins it.
-        # This checks cross-process wchan visibility without a native behavior hook.
-        helper = ("import os,sys,threading; "
-                  "writer=threading.Thread(target=os.write,args=(int(sys.argv[1]),b'x'*8192)); "
-                  "writer.start(); writer.join()")
-        child = subprocess.Popen([sys.executable, "-S", "-c", helper, str(write_fd)],
-                                 pass_fds=(write_fd,), stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE)
-        tasks = {}
-        previous = None
-        stable_reads = 0
-        while True:
-            if child.poll() is not None:
-                _, diagnostic = child.communicate()
-                report("error", "capability helper exited", returncode=child.returncode)
-                raise AdmissionError(f"capability helper failed: {diagnostic!r}")
-            fcntl.ioctl(read_fd, termios.FIONREAD, queued, True)
-            try:
-                paths = list(Path(f"/proc/{child.pid}/task").iterdir())
-                tasks = {int(path.name): (path / "wchan").read_text().strip()
-                         for path in paths}
-                sleeping = all((path / "stat").read_text().rsplit(")", 1)[1].split()[0]
-                               in {"S", "D"} for path in paths)
-            except (FileNotFoundError, PermissionError) as error:
-                if child.poll() is not None:
-                    raise AdmissionError("capability helper exited before /proc read") from error
-                return report("unavailable", "child task wait channels unreadable",
-                              errno=error.errno)
-            if (len(tasks) == 2 and queued[0] == capacity
-                    and "futex" in tasks.get(child.pid, "")
-                    and any("pipe" in state for tid, state in tasks.items() if tid != child.pid)):
-                return report("available", "pipe controls and child wait channels observed",
-                              capacity=capacity, tasks=tasks)
-            # A full, undrained pipe keeps the writer blocked. Accept unavailable
-            # symbols only on consecutive stable reads of both helper tasks;
-            # running tasks (wchan 0) must not classify a visible host as hidden.
-            states = tuple(sorted(tasks.items()))
-            if len(tasks) == 2 and queued[0] == capacity and sleeping:
-                stable_reads = stable_reads + 1 if states == previous else 1
-                previous = states
-                if stable_reads >= 3 and child.poll() is None:
-                    return report("unavailable",
-                                  "required futex/pipe wait-channel symbols unavailable",
-                                  tasks=tasks)
-            else:
-                previous = None
-                stable_reads = 0
-            time.sleep(0.01)
+
+_FIFO_CAPABILITY_ERRNOS = {
+    errno.EACCES,
+    errno.EPERM,
+    errno.EINVAL,
+    errno.ENOSYS,
+    errno.ENOTTY,
+    errno.ENXIO,
+    getattr(errno, "ENOTSUP", errno.EINVAL),
+    getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+}
+
+
+def probe_fifo_handshake():
+    """Probe the FIFO open/write path used by the portable admission fixture."""
+    if not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"):
+        return False, "mkfifo or O_NONBLOCK is unavailable"
+    read_fd = None
+    write_fd = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="pfh-no-improvement-capability-") as directory:
+            path = Path(directory) / "probe.fifo"
+            os.mkfifo(path)
+            read_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            write_fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+            if os.write(write_fd, b"P") != 1:
+                return False, "FIFO handshake did not round-trip one byte"
+            readable, _, _ = select.select([read_fd], [], [])
+            if not readable or os.read(read_fd, 1) != b"P":
+                return False, "FIFO handshake did not round-trip one byte"
+    except (AttributeError, NotImplementedError) as error:
+        return False, str(error)
+    except OSError as error:
+        if error.errno in _FIFO_CAPABILITY_ERRNOS:
+            return False, error.strerror or str(error)
+        raise
     finally:
-        if child is not None:
-            if child.poll() is None:
-                child.kill()
-            child.communicate()
-        os.close(read_fd)
-        os.close(write_fd)
+        if read_fd is not None:
+            os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
+    return True, "FIFO create/open/nonblocking write/read succeeded"
+
+
+def create_prefilled_fifo(path):
+    """Create a FIFO whose nonblocking writer reached EAGAIN before the child starts."""
+    if not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"):
+        raise CapabilityUnavailable("fifo-handshake", "mkfifo or O_NONBLOCK is unavailable")
+    read_fd = None
+    fill_fd = None
+    try:
+        os.mkfifo(path)
+        read_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        fill_fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+        prefix_size = fill_nonblocking_pipe(fill_fd)
+        return read_fd, prefix_size
+    except (AttributeError, NotImplementedError) as error:
+        raise CapabilityUnavailable("fifo-handshake", str(error)) from error
+    except OSError as error:
+        if error.errno in _FIFO_CAPABILITY_ERRNOS:
+            raise CapabilityUnavailable(
+                "fifo-handshake", f"{path}: {error.strerror or error}"
+            ) from error
+        raise
+    finally:
+        if fill_fd is not None:
+            os.close(fill_fd)
+
+
+def wait_for_late_output_admission(child, progress_read, trace_read, worker_exit_read,
+                                  admission_deadline):
+    """Require worker exit after the final stop check, plus the first progress row."""
+    buffers = {progress_read: bytearray(), trace_read: bytearray(),
+               worker_exit_read: bytearray()}
+    while True:
+        if child.poll() is not None:
+            raise AdmissionClosed("child exited before the late-output control protocol")
+        remaining = admission_deadline - time.monotonic()
+        if remaining <= 0:
+            raise AdmissionWaitExpired("late-output admission deadline expired")
+        readable, _, _ = select.select(list(buffers), [], [], remaining)
+        if not readable:
+            raise AdmissionWaitExpired("late-output admission deadline expired")
+        for descriptor in readable:
+            try:
+                chunk = os.read(descriptor, 65536)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                raise AdmissionClosed("late-output control pipe closed before admission")
+            buffers[descriptor].extend(chunk)
+        progress = bytes(buffers[progress_read])
+        trace = bytes(buffers[trace_read])
+        worker_exit = bytes(buffers[worker_exit_read])
+        if b"\n" in progress and trace.count(b"\n") >= 2 and worker_exit:
+            try:
+                first_progress = json.loads(progress)
+                completions = [int(line) for line in trace.splitlines()]
+            except (ValueError, json.JSONDecodeError) as error:
+                raise AdmissionError("late-output control protocol was malformed") from error
+            if completions != [0, 1]:
+                raise AdmissionError(
+                    f"late-output fixture completion protocol was {completions!r}, expected [0, 1]"
+                )
+            if worker_exit != b"J":
+                raise AdmissionError(f"late-output worker-exit protocol was {worker_exit!r}")
+            if child.poll() is not None:
+                raise AdmissionClosed("child exited after the late-output control protocol")
+            return progress, trace, completions, first_progress
+
+
+def wait_for_sigterm_delivery(child, signal_read):
+    """Acknowledge only after the native cooperative SIGTERM handler has returned."""
+    if child.poll() is not None:
+        raise AdmissionError("child exited before SIGTERM delivery acknowledgement")
+    readable, _, _ = select.select([signal_read], [], [], 30.0)
+    if not readable:
+        raise AdmissionError("SIGTERM delivery acknowledgement timed out")
+    token = os.read(signal_read, 65536)
+    if token != b"T":
+        raise AdmissionError(f"SIGTERM delivery protocol was {token!r}, expected b'T'")
+    return token
+
+
+def drain_output_pipes(progress_read, trace_read, fifo_read, progress_prefix, trace_prefix):
+    """Drain protocol and product streams after release without a timed reader."""
+    buffers = {
+        progress_read: bytearray(progress_prefix),
+        trace_read: bytearray(trace_prefix),
+        fifo_read: bytearray(),
+    }
+    descriptors = list(buffers)
+    while descriptors:
+        readable, _, _ = select.select(descriptors, [], [])
+        for descriptor in readable:
+            try:
+                chunk = os.read(descriptor, 65536)
+            except BlockingIOError:
+                continue
+            if chunk:
+                buffers[descriptor].extend(chunk)
+                continue
+            descriptors.remove(descriptor)
+    return (bytes(buffers[progress_read]), bytes(buffers[trace_read]),
+            bytes(buffers[fifo_read]))
 
 
 def supplied_reference():
@@ -368,6 +526,101 @@ class NoImprovementTests(unittest.TestCase):
         control, _ = self.run_cli("--pruner", "median", score="10,10,9,8,7,6",
                                   budget=6, batch=2)
         self.assertTrue(any(row["status"] == "pruned" for row in control["trials"]))
+
+    def test_capability_failure_classifier_keeps_product_failures_red(self):
+        unavailable = {
+            "name": "fifo-handshake",
+            "status": "unavailable",
+            "available": False,
+        }
+        available = {
+            "name": "fifo-handshake",
+            "status": "available",
+            "available": True,
+        }
+        inconsistent = {
+            "name": "fifo-handshake",
+            "status": "unavailable",
+            "available": True,
+        }
+        self.assertEqual(
+            classify_capability_failure(unavailable, "capability_unavailable"), "skip")
+        for capability, failure in (
+                (unavailable, "product_assertion_failed"),
+                (available, "capability_unavailable"),
+                (available, "product_assertion_failed"),
+                (inconsistent, "capability_unavailable"),
+                (inconsistent, "product_assertion_failed")):
+            with self.subTest(capability=capability, failure=failure):
+                self.assertEqual(classify_capability_failure(capability, failure), "fail")
+
+    def test_required_fifo_capability_cannot_skip(self):
+        unavailable = {
+            "name": "fifo-handshake", "status": "unavailable", "available": False,
+            "reason": "deliberately unavailable",
+        }
+        with mock.patch(f"{__name__}.report_capabilities",
+                        return_value={"fifo-handshake": unavailable}):
+            with mock.patch.dict(os.environ, {"PFH_REQUIRE_FIFO_HANDSHAKE": "1"}):
+                try:
+                    with self.assertRaisesRegex(AdmissionError, "PFH_REQUIRE_FIFO_HANDSHAKE"):
+                        self.require_late_output_capability()
+                except unittest.SkipTest as error:
+                    self.fail(f"a required FIFO capability became a skip: {error}")
+            with mock.patch.dict(os.environ, {"PFH_REQUIRE_FIFO_HANDSHAKE": "0"}):
+                with self.assertRaisesRegex(unittest.SkipTest, "SKIP capability=fifo-handshake"):
+                    self.require_late_output_capability()
+
+    def test_available_fifo_probe_does_not_hide_fixture_failure(self):
+        available = {
+            "name": "fifo-handshake", "status": "available", "available": True,
+            "reason": "deliberately available",
+        }
+        with (
+            mock.patch(f"{__name__}.report_capabilities",
+                       return_value={"fifo-handshake": available}),
+            mock.patch.dict(os.environ, {"PFH_REQUIRE_FIFO_HANDSHAKE": "0"}),
+            mock.patch.object(os, "mkfifo",
+                              side_effect=PermissionError(errno.EPERM, "fixture denied")),
+        ):
+            try:
+                with self.assertRaisesRegex(AdmissionError, "probe contradicted unavailable"):
+                    self.slow_terminal_reader.__wrapped__(
+                        self, 0, "signal", product_seconds=3.0, attempt=1)
+            except unittest.SkipTest as error:
+                self.fail(f"an available probe followed by fixture failure became a skip: {error}")
+
+    def test_late_output_admission_wait_is_bounded(self):
+        child = mock.Mock()
+        child.poll.return_value = None
+        with (
+            mock.patch.object(time, "monotonic", return_value=10.0),
+            mock.patch.object(select, "select", return_value=([], [], [])) as wait,
+        ):
+            with self.assertRaisesRegex(AdmissionWaitExpired, "admission deadline expired"):
+                wait_for_late_output_admission(child, 101, 102, 103, 11.0)
+        wait.assert_called_once_with([101, 102, 103], [], [], 1.0)
+
+    def test_late_output_admission_requires_worker_exit(self):
+        child = mock.Mock()
+        child.poll.return_value = None
+        progress = b'{"trial_id":0,"status":"ok"}\n'
+        chunks = {101: progress, 102: b"0\n1\n", 103: b"J"}
+        with (
+            mock.patch.object(time, "monotonic", return_value=10.0),
+            mock.patch.object(select, "select",
+                              side_effect=[([101, 102], [], []), ([103], [], [])]) as wait,
+            mock.patch.object(os, "read", side_effect=lambda descriptor, size: chunks[descriptor]),
+        ):
+            observed = wait_for_late_output_admission(child, 101, 102, 103, 11.0)
+        self.assertEqual(wait.call_count, 2, "trace and progress alone admitted before worker exit")
+        self.assertEqual(observed[:3], (progress, b"0\n1\n", [0, 1]))
+
+    def test_late_deadline_before_admission_retries_only_validated_expiry(self):
+        self.require_late_output_capability()
+        with self.assertRaises(AdmissionExpired):
+            self.slow_terminal_reader.__wrapped__(
+                self, 8, "deadline", product_seconds=1e-9, attempt=1)
 
     def test_semantics_and_batch_boundaries(self):
         cases = [
@@ -667,47 +920,56 @@ class NoImprovementTests(unittest.TestCase):
     def slow_terminal_reader(self, patience, intervention, *, product_seconds, attempt):
         """Gate the actual blocking JSONL sink after evaluation, without a mock runner.
 
-        --trials-file is a FIFO consumed by a reader thread held behind an Event.
-        A regular --progress-fd supplies the first genuine terminal row. A full
-        FIFO, both engine completions and only main+writer tasks prove workers.close
-        has finished while the real writer is blocked. No timed reader trickle or
-        replacement clock is used. An admission failure is never product RED.
+        The parent fills a nonblocking FIFO until its writer receives EAGAIN, closes
+        that filler, and never reads the FIFO during admission. The fixture's worker
+        TLS destructor emits J only when BatchExecutor closes its pool, after the
+        final stop checks (main.cpp:2640,2935-2938; batch_executor.hpp:34-36,73-84).
+        Row 0 proves progress publication; the full FIFO holds that row's trials-file
+        write. Neither kernel wait-channel spelling nor helper-thread count is used.
         """
         label = f"{intervention}-p{patience}"
         directory = self.directory / f"{label}-attempt{attempt}"
         directory.mkdir()
         fifo = directory / "terminal.fifo"
-        os.mkfifo(fifo)
-        reader_fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
-        fcntl.fcntl(reader_fd, fcntl.F_SETPIPE_SZ, 4096)
-        capacity = fcntl.fcntl(reader_fd, fcntl.F_GETPIPE_SZ)
-        release_reader = threading.Event()
-        reader_errors = []
-
-        def read_terminal_stream():
-            try:
-                release_reader.wait()
-                os.set_blocking(reader_fd, True)
-                with (directory / "trials.jsonl").open("wb") as output:
-                    while chunk := os.read(reader_fd, 65536):
-                        output.write(chunk)
-            except Exception as error:
-                reader_errors.append(repr(error))
-            finally:
-                os.close(reader_fd)
-
-        reader = threading.Thread(target=read_terminal_stream)
-        reader.start()
         deadline_seconds = product_seconds
-        receipt = {"case": label, "fifo_capacity": capacity, "admitted": False,
+        receipt = {"case": label, "fifo_fill": "EAGAIN", "admitted": False,
                    "product_seconds": product_seconds}
         progress_path = directory / "progress.jsonl"
         arrivals_path = directory / "arrivals"
+        fifo_bytes_path = directory / "terminal.fifo.bytes"
+        trials_path = directory / "trials.jsonl"
         final = directory / "final.json"
         started = time.monotonic()
         child = None
-        stdout = stderr = b""
-        with progress_path.open("wb") as progress, arrivals_path.open("ab") as arrivals:
+        stdout = stderr = None
+        progress_read = progress_write = None
+        trace_read = trace_write = None
+        worker_exit_read = worker_exit_write = None
+        signal_read = signal_write = None
+        reader_fd = None
+        prefix_size = 0
+        progress_observed = trace_observed = b""
+        progress_bytes = trace_bytes = fifo_bytes = b""
+        admitted_at = None
+        retry_for_budget = False
+        try:
+            try:
+                reader_fd, prefix_size = create_prefilled_fifo(fifo)
+            except CapabilityUnavailable as unavailable:
+                capability = report_capabilities()[unavailable.name]
+                if (os.environ.get("PFH_REQUIRE_FIFO_HANDSHAKE") == "1"
+                        or classify_capability_failure(
+                            capability, "capability_unavailable") != "skip"):
+                    raise AdmissionError(
+                        f"probe contradicted unavailable {unavailable.name}: "
+                        f"{unavailable.reason}"
+                    ) from unavailable
+                skip_capability(capability, unavailable.reason)
+
+            progress_read, progress_write = os.pipe()
+            trace_read, trace_write = os.pipe()
+            worker_exit_read, worker_exit_write = os.pipe()
+            signal_read, signal_write = os.pipe()
             command = [
                 str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(self.csv),
                 "--objective", "metrics.all.net_profit", "--sampler", "grid",
@@ -719,104 +981,133 @@ class NoImprovementTests(unittest.TestCase):
                 "--fixed-input", "BatchPrefixTest", "1",
                 "--fixed-input", "BatchPrefixJitter", "0",
                 "--fixed-input", "SequenceScore", "10",
-                "--fixed-input", "CompletionTraceFd", str(arrivals.fileno()),
+                "--fixed-input", "CompletionTraceFd", str(trace_write),
+                "--fixed-input", "WorkerExitFd", str(worker_exit_write),
                 "--categorical-choice", "Payload", "m" * 16384,
-                "--progress-fd", str(progress.fileno()), "--trials-file", str(fifo),
+                "--progress-fd", str(progress_write), "--trials-file", str(fifo),
                 "--output", str(final),
             ]
             if intervention == "deadline" and product_seconds:
                 command += ["--max-wall-seconds", str(deadline_seconds)]
+            if intervention == "signal":
+                command += ["--fixed-input", "SignalTraceFd", str(signal_write)]
             (directory / "command.json").write_text(json.dumps(command) + "\n")
+            started = time.monotonic()
+            with (directory / "stdout").open("wb") as out, (
+                    directory / "stderr").open("wb") as err:
+                child = subprocess.Popen(
+                    command, stdout=out, stderr=err,
+                    pass_fds=(progress_write, trace_write, worker_exit_write, signal_write))
+            os.close(progress_write)
+            progress_write = None
+            os.close(trace_write)
+            trace_write = None
+            os.close(worker_exit_write)
+            worker_exit_write = None
+            os.close(signal_write)
+            signal_write = None
+            admission_deadline = started + (
+                deadline_seconds + 3.0 if intervention == "deadline" and product_seconds else 60.0)
             try:
-                started = time.monotonic()
-                with (directory / "stdout").open("wb") as out, (
-                        directory / "stderr").open("wb") as err:
-                    child = subprocess.Popen(command, stdout=out, stderr=err,
-                                             pass_fds=(progress.fileno(), arrivals.fileno()))
-                while True:
-                    queued = array.array("i", [0])
-                    fcntl.ioctl(reader_fd, termios.FIONREAD, queued, True)
-                    tasks = process_threads(child.pid)
-                    emitted = progress_path.read_bytes()
-                    completed = arrivals_path.read_text().splitlines()
-                    elapsed = time.monotonic() - started
-                    closed_writer = (child.poll() is None and len(tasks) == 2
-                                     and "futex" in tasks.get(child.pid, "")
-                                     and any("pipe" in state for tid, state in tasks.items()
-                                             if tid != child.pid)
-                                     and queued[0] == capacity and emitted.endswith(b"\n")
-                                     and len(emitted) > capacity)
-                    ready = closed_writer and completed == ["0", "1"]
-                    if ready:
-                        first = json.loads(emitted)
-                        if first["trial_id"] != 0 or first["status"] != "ok":
-                            raise AdmissionError(
-                                "slow-reader control has no genuine first terminal")
-                        admitted_at = time.monotonic()
-                        receipt.update(admitted=True, admitted_seconds=elapsed, tasks=tasks,
-                                       queued_bytes=queued[0], engine_completions=completed,
-                                       first_terminal_id=first["trial_id"])
-                        break
-                    if closed_writer:
-                        # No workers remain to produce the missing completion.
-                        # Drain the actual sink and retry only a genuine deadline.
-                        receipt.update(tasks=tasks, engine_completions=completed,
-                                       queued_bytes=queued[0], elapsed_seconds=elapsed)
-                        release_reader.set()
-                        stdout, stderr = wait_for_output(child, directory)
-                        if intervention == "deadline" and product_seconds:
-                            self.expired_before_admission(child, stdout, "deadline", elapsed)
-                        raise AdmissionError("closed workers did not complete both trials")
-                    if child.poll() is not None:
-                        receipt.update(tasks=tasks, queued_bytes=queued[0],
-                                       engine_completions=completed, elapsed_seconds=elapsed)
-                        stdout, stderr = wait_for_output(child, directory)
-                        if intervention == "deadline" and product_seconds:
-                            self.expired_before_admission(child, stdout, "deadline", elapsed)
-                        raise AdmissionError(
-                            "evaluation/closed-workers/blocked-writer ordering not admitted")
-                    time.sleep(0.005)
-                # Admission ended on the event. If the feature's entire period
-                # was already consumed, this attempt cannot prove a late stop.
-                # Release on that same event and retry; elapsed time never fails it.
-                retry_for_budget = (intervention == "deadline" and product_seconds
-                                    and admitted_at - started >= deadline_seconds)
-                if retry_for_budget:
-                    receipt["retry_reason"] = "feature period consumed before admission"
-                if intervention == "deadline" and product_seconds and not retry_for_budget:
-                    # run() necessarily started before the admitted first terminal;
-                    # this crosses its deadline even if process startup was delayed.
-                    remaining = admitted_at + deadline_seconds + 0.2 - time.monotonic()
-                    if remaining > 0:
-                        release_reader.wait(remaining)
-                elif intervention == "signal":
-                    child.send_signal(signal.SIGTERM)
-                    receipt["signal_sent_seconds"] = time.monotonic() - started
-                receipt["release_seconds"] = time.monotonic() - started
-                release_reader.set()
-                stdout, stderr = wait_for_output(child, directory)
-            finally:
-                if child is not None and child.poll() is None:
-                    child.kill()
-                    child.wait()
-                release_reader.set()
-                reader.join()
-                if child is not None and not stdout:
+                (progress_observed, trace_observed, completions,
+                 first) = wait_for_late_output_admission(
+                    child, progress_read, trace_read, worker_exit_read, admission_deadline)
+            except AdmissionError as error:
+                elapsed = time.monotonic() - started
+                receipt.update(admitted_seconds=elapsed)
+                if (intervention == "deadline" and product_seconds
+                        and isinstance(error, (AdmissionWaitExpired, AdmissionClosed))):
+                    # A full trials FIFO can keep an expired child alive. Release it before
+                    # classifying the native result; the wait timeout alone never earns a retry.
+                    progress_bytes, trace_bytes, fifo_bytes = drain_output_pipes(
+                        progress_read, trace_read, reader_fd, progress_observed, trace_observed)
                     stdout, stderr = wait_for_output(child, directory)
-                receipt.update(returncode=child.returncode if child else None,
-                               reader_errors=reader_errors, reader_finished=not reader.is_alive())
+                    self.expired_before_admission(child, stdout, "deadline", elapsed)
+                raise
+            if first["trial_id"] != 0 or first["status"] != "ok":
+                raise AdmissionError("late-output control has no genuine first terminal")
+            admitted_at = time.monotonic()
+            receipt.update(
+                admitted=True,
+                admitted_seconds=admitted_at - started,
+                prefix_bytes=prefix_size,
+                engine_completions=completions,
+                first_terminal_id=first["trial_id"],
+                worker_exit="J",
+                protocol=["fifo-prefilled-to-EAGAIN", "engine-completions",
+                          "progress-terminal", "worker-exit-after-final-stop-check"],
+            )
+            retry_for_budget = (intervention == "deadline" and product_seconds
+                                and admitted_at - started >= deadline_seconds)
+            if retry_for_budget:
+                receipt["retry_reason"] = "feature period consumed before admission"
+            self.assertIsNone(child.poll(), "FIFO gate did not keep the child alive")
+            self.assertEqual(select.select([progress_read], [], [], 0)[0], [],
+                             "row 1 progressed while row 0 should be held by the full FIFO")
+            if intervention == "deadline" and product_seconds and not retry_for_budget:
+                # Cross the real product period after admission; readiness itself is
+                # established by protocol bytes, not this deadline intervention.
+                remaining = admitted_at + deadline_seconds + 0.2 - time.monotonic()
+                if remaining > 0:
+                    select.select([], [], [], remaining)
+                self.assertGreaterEqual(time.monotonic(), admitted_at + deadline_seconds,
+                                        "FIFO released before the real product deadline")
+                receipt["deadline_crossed_seconds"] = time.monotonic() - started
+            elif intervention == "signal":
+                self.assertEqual(select.select([signal_read], [], [], 0)[0], [],
+                                 "SIGTERM was already acknowledged before the intervention")
+                self.assertIsNone(child.poll(), "child exited before the SIGTERM intervention")
+                self.assertEqual(select.select([progress_read], [], [], 0)[0], [],
+                                 "row 1 progressed before the SIGTERM intervention")
+                child.send_signal(signal.SIGTERM)
+                receipt["signal_sent_seconds"] = time.monotonic() - started
+                self.assertEqual(wait_for_sigterm_delivery(child, signal_read), b"T")
+                receipt["signal_delivered"] = True
+            self.assertIsNone(child.poll(), "FIFO gate was released before the drain")
+            self.assertEqual(select.select([progress_read], [], [], 0)[0], [],
+                             "row 1 progressed before the FIFO drain was released")
+            receipt["release_seconds"] = time.monotonic() - started
+            progress_bytes, trace_bytes, fifo_bytes = drain_output_pipes(
+                progress_read, trace_read, reader_fd, progress_observed, trace_observed)
+            stdout, stderr = wait_for_output(child, directory)
+        finally:
+            if child is not None and child.poll() is None:
+                child.kill()
+                child.wait()
+            if child is not None and stdout is None:
+                stdout, stderr = wait_for_output(child, directory)
+            for descriptor in (progress_read, progress_write, trace_read, trace_write, reader_fd,
+                               worker_exit_read, worker_exit_write, signal_read, signal_write):
+                if descriptor is not None:
+                    os.close(descriptor)
+            trials_bytes = fifo_bytes[prefix_size:]
+            progress_path.write_bytes(progress_bytes)
+            arrivals_path.write_bytes(trace_bytes)
+            fifo_bytes_path.write_bytes(fifo_bytes)
+            trials_path.write_bytes(trials_bytes)
+            receipt.update(
+                returncode=child.returncode if child else None,
+                progress_bytes=len(progress_bytes),
+                trace_bytes=len(trace_bytes),
+                fifo_bytes=len(fifo_bytes),
+            )
+            if stdout is not None:
                 (directory / "stdout").write_bytes(stdout)
                 (directory / "stderr").write_bytes(stderr)
-                (directory / "admission.json").write_text(json.dumps(receipt, indent=2) + "\n")
+            (directory / "admission.json").write_text(json.dumps(receipt, indent=2) + "\n")
+            if fifo.exists():
                 fifo.unlink()
-        self.assertFalse(reader.is_alive(), "gated reader did not finish")
-        self.assertEqual(reader_errors, [])
+        if child is None:
+            raise AdmissionError("late-output fixture did not start the native child")
+        self.assertGreater(prefix_size, 0, "the FIFO writer was never held by a filler prefix")
+        self.assertEqual(fifo_bytes[:prefix_size], b"F" * prefix_size)
         self.assertEqual(child.returncode, 0, stderr)
         result = json.loads(stdout)
         self.assertEqual(final.read_bytes(), stdout)
-        self.assertEqual(progress_path.read_bytes(), (directory / "trials.jsonl").read_bytes())
+        self.assertEqual(progress_path.read_bytes(), trials_path.read_bytes())
         self.assertEqual([json.loads(line) for line in progress_path.read_bytes().splitlines()],
                          result["trials"])
+        self.assertEqual([int(line) for line in arrivals_path.read_bytes().splitlines()], [0, 1])
         self.assertEqual(result["trials_completed"], 2)
         if retry_for_budget:
             self.assertIn(result["stop_reason"], {
@@ -833,20 +1124,23 @@ class NoImprovementTests(unittest.TestCase):
             self.assertEqual(result["early_stop"]["trigger_trial_id"], 1 if patience == 1 else None)
         return admitted_at - started
 
-    def require_late_reader_capability(self):
-        capability = late_reader_capability()
-        if capability["status"] == "unavailable":
-            self.skipTest("late-reader capability unavailable: " + capability["reason"])
+    def require_late_output_capability(self):
+        capability = report_capabilities()["fifo-handshake"]
+        if os.environ.get("PFH_REQUIRE_FIFO_HANDSHAKE") == "1":
+            if not capability["available"] or capability["status"] != "available":
+                raise AdmissionError(f"PFH_REQUIRE_FIFO_HANDSHAKE=1 requires {capability!r}")
+        if classify_capability_failure(capability, "capability_unavailable") == "skip":
+            skip_capability(capability)
         self.assertTrue(capability["available"], capability)
 
     def test_late_deadline_during_trials_file_drain(self):
-        self.require_late_reader_capability()
+        self.require_late_output_capability()
         for patience in (0, 1, 8):
             with self.subTest(patience=patience):
                 self.slow_terminal_reader(patience, "deadline")
 
     def test_late_signal_during_trials_file_drain(self):
-        self.require_late_reader_capability()
+        self.require_late_output_capability()
         for patience in (0, 1, 8):
             with self.subTest(patience=patience):
                 self.slow_terminal_reader(patience, "signal")
@@ -1043,12 +1337,19 @@ class NoImprovementTests(unittest.TestCase):
 
 if __name__ == "__main__":
     NATIVE, PLUGIN = (Path(sys.argv.pop(1)).resolve() for _ in range(2))
+    report_capabilities()
     program = unittest.main(verbosity=2, exit=False)
     skips = [{"test": test.id(), "reason": reason} for test, reason in program.result.skipped]
+    capability_skips = {}
+    for item in skips:
+        match = re.search(r"\bSKIP capability=([^\s]+)", item["reason"])
+        if match:
+            name = match.group(1)
+            capability_skips[name] = capability_skips.get(name, 0) + 1
     print("NO_IMPROVEMENT_SKIP_SUMMARY " + json.dumps({
         "total": len(skips),
-        "late_reader_capability": sum(
-            item["reason"].startswith("late-reader capability unavailable:") for item in skips),
+        "capability_skips": sum(capability_skips.values()),
+        "capabilities": capability_skips,
         "supplied_reference": sum(item["reason"].startswith("supplied reference unavailable:")
                                   for item in skips),
         "skips": skips,
