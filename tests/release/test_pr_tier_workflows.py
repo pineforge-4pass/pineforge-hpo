@@ -408,6 +408,17 @@ class PrTierWorkflowTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
 
+    def test_aggregate_script_rejects_a_skipped_or_failed_light_job(self):
+        script = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )["run"]
+        for light_result in ("skipped", "failure"):
+            with self.subTest(light=light_result):
+                result = self.run_workflow_script(
+                    script, self.aggregate_environment(light=light_result)
+                )
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+
     def test_aggregate_script_rejects_a_noop_run_mutation(self):
         script = workflow_step(
             self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
