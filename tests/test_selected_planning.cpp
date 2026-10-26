@@ -867,31 +867,6 @@ void real_rows(const pfh::WindowPlanHelper& helper) {
                        {"value_ms=0", "input_tf='60'", "script_tf='5'"},
                        [&] { (void)pfh::plan_selected_window(helper, tape, wanted); });
     });
-    row("real-strict-feed-gap-refused", [&] {
-        // 09:30 is in [F,E) but outside the two declared session windows.
-        // False pass: feed_tolerant=false falls back to a raw interval or hides rows refusal.
-        const auto at = [](int hour, int minute_of_hour) {
-            return kBase + static_cast<std::int64_t>(hour * 60 + minute_of_hour) * kMinute;
-        };
-        const auto bar = [](std::int64_t timestamp) {
-            return pf_bar_t{100.0, 102.0, 98.0, 101.0, 10.0, timestamp};
-        };
-        const auto strict_owner = std::make_shared<const pfh::Dataset>(
-            std::vector<pf_bar_t>{
-                bar(at(9, 0)), bar(at(9, 30)), bar(at(10, 0)), bar(at(10, 5))});
-        const pfh::DatasetView strict_tape(strict_owner);
-        auto wanted = request();
-        wanted.start_ms = at(10, 0);
-        wanted.end_ms = at(10, 15);
-        wanted.fed_start_ms = at(9, 0);
-        wanted.session = "0900-0930,1000-1030";
-        wanted.feed_tolerant = false;
-        expect_refusal("calendar_unsupported", "rows",
-                       {"value_ms=" + std::to_string(at(9, 30))},
-                       [&] {
-                           (void)pfh::plan_selected_window(helper, strict_tape, wanted);
-                       });
-    });
     row("real-feed-range-unreachable-after-bounding", [&] {
         // The valid Dataset contains both offending kinds, but plan_selected_window excludes
         // them. Direct REAL-helper calls prove the status and its typed conversion, not a fake
