@@ -2986,7 +2986,12 @@ void publish(const Options& options, const pfh::detail::ResultDocument& json,
 }
 
 int run(Options options) {
+#ifdef PINEFORGE_HPO_TEST_EVALUATION_COMPLETION
+    // The study split must not give RunState a real start and an injected current time.
+    const auto started = RunState::Clock::now();
+#else
     const auto started = StudyClock::now();
+#endif
     const auto prepared = prepare(std::move(options));
     StudyCallbacks callbacks;
     callbacks.cancelled = [] { return signal_cancelled.load(std::memory_order_relaxed); };
