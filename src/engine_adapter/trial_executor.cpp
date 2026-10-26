@@ -1,4 +1,5 @@
 #include <pineforge/hpo/error.hpp>
+#include <pineforge/hpo/jailed_profile.hpp>
 #include <pineforge/hpo/return_stats.hpp>
 #include <pineforge/hpo/return_stats_identity.hpp>
 #include <pineforge/hpo/trial_executor.hpp>
@@ -198,6 +199,10 @@ void compute_report_return_blocks(const pf_report_t& report,
     snapshot->return_blocks = reduce_return_blocks(view, snapshot->return_block_layout);
 }
 
+}  // namespace
+
+namespace detail {
+
 ReportSnapshot copy_report(const pf_report_t& report,
                            const BacktestConfiguration& configuration,
                            bool reduce_blocks) {
@@ -206,6 +211,10 @@ ReportSnapshot copy_report(const pf_report_t& report,
     if (report.total_trades < 0) {
         throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
                                                 "strategy returned a negative total_trades value");
+    }
+    if (report.trades_len < 0) {
+        throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
+                                                "strategy returned a negative trades_len value");
     }
     if (report.equity_curve_len < 0) {
         throw TypedHpoError<std::runtime_error>(
@@ -243,9 +252,15 @@ ReportSnapshot copy_report(const pf_report_t& report,
             throw TypedHpoError<std::runtime_error>("hpo_report_invalid", {},
                                                     "strategy returned null non-empty trades");
         }
-        snapshot.trades.resize(static_cast<std::size_t>(report.total_trades));
-        std::memcpy(snapshot.trades.data(), report.trades,
-                    snapshot.trades.size() * sizeof(pf_trade_t));
+        if (report.trades_len != report.total_trades) {
+            throw TypedHpoError<std::runtime_error>(
+                "hpo_report_invalid", {},
+                "strategy returned trades_len (resident length) different from "
+                "total_trades (logical count)");
+        }
+        const auto trades_size = static_cast<std::size_t>(report.trades_len);
+        snapshot.trades.resize(trades_size);
+        std::memcpy(snapshot.trades.data(), report.trades, trades_size * sizeof(pf_trade_t));
     }
     if (capture_equity_curve && report.equity_curve_len > 0) {
         snapshot.equity_curve.assign(report.equity_curve,
@@ -257,6 +272,26 @@ ReportSnapshot copy_report(const pf_report_t& report,
         compute_report_return_blocks(report, configuration.pbo_blocks, &snapshot);
     return snapshot;
 }
+
+void apply_trial_settings(const StrategyPlugin& plugin, pf_strategy_t strategy,
+                          const ParameterValues& inputs, const ParameterValues& overrides,
+                          const BacktestConfiguration& configuration) {
+    plugin.set_chart_timezone(strategy, configuration.chart_timezone);
+    for (const auto& entry : overrides) {
+        plugin.set_override(strategy, entry.first, entry.second);
+    }
+    for (const auto& entry : inputs) {
+        plugin.set_input(strategy, entry.first, entry.second);
+    }
+    if (configuration.symbol_info)
+        plugin.set_symbol_info(strategy, *configuration.symbol_info);
+    if (configuration.symbol_feeds)
+        plugin.set_symbol_feeds(strategy, *configuration.symbol_feeds);
+}
+
+}  // namespace detail
+
+namespace {
 
 bool valid_magnifier_distribution(pf_magnifier_distribution_t distribution) noexcept {
     switch (distribution) {
@@ -271,29 +306,16 @@ bool valid_magnifier_distribution(pf_magnifier_distribution_t distribution) noex
     return false;
 }
 
-// One resource owner makes the required teardown order structural rather than
-// dependent on local declaration order: report arrays first, handle second.
-class TrialResources final {
-public:
-    TrialResources(const StrategyPlugin& plugin, pf_strategy_t strategy)
-        : plugin_(plugin), strategy_(strategy) {}
-
-    ~TrialResources() {
-        plugin_.free_report(&report);
-        plugin_.free_strategy(strategy_);
-    }
-
-    TrialResources(const TrialResources&) = delete;
-    TrialResources& operator=(const TrialResources&) = delete;
-
-    pf_strategy_t strategy() const noexcept { return strategy_; }
-
-    pf_report_t report{};
-
-private:
-    const StrategyPlugin& plugin_;
-    pf_strategy_t strategy_;
-};
+DatasetView whole_dataset(const std::shared_ptr<const StrategyPlugin>& plugin,
+                         std::shared_ptr<const Dataset> dataset) {
+    if (!plugin)
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "TrialExecutor requires a strategy plugin");
+    if (!dataset)
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "TrialExecutor requires a dataset");
+    return DatasetView(std::move(dataset));
+}
 
 }  // namespace
 
@@ -336,20 +358,16 @@ std::optional<double> ReportSnapshot::metric(std::string_view path) const noexce
 }
 
 TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
-                             std::shared_ptr<const Dataset> dataset,
+                             DatasetView view,
                              BacktestConfiguration configuration)
     : plugin_(std::move(plugin)),
-      dataset_(std::move(dataset)),
+      view_(std::move(view)),
       configuration_(std::move(configuration)) {
     if (!plugin_) {
         throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
                                                    "TrialExecutor requires a strategy plugin");
     }
-    if (!dataset_) {
-        throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
-                                                   "TrialExecutor requires a dataset");
-    }
-    if (dataset_->size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    if (view_.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
         throw TypedHpoError<std::invalid_argument>(
             "hpo_dataset_invalid", {}, "dataset exceeds the PineForge C ABI bar-count limit");
     }
@@ -376,7 +394,7 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
                 "return statistics need a build without floating-point contraction");
     }
     if (configuration_.symbol_feeds && !configuration_.symbol_feeds->empty()) {
-        TrialResources validation(*plugin_, plugin_->create_strategy());
+        detail::TrialResources validation(*plugin_, plugin_->create_strategy());
         plugin_->set_symbol_feeds(validation.strategy(), *configuration_.symbol_feeds);
         const auto error = plugin_->last_error(validation.strategy());
         const auto code = plugin_->last_error_code(validation.strategy());
@@ -402,33 +420,49 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
                     configuration_.input_timeframe + "' aggregated to chart '" +
                     configuration_.script_timeframe + "' is not supported");
     }
+    if (detail::jailed_profile_requested()) {
+        // First attach belongs to single-threaded startup, before any worker is created.
+        // This handle carries no trial settings and cannot publish a report or result.
+        detail::TrialResources validation(*plugin_, plugin_->create_strategy());
+        detail::prepare_jailed_handle(*plugin_, validation.strategy());
+    }
 }
+
+TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
+                             std::shared_ptr<const Dataset> dataset,
+                             BacktestConfiguration configuration)
+    : TrialExecutor(plugin, whole_dataset(plugin, std::move(dataset)),
+                    std::move(configuration)) {}
 
 TrialExecutionResult TrialExecutor::execute(const ParameterValues& inputs,
                                             const ParameterValues& strategy_overrides) const {
-    return execute_prefix(inputs, strategy_overrides, dataset_->size());
+    return execute_prefix(inputs, strategy_overrides, view_.size());
 }
 
 TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs,
                                                    const ParameterValues& strategy_overrides,
                                                    std::size_t bar_count) const {
-    if (bar_count == 0 || bar_count > dataset_->size())
+    if (bar_count == 0 || bar_count > view_.size())
         throw TypedHpoError<std::invalid_argument>("hpo_invariant", {},
                                                    "prefix size must be within the dataset");
-    TrialResources resources(*plugin_, plugin_->create_strategy());
-    plugin_->set_chart_timezone(resources.strategy(), configuration_.chart_timezone);
-    for (const auto& entry : strategy_overrides) {
-        plugin_->set_override(resources.strategy(), entry.first, entry.second);
+    detail::TrialResources resources(*plugin_, plugin_->create_strategy());
+    detail::apply_trial_settings(*plugin_, resources.strategy(), inputs, strategy_overrides,
+                                 configuration_);
+    try {
+        detail::prepare_jailed_handle(*plugin_, resources.strategy());
+    } catch (const EngineError& error) {
+        // A missing export (HpoError) cannot occur here: the constructor preflight already
+        // proved both exports on this plugin. Only the engine's per-trial refusal lands here.
+        TrialExecutionResult failed;
+        failed.status = TrialExecutionStatus::kEngineError;
+        failed.error = error.what();
+        failed.error_code = error.code().empty() ? std::nullopt
+                                                 : std::make_optional(error.code());
+        failed.error_args = error.raw_args();
+        return failed;
     }
-    for (const auto& entry : inputs) {
-        plugin_->set_input(resources.strategy(), entry.first, entry.second);
-    }
-    if (configuration_.symbol_info)
-        plugin_->set_symbol_info(resources.strategy(), *configuration_.symbol_info);
-    if (configuration_.symbol_feeds)
-        plugin_->set_symbol_feeds(resources.strategy(), *configuration_.symbol_feeds);
 
-    plugin_->run_backtest_full(resources.strategy(), dataset_->data(),
+    plugin_->run_backtest_full(resources.strategy(), view_.data(),
                                static_cast<int>(bar_count), configuration_.input_timeframe,
                                configuration_.script_timeframe, configuration_.bar_magnifier,
                                configuration_.magnifier_samples,
@@ -449,11 +483,11 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
     // Blocks describe one curve: the full window. A prefix rung is a different, shorter series, so
     // it is never reduced against the S of the full window, and the request is local to this call.
     const bool reduce_blocks =
-        configuration_.pbo_blocks != 0 && bar_count == dataset_->size();
+        configuration_.pbo_blocks != 0 && bar_count == view_.size();
 
     TrialExecutionResult succeeded;
     succeeded.status = TrialExecutionStatus::kSucceeded;
-    succeeded.report = copy_report(resources.report, configuration_, reduce_blocks);
+    succeeded.report = detail::copy_report(resources.report, configuration_, reduce_blocks);
     return succeeded;
 }
 

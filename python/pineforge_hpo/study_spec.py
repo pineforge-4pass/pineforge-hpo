@@ -64,10 +64,12 @@ class DatasetSpec:
     """One OHLCV source and its PineForge timeframe interpretation."""
 
     id: str
-    ohlcv: Path
+    ohlcv: Path | None
     input_tf: str
     script_tf: str
     chart_timezone: str
+    ohlcv_bin: Path | None = None
+    verify_bin: str = "full"
 
 
 @dataclass(frozen=True)
@@ -489,10 +491,44 @@ def _parse_dataset(
     path = f"$.datasets[{index}]"
     raw = _object(value, path, issues)
     _check_unknown(
-        raw, {"id", "ohlcv", "input_tf", "script_tf", "chart_timezone"}, path, issues
+        raw,
+        {
+            "id",
+            "ohlcv",
+            "ohlcv_bin",
+            "verify_bin",
+            "input_tf",
+            "script_tf",
+            "chart_timezone",
+        },
+        path,
+        issues,
     )
     dataset_id = _nonempty_string(raw.get("id"), f"{path}.id", issues)
-    ohlcv = _resolve_path(raw.get("ohlcv"), f"{path}.ohlcv", base_dir, issues)
+    has_csv = "ohlcv" in raw
+    has_binary = "ohlcv_bin" in raw
+    verify_bin = raw.get("verify_bin", "full")
+    if verify_bin not in ("full", "sidecar"):
+        issues.append(ValidationIssue(f"{path}.verify_bin", "must be full or sidecar"))
+        verify_bin = "full"
+    if "verify_bin" in raw and not has_binary:
+        issues.append(ValidationIssue(f"{path}.verify_bin", "requires ohlcv_bin"))
+    if has_csv and has_binary:
+        issues.append(
+            ValidationIssue(path, "ohlcv and ohlcv_bin are mutually exclusive")
+        )
+    elif not has_csv and not has_binary:
+        issues.append(ValidationIssue(path, "one of ohlcv or ohlcv_bin is required"))
+    ohlcv = (
+        _resolve_path(raw.get("ohlcv"), f"{path}.ohlcv", base_dir, issues)
+        if has_csv
+        else None
+    )
+    ohlcv_bin = (
+        _resolve_path(raw.get("ohlcv_bin"), f"{path}.ohlcv_bin", base_dir, issues)
+        if has_binary
+        else None
+    )
     input_tf = _nonempty_string(raw.get("input_tf"), f"{path}.input_tf", issues)
     script_tf_raw = raw.get("script_tf", input_tf)
     if not isinstance(script_tf_raw, str):
@@ -503,10 +539,12 @@ def _parse_dataset(
     )
     return DatasetSpec(
         id=dataset_id,
-        ohlcv=ohlcv or (base_dir / "<invalid>"),
+        ohlcv=(ohlcv or (base_dir / "<invalid>")) if has_csv else None,
         input_tf=input_tf,
         script_tf=script_tf_raw,
         chart_timezone=chart_timezone,
+        ohlcv_bin=ohlcv_bin,
+        verify_bin=verify_bin,
     )
 
 
@@ -1243,11 +1281,15 @@ def load_study_spec(
                 )
             )
         for index, dataset in enumerate(datasets):
-            if not dataset.ohlcv.is_file():
+            source = (
+                dataset.ohlcv_bin if dataset.ohlcv_bin is not None else dataset.ohlcv
+            )
+            source_key = "ohlcv_bin" if dataset.ohlcv_bin is not None else "ohlcv"
+            if source is not None and not source.is_file():
                 issues.append(
                     ValidationIssue(
-                        f"$.datasets[{index}].ohlcv",
-                        f"file does not exist: {dataset.ohlcv}",
+                        f"$.datasets[{index}].{source_key}",
+                        f"file does not exist: {source}",
                     )
                 )
 

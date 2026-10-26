@@ -57,6 +57,9 @@ def main():
     if args.harness:
         module = importlib.util.spec_from_file_location("release_harness", args.harness)
         oracle = importlib.util.module_from_spec(module)
+        # The harness imports its sibling pf_sink lazily (engine 1.7.0), as a script it
+        # would have its own directory on sys.path.
+        sys.path.insert(0, str(args.harness.resolve().parent))
         module.loader.exec_module(oracle)
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)

@@ -1,20 +1,164 @@
 {
   "schema": "pineforge-hpo-failure-catalog-diff/v1",
   "from": {
-    "version": "1.6.2",
-    "tag": "v1.6.2",
+    "version": "1.7.0",
+    "tag": "v1.7.0",
     "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
   },
   "to": {
-    "version": "1.6.3",
-    "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
+    "version": null,
+    "unreleased": true,
+    "catalogSha256": "813b7b11790cdaf9517b4bd464c7220e0409cb077315e4205cc969c19e7a0f66"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
     "after": "pineforge-hpo-failure-catalog/v1"
   },
   "metadataChanges": [],
-  "added": [],
+  "added": [
+    {
+      "code": "hpo_walkforward_inventory_invalid",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "capability": {
+            "kind": "string",
+            "values": [
+              "selected_window_request_feed_inventory"
+            ]
+          },
+          "reason": {
+            "kind": "string",
+            "values": [
+              "artifact_mismatch",
+              "chart_mismatch",
+              "input_unresolved",
+              "invalid",
+              "missing",
+              "producer_unavailable",
+              "unbound",
+              "unknown"
+            ]
+          }
+        },
+        "templates": [
+          "Invalid request-feed inventory ({capability}: {reason})."
+        ],
+        "since": "1.8.0"
+      }
+    },
+    {
+      "code": "hpo_walkforward_plan_refused",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "option": {
+            "kind": "string",
+            "values": [
+              "calendar",
+              "end_ms",
+              "engine_timezone",
+              "fed_start_ms",
+              "input_tf",
+              "none",
+              "preroll_bars",
+              "rows",
+              "script_tf",
+              "session",
+              "start_ms",
+              "timeframes",
+              "timezone"
+            ]
+          },
+          "status": {
+            "kind": "string",
+            "values": [
+              "boundary_unaligned",
+              "calendar_unsupported",
+              "feed_range_invalid",
+              "internal_error",
+              "request_invalid",
+              "rows_unordered"
+            ]
+          }
+        },
+        "templates": [
+          "Selected-window plan refused ({status}: {option})."
+        ],
+        "since": "1.8.0"
+      }
+    },
+    {
+      "code": "hpo_walkforward_timeframe_unsupported",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "capability": {
+            "kind": "string",
+            "values": [
+              "selected_window_chart_timeframe",
+              "selected_window_request_feed_timeframe"
+            ]
+          }
+        },
+        "templates": [
+          "Unsupported selected-window timeframe ({capability})."
+        ],
+        "since": "1.8.0"
+      }
+    },
+    {
+      "code": "hpo_walkforward_unavailable",
+      "collection": "codes",
+      "entry": {
+        "class": "environment",
+        "retryable": false,
+        "args": {
+          "reason": {
+            "kind": "string",
+            "values": [
+              "engine_identity",
+              "engine_revision",
+              "engine_version_invalid",
+              "engine_version_missing",
+              "execution_observer_contract",
+              "execution_observer_version",
+              "missing_pf_execution_observer_version",
+              "missing_pf_selected_window_version",
+              "missing_strategy_execution_observation_v1",
+              "missing_strategy_selected_window_counts_v1",
+              "missing_strategy_set_execution_observer_v1",
+              "missing_strategy_set_selected_window_v1",
+              "selected_window_contract",
+              "selected_window_version",
+              "window_plan_changed",
+              "window_plan_hash_mismatch",
+              "window_plan_identity",
+              "window_plan_load",
+              "window_plan_manifest_invalid",
+              "window_plan_manifest_missing",
+              "window_plan_missing",
+              "window_plan_missing_pf_plan_selected_primary_v1",
+              "window_plan_missing_pf_selected_plan_version",
+              "window_plan_path",
+              "window_plan_self_test",
+              "window_plan_version"
+            ]
+          }
+        },
+        "templates": [
+          "Native walk-forward is unavailable ({reason})."
+        ],
+        "since": "1.8.0"
+      }
+    }
+  ],
   "changed": [],
   "removed": [],
   "deprecated": []
