@@ -14,7 +14,9 @@ body:
     id: contract
     attributes:
       label: Proposed user-facing contract
-      description: Show the desired C++, CLI, or StudySpec shape.
+      description: >-
+        Show the desired C++, Python, CLI, or StudySpec shape, including any proposed
+        result or typed failure fields.
       render: text
     validations:
       required: true

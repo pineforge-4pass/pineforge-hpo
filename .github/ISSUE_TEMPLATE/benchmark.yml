@@ -24,13 +24,31 @@ body:
     id: protocol
     attributes:
       label: Exact protocol
-      description: Problems, search spaces, budgets, seeds, startup policy, workers, and comparison metric.
+      description: >-
+        Include the exact commands, minimal StudySpec or benchmark configuration,
+        problems, search spaces, objective/direction, budgets, seeds, sampler settings,
+        startup policy, workers, schedule, and comparison metric. For strategy runs,
+        include execution.schedule; for native commands, include --sampler and --schedule.
+        Include batch size/lag, warm-start, pruning, stop controls, and native retention
+        settings (--trials-out/--best-k) when used. State whether it reproduces
+        with one worker, or not tried.
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
       label: Environment and raw artifacts
-      description: Versions, hardware, commands, raw CSV/JSON location, and summary calculation.
+      description: >-
+        Include hardware, OS/architecture, compiler, and applicable CMake/Python versions;
+        pineforge-hpo --version output if installed, pineforge_hpo_version from result
+        JSON when available, and the source tag/commit. For strategy runs, include the
+        actual engine/codegen tags or commits and engine C ABI version; compare the pair with the
+        [release notes](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/CHANGELOG.md).
+        Attach non-sensitive raw CSV/JSON, generated metadata sidecars, artifact
+        provenance, emitted numeric_build_identity fields, and the summary calculation.
+        For failed runs, include the process exit code, stdout/stderr, and any failure
+        object (origin, code, args, exit_code) or affected terminal records
+        (trial_id, status, error, failure_code, failure_origin, failure_args), preserving
+        nulls. Include captured --progress-fd or --trials-file JSONL if retention omits rows.
     validations:
       required: true

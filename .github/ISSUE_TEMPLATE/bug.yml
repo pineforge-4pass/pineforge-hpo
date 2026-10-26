@@ -12,15 +12,20 @@ body:
     id: version
     attributes:
       label: PineForge HPO version
-      description: Tag, VERSION value, or commit SHA.
-      placeholder: v0.1.0 or commit SHA
+      description: >-
+        Paste pineforge-hpo --version output if installed, plus pineforge_hpo_version
+        from the result JSON when available. Include the tag or commit for source builds.
+      placeholder: Version output or source tag/commit
     validations:
       required: true
   - type: textarea
     id: environment
     attributes:
       label: Environment
-      description: OS, architecture, compiler, CMake, Python, engine, and codegen versions.
+      description: >-
+        OS, architecture, compiler, and CMake/Python versions where used. Include the
+        actual engine/codegen tags or commits and engine C ABI version; compare the
+        pair with the [release notes](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/CHANGELOG.md).
       placeholder: macOS 15 arm64, AppleClang 17, CMake 4.2, Python 3.13...
     validations:
       required: true
@@ -28,7 +33,13 @@ body:
     id: reproduction
     attributes:
       label: Minimal reproduction
-      description: Include the smallest StudySpec, command, and input needed to reproduce it.
+      description: >-
+        Include the smallest StudySpec, exact command or library call, strategy, and
+        input fixture needed to reproduce it. Include sampler settings, seed, trial
+        budget, workers, and execution.schedule; for native commands, include --sampler
+        and --schedule. Include batch size/lag, warm-start, pruning, stop controls, and
+        native --trials-out/--best-k settings when used. State whether it reproduces
+        with one worker, or not tried.
       render: shell
     validations:
       required: true
@@ -41,14 +52,30 @@ body:
   - type: textarea
     id: actual
     attributes:
-      label: Actual behavior and complete output
+      label: Actual behavior, exit status, and complete output
+      description: >-
+        Include the process exit code and complete stdout/stderr. Attach or paste the
+        final JSON from stdout or --output, or its failure object with origin, code,
+        args, and exit_code. For trial failures, include full affected terminal records
+        with trial_id, status, error, failure_code, failure_origin, and failure_args.
+        Preserve null values and say if no JSON or metadata was emitted. For Python API
+        failures, include the traceback and exception .code, .origin, and .failure_args
+        when available; process exit status is not applicable to a library call.
+        See [failure reporting](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/docs/failure-codes.md).
     validations:
       required: true
   - type: textarea
     id: provenance
     attributes:
       label: Result provenance
-      description: Attach or paste non-sensitive artifact/study provenance and sampler fields.
+      description: >-
+        Attach non-sensitive artifact provenance.json and result metadata when available,
+        including artifact_key, sampler_implementation, sampler_config, seed,
+        candidate_policy, replay_contract, batch_size, batch_lag, trials_requested,
+        trials_completed, stop_reason, trials_out, and any numeric_build_identity and
+        parent_numeric_build_identity fields as emitted. Include a warm-start parent
+        if relevant. If final retention omits affected trials, attach captured
+        --progress-fd or --trials-file JSONL; the terminal progress stream is the billing record.
   - type: checkboxes
     id: checks
     attributes:
