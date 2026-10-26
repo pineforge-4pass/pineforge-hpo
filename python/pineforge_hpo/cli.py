@@ -1196,6 +1196,13 @@ def prepare_run(
 
 
 def _run(args: argparse.Namespace) -> int:
+    jailed = "PF_SCRATCH_ARENA_FD" in os.environ
+    if jailed and args.progress_fd == 5:
+        raise _cli_error(
+            "hpo_cli_usage",
+            {},
+            "--progress-fd 5 conflicts with the engine's inherited scratch arena",
+        )
     study = load_study_spec(args.study, continuation=args.warm_start is not None)
     command, artifact = prepare_run(
         study.spec_path,
@@ -1215,17 +1222,20 @@ def _run(args: argparse.Namespace) -> int:
         )
     if args.no_improvement_trials:
         command.extend(("--no-improvement-trials", str(args.no_improvement_trials)))
+    if jailed and args.output:
+        # The native trial spool needs the writable output parent even though Python
+        # adds metadata and publishes the final document after the child returns.
+        command.extend(("--output", str(Path(args.output).expanduser().resolve())))
+    inherited_fds = (args.progress_fd,) if args.progress_fd is not None else ()
+    if jailed:
+        inherited_fds = tuple(dict.fromkeys((*inherited_fds, 5)))
     try:
         completed = subprocess.run(
             command,
             text=True,
             capture_output=True,
             check=False,
-            **(
-                {"pass_fds": (args.progress_fd,)}
-                if args.progress_fd is not None
-                else {}
-            ),
+            **({"pass_fds": inherited_fds} if inherited_fds else {}),
         )
     except OSError as error:
         raise _cli_error(

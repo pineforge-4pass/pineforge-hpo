@@ -1,4 +1,5 @@
 #include <pineforge/hpo/error.hpp>
+#include <pineforge/hpo/jailed_profile.hpp>
 #include <pineforge/hpo/return_stats.hpp>
 #include <pineforge/hpo/return_stats_identity.hpp>
 #include <pineforge/hpo/trial_executor.hpp>
@@ -419,6 +420,12 @@ TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
                     configuration_.input_timeframe + "' aggregated to chart '" +
                     configuration_.script_timeframe + "' is not supported");
     }
+    if (detail::jailed_profile_requested()) {
+        // First attach belongs to single-threaded startup, before any worker is created.
+        // This handle carries no trial settings and cannot publish a report or result.
+        detail::TrialResources validation(*plugin_, plugin_->create_strategy());
+        detail::prepare_jailed_handle(*plugin_, validation.strategy());
+    }
 }
 
 TrialExecutor::TrialExecutor(std::shared_ptr<const StrategyPlugin> plugin,
@@ -441,6 +448,17 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
     detail::TrialResources resources(*plugin_, plugin_->create_strategy());
     detail::apply_trial_settings(*plugin_, resources.strategy(), inputs, strategy_overrides,
                                  configuration_);
+    try {
+        detail::prepare_jailed_handle(*plugin_, resources.strategy());
+    } catch (const EngineError& error) {
+        TrialExecutionResult failed;
+        failed.status = TrialExecutionStatus::kEngineError;
+        failed.error = error.what();
+        failed.error_code = error.code().empty() ? std::nullopt
+                                                 : std::make_optional(error.code());
+        failed.error_args = error.raw_args();
+        return failed;
+    }
 
     plugin_->run_backtest_full(resources.strategy(), view_.data(),
                                static_cast<int>(bar_count), configuration_.input_timeframe,

@@ -1,4 +1,5 @@
 #include <pineforge/hpo/error.hpp>
+#include <pineforge/hpo/jailed_profile.hpp>
 #include <pineforge/hpo/selected_evaluation.hpp>
 
 #include <exception>
@@ -194,6 +195,7 @@ SelectedEvaluationResult SelectedEvaluation::evaluate(
     const pf_execution_observer_v1 observer{sizeof(pf_execution_observer_v1), 1, &context,
                                            before_results};
     plugin.set_execution_observer(resources.strategy(), &observer);
+    detail::prepare_jailed_handle(plugin, resources.strategy());
     plugin.run_backtest_full(resources.strategy(), bars, static_cast<int>(count),
                              configuration.input_timeframe, configuration.script_timeframe,
                              configuration.bar_magnifier, configuration.magnifier_samples,

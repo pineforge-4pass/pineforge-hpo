@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- REFUSAL FIX, not a feature: hpo trials refuse in the engine's jailed profile; this makes the existing engine C ABI path reachable.
+  Preserve inherited arena fd 5, preflight native admission before workers, and install the
+  engine's bounded-memory default tables on fresh trial and selected-window handles.
 - Add native selected-window planning over an immutable `DatasetView`, with bounded input,
   typed planner refusals, plan validation and retained rows/counts for OOS evaluation.
 - Produce and publish source- and plugin-bound request-feed inventories when codegen

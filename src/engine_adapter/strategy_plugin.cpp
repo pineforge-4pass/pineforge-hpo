@@ -6,6 +6,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <iomanip>
 #include <limits>
 #include <locale>
@@ -193,6 +194,11 @@ StrategyPlugin::StrategyPlugin(std::filesystem::path path) : path_(std::move(pat
             library_handle_, "strategy_set_symbol_facts");
         strategy_set_symbol_feed_ = load_optional_symbol<StrategySetSymbolFeedFn>(
             library_handle_, "strategy_set_symbol_feed");
+        strategy_set_scratch_tables_v1_ = load_optional_symbol<StrategySetScratchTablesFn>(
+            library_handle_, "strategy_set_scratch_tables_v1");
+        strategy_require_report_scratch_arena_v1_ =
+            load_optional_symbol<StrategyRequireScratchArenaFn>(
+                library_handle_, "strategy_require_report_scratch_arena_v1");
         run_backtest_full_ =
             load_required_symbol<RunBacktestFullFn>(library_handle_, path_, "run_backtest_full");
         strategy_get_last_error_ = load_required_symbol<StrategyGetLastErrorFn>(
@@ -270,6 +276,8 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
       strategy_set_syminfo_session_(other.strategy_set_syminfo_session_),
       strategy_set_symbol_facts_(other.strategy_set_symbol_facts_),
       strategy_set_symbol_feed_(other.strategy_set_symbol_feed_),
+      strategy_set_scratch_tables_v1_(other.strategy_set_scratch_tables_v1_),
+      strategy_require_report_scratch_arena_v1_(other.strategy_require_report_scratch_arena_v1_),
       run_backtest_full_(other.run_backtest_full_),
       strategy_get_last_error_(other.strategy_get_last_error_),
       strategy_get_last_error_code_(other.strategy_get_last_error_code_),
@@ -303,6 +311,8 @@ StrategyPlugin::StrategyPlugin(StrategyPlugin&& other) noexcept
     other.strategy_set_syminfo_session_ = nullptr;
     other.strategy_set_symbol_facts_ = nullptr;
     other.strategy_set_symbol_feed_ = nullptr;
+    other.strategy_set_scratch_tables_v1_ = nullptr;
+    other.strategy_require_report_scratch_arena_v1_ = nullptr;
     other.run_backtest_full_ = nullptr;
     other.strategy_get_last_error_ = nullptr;
     other.strategy_get_last_error_code_ = nullptr;
@@ -344,6 +354,8 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     strategy_set_syminfo_session_ = other.strategy_set_syminfo_session_;
     strategy_set_symbol_facts_ = other.strategy_set_symbol_facts_;
     strategy_set_symbol_feed_ = other.strategy_set_symbol_feed_;
+    strategy_set_scratch_tables_v1_ = other.strategy_set_scratch_tables_v1_;
+    strategy_require_report_scratch_arena_v1_ = other.strategy_require_report_scratch_arena_v1_;
     run_backtest_full_ = other.run_backtest_full_;
     strategy_get_last_error_ = other.strategy_get_last_error_;
     strategy_get_last_error_code_ = other.strategy_get_last_error_code_;
@@ -378,6 +390,8 @@ StrategyPlugin& StrategyPlugin::operator=(StrategyPlugin&& other) noexcept {
     other.strategy_set_syminfo_session_ = nullptr;
     other.strategy_set_symbol_facts_ = nullptr;
     other.strategy_set_symbol_feed_ = nullptr;
+    other.strategy_set_scratch_tables_v1_ = nullptr;
+    other.strategy_require_report_scratch_arena_v1_ = nullptr;
     other.run_backtest_full_ = nullptr;
     other.strategy_get_last_error_ = nullptr;
     other.strategy_get_last_error_code_ = nullptr;
@@ -521,6 +535,42 @@ void StrategyPlugin::set_symbol_info(pf_strategy_t strategy, const SymbolInfo& i
         strategy_set_syminfo_timezone_(strategy, info.timezone.c_str());
     if (!info.session.empty())
         strategy_set_syminfo_session_(strategy, info.session.c_str());
+}
+
+void StrategyPlugin::set_scratch_tables_bounded_default(pf_strategy_t strategy) const {
+    if (!strategy_set_scratch_tables_v1_)
+        throw TypedHpoError<std::runtime_error>(
+            "strategy_library_incompatible", {{"reason", "setter_missing"}},
+            "jailed execution requires strategy_set_scratch_tables_v1", FailureOrigin::Engine);
+    if (!strategy)
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "cannot set scratch tables on a null strategy handle");
+    static_assert(sizeof(ScratchTablesV1) == 104,
+                  "scratch-table v1 has four uint32 headers and eleven uint64 maxima");
+    static_assert(offsetof(ScratchTablesV1, maxima) == 16,
+                  "scratch-table v1 maxima begin at byte 16");
+    ScratchTablesV1 descriptor{};
+    descriptor.struct_size = sizeof(descriptor);
+    descriptor.version = 1;
+    descriptor.backend = 1;
+    if (strategy_set_scratch_tables_v1_(strategy, &descriptor) != 0)
+        throw EngineError(last_error_code(strategy), last_error_args(strategy),
+                          "the engine refused its bounded-memory scratch tables: " +
+                              last_error(strategy));
+}
+
+void StrategyPlugin::require_scratch_arena(pf_strategy_t strategy) const {
+    if (!strategy_require_report_scratch_arena_v1_)
+        throw TypedHpoError<std::runtime_error>(
+            "strategy_library_incompatible", {{"reason", "symbol_missing"}},
+            "jailed execution requires strategy_require_report_scratch_arena_v1",
+            FailureOrigin::Engine);
+    if (!strategy)
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "cannot admit a scratch arena on a null strategy handle");
+    if (strategy_require_report_scratch_arena_v1_(strategy) != 0)
+        throw EngineError(last_error_code(strategy), last_error_args(strategy),
+                          "the engine refused the scratch arena: " + last_error(strategy));
 }
 
 void StrategyPlugin::run_backtest_full(pf_strategy_t strategy,
