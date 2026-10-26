@@ -867,6 +867,81 @@ void real_rows(const pfh::WindowPlanHelper& helper) {
                        {"value_ms=0", "input_tf='60'", "script_tf='5'"},
                        [&] { (void)pfh::plan_selected_window(helper, tape, wanted); });
     });
+    row("real-strict-feed-gap-accepted", [&] {
+        // Proves REAL strict mode accepts a session-gap row; false pass: a refusal or hpo rewrite
+        // would not return. Replaces the strict-refusal expectation the real helper did not
+        // confirm.
+        const auto strict_owner = std::make_shared<const pfh::Dataset>(
+            std::vector<pf_bar_t>{
+                {100.0, 102.0, 98.0, 101.0, 10.0, minute(540)},
+                {100.0, 102.0, 98.0, 101.0, 10.0, minute(570)},
+                {100.0, 102.0, 98.0, 101.0, 10.0, minute(600)},
+                {100.0, 102.0, 98.0, 101.0, 10.0, minute(605)},
+            });
+        const pfh::DatasetView strict_tape(strict_owner);
+        auto wanted = request();
+        wanted.start_ms = minute(600);
+        wanted.end_ms = minute(615);
+        wanted.fed_start_ms = minute(540);
+        wanted.session = "0900-0930,1000-1030";
+        wanted.feed_tolerant = false;
+
+        std::unique_ptr<pfh::SelectedPlan> strict_plan;
+        std::string strict_error;
+        try {
+            strict_plan = std::make_unique<pfh::SelectedPlan>(
+                pfh::plan_selected_window(helper, strict_tape, wanted));
+        } catch (const std::exception& error) {
+            strict_error = error.what();
+        }
+
+        wanted.feed_tolerant = true;
+        std::unique_ptr<pfh::SelectedPlan> tolerant_plan;
+        std::string tolerant_error;
+        try {
+            tolerant_plan = std::make_unique<pfh::SelectedPlan>(
+                pfh::plan_selected_window(helper, strict_tape, wanted));
+        } catch (const std::exception& error) {
+            tolerant_error = error.what();
+        }
+
+        const auto return_text = [](bool returned, const std::string& error) {
+            return std::string(returned ? "true" : "false") + ", error='" + error + "'";
+        };
+        require(strict_plan != nullptr && tolerant_plan != nullptr,
+                "strict returned=" + return_text(strict_plan != nullptr, strict_error) +
+                    "; tolerant returned=" +
+                    return_text(tolerant_plan != nullptr, tolerant_error));
+
+        const auto counts_text = [](const pfh::SelectedExpectedCounts& counts) {
+            return std::string("fed_input_bars=") + std::to_string(counts.fed_input_bars) +
+                   ", fed_script_bars=" + std::to_string(counts.fed_script_bars) +
+                   ", preroll_input_bars=" + std::to_string(counts.preroll_input_bars) +
+                   ", preroll_script_bars=" + std::to_string(counts.preroll_script_bars) +
+                   ", window_input_bars=" + std::to_string(counts.window_input_bars) +
+                   ", window_script_bars=" + std::to_string(counts.window_script_bars);
+        };
+        const auto& strict_counts = strict_plan->expected;
+        const auto& tolerant_counts = tolerant_plan->expected;
+        require(strict_counts.fed_input_bars == tolerant_counts.fed_input_bars &&
+                    strict_counts.fed_script_bars == tolerant_counts.fed_script_bars &&
+                    strict_counts.preroll_input_bars == tolerant_counts.preroll_input_bars &&
+                    strict_counts.preroll_script_bars == tolerant_counts.preroll_script_bars &&
+                    strict_counts.window_input_bars == tolerant_counts.window_input_bars &&
+                    strict_counts.window_script_bars == tolerant_counts.window_script_bars,
+                "strict/tolerant expected counts differ: strict{" +
+                    counts_text(strict_counts) + "} tolerant{" +
+                    counts_text(tolerant_counts) + "}");
+        require(strict_counts.window_input_bars == 2 && tolerant_counts.window_input_bars == 2,
+                "window_input_bars strict=" +
+                    std::to_string(strict_counts.window_input_bars) +
+                    ", tolerant=" + std::to_string(tolerant_counts.window_input_bars));
+        require(strict_counts.fed_input_bars >= strict_counts.window_input_bars + 1 &&
+                    tolerant_counts.fed_input_bars >= tolerant_counts.window_input_bars + 1,
+                "fed tail does not retain the 09:30 row: strict{" +
+                    counts_text(strict_counts) + "} tolerant{" +
+                    counts_text(tolerant_counts) + "}");
+    });
     row("real-feed-range-unreachable-after-bounding", [&] {
         // The valid Dataset contains both offending kinds, but plan_selected_window excludes
         // them. Direct REAL-helper calls prove the status and its typed conversion, not a fake
