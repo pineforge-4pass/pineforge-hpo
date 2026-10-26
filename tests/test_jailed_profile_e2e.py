@@ -407,26 +407,77 @@ def run_suite(args):
     direction = document["objective"]["direction"]
     require(direction in ("maximize", "minimize"), f"unknown objective direction: {direction}")
     objective_sign = -1 if direction == "maximize" else 1
-    eligible = [
-        trial
-        for trial in expected["trials"]
-        if trial["status"] == "ok"
-        and trial["feasible"] is True
-        and trial["objective"] is not None
-        and math.isfinite(trial["objective"])
-    ]
-    require(len(eligible) >= 2, f"baseline has fewer than two eligible trials: {eligible}")
-    ranked = sorted(
-        eligible,
-        key=lambda trial: (objective_sign * trial["objective"], trial["trial_id"]),
+
+    def rank_best_k(trials, k):
+        eligible = [
+            trial
+            for trial in trials
+            if trial["status"] == "ok"
+            and trial["feasible"] is True
+            and trial["objective"] is not None
+            and math.isfinite(trial["objective"])
+        ]
+        ranked = sorted(
+            eligible,
+            key=lambda trial: (objective_sign * trial["objective"], trial["trial_id"]),
+        )
+        return ranked, sorted(ranked[:k], key=lambda trial: trial["trial_id"])
+
+    eligible, expected_best_k = rank_best_k(expected["trials"], 2)
+    eligible_trial_ids = [trial["trial_id"] for trial in eligible]
+    require(
+        len(eligible) > 2,
+        f"baseline must have more than k=2 eligible trials: "
+        f"count={len(eligible)}, trial_ids={eligible_trial_ids}",
     )
-    expected_best_k = sorted(ranked[:2], key=lambda trial: trial["trial_id"])
-    prepared_unjailed = invoke(
-        "prepare-best-k-unjailed",
-        [*native_command, "--trials-out", "best-k", "--best-k", "2"],
-        environment,
-        "closed",
-    )
+
+    def require_best_k_progress(name, result, progress_events, k):
+        require(
+            len(progress_events) == len(expected["trials"]),
+            f"{name}: expected {len(expected['trials'])} progress records: {progress_events}",
+        )
+        require(
+            progress_events == expected["trials"],
+            f"{name}: progress records differ from the baseline: {progress_events}",
+        )
+        progress_ranked, progress_best_k = rank_best_k(progress_events, k)
+        require(
+            len(result["trials"]) == k < len(progress_events),
+            f"{name}: retention must omit a streamed trial: {result}",
+        )
+        require(
+            result["trials"] == progress_best_k == result["summary"]["best_k"],
+            f"{name}: retained rows differ from this run's top-{k}: "
+            f"expected={progress_best_k}, result={result}",
+        )
+        require(result["trials"] == expected_best_k, f"{name}: {result}")
+        omitted = progress_ranked[k:]
+        require(len(omitted) == 1, f"{name}: expected one omitted eligible trial: {omitted}")
+        require(
+            omitted[0] in progress_events
+            and omitted[0] not in result["trials"]
+            and omitted[0] not in result["summary"]["best_k"],
+            f"{name}: rank-{k + 1} trial must be streamed but not retained: {omitted[0]}",
+        )
+
+    # Compare jailed and unjailed best-k runs at the same k=2; k=1 is only a control.
+    best_k_command = [*native_command, "--trials-out", "best-k", "--best-k", "2"]
+    # These three-record streams fit in the pipe; read only after invoke returns.
+    reader, writer = os.pipe()
+    progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(writer)
+    try:
+        prepared_unjailed = invoke(
+            "prepare-best-k-unjailed",
+            [*best_k_command, "--progress-fd", str(progress)],
+            environment,
+            "closed",
+            pass_fds=(progress,),
+        )
+    finally:
+        os.close(progress)
+    with os.fdopen(reader, encoding="utf-8") as stream:
+        unjailed_events = [json.loads(line) for line in stream if line.strip()]
     require(prepared_unjailed.returncode == 0, prepared_unjailed.stderr)
     unjailed_result = json.loads(prepared_unjailed.stdout)
     require(unjailed_result["ok"] is True, unjailed_result)
@@ -440,17 +491,27 @@ def run_suite(args):
         unjailed_result["summary"],
     )
     require(unjailed_result["summary"]["best_k"] == expected_best_k, unjailed_result)
+    require_best_k_progress("prepare-best-k-unjailed", unjailed_result, unjailed_events, 2)
     # Pre-create invoke's captures so the directory check measures native residue.
     for name in ("prepare-best-k-jailed", "prepare-best-k-one-jailed"):
         for suffix in ("stdout", "stderr"):
             checked_path(directory / f"{name}.{suffix}").touch()
     before = sorted(p.name for p in directory.iterdir())
     # Best-k opens no trial spool.
-    prepared_jailed = invoke(
-        "prepare-best-k-jailed",
-        [*native_command, "--trials-out", "best-k", "--best-k", "2"],
-        jailed_environment,
-    )
+    reader, writer = os.pipe()
+    progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(writer)
+    try:
+        prepared_jailed = invoke(
+            "prepare-best-k-jailed",
+            [*best_k_command, "--progress-fd", str(progress)],
+            jailed_environment,
+            pass_fds=(progress,),
+        )
+    finally:
+        os.close(progress)
+    with os.fdopen(reader, encoding="utf-8") as stream:
+        jailed_events = [json.loads(line) for line in stream if line.strip()]
     require(prepared_jailed.returncode == 0, prepared_jailed.stderr)
     jailed_result = json.loads(prepared_jailed.stdout)
     require(jailed_result["ok"] is True, jailed_result)
@@ -463,6 +524,7 @@ def run_suite(args):
         not differing_keys,
         f"prepare_run jailed/unjailed result keys differ: {differing_keys}",
     )
+    require_best_k_progress("prepare-best-k-jailed", jailed_result, jailed_events, 2)
     after = sorted(p.name for p in directory.iterdir())
     require(
         after == before,
@@ -482,7 +544,7 @@ def run_suite(args):
         control_result,
     )
     require(len(control_result["trials"]) == 1, control_result)
-    require(control_result["trials"] == ranked[:1], control_result)
+    require(control_result["trials"] == eligible[:1], control_result)
     require(
         len(control_result["trials"]) != len(jailed_result["trials"]),
         "prepare_run best-k control did not change the retained trial count",
@@ -497,7 +559,73 @@ def run_suite(args):
     record(
         "prepare-run-best-k-jailed",
         trial_ids=[trial["trial_id"] for trial in jailed_result["trials"]],
+        eligible_trial_ids=eligible_trial_ids,
+        progress_trial_ids=[trial["trial_id"] for trial in jailed_events],
+        unjailed_progress_trial_ids=[trial["trial_id"] for trial in unjailed_events],
         control_trial_ids=[trial["trial_id"] for trial in control_result["trials"]],
+    )
+    # Include invoke's capture files in the parent listing before creating the output home.
+    for suffix in ("stdout", "stderr"):
+        checked_path(directory / f"prepare-best-k-jailed-with-output.{suffix}").touch()
+    output_parent_before = sorted(p.name for p in directory.iterdir())
+    output_directory = checked_path(directory / "prepare-best-k-output")
+    output_directory.mkdir(mode=0o700)
+    output_before = sorted(p.name for p in output_directory.iterdir())
+    require(output_before == [], f"output directory must start empty: {output_before}")
+    output_path = checked_path(output_directory / "result.json")
+    reader, writer = os.pipe()
+    progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(writer)
+    try:
+        prepared_output = invoke(
+            "prepare-best-k-jailed-with-output",
+            [*best_k_command, "--output", str(output_path), "--progress-fd", str(progress)],
+            jailed_environment,
+            pass_fds=(progress,),
+        )
+    finally:
+        os.close(progress)
+    with os.fdopen(reader, encoding="utf-8") as stream:
+        output_events = [json.loads(line) for line in stream if line.strip()]
+    require(prepared_output.returncode == 0, prepared_output.stderr)
+    output_result = json.loads(prepared_output.stdout)
+    require(output_result["ok"] is True, output_result)
+    # Native truncates/writes directly, not atomically via temp+rename; the Python
+    # wrapper performs that rewrite. Check complete JSON and no residue after exit.
+    require(output_path.is_file(), f"native output file is missing: {output_path}")
+    output_document = read_json(output_path)
+    for key in ("trials", "trials_out", "best_k", "summary"):
+        require(
+            output_document[key] == output_result[key] == jailed_result[key],
+            f"prepare_run best-k output key {key} differs: "
+            f"file={output_document[key]}, stdout={output_result[key]}, "
+            f"no_output={jailed_result[key]}",
+        )
+    require_best_k_progress(
+        "prepare-best-k-jailed-with-output", output_result, output_events, 2
+    )
+    # Best-k opens no trial spool, so --output's parent is only the result file's home.
+    output_after = sorted(p.name for p in output_directory.iterdir())
+    require(
+        output_after == ["result.json"],
+        f"prepare_run best-k left files under {output_directory}: "
+        f"before={output_before}, after={output_after}",
+    )
+    output_parent_after = sorted(p.name for p in directory.iterdir())
+    require(
+        output_parent_after == sorted([*output_parent_before, output_directory.name]),
+        f"prepare_run best-k output changed files under {directory}: "
+        f"before={output_parent_before}, after={output_parent_after}",
+    )
+    require(not missing_tmp.exists(), f"prepare_run best-k output created {missing_tmp}")
+    record(
+        "prepare-run-best-k-jailed-with-output",
+        trial_ids=[trial["trial_id"] for trial in output_result["trials"]],
+        eligible_trial_ids=eligible_trial_ids,
+        progress_trial_ids=[trial["trial_id"] for trial in output_events],
+        output_file=output_path.name,
+        output_entries_before=output_before,
+        output_entries_after=output_after,
     )
     collision = invoke(
         "progress-collision",
