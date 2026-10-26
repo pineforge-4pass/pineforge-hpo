@@ -9,6 +9,9 @@
   trial spool needs a writable parent), and on Linux a present arena that is not a sealed
   memfd is now refused at startup (engine admission rule) where 1.7.0 ran with disk-backed
   tables, including when `PF_SCRATCH_ARENA_JAILED` is unset or 0.
+- Follow-up to the walk-forward foundations: test hardening and documentation fixes; an unreadable
+  planner helper no longer fails an ordinary artifact build (no `window_plan` block is published);
+  ancestry refusals now identify the offending path, mode (octal) and uid.
 - Add native selected-window planning over an immutable `DatasetView`, with bounded input,
   typed planner refusals, plan validation and retained rows/counts for OOS evaluation.
 - Produce and publish source- and plugin-bound request-feed inventories when codegen

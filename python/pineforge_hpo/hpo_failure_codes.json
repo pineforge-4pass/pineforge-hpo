@@ -222,7 +222,7 @@
       "templates": [
         "Invalid request-feed inventory ({capability}: {reason})."
       ],
-      "since": "1.7.1"
+      "since": "1.8.0"
     },
     "hpo_walkforward_plan_refused": {
       "class": "request",
@@ -261,7 +261,7 @@
       "templates": [
         "Selected-window plan refused ({status}: {option})."
       ],
-      "since": "1.7.1"
+      "since": "1.8.0"
     },
     "hpo_walkforward_timeframe_unsupported": {
       "class": "request",
@@ -278,7 +278,7 @@
       "templates": [
         "Unsupported selected-window timeframe ({capability})."
       ],
-      "since": "1.7.1"
+      "since": "1.8.0"
     },
     "hpo_walkforward_unavailable": {
       "class": "environment",
@@ -319,7 +319,7 @@
       "templates": [
         "Native walk-forward is unavailable ({reason})."
       ],
-      "since": "1.7.1"
+      "since": "1.8.0"
     },
     "hpo_warm_start_rejected": {
       "class": "continuation",

@@ -10,6 +10,7 @@ before normalization or filesystem access. There is no implicit path search or t
 fallback. A worker owns one helper and reuses it for its planning calls.
 The loader requires that every ancestor of the run directory is root- or user-owned and not
 writable by others unless sticky.
+ACLs and a group-only owner are not covered by this ancestry check.
 
 The loader opens the source read-only with close-on-exec and `O_NONBLOCK`, so opening a FIFO
 never waits for a writer. It requires a regular file and copies from that held descriptor into
@@ -85,12 +86,12 @@ the helper unchanged; no boundary is snapped. An empty cut is passed to the plan
 a possibly null pointer with zero count. An invalid F/E relationship also reaches request
 admission without unsigned range underflow.
 
-Binary search relies on Dataset's existing strict timestamp ordering: the owned constructor
-checks it in `src/engine_adapter/dataset.cpp:205-208`, CSV loading uses that constructor, and
-mapped loading scans it at `:449-452`. Preserve the owner's immutability, including mapped
-bytes; mapped-file verification remains the owner's run-boundary duty. Valid Dataset inputs
-cannot reach `rows_unordered`, and the bounded cut prevents `feed_range_invalid`. Their
-refusal mappings remain defined for every engine status.
+Binary search relies on Dataset's existing strict timestamp ordering: the
+`Dataset(std::vector<pf_bar_t>)` constructor checks it, CSV loading uses that constructor, and
+mapped loading calls `check_binary_records`. Preserve the owner's immutability, including mapped
+bytes; mapped-file verification remains the owner's run-boundary duty. Valid Dataset inputs cannot
+reach `rows_unordered`, and the bounded cut prevents `feed_range_invalid`. Their refusal mappings
+remain defined for every engine status.
 
 Planner refusals throw `TypedHpoError<std::invalid_argument>` with
 `hpo_walkforward_plan_refused` and exactly two closed string arguments, `status` and `option`.

@@ -144,7 +144,7 @@ admission refused until enrichment is re-run. Ordinary execution ignores the
 `window_plan` block and does not require a planner companion.
 
 `plan_selected_window` throws `TypedHpoError<std::invalid_argument>` with
-`hpo_walkforward_plan_refused`, class `request`, `retryable: false`, since `1.7.1`.
+`hpo_walkforward_plan_refused`, class `request`, `retryable: false`, since `1.8.0`.
 Its template is `Selected-window plan refused ({status}: {option}).`; both arguments
 are required closed strings. The `option` values are `calendar`, `end_ms`,
 `engine_timezone`, `fed_start_ms`, `input_tf`, `none`, `preroll_bars`, `rows`,
@@ -171,7 +171,7 @@ pre-roll shortfall is returned for caller policy.
 
 ### Request-feed inventory admission
 
-Since 1.7.1 the selected-study Python API raises `RequestTimeframeError` or
+Since 1.8.0 the selected-study Python API raises `RequestTimeframeError` or
 `RequestInventoryError` (both `HpoError` and `RuntimeError`). Both codes are class
 `request`, `retryable: false`. They translate the engine's
 `window_mode_unsupported` admission vocabulary into closed HPO arguments:
