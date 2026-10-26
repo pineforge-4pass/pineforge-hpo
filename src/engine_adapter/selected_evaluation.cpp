@@ -104,6 +104,8 @@ void validate_request(const pf_bar_t* bars, std::size_t count, std::int64_t star
         expected.preroll_script_bars > expected.fed_script_bars ||
         expected.window_script_bars != expected.fed_script_bars - expected.preroll_script_bars ||
         expected.fed_script_bars > count ||
+        // Defensive: the clauses above already bound window_script_bars by count (<= INT_MAX),
+        // so no request can isolate this one in a test.
         expected.window_script_bars >=
             static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
         invariant("inconsistent planned selected counts");

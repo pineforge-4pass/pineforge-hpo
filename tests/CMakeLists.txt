@@ -365,6 +365,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_omit_6>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_no_version>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_selected_no_settings>)
+    if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
+        set_tests_properties(pineforge_hpo_selected_evaluation PROPERTIES
+            ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
+    endif()
 
     add_executable(pineforge_hpo_test_window_plan test_window_plan.cpp)
     target_link_libraries(pineforge_hpo_test_window_plan PRIVATE

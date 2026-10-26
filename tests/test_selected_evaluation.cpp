@@ -386,6 +386,9 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int count,
     report->equity_curve[0].equity = 1000;
     report->equity_curve[1].equity = 1005;
     report->equity_curve[2].equity = 1012.5;
+    for (std::int64_t index = 0; index < 3; ++index)
+        report->equity_curve[index].time_ms =
+            1'704'067'320'000LL + index * 60'000;
     event("allocate_report");
     if (!hit("never_callback")) {
         dispatch_boundary(state);
@@ -864,6 +867,9 @@ void test_return_statistics(const char* path) {
     StrategyPlugin plugin(path);
     const auto bars = input_bars();
     std::optional<std::string> identity_refusal;
+    const bool identity_required =
+        std::getenv("PFH_REQUIRE_RETURN_STATS_IDENTITY") != nullptr &&
+        std::string(std::getenv("PFH_REQUIRE_RETURN_STATS_IDENTITY")) == "1";
     try {
         require_return_stats_identity();
     } catch (const HpoError& error) {
@@ -892,12 +898,20 @@ void test_return_statistics(const char* path) {
         config.pbo_blocks = row.blocks;
         // Use the same build-admission functions as the helper; every branch asserts its result.
         if (identity_refusal) {
+            if (identity_required)
+                throw std::runtime_error(
+                    std::string("selected return statistics ") + row.name +
+                    " refused because the build identity is required");
             const auto message = expect_failure([&] { (void)evaluate(plugin, bars, config); },
                 "hpo_toolchain_unavailable", "native_runner", FailureOrigin::Hpo);
             require(message == *identity_refusal, "helper did not propagate the identity refusal");
             require_not_started(fixture, row.name);
             std::cout << "selected return statistics " << row.name << ": identity refused\n";
         } else if (!contraction_free) {
+            if (identity_required)
+                throw std::runtime_error(
+                    std::string("selected return statistics ") + row.name +
+                    " refused because contraction-free reduction is required");
             const auto message = expect_failure([&] { (void)evaluate(plugin, bars, config); },
                                                 "hpo_invariant", "", FailureOrigin::Hpo);
             require(message == "selected evaluation: return statistics need a build without "
@@ -912,6 +926,15 @@ void test_return_statistics(const char* path) {
                     std::string(row.name) + ": requested return series was not captured");
             require(result.counts.window_script_bars == 2 && result.report.equity_curve.size() == 3,
                     "return statistics did not use the selected three-point curve");
+            const auto status_index = static_cast<std::size_t>(ReturnStatistic::Status);
+            const auto expected_status =
+                static_cast<double>(ReturnStatsStatus::InsufficientCount);
+            if (row.bar)
+                require(result.report.return_bar.values[status_index] == expected_status,
+                        "bar return series status changed");
+            if (row.monthly)
+                require(result.report.return_monthly.values[status_index] == expected_status,
+                        "monthly return series status changed");
             if (row.blocks != 0) {
                 // K=2 intervals, S=2: the smallest half holds 1 interval, below the required 2.
                 // A skipped reduction leaves NotRequested, so it cannot satisfy this assertion.
