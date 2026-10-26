@@ -292,8 +292,8 @@ jobs:
 
       - name: Lint and format release notification code
         run: |
-          ruff check scripts/notify_release_hub.py tests/release
-          ruff format --check scripts/notify_release_hub.py tests/release
+          ruff check scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
+          ruff format --check --diff scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
 
   native:
     name: Native (${{ matrix.os }})
@@ -577,8 +577,76 @@ jobs:
           ruff check python tests/python benchmarks
           ruff format --check python tests/python benchmarks
 
+  memory-gate:
+    name: HPO memory growth gate
+    needs: [authz, changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the exact head and pinned submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build time
+
+      - name: Configure PineForge Engine headers
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
+
+      - name: Configure PineForge HPO
+        run: |
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
+            -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Build PineForge Engine runtime
+        run: cmake --build external/pineforge-engine/build --target pineforge -j4
+
+      - name: Gate child peak RSS growth
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'timestamp,open,high,low,close,volume' \
+            '1700000000000,100,102,99,101,10' \
+            '1700000060000,100,102,99,101,10' > build/memory-gate-bars.csv
+          python3 -I scripts/ci_memory_gate.py \
+            --native build/bin/pineforge-hpo-native \
+            --plugin build/lib/fake_strategy.so \
+            --ohlcv build/memory-gate-bars.csv \
+            --artifacts build/memory-gate --bars-axis
+
   build-gate:
-    needs: [authz, changes, workflow-lint, light, release-notification, native, python]
+    needs: [authz, changes, workflow-lint, light, release-notification, native, python, memory-gate]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
@@ -696,7 +764,7 @@ jobs:
         shell: "bash"
         env:
           NEEDS: "${{ toJSON(needs) }}"
-          HEAVY_JOBS: "[\"native\",\"python\",\"release-notification\"]"
+          HEAVY_JOBS: "[\"native\",\"python\",\"release-notification\",\"memory-gate\"]"
           DOCS_ONLY: "${{ steps.classify.outputs.docs_only }}"
           WORKFLOWS_ONLY: "${{ steps.classify.outputs.workflows_only }}"
         run: |
