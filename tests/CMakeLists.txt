@@ -578,6 +578,28 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
         "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}"
         "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
     target_compile_options(pineforge-hpo-native-proof PRIVATE -Wall -Wextra -Wpedantic)
+    # Like the proof CLI, this includes the real coordinator in a separate test translation.
+    # Its hook definition and controlled clock never reach pineforge-hpo-native.
+    add_executable(pineforge_hpo_test_evaluation_completion test_evaluation_completion.cpp)
+    target_compile_definitions(pineforge_hpo_test_evaluation_completion PRIVATE
+        PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
+    target_link_libraries(pineforge_hpo_test_evaluation_completion PRIVATE
+        PineForgeHPO::engine_adapter Threads::Threads)
+    add_dependencies(pineforge_hpo_test_evaluation_completion ${PFH_RETURN_STATS_IDENTITY_TARGET})
+    target_include_directories(pineforge_hpo_test_evaluation_completion PRIVATE
+        "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
+    target_compile_options(pineforge_hpo_test_evaluation_completion PRIVATE
+        -Wall -Wextra -Wpedantic)
+    if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+        target_compile_options(pineforge_hpo_test_evaluation_completion PRIVATE
+            -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_test_evaluation_completion PRIVATE
+            -fsanitize=address,undefined)
+    elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+        target_compile_options(pineforge_hpo_test_evaluation_completion PRIVATE
+            -fsanitize=thread -fno-omit-frame-pointer)
+        target_link_options(pineforge_hpo_test_evaluation_completion PRIVATE -fsanitize=thread)
+    endif()
     add_executable(pineforge_hpo_pbo_curve_reference EXCLUDE_FROM_ALL real_strategy_curve.cpp)
     target_compile_definitions(pineforge_hpo_pbo_curve_reference PRIVATE PINEFORGE_HPO_PBO_PROBE=1)
     target_link_libraries(pineforge_hpo_pbo_curve_reference PRIVATE PineForgeHPO::engine_adapter)
@@ -878,6 +900,13 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             set_property(TEST pineforge_hpo_no_improvement APPEND PROPERTY
                 ENVIRONMENT "PFH_REQUIRE_FIFO_HANDSHAKE=1")
+            add_test(NAME pineforge_hpo_evaluation_completion
+                COMMAND "${Python3_EXECUTABLE}" -I
+                    "${CMAKE_CURRENT_SOURCE_DIR}/test_evaluation_completion.py"
+                    $<TARGET_FILE:pineforge-hpo-native>
+                    $<TARGET_FILE:pineforge_hpo_test_evaluation_completion>
+                    $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                    "${CMAKE_CURRENT_BINARY_DIR}/evaluation-completion")
         endif()
         add_test(NAME pineforge_hpo_sobol_cli
             COMMAND "${Python3_EXECUTABLE}"
