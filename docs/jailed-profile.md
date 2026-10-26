@@ -123,6 +123,13 @@ its spool can use that parent directory. A memory-backed writable scratch
 filesystem is sufficient for the spool and result. Without a writable output
 parent, native selects a non-empty `TMPDIR`, otherwise `/tmp`.
 
+`pineforge-hpo run` also accepts `--trials-out all|best-k|none` and `--best-k N`.
+With `--trials-out best-k` or `none`, native opens no trial spool, so no writable
+output parent is needed for the spool. A precompiled study that needs no other
+HPO scratch can publish its bounded result on stdout without `--output` or
+`--trials-file`; explicitly requested result or trial files still need writable
+destinations.
+
 Finite-space coverage above cardinality 100,000,000, and finite warm-history
 coverage using the file-backed ordinal index, can also require `std::tmpfile`.
 This fix does not remove either HPO storage path, make array reports bounded,

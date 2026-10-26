@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -295,6 +296,294 @@ def run_suite(args):
     require(events == actual["trials"], f"lost or changed progress records: {events}")
     require(not missing_tmp.exists(), "the engine fallback directory became usable")
     record("jailed-study-and-progress", trials=actual["trials"], progress_events=events)
+    direction = document["objective"]["direction"]
+    require(direction in ("maximize", "minimize"), f"objective direction: {direction!r}")
+
+    def rank_best_k(trials, k):
+        eligible = [
+            trial
+            for trial in trials
+            if trial["status"] == "ok"
+            and trial["feasible"]
+            and trial["objective"] is not None
+            and math.isfinite(trial["objective"])
+        ]
+        ranked = sorted(
+            eligible,
+            key=lambda trial: (
+                -trial["objective"] if direction == "maximize" else trial["objective"],
+                trial["trial_id"],
+            ),
+        )
+        # Native selects by objective, then emits retained winners in trial-ID order.
+        return ranked, sorted(ranked[:k], key=lambda trial: trial["trial_id"])
+
+    def require_best_k_progress(name, result, progress_events, k):
+        require(
+            len(progress_events) == len(expected["trials"]) == 3,
+            {
+                "run": name,
+                "progress_count": len(progress_events),
+                "baseline_count": len(expected["trials"]),
+                "progress_events": progress_events,
+            },
+        )
+        require(
+            progress_events == expected["trials"],
+            {
+                "run": name,
+                "progress_events": progress_events,
+                "baseline_trials": expected["trials"],
+            },
+        )
+        ranked, progress_best_k = rank_best_k(progress_events, k)
+        _, baseline_best_k = rank_best_k(expected["trials"], k)
+        require(
+            result["trials_out"] == "best-k" and result["best_k"] == k,
+            {"run": name, "requested_k": k, "result": result},
+        )
+        require(
+            len(result["trials"]) == k < len(progress_events),
+            {
+                "run": name,
+                "requested_k": k,
+                "retained_count": len(result["trials"]),
+                "progress_count": len(progress_events),
+            },
+        )
+        require(
+            result["trials"] == progress_best_k == result["summary"]["best_k"],
+            {
+                "run": name,
+                "progress_best_k": progress_best_k,
+                "trials": result["trials"],
+                "summary_best_k": result["summary"]["best_k"],
+            },
+        )
+        require(
+            progress_best_k == baseline_best_k,
+            {
+                "run": name,
+                "progress_best_k": progress_best_k,
+                "baseline_best_k": baseline_best_k,
+            },
+        )
+        discarded = ranked[k:]
+        require(
+            len(discarded) == len(progress_events) - k,
+            {"run": name, "discarded": discarded, "progress_events": progress_events, "k": k},
+        )
+        for rank, trial in enumerate(discarded, start=k + 1):
+            trial_id = trial["trial_id"]
+            require(
+                trial in progress_events
+                and all(row["trial_id"] != trial_id for row in result["trials"])
+                and all(row["trial_id"] != trial_id for row in result["summary"]["best_k"]),
+                {
+                    "run": name,
+                    "discarded_rank": rank,
+                    "discarded_trial_id": trial_id,
+                    "progress_events": progress_events,
+                    "trials": result["trials"],
+                    "summary_best_k": result["summary"]["best_k"],
+                },
+            )
+
+    eligible, expected_best_k = rank_best_k(expected["trials"], 2)
+    eligible_trial_ids = [trial["trial_id"] for trial in eligible]
+    require(
+        len(eligible) > 2,
+        {
+            "required_more_than": 2,
+            "eligible_count": len(eligible),
+            "eligible_trial_ids": eligible_trial_ids,
+        },
+    )
+    require(
+        len(expected_best_k) == 2,
+        {"direction": direction, "baseline_trials": expected["trials"]},
+    )
+    baseline_trial_bytes = checked_path(directory / "baseline.jsonl").read_bytes()
+    best_k_results = {}
+    best_k_trial_bytes = {}
+    best_k_progress_events = {}
+    # Both the unjailed reference and the jailed comparison request the same K=2.
+    for name, env, mode in (
+        ("unjailed-best-k", environment, "closed"),
+        ("jailed-best-k", jailed_environment, "sealed"),
+    ):
+        reader, writer = os.pipe()
+        progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+        os.close(writer)
+        try:
+            result = invoke(
+                name,
+                cli_command(
+                    name,
+                    "--trials-out",
+                    "best-k",
+                    "--best-k",
+                    "2",
+                    "--progress-fd",
+                    str(progress),
+                ),
+                env,
+                mode,
+                pass_fds=(progress,),
+            )
+        finally:
+            os.close(progress)
+        with os.fdopen(reader, encoding="utf-8") as stream:
+            progress_events = [json.loads(line) for line in stream if line.strip()]
+        require(
+            result.returncode == 0,
+            f"{name}: exit {result.returncode}, stdout={result.stdout!r}, "
+            f"stderr={result.stderr!r}",
+        )
+        retained = read_json(directory / f"{name}.json")
+        require_best_k_progress(name, retained, progress_events, 2)
+        require(retained["trials_out"] == "best-k", retained)
+        require(len(retained["trials"]) == 2, retained)
+        require(
+            retained["trials"] == expected_best_k,
+            {"run": name, "actual": retained["trials"], "expected": expected_best_k},
+        )
+        summary = retained["summary"]
+        require(
+            sum(summary["counts_by_status"].values()) == len(expected["trials"]),
+            {"run": name, "summary": summary, "baseline_trials": len(expected["trials"])},
+        )
+        require(
+            summary["best_k"] == expected_best_k,
+            {"run": name, "actual": summary["best_k"], "expected": expected_best_k},
+        )
+        trial_bytes = checked_path(directory / f"{name}.jsonl").read_bytes()
+        require(
+            trial_bytes == baseline_trial_bytes,
+            f"{name}: trial bytes={trial_bytes!r}, baseline={baseline_trial_bytes!r}",
+        )
+        best_k_results[name] = retained
+        best_k_trial_bytes[name] = trial_bytes
+        best_k_progress_events[name] = progress_events
+    unjailed_best_k = best_k_results["unjailed-best-k"]
+    jailed_best_k = best_k_results["jailed-best-k"]
+    for field in ("trials", "trials_out", "best_k", "summary"):
+        require(
+            jailed_best_k[field] == unjailed_best_k[field],
+            {
+                "field": field,
+                "jailed": jailed_best_k[field],
+                "unjailed": unjailed_best_k[field],
+            },
+        )
+    require(
+        best_k_trial_bytes["jailed-best-k"] == best_k_trial_bytes["unjailed-best-k"],
+        f"jailed trial bytes={best_k_trial_bytes['jailed-best-k']!r}, "
+        f"unjailed={best_k_trial_bytes['unjailed-best-k']!r}",
+    )
+    # A jailed K=1 control must retain fewer rows than the same fixture with K=2.
+    reader, writer = os.pipe()
+    progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(writer)
+    try:
+        wrong_k = invoke(
+            "jailed-best-k-wrong-k",
+            cli_command(
+                "jailed-best-k-wrong-k",
+                "--trials-out",
+                "best-k",
+                "--best-k",
+                "1",
+                "--progress-fd",
+                str(progress),
+            ),
+            jailed_environment,
+            pass_fds=(progress,),
+        )
+    finally:
+        os.close(progress)
+    with os.fdopen(reader, encoding="utf-8") as stream:
+        wrong_k_events = [json.loads(line) for line in stream if line.strip()]
+    require(
+        wrong_k.returncode == 0,
+        f"wrong-k: exit {wrong_k.returncode}, stdout={wrong_k.stdout!r}, "
+        f"stderr={wrong_k.stderr!r}",
+    )
+    wrong_k_document = read_json(directory / "jailed-best-k-wrong-k.json")
+    require_best_k_progress("jailed-best-k-wrong-k", wrong_k_document, wrong_k_events, 1)
+    require(
+        wrong_k_document["trials"] != jailed_best_k["trials"]
+        and len(wrong_k_document["trials"]) < len(jailed_best_k["trials"]),
+        {"wrong_k_trials": wrong_k_document["trials"], "k_2_trials": jailed_best_k["trials"]},
+    )
+    record(
+        "jailed-best-k-equals-unjailed",
+        trials=jailed_best_k["trials"],
+        summary=jailed_best_k["summary"],
+        eligible_trial_ids=eligible_trial_ids,
+        progress_events=best_k_progress_events,
+        wrong_k_work_exit=wrong_k.returncode,
+        wrong_k_trials=wrong_k_document["trials"],
+        wrong_k_summary=wrong_k_document["summary"],
+        wrong_k_progress_events=wrong_k_events,
+    )
+    reader, writer = os.pipe()
+    progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(writer)
+    try:
+        stdout_only = invoke(
+            "jailed-best-k-no-writable-dir",
+            [
+                str(interpreter),
+                "-m",
+                "pineforge_hpo.cli",
+                "run",
+                str(study),
+                "--native",
+                str(native),
+                "--trials-out",
+                "best-k",
+                "--best-k",
+                "2",
+                "--progress-fd",
+                str(progress),
+            ],
+            jailed_environment,
+            pass_fds=(progress,),
+        )
+    finally:
+        os.close(progress)
+    with os.fdopen(reader, encoding="utf-8") as stream:
+        stdout_events = [json.loads(line) for line in stream if line.strip()]
+    require(
+        stdout_only.returncode == 0,
+        f"stdout-only: exit {stdout_only.returncode}, stdout={stdout_only.stdout!r}, "
+        f"stderr={stdout_only.stderr!r}",
+    )
+    stdout_document = json.loads(stdout_only.stdout)
+    require_best_k_progress("jailed-best-k-no-writable-dir", stdout_document, stdout_events, 2)
+    for field in ("trials", "trials_out", "best_k", "summary"):
+        require(
+            stdout_document[field] == unjailed_best_k[field],
+            {
+                "field": field,
+                "stdout_only": stdout_document[field],
+                "unjailed": unjailed_best_k[field],
+            },
+        )
+    require(
+        not missing_tmp.exists(),
+        f"fallback directory {missing_tmp}: exists={missing_tmp.exists()}",
+    )
+    record(
+        "jailed-best-k-no-writable-dir",
+        work_exit=stdout_only.returncode,
+        trials=stdout_document["trials"],
+        summary=stdout_document["summary"],
+        missing_tmp_exists=missing_tmp.exists(),
+        eligible_trial_ids=eligible_trial_ids,
+        progress_events=stdout_events,
+    )
     candidate = str(expected["trials"][0]["parameters"]["ETH threshold"])
     for name, env in (
         ("unjailed-probe", environment),

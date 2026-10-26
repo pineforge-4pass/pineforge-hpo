@@ -1115,9 +1115,9 @@ non-empty `TMPDIR`, or `/tmp` when `TMPDIR` is unset or empty. The directory is 
 files; creation failures do not trigger a retry in another directory. The index is addressed relative
 to the first trial ID of the run, so high continuation IDs and gaps are supported.
 The spool holds the whole trial array on disk until the process exits.
-On read-only root filesystems, `--output` in a writable place and `--trials-out none|best-k` are
-remedies for the native CLI only. The Python `run` wrapper forwards neither `--output` nor
-`--trials-out`, so for `pineforge-hpo run` only a writable `TMPDIR` (or `/tmp`) helps.
+On read-only root filesystems, native `run` and the jailed Python `run` wrapper can use a writable
+`--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it, and the Python
+`run` wrapper forwards `--trials-out` and `--best-k`.
 If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
 not in the native process RSS.
 The final `trials` array copies those rendered rows in trial-ID order
