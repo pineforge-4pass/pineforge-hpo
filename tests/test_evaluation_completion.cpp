@@ -68,7 +68,7 @@ void serve_commands() {
         if (command == 'S') {
             // The parent sends the real SIGTERM. Acknowledge handler delivery, not RunState's
             // observation: this must never call stopped() or set the study's stop reason.
-            while (!signal_cancelled.load(std::memory_order_relaxed))
+            while (!pineforge::hpo::cli::signal_cancelled.load(std::memory_order_relaxed))
                 std::this_thread::yield();
             write_all(event_fd, "S");
         } else if (command == 'D') {
