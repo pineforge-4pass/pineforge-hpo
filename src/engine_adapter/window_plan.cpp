@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
@@ -324,11 +325,13 @@ void require_safe_ancestry(const std::filesystem::path& directory_path) {
             io_failure("cannot inspect planner snapshot ancestry", ancestor);
         if (!S_ISDIR(identity.st_mode) || (identity.st_uid != 0 && identity.st_uid != owner) ||
             ((identity.st_mode & 0022) != 0 && (identity.st_mode & S_ISVTX) == 0)) {
+            char mode_text[16];
+            std::snprintf(mode_text, sizeof(mode_text), "0%o",
+                          static_cast<unsigned>(identity.st_mode & 07777));
             unavailable(
                 "window_plan_load",
                 "planner snapshot ancestry is unsafe: path='" + ancestor.string() +
-                    "', mode=" +
-                    std::to_string(static_cast<unsigned long>(identity.st_mode & 07777)) +
+                    "', mode=" + mode_text +
                     ", uid=" +
                     std::to_string(static_cast<unsigned long>(identity.st_uid)));
         }

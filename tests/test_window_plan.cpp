@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -426,13 +427,14 @@ void loader_failure_rows(const fs::path& fake, const fs::path& base) {
         struct stat parent_identity {};
         require(::stat(parent.c_str(), &parent_identity) == 0,
                 "cannot inspect unsafe ancestor");
-        require(diagnostic.find(parent.string()) != std::string::npos,
+        // The loader prints the canonical path (a symlinked /tmp or /var on macOS differs).
+        require(diagnostic.find(fs::canonical(parent).string()) != std::string::npos,
                 "ancestry diagnostic omitted the offending path");
-        require(diagnostic.find(
-                    "mode=" +
-                    std::to_string(static_cast<unsigned long>(parent_identity.st_mode & 07777))) !=
-                    std::string::npos,
-                "ancestry diagnostic omitted the offending mode");
+        char expected_mode[16];
+        std::snprintf(expected_mode, sizeof(expected_mode), "mode=0%o",
+                      static_cast<unsigned>(parent_identity.st_mode & 07777));
+        require(diagnostic.find(expected_mode) != std::string::npos,
+                "ancestry diagnostic omitted the offending mode in octal");
         require(diagnostic.find(
                     "uid=" + std::to_string(static_cast<unsigned long>(parent_identity.st_uid))) !=
                     std::string::npos,

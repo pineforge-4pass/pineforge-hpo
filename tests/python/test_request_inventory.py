@@ -103,6 +103,8 @@ class RequestInventoryAdmissionTests(unittest.TestCase):
                 spec.loader.exec_module(engine_module)
             finally:
                 sys.path.pop(0)
+                sys.modules.pop("request_feed_inventory", None)
+                sys.modules.pop(spec.name, None)
         except (ImportError, OSError, SyntaxError) as error:
             reason = f"engine support_policy is not importable: {error}"
             print(f"SKIP {reason}")
