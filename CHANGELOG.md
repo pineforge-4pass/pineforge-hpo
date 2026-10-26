@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Follow-up to the walk-forward foundations: test hardening and documentation fixes (no behaviour
+  change); ancestry refusals now identify the offending path, mode and uid.
 - Add native selected-window planning over an immutable `DatasetView`, with bounded input,
   typed planner refusals, plan validation and retained rows/counts for OOS evaluation.
 - Produce and publish source- and plugin-bound request-feed inventories when codegen

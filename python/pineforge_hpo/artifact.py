@@ -559,6 +559,8 @@ class ArtifactBuilder:
             request_identity = manifest.get("request_identity")
             if "window_plan" in manifest or "window_plan" in provenance:
                 candidates = []
+                # Repair only from a candidate whose block and file-local
+                # request_identity validate.
                 for location, document in (
                     ("manifest", manifest),
                     ("provenance", provenance),
@@ -1147,11 +1149,11 @@ class ArtifactBuilder:
                 provenance["input_kind_schema"] = 1
             try:
                 window_plan = associate_window_plan(engine)
-            except WindowPlanError:
+            except (WindowPlanError, OSError):
                 window_plan = None
             if window_plan is not None:
                 manifest["window_plan"] = window_plan
-                provenance["window_plan"] = window_plan
+                provenance["window_plan"] = copy.deepcopy(window_plan)
                 require_window_plan_block(manifest, provenance)
             (staging / "manifest.json").write_text(
                 _canonical_json(manifest) + "\n", encoding="utf-8"

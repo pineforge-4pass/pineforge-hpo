@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -17,6 +18,7 @@ from pineforge_hpo.error import HpoError  # noqa: E402
 from pineforge_hpo.request_inventory import (  # noqa: E402
     RequestInventoryError,
     RequestTimeframeError,
+    SUPPORT_POLICY,
     admit_request_feed_inventory,
     read_request_feed_inventory,
 )
@@ -78,6 +80,39 @@ class RequestInventoryAdmissionTests(unittest.TestCase):
         self.assert_reason(caught.exception, "producer_unavailable")
         self.assertIsInstance(caught.exception.__cause__, ImportError)
         self.assertIn("pineforge_codegen.request_feed_inventory", str(caught.exception))
+
+    def test_support_policy_matches_engine_candidate_constants(self) -> None:
+        # Proves Python admission mirrors the checked-out engine candidate policy.
+        # False pass: changing one policy silently leaves the layers divergent.
+        engine_dir = ROOT / "external" / "pineforge-engine" / "docker"
+        engine_path = engine_dir / "selected_window_report.py"
+        if not engine_path.is_file():
+            reason = f"engine support_policy source is absent: {engine_path}"
+            print(f"SKIP {reason}")
+            raise unittest.SkipTest(reason)
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "_pineforge_engine_selected_window_report",
+                engine_path,
+            )
+            if spec is None or spec.loader is None:
+                raise ImportError("no import loader was available")
+            engine_module = importlib.util.module_from_spec(spec)
+            sys.path.insert(0, str(engine_path.parent))
+            try:
+                spec.loader.exec_module(engine_module)
+            finally:
+                sys.path.pop(0)
+        except (ImportError, OSError, SyntaxError) as error:
+            reason = f"engine support_policy is not importable: {error}"
+            print(f"SKIP {reason}")
+            raise unittest.SkipTest(reason) from error
+
+        expected = {
+            key: list(value) if isinstance(value, tuple) else value
+            for key, value in SUPPORT_POLICY.items()
+        }
+        self.assertEqual(engine_module.support_policy(), expected)
 
     def test_empty_entries_are_complete_and_all_primary_tokens_are_admitted(
         self,

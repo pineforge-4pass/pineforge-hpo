@@ -63,6 +63,8 @@ struct SelectedPlanningTestAccess {
     /// Applies the production refusal mapping to a real-helper or hand-built result.
     /// @param plan Result with a valid helper descriptor.
     /// @param request Unmodified request, used only for diagnostic values.
+    /// Unknown status words (> 6) reach invariant("status", ...) only through this seam;
+    /// the helper already rejects them.
     /// @throws HpoError for a planner refusal or an unknown status/option.
     static void check_status(const PlanResult& plan, const PlanRequest& request);
 };

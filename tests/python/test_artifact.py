@@ -590,6 +590,50 @@ class RequestInventoryArtifactTests(unittest.TestCase):
         self.transpile.assert_called_once()
         self.assertEqual(len(self.log.read_text().splitlines()), 1)
 
+    def test_real_codegen_inventory_reaches_builder_publication(self) -> None:
+        # Proves pinned codegen, the builder and the real binder share exact bytes.
+        # False pass: a fake transpile result or copied hash claims publication.
+        from pineforge_hpo.transpile import (
+            codegen_identity as real_codegen_identity,
+            transpile_source as real_transpile_source,
+        )
+
+        source = (
+            '//@version=6\nstrategy("inventory e2e", initial_capital=7000)\n'
+            'length = input.int(7, "Length")\nplot(ta.sma(close, length))\n'
+        )
+        with (
+            patch(
+                "pineforge_hpo.artifact.codegen_identity",
+                wraps=real_codegen_identity,
+            ) as identity,
+            patch(
+                "pineforge_hpo.artifact.transpile_source",
+                wraps=real_transpile_source,
+            ) as transpile,
+        ):
+            artifact = self.builder.build(source, filename="inventory-e2e.pine")
+
+        identity.assert_called_once_with()
+        transpile.assert_called_once_with(source, filename="inventory-e2e.pine")
+        manifest, provenance = self.documents(artifact)
+        sidecar = json.loads(
+            (artifact.plugin_path.parent / "request_feed_inventory.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(manifest["request_feed_inventory"], sidecar)
+        self.assertEqual(provenance["request_feed_inventory"], sidecar)
+        self.assertEqual(
+            sidecar["source_sha256"],
+            hashlib.sha256(artifact.generated_cpp_path.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            sidecar["artifact_sha256"],
+            hashlib.sha256(artifact.plugin_path.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(len(self.log.read_text(encoding="utf-8").splitlines()), 1)
+
     def test_binder_errors_and_each_hash_mismatch_publish_nothing(self) -> None:
         # Proves each binding failure is an inventory-stage build failure.
         # False pass: reporting an error after publication leaves a reusable artifact.
@@ -608,17 +652,22 @@ class RequestInventoryArtifactTests(unittest.TestCase):
                 )
                 if fault != "binder":
                     bound[fault] = "0" * 64
-                with (
-                    patch(
+                if fault == "binder":
+                    binder_patch = patch(
+                        "pineforge_codegen.request_feed_inventory."
+                        "bind_request_feed_inventory",
+                        side_effect=RequestFeedInventoryError(
+                            "intentional binder failure"
+                        ),
+                    )
+                else:
+                    binder_patch = patch(
                         "pineforge_codegen.request_feed_inventory."
                         "bind_request_feed_inventory",
                         return_value=bound,
-                        side_effect=(
-                            RequestFeedInventoryError("intentional binder failure")
-                            if fault == "binder"
-                            else None
-                        ),
-                    ) as bind,
+                    )
+                with (
+                    binder_patch as bind,
                     patch.object(builder, "plugin_validator") as validate,
                 ):
                     with self.assertRaises(ArtifactBuildError) as caught:
@@ -1042,6 +1091,26 @@ class WindowPlanArtifactTests(unittest.TestCase):
         with patch(
             "pineforge_hpo.artifact.associate_window_plan",
             side_effect=WindowPlanError("window_plan_missing", "unreadable helper"),
+        ) as associate:
+            artifact = self.builder.build("source")
+        associate.assert_called_once()
+        for document in self.documents(artifact):
+            self.assertNotIn("window_plan", document)
+        with self.assertRaises(WindowPlanError) as caught:
+            require_window_plan_block(*self.documents(artifact))
+        self.assert_reason(caught, "window_plan_manifest_missing")
+        self.assertEqual(
+            self.builder.enrich_window_plan(artifact),
+            self.expected_block(self.helper),
+        )
+
+    def test_association_oserror_does_not_fail_an_ordinary_build(self) -> None:
+        # Proves an association OSError leaves the ordinary build intact.
+        # False pass: the OSError escapes the hook, or the build recompiles.
+        self.helper.write_bytes(b"abc")
+        with patch(
+            "pineforge_hpo.artifact.associate_window_plan",
+            side_effect=OSError("unreadable helper"),
         ) as associate:
             artifact = self.builder.build("source")
         associate.assert_called_once()

@@ -172,7 +172,8 @@ void write_bytes(const fs::path& path, const std::string& bytes) {
 }
 
 template <typename Function>
-void expect_reason(const char* reason, Function function, const char* diagnostic = nullptr) {
+std::string expect_reason(const char* reason, Function function,
+                         const char* diagnostic = nullptr) {
     try {
         function();
     } catch (const pfh::TypedHpoError<std::runtime_error>& error) {
@@ -184,7 +185,7 @@ void expect_reason(const char* reason, Function function, const char* diagnostic
         require(diagnostic == nullptr || std::string(error.what()).find(diagnostic) !=
                                              std::string::npos,
                 "failure came from the wrong loader stage: " + std::string(error.what()));
-        return;
+        return error.what();
     }
     throw std::runtime_error(std::string("missing refusal: ") + reason);
 }
@@ -419,9 +420,23 @@ void loader_failure_rows(const fs::path& fake, const fs::path& base) {
             private_directory(base, "ancestry-parent"), "ancestry parent chmod");
         const auto directory = private_directory(parent, "private-child");
         require(::chmod(parent.c_str(), 0770) == 0, "cannot prepare unsafe ancestor");
-        expect_reason("window_plan_load", [&] {
+        const auto diagnostic = expect_reason("window_plan_load", [&] {
             (void)pfh::WindowPlanHelper::load(fake, pfh::detail::sha256(fake_bytes), directory);
-        }, "planner snapshot ancestry must not be writable by others");
+        });
+        struct stat parent_identity {};
+        require(::stat(parent.c_str(), &parent_identity) == 0,
+                "cannot inspect unsafe ancestor");
+        require(diagnostic.find(parent.string()) != std::string::npos,
+                "ancestry diagnostic omitted the offending path");
+        require(diagnostic.find(
+                    "mode=" +
+                    std::to_string(static_cast<unsigned long>(parent_identity.st_mode & 07777))) !=
+                    std::string::npos,
+                "ancestry diagnostic omitted the offending mode");
+        require(diagnostic.find(
+                    "uid=" + std::to_string(static_cast<unsigned long>(parent_identity.st_uid))) !=
+                    std::string::npos,
+                "ancestry diagnostic omitted the offending uid");
         require(::chmod(parent.c_str(), 0700) == 0, "cannot restore test ancestor permissions");
     });
     row("fifo-source-refused-without-writer", [&] {
@@ -785,7 +800,8 @@ void swap_rows(const std::string& original, const std::string& digest, const fs:
     });
     row("real-snapshot-directory-replaced-after-close", [&] {
         // Red if the whole post-close directory/file identity refusal block is removed:
-        // the decoy is private (0700) and its same-named 0400 file is a loadable helper.
+        // retained directory: "snapshot-directory-retained"; decoy: "snapshot-directory".
+        // The decoy is private (0700) and its same-named 0400 file is a loadable helper.
         const auto directory = checked_path(
             private_directory(base, "snapshot-directory"), "snapshot directory rename source");
         const auto saved = checked_path(

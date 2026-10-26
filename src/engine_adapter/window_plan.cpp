@@ -324,8 +324,13 @@ void require_safe_ancestry(const std::filesystem::path& directory_path) {
             io_failure("cannot inspect planner snapshot ancestry", ancestor);
         if (!S_ISDIR(identity.st_mode) || (identity.st_uid != 0 && identity.st_uid != owner) ||
             ((identity.st_mode & 0022) != 0 && (identity.st_mode & S_ISVTX) == 0)) {
-            unavailable("window_plan_load",
-                        "planner snapshot ancestry must not be writable by others");
+            unavailable(
+                "window_plan_load",
+                "planner snapshot ancestry is unsafe: path='" + ancestor.string() +
+                    "', mode=" +
+                    std::to_string(static_cast<unsigned long>(identity.st_mode & 07777)) +
+                    ", uid=" +
+                    std::to_string(static_cast<unsigned long>(identity.st_uid)));
         }
         const auto parent = ancestor.parent_path();
         if (parent == ancestor)
@@ -512,6 +517,7 @@ WindowPlanHelper WindowPlanHelper::load_impl(
         if (directory_before.st_dev != directory_now.st_dev ||
             directory_before.st_ino != directory_now.st_ino ||
             !same_source(snapshot_identity, snapshot_now) || !S_ISREG(snapshot_now.st_mode) ||
+            // Defense in depth: no row can isolate this check because chmod changes ctime.
             (snapshot_now.st_mode & 0222) != 0) {
             unavailable("window_plan_changed", "planner snapshot path changed before loading");
         }
