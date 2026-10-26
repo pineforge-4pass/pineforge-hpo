@@ -68,7 +68,12 @@ def canonical_abi_bytes(raw, structure):
 
 
 def oracle_probe():
-    harness, output = Path(sys.argv[2]), Path(sys.argv[3])
+    from test_jailed_profile_e2e import checked_path
+
+    harness = checked_path(sys.argv[2], stream=sys.stderr)
+    output = checked_path(sys.argv[3], stream=sys.stderr)
+    for value in sys.argv[4:]:
+        checked_path(value, stream=sys.stderr)
     # Engine 1.7.0's harness imports its sibling pf_sink lazily; running it as a script
     # puts its directory on sys.path, so loading it by path must do the same.
     sys.path.insert(0, str(harness.resolve().parent))
@@ -609,6 +614,7 @@ if selected <= open
 
 def main():
     from pineforge_hpo.cli import prepare_run
+    from test_jailed_profile_e2e import checked_path
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--native", type=Path, required=True)
@@ -616,6 +622,10 @@ def main():
     parser.add_argument("--harness", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    args.native = checked_path(args.native)
+    args.probe = checked_path(args.probe)
+    args.harness = checked_path(args.harness)
+    args.output = checked_path(args.output)
     module = importlib.util.spec_from_file_location("release_abi", args.harness)
     abi = importlib.util.module_from_spec(module)
     # Same as oracle_probe: the harness imports its sibling pf_sink lazily.
@@ -895,6 +905,33 @@ if eth4 < threshold or eth4 <= ethD
     (directory / "equality-evidence.json").write_text(
         json.dumps(metadata, indent=2) + "\n"
     )
+    # Reuse this gate's real artifact: no second codegen/compiler run in the jail.
+    # CI builds the engine and installs the Python packages before entering this gate.
+    jailed_document = copy.deepcopy(document)
+    jailed_document["strategies"][0].pop("source")
+    jailed_document["strategies"][0]["artifact"] = artifact["plugin"]
+    jailed_document["execution"]["workers"] = 2
+    jailed_spec = checked_path(directory / "jailed-study.json")
+    jailed_spec.write_text(json.dumps(jailed_document), encoding="utf-8")
+    jailed_script = checked_path(ROOT / "tests/test_jailed_profile_e2e.py")
+    jailed = subprocess.run(
+        [
+            sys.executable,
+            str(jailed_script),
+            "--native",
+            str(args.native),
+            "--probe",
+            str(args.probe),
+            "--harness",
+            str(args.harness),
+            "--study",
+            str(jailed_spec),
+            "--output",
+            str(checked_path(directory / "jailed-profile")),
+        ],
+        check=False,
+    )
+    require(jailed.returncode == 0, "real jailed-profile gate failed")
 
 
 if __name__ == "__main__":

@@ -428,7 +428,7 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         endif()
     endforeach()
 
-    foreach(extension CODED STATUS CHECKED BAD_ABI)
+    foreach(extension CODED STATUS CHECKED BAD_ABI SCRATCH SCRATCH_NO_TABLES SCRATCH_NO_ARENA)
         string(TOLOWER "${extension}" extension_name)
         add_library(pineforge_hpo_fake_strategy_${extension_name} SHARED test_engine_adapter.cpp)
         target_compile_definitions(pineforge_hpo_fake_strategy_${extension_name} PRIVATE
@@ -451,6 +451,16 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
                 -fsanitize=thread)
         endif()
     endforeach()
+    foreach(plugin pineforge_hpo_fake_strategy_scratch
+                   pineforge_hpo_fake_strategy_scratch_no_tables
+                   pineforge_hpo_fake_strategy_scratch_no_arena)
+        target_compile_definitions(${plugin} PRIVATE
+            PINEFORGE_HPO_FAKE_PLUGIN_SCRATCH=1 PINEFORGE_HPO_FAKE_PLUGIN_CODED=1)
+    endforeach()
+    target_compile_definitions(pineforge_hpo_fake_strategy_scratch_no_tables PRIVATE
+        PINEFORGE_HPO_FAKE_PLUGIN_NO_TABLES=1)
+    target_compile_definitions(pineforge_hpo_fake_strategy_scratch_no_arena PRIVATE
+        PINEFORGE_HPO_FAKE_PLUGIN_NO_ARENA=1)
 
     add_executable(pineforge_hpo_test_engine_adapter test_engine_adapter.cpp)
     target_link_libraries(pineforge_hpo_test_engine_adapter PRIVATE
@@ -521,7 +531,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         pineforge_hpo_fake_strategy_coded
         pineforge_hpo_fake_strategy_status
         pineforge_hpo_fake_strategy_checked
-        pineforge_hpo_fake_strategy_bad_abi)
+        pineforge_hpo_fake_strategy_bad_abi
+        pineforge_hpo_fake_strategy_scratch
+        pineforge_hpo_fake_strategy_scratch_no_tables
+        pineforge_hpo_fake_strategy_scratch_no_arena)
 
     add_test(NAME pineforge_hpo_engine_adapter
         COMMAND pineforge_hpo_test_engine_adapter
@@ -531,7 +544,10 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             $<TARGET_FILE:pineforge_hpo_fake_strategy_coded>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_status>
             $<TARGET_FILE:pineforge_hpo_fake_strategy_checked>
-            $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>)
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_bad_abi>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_scratch>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_scratch_no_tables>
+            $<TARGET_FILE:pineforge_hpo_fake_strategy_scratch_no_arena>)
     if(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY)
         set_property(TEST pineforge_hpo_engine_adapter APPEND PROPERTY
             ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
@@ -597,7 +613,14 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
 
     add_executable(pineforge_hpo_symbol_feed_report symbol_feed_report.cpp)
     target_include_directories(pineforge_hpo_symbol_feed_report PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
-    target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE PineForgeHPO::engine_adapter)
+    target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE
+        PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME pineforge_hpo_jailed_profile_e2e
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_jailed_profile_e2e.py")
+        set_tests_properties(pineforge_hpo_jailed_profile_e2e PROPERTIES
+            SKIP_REGULAR_EXPRESSION "SKIP: jailed profile requires Linux sealed memfds")
+    endif()
 
     # Rolling-schedule replay: the test runs the real native binary on the rolling schedule at
     # several worker counts, reads each result file and replays every proposal from it.

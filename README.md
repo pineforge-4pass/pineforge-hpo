@@ -732,6 +732,7 @@ Additional design and validation material:
 
 - [StudySpec v1](docs/study-spec.md)
 - [Architecture](docs/architecture.md)
+- [Jailed scratch profile](docs/jailed-profile.md)
 - [Implementation plan](docs/plan.md)
 - [Native TPE design decision](docs/adr/0002-native-product-tpe.md)
 - [Finite candidate-policy decision](docs/adr/0003-finite-candidate-policies.md)

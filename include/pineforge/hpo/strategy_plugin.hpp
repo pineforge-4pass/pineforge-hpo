@@ -119,6 +119,17 @@ public:
     /// @throws std::runtime_error naming a missing setter or refused symbol/timeframe.
     void set_symbol_feeds(pf_strategy_t strategy, const SymbolFeeds& symbols) const;
 
+    /// Installs backend 1 with all-zero maxima; the engine expands its default tier at begin.
+    /// @throws HpoError with engine code `strategy_library_incompatible` if the setter is absent.
+    /// @throws EngineError when the engine refuses the descriptor.
+    void set_scratch_tables_bounded_default(pf_strategy_t strategy) const;
+
+    /// Admits the inherited arena using the engine's environment and backing checks.
+    /// The first successful attach ignores SIGXFSZ process-wide; reattachment is idempotent.
+    /// @throws HpoError with engine code `strategy_library_incompatible` if admission is absent.
+    /// @throws EngineError preserving the engine's code and raw argument JSON on refusal.
+    void require_scratch_arena(pf_strategy_t strategy) const;
+
     /// Invokes the plugin's full backtest entry point using immutable OHLCV input.
     ///
     /// The report remains caller-owned and must later be released with free_report().
@@ -202,6 +213,16 @@ private:
     using StrategySetSymbolFactsFn = int (*)(pf_strategy_t, const char*, const char*, const char*);
     using StrategySetSymbolFeedFn = int (*)(pf_strategy_t, const char*, const char*,
                                            const pf_bar_t*, const std::int64_t*, std::int32_t);
+    // Mirror the additive C descriptor without requiring its declaration in older engine headers.
+    struct ScratchTablesV1 {
+        std::uint32_t struct_size;
+        std::uint32_t version;
+        std::uint32_t backend;
+        std::uint32_t reserved;
+        std::uint64_t maxima[11];
+    };
+    using StrategySetScratchTablesFn = int (*)(pf_strategy_t, const ScratchTablesV1*);
+    using StrategyRequireScratchArenaFn = int (*)(pf_strategy_t);
     using RunBacktestFullFn = void (*)(pf_strategy_t,
                                        pf_bar_t*,
                                        int,
@@ -245,6 +266,8 @@ private:
     StrategySetSymbolStringFn strategy_set_syminfo_session_ = nullptr;
     StrategySetSymbolFactsFn strategy_set_symbol_facts_ = nullptr;
     StrategySetSymbolFeedFn strategy_set_symbol_feed_ = nullptr;
+    StrategySetScratchTablesFn strategy_set_scratch_tables_v1_ = nullptr;
+    StrategyRequireScratchArenaFn strategy_require_report_scratch_arena_v1_ = nullptr;
     RunBacktestFullFn run_backtest_full_ = nullptr;
     StrategyGetLastErrorFn strategy_get_last_error_ = nullptr;
     StrategyGetLastErrorFn strategy_get_last_error_code_ = nullptr;
