@@ -8,7 +8,7 @@
   "to": {
     "version": null,
     "unreleased": true,
-    "catalogSha256": "52374f0841c8305a6cb1b003de981cc0f331398f488c9e7642080b3fde3e8638"
+    "catalogSha256": "813b7b11790cdaf9517b4bd464c7220e0409cb077315e4205cc969c19e7a0f66"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
@@ -46,7 +46,7 @@
         "templates": [
           "Invalid request-feed inventory ({capability}: {reason})."
         ],
-        "since": "1.7.1"
+        "since": "1.8.0"
       }
     },
     {
@@ -89,7 +89,7 @@
         "templates": [
           "Selected-window plan refused ({status}: {option})."
         ],
-        "since": "1.7.1"
+        "since": "1.8.0"
       }
     },
     {
@@ -110,7 +110,7 @@
         "templates": [
           "Unsupported selected-window timeframe ({capability})."
         ],
-        "since": "1.7.1"
+        "since": "1.8.0"
       }
     },
     {
@@ -155,7 +155,7 @@
         "templates": [
           "Native walk-forward is unavailable ({reason})."
         ],
-        "since": "1.7.1"
+        "since": "1.8.0"
       }
     }
   ],

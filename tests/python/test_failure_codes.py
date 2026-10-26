@@ -512,7 +512,7 @@ class FailureCodeTests(unittest.TestCase):
                     },
                 },
                 "templates": ["Selected-window plan refused ({status}: {option})."],
-                "since": "1.7.1",
+                "since": "1.8.0",
             },
         )
 
@@ -560,7 +560,7 @@ class FailureCodeTests(unittest.TestCase):
                     }
                 },
                 "templates": ["Native walk-forward is unavailable ({reason})."],
-                "since": "1.7.1",
+                "since": "1.8.0",
             },
         )
 
@@ -594,7 +594,7 @@ class FailureCodeTests(unittest.TestCase):
                 "templates": [
                     "Invalid request-feed inventory ({capability}: {reason})."
                 ],
-                "since": "1.7.1",
+                "since": "1.8.0",
             },
         )
 
@@ -616,7 +616,7 @@ class FailureCodeTests(unittest.TestCase):
                     },
                 },
                 "templates": ["Unsupported selected-window timeframe ({capability})."],
-                "since": "1.7.1",
+                "since": "1.8.0",
             },
         )
 
