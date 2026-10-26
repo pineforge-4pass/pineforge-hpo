@@ -397,6 +397,9 @@ pineforge-hpo warm-encode --spec study.json --input parent.result.json --output 
 pineforge-hpo run study.json --warm-start parent.warm > continued.result.json
 ```
 
+`pineforge-hpo run` accepts `--trials-out all|best-k|none` and `--best-k N`
+(default 10); omitted flags preserve all-trial retention.
+
 The study's `sampler.trials` is the **additional** trial budget. `--warm-start` accepts
 concatenated binary v2 blocks, the parent's complete result JSON, its `trials` array,
 or the exact terminal-trial JSONL
@@ -658,8 +661,9 @@ Generated strategies are compiled with the parity-critical
 `-std=c++17 -O2 -ffp-contract=off -fPIC -shared` flags; with Clang, the builder also passes
 `-fbracket-depth=1024`, which engine 1.0 requires for deeply nested generated C++. Result
 JSON includes the HPO version, sampler implementation identity, artifact key, trials
-selected by `--trials-out`, cardinality, and coverage diagnostics. Preserve result and
-artifact provenance together when reporting a benchmark or bug.
+selected by `--trials-out` (also accepted by `pineforge-hpo run` alongside `--best-k N`),
+cardinality, and coverage diagnostics. Preserve result and artifact provenance together
+when reporting a benchmark or bug.
 
 ## Current scope
 

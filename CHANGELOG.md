@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Forward `--trials-out all|best-k|none` and `--best-k N` from `pineforge-hpo run` to
+  native, preserving default retention. Jailed best-k studies avoid the trial spool,
+  including stdout-only runs without a writable output parent.
 - REFUSAL FIX, not a feature: hpo trials refuse in the engine's jailed profile; this makes the existing engine C ABI path reachable.
   Preserve inherited arena fd 5, preflight native admission before workers, and install the
   engine's bounded-memory default tables on fresh trial and selected-window handles.
