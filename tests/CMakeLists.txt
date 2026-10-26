@@ -416,8 +416,92 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
         PREFIX ""
         OUTPUT_NAME "fake_strategy_no_metadata")
 
+    # Keep the production runner and the ordinary fake plugin untouched. This variant adds
+    # protocol bytes at worker exit and after the runner's real SIGTERM handler returns.
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/no_improvement_strategy.cpp" CONTENT [=[
+#define run_backtest_full fixture_run_backtest_full
+#include "test_engine_adapter.cpp"
+#undef run_backtest_full
+#include <csignal>
+
+namespace {
+struct WorkerExitTrace {
+    int descriptor = -1;
+    ~WorkerExitTrace() {
+        if (descriptor < 0)
+            return;
+        ssize_t count;
+        do {
+            count = ::write(descriptor, "J", 1);
+        } while (count < 0 && errno == EINTR);
+        if (count != 1)
+            ::_exit(90);
+    }
+};
+thread_local WorkerExitTrace worker_exit_trace;
+struct sigaction runner_sigterm {};
+volatile std::sig_atomic_t signal_trace_fd = -1;
+
+void trace_sigterm(int number) {
+    const int saved_errno = errno;
+    runner_sigterm.sa_handler(number);
+    ssize_t count;
+    do {
+        count = ::write(static_cast<int>(signal_trace_fd), "T", 1);
+    } while (count < 0 && errno == EINTR);
+    if (count != 1)
+        ::_exit(91);
+    errno = saved_errno;
+}
+}  // namespace
+
+extern "C" {
+PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_count,
+                             const char* input_timeframe, const char* script_timeframe,
+                             int bar_magnifier, int magnifier_samples,
+                             pf_magnifier_distribution_t magnifier_distribution,
+                             pf_report_t* report) {
+    auto* state = fake(strategy);
+    const auto exited = state->inputs.find("WorkerExitFd");
+    if (exited != state->inputs.end())
+        worker_exit_trace.descriptor = std::stoi(exited->second);
+    const auto delivered = state->inputs.find("SignalTraceFd");
+    if (delivered != state->inputs.end() && signal_trace_fd < 0) {
+        if (::sigaction(SIGTERM, nullptr, &runner_sigterm) != 0 ||
+            (runner_sigterm.sa_flags & SA_SIGINFO) != 0 ||
+            runner_sigterm.sa_handler == SIG_DFL || runner_sigterm.sa_handler == SIG_IGN) {
+            state->error = "cannot observe runner SIGTERM handler";
+            return;
+        }
+        signal_trace_fd = std::stoi(delivered->second);
+        auto action = runner_sigterm;
+        action.sa_handler = trace_sigterm;
+        if (::sigaction(SIGTERM, &action, nullptr) != 0) {
+            state->error = "cannot install SIGTERM delivery trace";
+            return;
+        }
+    }
+    fixture_run_backtest_full(strategy, bars, bar_count, input_timeframe, script_timeframe,
+                             bar_magnifier, magnifier_samples, magnifier_distribution, report);
+}
+}  // extern "C"
+]=])
+    add_library(pineforge_hpo_no_improvement_strategy SHARED
+        "${CMAKE_CURRENT_BINARY_DIR}/no_improvement_strategy.cpp")
+    target_compile_definitions(pineforge_hpo_no_improvement_strategy PRIVATE
+        PINEFORGE_HPO_FAKE_PLUGIN=1)
+    target_include_directories(pineforge_hpo_no_improvement_strategy PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${PINEFORGE_ENGINE_SOURCE_INCLUDE}"
+        "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+    target_compile_options(pineforge_hpo_no_improvement_strategy PRIVATE
+        -Wall -Wextra -Wpedantic)
+    set_target_properties(pineforge_hpo_no_improvement_strategy PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "no_improvement_strategy")
+
     foreach(plugin pineforge_hpo_fake_strategy pineforge_hpo_fake_strategy_no_timezone
-                   pineforge_hpo_fake_strategy_no_metadata)
+                   pineforge_hpo_fake_strategy_no_metadata pineforge_hpo_no_improvement_strategy)
         if(PINEFORGE_HPO_ENABLE_SANITIZERS)
             target_compile_options(${plugin} PRIVATE
                 -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -790,7 +874,11 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_no_improvement.py"
                 $<TARGET_FILE:pineforge-hpo-native>
-                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+                $<TARGET_FILE:pineforge_hpo_no_improvement_strategy>)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_property(TEST pineforge_hpo_no_improvement APPEND PROPERTY
+                ENVIRONMENT "PFH_REQUIRE_FIFO_HANDSHAKE=1")
+        endif()
         add_test(NAME pineforge_hpo_sobol_cli
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_sobol_cli.py"
