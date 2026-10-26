@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -394,6 +395,110 @@ def run_suite(args):
         require(not checked_path(directory / f"{name}.json").exists(), name)
         require(not checked_path(directory / f"{name}.jsonl").exists(), name)
         record(name, failure=failure["failure"], result_published=False)
+    require(
+        not any(
+            flag in native_command
+            for flag in (
+                "--trials-out", "--best-k", "--output", "--trials-file", "--progress-fd"
+            )
+        ),
+        f"prepare_run supplied retention or output flags: {native_command}",
+    )
+    direction = document["objective"]["direction"]
+    require(direction in ("maximize", "minimize"), f"unknown objective direction: {direction}")
+    objective_sign = -1 if direction == "maximize" else 1
+    eligible = [
+        trial
+        for trial in expected["trials"]
+        if trial["status"] == "ok"
+        and trial["feasible"] is True
+        and trial["objective"] is not None
+        and math.isfinite(trial["objective"])
+    ]
+    require(len(eligible) >= 2, f"baseline has fewer than two eligible trials: {eligible}")
+    ranked = sorted(
+        eligible,
+        key=lambda trial: (objective_sign * trial["objective"], trial["trial_id"]),
+    )
+    expected_best_k = sorted(ranked[:2], key=lambda trial: trial["trial_id"])
+    prepared_unjailed = invoke(
+        "prepare-best-k-unjailed",
+        [*native_command, "--trials-out", "best-k", "--best-k", "2"],
+        environment,
+        "closed",
+    )
+    require(prepared_unjailed.returncode == 0, prepared_unjailed.stderr)
+    unjailed_result = json.loads(prepared_unjailed.stdout)
+    require(unjailed_result["ok"] is True, unjailed_result)
+    require(unjailed_result["trials_out"] == "best-k", unjailed_result)
+    require(unjailed_result["best_k"] == 2, unjailed_result)
+    require(len(unjailed_result["trials"]) == 2, unjailed_result)
+    require(unjailed_result["trials"] == expected_best_k, unjailed_result)
+    require(
+        sum(unjailed_result["summary"]["counts_by_status"].values())
+        == len(expected["trials"]),
+        unjailed_result["summary"],
+    )
+    require(unjailed_result["summary"]["best_k"] == expected_best_k, unjailed_result)
+    # Pre-create invoke's captures so the directory check measures native residue.
+    for name in ("prepare-best-k-jailed", "prepare-best-k-one-jailed"):
+        for suffix in ("stdout", "stderr"):
+            checked_path(directory / f"{name}.{suffix}").touch()
+    before = sorted(p.name for p in directory.iterdir())
+    # Best-k opens no trial spool.
+    prepared_jailed = invoke(
+        "prepare-best-k-jailed",
+        [*native_command, "--trials-out", "best-k", "--best-k", "2"],
+        jailed_environment,
+    )
+    require(prepared_jailed.returncode == 0, prepared_jailed.stderr)
+    jailed_result = json.loads(prepared_jailed.stdout)
+    require(jailed_result["ok"] is True, jailed_result)
+    differing_keys = [
+        key
+        for key in ("trials", "trials_out", "best_k", "summary")
+        if jailed_result.get(key) != unjailed_result[key]
+    ]
+    require(
+        not differing_keys,
+        f"prepare_run jailed/unjailed result keys differ: {differing_keys}",
+    )
+    after = sorted(p.name for p in directory.iterdir())
+    require(
+        after == before,
+        f"prepare_run best-k changed files under {directory}: before={before}, after={after}",
+    )
+    require(not missing_tmp.exists(), f"prepare_run best-k created {missing_tmp}")
+    prepared_control = invoke(
+        "prepare-best-k-one-jailed",
+        [*native_command, "--trials-out", "best-k", "--best-k", "1"],
+        jailed_environment,
+    )
+    require(prepared_control.returncode == 0, prepared_control.stderr)
+    control_result = json.loads(prepared_control.stdout)
+    require(control_result["ok"] is True, control_result)
+    require(
+        control_result["trials_out"] == "best-k" and control_result["best_k"] == 1,
+        control_result,
+    )
+    require(len(control_result["trials"]) == 1, control_result)
+    require(control_result["trials"] == ranked[:1], control_result)
+    require(
+        len(control_result["trials"]) != len(jailed_result["trials"]),
+        "prepare_run best-k control did not change the retained trial count",
+    )
+    after = sorted(p.name for p in directory.iterdir())
+    require(
+        after == before,
+        f"prepare_run best-k control changed files under {directory}: "
+        f"before={before}, after={after}",
+    )
+    require(not missing_tmp.exists(), f"prepare_run best-k control created {missing_tmp}")
+    record(
+        "prepare-run-best-k-jailed",
+        trial_ids=[trial["trial_id"] for trial in jailed_result["trials"]],
+        control_trial_ids=[trial["trial_id"] for trial in control_result["trials"]],
+    )
     collision = invoke(
         "progress-collision",
         cli_command("progress-collision", "--progress-fd", "5"),
