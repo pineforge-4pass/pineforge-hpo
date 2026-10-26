@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -295,6 +296,134 @@ def run_suite(args):
     require(events == actual["trials"], f"lost or changed progress records: {events}")
     require(not missing_tmp.exists(), "the engine fallback directory became usable")
     record("jailed-study-and-progress", trials=actual["trials"], progress_events=events)
+    direction = document["objective"]["direction"]
+    require(direction in ("maximize", "minimize"), f"objective direction: {direction!r}")
+    eligible = [
+        trial
+        for trial in expected["trials"]
+        if trial["status"] == "ok"
+        and trial["feasible"]
+        and trial["objective"] is not None
+        and math.isfinite(trial["objective"])
+    ]
+    ranked = sorted(
+        eligible,
+        key=lambda trial: (
+            -trial["objective"] if direction == "maximize" else trial["objective"],
+            trial["trial_id"],
+        ),
+    )
+    # Native selects by objective, then emits the retained winners in trial-ID order.
+    expected_best_k = sorted(ranked[:2], key=lambda trial: trial["trial_id"])
+    require(
+        len(expected_best_k) == 2,
+        {"direction": direction, "baseline_trials": expected["trials"]},
+    )
+    baseline_trial_bytes = checked_path(directory / "baseline.jsonl").read_bytes()
+    best_k_results = {}
+    best_k_trial_bytes = {}
+    for name, env, mode in (
+        ("unjailed-best-k", environment, "closed"),
+        ("jailed-best-k", jailed_environment, "sealed"),
+    ):
+        result = invoke(
+            name,
+            cli_command(name, "--trials-out", "best-k", "--best-k", "2"),
+            env,
+            mode,
+        )
+        require(
+            result.returncode == 0,
+            f"{name}: exit {result.returncode}, stdout={result.stdout!r}, "
+            f"stderr={result.stderr!r}",
+        )
+        retained = read_json(directory / f"{name}.json")
+        require(retained["trials_out"] == "best-k", retained)
+        require(len(retained["trials"]) == 2, retained)
+        require(
+            retained["trials"] == expected_best_k,
+            {"run": name, "actual": retained["trials"], "expected": expected_best_k},
+        )
+        summary = retained["summary"]
+        require(
+            sum(summary["counts_by_status"].values()) == len(expected["trials"]),
+            {"run": name, "summary": summary, "baseline_trials": len(expected["trials"])},
+        )
+        require(
+            summary["best_k"] == expected_best_k,
+            {"run": name, "actual": summary["best_k"], "expected": expected_best_k},
+        )
+        trial_bytes = checked_path(directory / f"{name}.jsonl").read_bytes()
+        require(
+            trial_bytes == baseline_trial_bytes,
+            f"{name}: trial bytes={trial_bytes!r}, baseline={baseline_trial_bytes!r}",
+        )
+        best_k_results[name] = retained
+        best_k_trial_bytes[name] = trial_bytes
+    unjailed_best_k = best_k_results["unjailed-best-k"]
+    jailed_best_k = best_k_results["jailed-best-k"]
+    for field in ("trials", "summary"):
+        require(
+            jailed_best_k[field] == unjailed_best_k[field],
+            {
+                "field": field,
+                "jailed": jailed_best_k[field],
+                "unjailed": unjailed_best_k[field],
+            },
+        )
+    require(
+        best_k_trial_bytes["jailed-best-k"] == best_k_trial_bytes["unjailed-best-k"],
+        f"jailed trial bytes={best_k_trial_bytes['jailed-best-k']!r}, "
+        f"unjailed={best_k_trial_bytes['unjailed-best-k']!r}",
+    )
+    record(
+        "jailed-best-k-equals-unjailed",
+        trials=jailed_best_k["trials"],
+        summary=jailed_best_k["summary"],
+    )
+    stdout_only = invoke(
+        "jailed-best-k-no-writable-dir",
+        [
+            str(interpreter),
+            "-m",
+            "pineforge_hpo.cli",
+            "run",
+            str(study),
+            "--native",
+            str(native),
+            "--trials-out",
+            "best-k",
+            "--best-k",
+            "2",
+        ],
+        jailed_environment,
+    )
+    require(
+        stdout_only.returncode == 0,
+        f"stdout-only: exit {stdout_only.returncode}, stdout={stdout_only.stdout!r}, "
+        f"stderr={stdout_only.stderr!r}",
+    )
+    stdout_document = json.loads(stdout_only.stdout)
+    for field in ("trials", "trials_out", "summary"):
+        require(
+            stdout_document[field] == unjailed_best_k[field],
+            {
+                "field": field,
+                "stdout_only": stdout_document[field],
+                "unjailed": unjailed_best_k[field],
+            },
+        )
+    require(
+        not missing_tmp.exists(),
+        f"fallback directory {missing_tmp}: exists={missing_tmp.exists()}",
+    )
+    record(
+        "jailed-best-k-no-writable-dir",
+        work_exit=stdout_only.returncode,
+        trials=stdout_document["trials"],
+        summary=stdout_document["summary"],
+        missing_tmp_exists=missing_tmp.exists(),
+    )
     candidate = str(expected["trials"][0]["parameters"]["ETH threshold"])
     for name, env in (
         ("unjailed-probe", environment),
