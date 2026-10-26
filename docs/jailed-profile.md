@@ -36,10 +36,20 @@ the arena variable present refuses before spawning with `hpo_cli_usage` and
 empty arguments. HPO neither opens, validates, resizes nor substitutes arena
 backing in Python.
 
+With the arena variable present and `--output` given, Python also passes `--output`
+to the native runner, so the native trial spool can use the output's parent
+directory. The native runner therefore writes the result file first; Python then
+replaces it atomically with the final document after adding `study`, `strategy_id`,
+`dataset_id` and `artifact`. If Python fails in between (for example on invalid
+native JSON), the file holds the native document without those four fields.
+
 ## Startup and fresh handles
 
 The native executor creates a validation handle on the main thread before
-starting workers or a batch. With the arena variable present it installs the
+starting workers or a batch (one extra create and free per study, only with the
+variable present). The engine would otherwise attach the arena lazily, from the
+first report on whichever worker thread gets there first, and the first attach is
+not thread-safe. With the arena variable present it installs the
 all-zero version-1 bounded-memory tables descriptor, then calls
 `strategy_require_report_scratch_arena_v1`. No trial settings or execution are
 applied to this validation handle. A failure propagates with its engine code
@@ -61,7 +71,9 @@ applying file-size restrictions.
 The arena is a process-wide engine singleton. Reattaching the same fd and size
 is an idempotent no-op; replacing a live attachment is refused. Startup
 preflight makes the first attachment before worker threads exist. Per-handle
-admission reuses that attachment; HPO keeps no attachment flag of its own.
+admission reuses that attachment and only reads the singleton: no production
+engine code detaches the arena, so that read cannot race a write. HPO keeps no
+attachment flag of its own.
 When `PF_SCRATCH_ARENA_FD` is absent, HPO creates no extra validation handle and
 calls neither new export, including when using older plugins without them.
 

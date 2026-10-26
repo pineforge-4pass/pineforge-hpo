@@ -5,6 +5,10 @@
 - REFUSAL FIX, not a feature: hpo trials refuse in the engine's jailed profile; this makes the existing engine C ABI path reachable.
   Preserve inherited arena fd 5, preflight native admission before workers, and install the
   engine's bounded-memory default tables on fresh trial and selected-window handles.
+  With the arena variable present, `--output` is also forwarded to the native runner (its
+  trial spool needs a writable parent), and on Linux a present arena that is not a sealed
+  memfd is now refused at startup (engine admission rule) where 1.7.0 ran with disk-backed
+  tables, including when `PF_SCRATCH_ARENA_JAILED` is unset or 0.
 - Add native selected-window planning over an immutable `DatasetView`, with bounded input,
   typed planner refusals, plan validation and retained rows/counts for OOS evaluation.
 - Produce and publish source- and plugin-bound request-feed inventories when codegen

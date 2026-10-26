@@ -451,6 +451,8 @@ TrialExecutionResult TrialExecutor::execute_prefix(const ParameterValues& inputs
     try {
         detail::prepare_jailed_handle(*plugin_, resources.strategy());
     } catch (const EngineError& error) {
+        // A missing export (HpoError) cannot occur here: the constructor preflight already
+        // proved both exports on this plugin. Only the engine's per-trial refusal lands here.
         TrialExecutionResult failed;
         failed.status = TrialExecutionStatus::kEngineError;
         failed.error = error.what();
