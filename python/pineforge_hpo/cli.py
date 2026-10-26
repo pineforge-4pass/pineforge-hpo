@@ -1220,6 +1220,10 @@ def _run(args: argparse.Namespace) -> int:
         command.extend(
             ("--trials-file", str(Path(args.trials_file).expanduser().resolve()))
         )
+    if args.trials_out is not None:
+        command.extend(("--trials-out", args.trials_out))
+    if args.best_k is not None:
+        command.extend(("--best-k", args.best_k))
     if args.no_improvement_trials:
         command.extend(("--no-improvement-trials", str(args.no_improvement_trials)))
     if jailed and args.output:
@@ -1352,6 +1356,30 @@ def _uint64_argument(value: str) -> int:
     return number
 
 
+def _trials_out_argument(value: str) -> str:
+    if value not in ("all", "best-k", "none"):
+        raise argparse.ArgumentTypeError("--trials-out must be all, best-k, or none")
+    return value
+
+
+def _best_k_argument(value: str) -> str:
+    # Match native parse_u64/std::stoull, preserving the original argv spelling.
+    integer_error = f"--best-k requires a non-negative integer, got `{value}`"
+    match = re.fullmatch(r"\s*([+-]?)([0-9]+)", value, flags=re.ASCII)
+    if value.startswith("-") or match is None:
+        raise argparse.ArgumentTypeError(integer_error)
+    digits = match[2].lstrip("0") or "0"
+    if len(digits) > 20 or int(digits) > (1 << 64) - 1:
+        raise argparse.ArgumentTypeError(integer_error)
+    number = int(digits)
+    if match[1] == "-":
+        # Native only rejects a minus at the first character, before std::stoull.
+        number = -number % (1 << 64)
+    if not 1 <= number <= 1000000:
+        raise argparse.ArgumentTypeError("--best-k must be between 1 and 1000000")
+    return value
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _FailureArgumentParser(
         prog="pineforge-hpo",
@@ -1385,6 +1413,20 @@ def _parser() -> argparse.ArgumentParser:
         "--progress-fd", type=int, help="terminal new trials descriptor"
     )
     run_parser.add_argument("--trials-file", help="write only new trials as JSONL")
+    run_parser.add_argument(
+        "--trials-out",
+        type=_trials_out_argument,
+        default=None,
+        metavar="{all,best-k,none}",
+        help="final trial retention (native default: all)",
+    )
+    run_parser.add_argument(
+        "--best-k",
+        type=_best_k_argument,
+        default=None,
+        metavar="N",
+        help="retained feasible winners, 1..1000000 (native default: 10)",
+    )
     run_parser.add_argument(
         "--no-improvement-trials",
         type=_uint64_argument,

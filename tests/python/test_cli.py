@@ -1009,6 +1009,146 @@ class CliTests(unittest.TestCase):
 
     @mock.patch("pineforge_hpo.cli.subprocess.run")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_run_forwards_trial_retention_only_when_given(
+        self, builder_type: mock.Mock, run: mock.Mock
+    ) -> None:
+        builder_type.return_value.build.return_value = self._artifact()
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"ok": true, "trials": []}', stderr=""
+        )
+        arguments = [
+            "run",
+            str(self.study_path),
+            "--engine-root",
+            str(self.root),
+            "--native",
+            str(self.native),
+        ]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(arguments), 0)
+        run.assert_called_once()
+        default_command = list(run.call_args.args[0])
+        self.assertNotIn("--trials-out", default_command)
+        self.assertNotIn("--best-k", default_command)
+
+        for extra in (
+            ["--trials-out", "best-k", "--best-k", "3"],
+            ["--trials-out", "none"],
+            ["--trials-out", "all"],
+            ["--best-k", "7"],
+            ["--best-k", "1"],
+            ["--best-k", "1000000"],
+            ["--best-k", "0007"],
+            ["--best-k", "+7"],
+        ):
+            with self.subTest(arguments=extra):
+                run.reset_mock()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main([*arguments, *extra]), 0)
+                run.assert_called_once()
+                command = run.call_args.args[0]
+                self.assertEqual(command, [*default_command, *extra])
+                for option in ("--trials-out", "--best-k"):
+                    if option in extra:
+                        self.assertEqual(command.count(option), 1)
+                        self.assertEqual(
+                            command[command.index(option) + 1],
+                            extra[extra.index(option) + 1],
+                        )
+                    else:
+                        self.assertNotIn(option, command)
+
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    def test_trial_retention_parser_rejects_invalid_values(
+        self, run: mock.Mock
+    ) -> None:
+        cases = [
+            ("--trials-out", value, "--trials-out must be all, best-k, or none")
+            for value in ("ALL", "bestk", "", "summary")
+        ]
+        cases += [
+            ("--best-k", value, "--best-k must be between 1 and 1000000")
+            for value in ("0", "1000001")
+        ]
+        cases += [
+            (
+                "--best-k",
+                value,
+                f"--best-k requires a non-negative integer, got `{value}`",
+            )
+            for value in ("-1", "1.5", "abc", "", "18446744073709551616")
+        ]
+        for option, value, message in cases:
+            with self.subTest(option=option, value=value):
+                stderr = io.StringIO()
+                with (
+                    contextlib.redirect_stderr(stderr),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    main(["run", str(self.study_path), option, value])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(option, stderr.getvalue())
+                self.assertIn(message, stderr.getvalue())
+                self.assertNotIn("unrecognized arguments", stderr.getvalue())
+                run.assert_not_called()
+
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_run_preserves_native_best_k_result(
+        self, builder_type: mock.Mock, run: mock.Mock
+    ) -> None:
+        artifact = self._artifact()
+        builder_type.return_value.build.return_value = artifact
+        trials = [
+            {"trial_id": 0, "status": "ok", "feasible": True, "objective": 1.5},
+            {"trial_id": 2, "status": "ok", "feasible": True, "objective": 3.5},
+        ]
+        native_result = {
+            "ok": True,
+            "trials_out": "best-k",
+            "best_k": 2,
+            "trials": trials,
+            "best_trial_id": 2,
+            "best_value": 3.5,
+            "summary": {"counts_by_status": {"ok": 3}, "best_k": trials},
+        }
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                main(
+                    [
+                        "run",
+                        str(self.study_path),
+                        "--engine-root",
+                        str(self.root),
+                        "--native",
+                        str(self.native),
+                        "--trials-out",
+                        "best-k",
+                        "--best-k",
+                        "2",
+                    ]
+                ),
+                0,
+            )
+        run.assert_called_once()
+        document = json.loads(stdout.getvalue())
+        self.assertEqual({key: document[key] for key in native_result}, native_result)
+        self.assertEqual(
+            set(document) - set(native_result),
+            {"study", "strategy_id", "dataset_id", "artifact"},
+        )
+        self.assertEqual(document["study"], str(self.study_path.resolve()))
+        self.assertEqual(document["strategy_id"], "test")
+        self.assertEqual(document["dataset_id"], "bars")
+        self.assertEqual(document["artifact"]["artifact_key"], artifact.artifact_key)
+
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_builds_once_and_emits_augmented_result(
         self, builder_type: mock.Mock, run: mock.Mock
     ) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -295,6 +296,294 @@ def run_suite(args):
     require(events == actual["trials"], f"lost or changed progress records: {events}")
     require(not missing_tmp.exists(), "the engine fallback directory became usable")
     record("jailed-study-and-progress", trials=actual["trials"], progress_events=events)
+    direction = document["objective"]["direction"]
+    require(direction in ("maximize", "minimize"), f"objective direction: {direction!r}")
+
+    def rank_best_k(trials, k):
+        eligible = [
+            trial
+            for trial in trials
+            if trial["status"] == "ok"
+            and trial["feasible"]
+            and trial["objective"] is not None
+            and math.isfinite(trial["objective"])
+        ]
+        ranked = sorted(
+            eligible,
+            key=lambda trial: (
+                -trial["objective"] if direction == "maximize" else trial["objective"],
+                trial["trial_id"],
+            ),
+        )
+        # Native selects by objective, then emits retained winners in trial-ID order.
+        return ranked, sorted(ranked[:k], key=lambda trial: trial["trial_id"])
+
+    def require_best_k_progress(name, result, progress_events, k):
+        require(
+            len(progress_events) == len(expected["trials"]) == 3,
+            {
+                "run": name,
+                "progress_count": len(progress_events),
+                "baseline_count": len(expected["trials"]),
+                "progress_events": progress_events,
+            },
+        )
+        require(
+            progress_events == expected["trials"],
+            {
+                "run": name,
+                "progress_events": progress_events,
+                "baseline_trials": expected["trials"],
+            },
+        )
+        ranked, progress_best_k = rank_best_k(progress_events, k)
+        _, baseline_best_k = rank_best_k(expected["trials"], k)
+        require(
+            result["trials_out"] == "best-k" and result["best_k"] == k,
+            {"run": name, "requested_k": k, "result": result},
+        )
+        require(
+            len(result["trials"]) == k < len(progress_events),
+            {
+                "run": name,
+                "requested_k": k,
+                "retained_count": len(result["trials"]),
+                "progress_count": len(progress_events),
+            },
+        )
+        require(
+            result["trials"] == progress_best_k == result["summary"]["best_k"],
+            {
+                "run": name,
+                "progress_best_k": progress_best_k,
+                "trials": result["trials"],
+                "summary_best_k": result["summary"]["best_k"],
+            },
+        )
+        require(
+            progress_best_k == baseline_best_k,
+            {
+                "run": name,
+                "progress_best_k": progress_best_k,
+                "baseline_best_k": baseline_best_k,
+            },
+        )
+        discarded = ranked[k:]
+        require(
+            len(discarded) == len(progress_events) - k,
+            {"run": name, "discarded": discarded, "progress_events": progress_events, "k": k},
+        )
+        for rank, trial in enumerate(discarded, start=k + 1):
+            trial_id = trial["trial_id"]
+            require(
+                trial in progress_events
+                and all(row["trial_id"] != trial_id for row in result["trials"])
+                and all(row["trial_id"] != trial_id for row in result["summary"]["best_k"]),
+                {
+                    "run": name,
+                    "discarded_rank": rank,
+                    "discarded_trial_id": trial_id,
+                    "progress_events": progress_events,
+                    "trials": result["trials"],
+                    "summary_best_k": result["summary"]["best_k"],
+                },
+            )
+
+    eligible, expected_best_k = rank_best_k(expected["trials"], 2)
+    eligible_trial_ids = [trial["trial_id"] for trial in eligible]
+    require(
+        len(eligible) > 2,
+        {
+            "required_more_than": 2,
+            "eligible_count": len(eligible),
+            "eligible_trial_ids": eligible_trial_ids,
+        },
+    )
+    require(
+        len(expected_best_k) == 2,
+        {"direction": direction, "baseline_trials": expected["trials"]},
+    )
+    baseline_trial_bytes = checked_path(directory / "baseline.jsonl").read_bytes()
+    best_k_results = {}
+    best_k_trial_bytes = {}
+    best_k_progress_events = {}
+    # Both the unjailed reference and the jailed comparison request the same K=2.
+    for name, env, mode in (
+        ("unjailed-best-k", environment, "closed"),
+        ("jailed-best-k", jailed_environment, "sealed"),
+    ):
+        reader, writer = os.pipe()
+        progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+        os.close(writer)
+        try:
+            result = invoke(
+                name,
+                cli_command(
+                    name,
+                    "--trials-out",
+                    "best-k",
+                    "--best-k",
+                    "2",
+                    "--progress-fd",
+                    str(progress),
+                ),
+                env,
+                mode,
+                pass_fds=(progress,),
+            )
+        finally:
+            os.close(progress)
+        with os.fdopen(reader, encoding="utf-8") as stream:
+            progress_events = [json.loads(line) for line in stream if line.strip()]
+        require(
+            result.returncode == 0,
+            f"{name}: exit {result.returncode}, stdout={result.stdout!r}, "
+            f"stderr={result.stderr!r}",
+        )
+        retained = read_json(directory / f"{name}.json")
+        require_best_k_progress(name, retained, progress_events, 2)
+        require(retained["trials_out"] == "best-k", retained)
+        require(len(retained["trials"]) == 2, retained)
+        require(
+            retained["trials"] == expected_best_k,
+            {"run": name, "actual": retained["trials"], "expected": expected_best_k},
+        )
+        summary = retained["summary"]
+        require(
+            sum(summary["counts_by_status"].values()) == len(expected["trials"]),
+            {"run": name, "summary": summary, "baseline_trials": len(expected["trials"])},
+        )
+        require(
+            summary["best_k"] == expected_best_k,
+            {"run": name, "actual": summary["best_k"], "expected": expected_best_k},
+        )
+        trial_bytes = checked_path(directory / f"{name}.jsonl").read_bytes()
+        require(
+            trial_bytes == baseline_trial_bytes,
+            f"{name}: trial bytes={trial_bytes!r}, baseline={baseline_trial_bytes!r}",
+        )
+        best_k_results[name] = retained
+        best_k_trial_bytes[name] = trial_bytes
+        best_k_progress_events[name] = progress_events
+    unjailed_best_k = best_k_results["unjailed-best-k"]
+    jailed_best_k = best_k_results["jailed-best-k"]
+    for field in ("trials", "trials_out", "best_k", "summary"):
+        require(
+            jailed_best_k[field] == unjailed_best_k[field],
+            {
+                "field": field,
+                "jailed": jailed_best_k[field],
+                "unjailed": unjailed_best_k[field],
+            },
+        )
+    require(
+        best_k_trial_bytes["jailed-best-k"] == best_k_trial_bytes["unjailed-best-k"],
+        f"jailed trial bytes={best_k_trial_bytes['jailed-best-k']!r}, "
+        f"unjailed={best_k_trial_bytes['unjailed-best-k']!r}",
+    )
+    # A jailed K=1 control must retain fewer rows than the same fixture with K=2.
+    reader, writer = os.pipe()
+    progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(writer)
+    try:
+        wrong_k = invoke(
+            "jailed-best-k-wrong-k",
+            cli_command(
+                "jailed-best-k-wrong-k",
+                "--trials-out",
+                "best-k",
+                "--best-k",
+                "1",
+                "--progress-fd",
+                str(progress),
+            ),
+            jailed_environment,
+            pass_fds=(progress,),
+        )
+    finally:
+        os.close(progress)
+    with os.fdopen(reader, encoding="utf-8") as stream:
+        wrong_k_events = [json.loads(line) for line in stream if line.strip()]
+    require(
+        wrong_k.returncode == 0,
+        f"wrong-k: exit {wrong_k.returncode}, stdout={wrong_k.stdout!r}, "
+        f"stderr={wrong_k.stderr!r}",
+    )
+    wrong_k_document = read_json(directory / "jailed-best-k-wrong-k.json")
+    require_best_k_progress("jailed-best-k-wrong-k", wrong_k_document, wrong_k_events, 1)
+    require(
+        wrong_k_document["trials"] != jailed_best_k["trials"]
+        and len(wrong_k_document["trials"]) < len(jailed_best_k["trials"]),
+        {"wrong_k_trials": wrong_k_document["trials"], "k_2_trials": jailed_best_k["trials"]},
+    )
+    record(
+        "jailed-best-k-equals-unjailed",
+        trials=jailed_best_k["trials"],
+        summary=jailed_best_k["summary"],
+        eligible_trial_ids=eligible_trial_ids,
+        progress_events=best_k_progress_events,
+        wrong_k_work_exit=wrong_k.returncode,
+        wrong_k_trials=wrong_k_document["trials"],
+        wrong_k_summary=wrong_k_document["summary"],
+        wrong_k_progress_events=wrong_k_events,
+    )
+    reader, writer = os.pipe()
+    progress = fcntl.fcntl(writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(writer)
+    try:
+        stdout_only = invoke(
+            "jailed-best-k-no-writable-dir",
+            [
+                str(interpreter),
+                "-m",
+                "pineforge_hpo.cli",
+                "run",
+                str(study),
+                "--native",
+                str(native),
+                "--trials-out",
+                "best-k",
+                "--best-k",
+                "2",
+                "--progress-fd",
+                str(progress),
+            ],
+            jailed_environment,
+            pass_fds=(progress,),
+        )
+    finally:
+        os.close(progress)
+    with os.fdopen(reader, encoding="utf-8") as stream:
+        stdout_events = [json.loads(line) for line in stream if line.strip()]
+    require(
+        stdout_only.returncode == 0,
+        f"stdout-only: exit {stdout_only.returncode}, stdout={stdout_only.stdout!r}, "
+        f"stderr={stdout_only.stderr!r}",
+    )
+    stdout_document = json.loads(stdout_only.stdout)
+    require_best_k_progress("jailed-best-k-no-writable-dir", stdout_document, stdout_events, 2)
+    for field in ("trials", "trials_out", "best_k", "summary"):
+        require(
+            stdout_document[field] == unjailed_best_k[field],
+            {
+                "field": field,
+                "stdout_only": stdout_document[field],
+                "unjailed": unjailed_best_k[field],
+            },
+        )
+    require(
+        not missing_tmp.exists(),
+        f"fallback directory {missing_tmp}: exists={missing_tmp.exists()}",
+    )
+    record(
+        "jailed-best-k-no-writable-dir",
+        work_exit=stdout_only.returncode,
+        trials=stdout_document["trials"],
+        summary=stdout_document["summary"],
+        missing_tmp_exists=missing_tmp.exists(),
+        eligible_trial_ids=eligible_trial_ids,
+        progress_events=stdout_events,
+    )
     candidate = str(expected["trials"][0]["parameters"]["ETH threshold"])
     for name, env in (
         ("unjailed-probe", environment),
@@ -394,6 +683,270 @@ def run_suite(args):
         require(not checked_path(directory / f"{name}.json").exists(), name)
         require(not checked_path(directory / f"{name}.jsonl").exists(), name)
         record(name, failure=failure["failure"], result_published=False)
+    # Exercise prepare_run's native argv separately from the CLI best-k rows above.
+    require(
+        not any(
+            prep_flag in native_command
+            for prep_flag in (
+                "--trials-out",
+                "--best-k",
+                "--output",
+                "--trials-file",
+                "--progress-fd",
+            )
+        ),
+        f"prepare_run supplied retention or output flags: {native_command}",
+    )
+    # The shared ranker uses truthiness; preserve strict feasible booleans here.
+    require(
+        all(prep_trial["feasible"] is True for prep_trial in eligible),
+        f"prepare_run eligible trials must be explicitly feasible: {eligible}",
+    )
+    # Compare jailed and unjailed best-k runs at the same k=2; k=1 is only a control.
+    prep_best_k_command = [*native_command, "--trials-out", "best-k", "--best-k", "2"]
+    # These three-record streams fit in the pipe; read only after invoke returns.
+    prep_reader, prep_writer = os.pipe()
+    prep_progress = fcntl.fcntl(prep_writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(prep_writer)
+    try:
+        prep_unjailed = invoke(
+            "prepare-best-k-unjailed",
+            [*prep_best_k_command, "--progress-fd", str(prep_progress)],
+            environment,
+            "closed",
+            pass_fds=(prep_progress,),
+        )
+    finally:
+        os.close(prep_progress)
+    with os.fdopen(prep_reader, encoding="utf-8") as prep_stream:
+        prep_unjailed_events = [
+            json.loads(prep_line) for prep_line in prep_stream if prep_line.strip()
+        ]
+    require(prep_unjailed.returncode == 0, prep_unjailed.stderr)
+    prep_unjailed_result = json.loads(prep_unjailed.stdout)
+    require(prep_unjailed_result["ok"] is True, prep_unjailed_result)
+    require(prep_unjailed_result["trials_out"] == "best-k", prep_unjailed_result)
+    require(prep_unjailed_result["best_k"] == 2, prep_unjailed_result)
+    require(len(prep_unjailed_result["trials"]) == 2, prep_unjailed_result)
+    require(prep_unjailed_result["trials"] == expected_best_k, prep_unjailed_result)
+    require(
+        sum(prep_unjailed_result["summary"]["counts_by_status"].values())
+        == len(expected["trials"]),
+        prep_unjailed_result["summary"],
+    )
+    require(
+        prep_unjailed_result["summary"]["best_k"] == expected_best_k,
+        prep_unjailed_result,
+    )
+    require_best_k_progress(
+        "prepare-best-k-unjailed", prep_unjailed_result, prep_unjailed_events, 2
+    )
+    # Pre-create invoke's captures so the directory check measures native residue.
+    for prep_name in ("prepare-best-k-jailed", "prepare-best-k-one-jailed"):
+        for prep_suffix in ("stdout", "stderr"):
+            checked_path(directory / f"{prep_name}.{prep_suffix}").touch()
+    prep_before = sorted(prep_path.name for prep_path in directory.iterdir())
+    # Best-k opens no trial spool.
+    prep_reader, prep_writer = os.pipe()
+    prep_progress = fcntl.fcntl(prep_writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(prep_writer)
+    try:
+        prep_jailed = invoke(
+            "prepare-best-k-jailed",
+            [*prep_best_k_command, "--progress-fd", str(prep_progress)],
+            jailed_environment,
+            pass_fds=(prep_progress,),
+        )
+    finally:
+        os.close(prep_progress)
+    with os.fdopen(prep_reader, encoding="utf-8") as prep_stream:
+        prep_jailed_events = [
+            json.loads(prep_line) for prep_line in prep_stream if prep_line.strip()
+        ]
+    require(prep_jailed.returncode == 0, prep_jailed.stderr)
+    prep_jailed_result = json.loads(prep_jailed.stdout)
+    require(prep_jailed_result["ok"] is True, prep_jailed_result)
+    prep_differing_keys = [
+        prep_key
+        for prep_key in ("trials", "trials_out", "best_k", "summary")
+        if prep_jailed_result.get(prep_key) != prep_unjailed_result[prep_key]
+    ]
+    require(
+        not prep_differing_keys,
+        f"prepare_run jailed/unjailed result keys differ: {prep_differing_keys}",
+    )
+    require_best_k_progress(
+        "prepare-best-k-jailed", prep_jailed_result, prep_jailed_events, 2
+    )
+    prep_after = sorted(prep_path.name for prep_path in directory.iterdir())
+    require(
+        prep_after == prep_before,
+        f"prepare_run best-k changed files under {directory}: "
+        f"before={prep_before}, after={prep_after}",
+    )
+    require(not missing_tmp.exists(), f"prepare_run best-k created {missing_tmp}")
+    prep_reader, prep_writer = os.pipe()
+    prep_progress = fcntl.fcntl(prep_writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(prep_writer)
+    try:
+        prep_control = invoke(
+            "prepare-best-k-one-jailed",
+            [
+                *native_command,
+                "--trials-out",
+                "best-k",
+                "--best-k",
+                "1",
+                "--progress-fd",
+                str(prep_progress),
+            ],
+            jailed_environment,
+            pass_fds=(prep_progress,),
+        )
+    finally:
+        os.close(prep_progress)
+    with os.fdopen(prep_reader, encoding="utf-8") as prep_stream:
+        prep_control_events = [
+            json.loads(prep_line) for prep_line in prep_stream if prep_line.strip()
+        ]
+    require(prep_control.returncode == 0, prep_control.stderr)
+    prep_control_result = json.loads(prep_control.stdout)
+    require(prep_control_result["ok"] is True, prep_control_result)
+    require(
+        prep_control_result["trials_out"] == "best-k"
+        and prep_control_result["best_k"] == 1,
+        prep_control_result,
+    )
+    require(len(prep_control_result["trials"]) == 1, prep_control_result)
+    require(prep_control_result["trials"] == eligible[:1], prep_control_result)
+    require(
+        len(prep_control_result["trials"]) != len(prep_jailed_result["trials"]),
+        "prepare_run best-k control did not change the retained trial count",
+    )
+    require_best_k_progress(
+        "prepare-best-k-one-jailed", prep_control_result, prep_control_events, 1
+    )
+    prep_after = sorted(prep_path.name for prep_path in directory.iterdir())
+    require(
+        prep_after == prep_before,
+        f"prepare_run best-k control changed files under {directory}: "
+        f"before={prep_before}, after={prep_after}",
+    )
+    require(
+        not missing_tmp.exists(), f"prepare_run best-k control created {missing_tmp}"
+    )
+    record(
+        "prepare-run-best-k-jailed",
+        trial_ids=[
+            prep_trial["trial_id"] for prep_trial in prep_jailed_result["trials"]
+        ],
+        eligible_trial_ids=eligible_trial_ids,
+        progress_trial_ids=[
+            prep_trial["trial_id"] for prep_trial in prep_jailed_events
+        ],
+        unjailed_progress_trial_ids=[
+            prep_trial["trial_id"] for prep_trial in prep_unjailed_events
+        ],
+        control_trial_ids=[
+            prep_trial["trial_id"] for prep_trial in prep_control_result["trials"]
+        ],
+    )
+    # Include invoke's captures in the parent listing before creating the output home.
+    for prep_suffix in ("stdout", "stderr"):
+        checked_path(
+            directory / f"prepare-best-k-jailed-with-output.{prep_suffix}"
+        ).touch()
+    prep_output_parent_before = sorted(
+        prep_path.name for prep_path in directory.iterdir()
+    )
+    prep_output_directory = checked_path(directory / "prepare-best-k-output")
+    prep_output_directory.mkdir(mode=0o700)
+    prep_output_before = sorted(
+        prep_path.name for prep_path in prep_output_directory.iterdir()
+    )
+    require(
+        prep_output_before == [],
+        f"output directory must start empty: {prep_output_before}",
+    )
+    prep_output_path = checked_path(prep_output_directory / "result.json")
+    prep_reader, prep_writer = os.pipe()
+    prep_progress = fcntl.fcntl(prep_writer, fcntl.F_DUPFD_CLOEXEC, 6)
+    os.close(prep_writer)
+    try:
+        prep_output = invoke(
+            "prepare-best-k-jailed-with-output",
+            [
+                *prep_best_k_command,
+                "--output",
+                str(prep_output_path),
+                "--progress-fd",
+                str(prep_progress),
+            ],
+            jailed_environment,
+            pass_fds=(prep_progress,),
+        )
+    finally:
+        os.close(prep_progress)
+    with os.fdopen(prep_reader, encoding="utf-8") as prep_stream:
+        prep_output_events = [
+            json.loads(prep_line) for prep_line in prep_stream if prep_line.strip()
+        ]
+    require(prep_output.returncode == 0, prep_output.stderr)
+    prep_output_result = json.loads(prep_output.stdout)
+    require(prep_output_result["ok"] is True, prep_output_result)
+    # Native truncates/writes directly, not atomically via temp+rename; the Python
+    # wrapper performs that rewrite. Check complete JSON and no residue after exit.
+    require(
+        prep_output_path.is_file(), f"native output file is missing: {prep_output_path}"
+    )
+    prep_output_document = read_json(prep_output_path)
+    for prep_key in ("trials", "trials_out", "best_k", "summary"):
+        require(
+            prep_output_document[prep_key]
+            == prep_output_result[prep_key]
+            == prep_jailed_result[prep_key],
+            f"prepare_run best-k output key {prep_key} differs: "
+            f"file={prep_output_document[prep_key]}, "
+            f"stdout={prep_output_result[prep_key]}, "
+            f"no_output={prep_jailed_result[prep_key]}",
+        )
+    require_best_k_progress(
+        "prepare-best-k-jailed-with-output", prep_output_result, prep_output_events, 2
+    )
+    # Best-k opens no trial spool; --output's parent only houses the result file.
+    prep_output_after = sorted(
+        prep_path.name for prep_path in prep_output_directory.iterdir()
+    )
+    require(
+        prep_output_after == ["result.json"],
+        f"prepare_run best-k left files under {prep_output_directory}: "
+        f"before={prep_output_before}, after={prep_output_after}",
+    )
+    prep_output_parent_after = sorted(
+        prep_path.name for prep_path in directory.iterdir()
+    )
+    require(
+        prep_output_parent_after
+        == sorted([*prep_output_parent_before, prep_output_directory.name]),
+        f"prepare_run best-k output changed files under {directory}: "
+        f"before={prep_output_parent_before}, after={prep_output_parent_after}",
+    )
+    require(
+        not missing_tmp.exists(), f"prepare_run best-k output created {missing_tmp}"
+    )
+    record(
+        "prepare-run-best-k-jailed-with-output",
+        trial_ids=[
+            prep_trial["trial_id"] for prep_trial in prep_output_result["trials"]
+        ],
+        eligible_trial_ids=eligible_trial_ids,
+        progress_trial_ids=[
+            prep_trial["trial_id"] for prep_trial in prep_output_events
+        ],
+        output_file=prep_output_path.name,
+        output_entries_before=prep_output_before,
+        output_entries_after=prep_output_after,
+    )
     collision = invoke(
         "progress-collision",
         cli_command("progress-collision", "--progress-fd", "5"),
