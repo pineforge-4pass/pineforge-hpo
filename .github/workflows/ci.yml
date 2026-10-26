@@ -258,10 +258,10 @@ jobs:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
     steps:
       - name: Check out PineForge HPO
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.14'
 
@@ -295,7 +295,7 @@ jobs:
 
     steps:
       - name: Check out PineForge HPO
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           submodules: ${{ github.event_name != 'pull_request' }}
           fetch-depth: 0
@@ -431,7 +431,7 @@ jobs:
 
       - name: Upload cross-vendor evidence
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: portable-proof-${{ runner.os }}-${{ runner.arch }}
           path: build/portable-proof
@@ -441,7 +441,7 @@ jobs:
 
       - name: Set up Python for end-to-end test
         if: runner.os == 'Linux' && github.event_name != 'pull_request'
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
 
@@ -527,13 +527,13 @@ jobs:
 
     steps:
       - name: Check out PineForge HPO
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           submodules: true
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
