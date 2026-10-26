@@ -471,6 +471,51 @@ class FailureCodeTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "hpo_output_io_failed")
         self.assertEqual(str(caught.exception), "original")
 
+    def test_selected_planning_catalog_pins_closed_refusals(self):
+        # Proves every engine refusal status/option has a closed catalog value.
+        # False pass: a missing option is discovered only when that refusal is emitted,
+        # or a template silently omits one of its two declared arguments.
+        self.assertEqual(
+            CATALOG["codes"]["hpo_walkforward_plan_refused"],
+            {
+                "class": "request",
+                "retryable": False,
+                "args": {
+                    "option": {
+                        "kind": "string",
+                        "values": [
+                            "calendar",
+                            "end_ms",
+                            "engine_timezone",
+                            "fed_start_ms",
+                            "input_tf",
+                            "none",
+                            "preroll_bars",
+                            "rows",
+                            "script_tf",
+                            "session",
+                            "start_ms",
+                            "timeframes",
+                            "timezone",
+                        ],
+                    },
+                    "status": {
+                        "kind": "string",
+                        "values": [
+                            "boundary_unaligned",
+                            "calendar_unsupported",
+                            "feed_range_invalid",
+                            "internal_error",
+                            "request_invalid",
+                            "rows_unordered",
+                        ],
+                    },
+                },
+                "templates": ["Selected-window plan refused ({status}: {option})."],
+                "since": "1.7.1",
+            },
+        )
+
     def test_window_plan_catalog_declares_only_implemented_reasons(self):
         # Proves the catalog publishes exactly the twenty-six closed reasons implemented by
         # the Python identity checks, the native planner loader and the selected-window plugin

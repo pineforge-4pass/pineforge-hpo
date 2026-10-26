@@ -8,7 +8,7 @@
   "to": {
     "version": null,
     "unreleased": true,
-    "catalogSha256": "1a7798ad99fd38c3013ae6281d23073001ecf424a78d7a4dfa6cec4644a6dc00"
+    "catalogSha256": "52374f0841c8305a6cb1b003de981cc0f331398f488c9e7642080b3fde3e8638"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
@@ -45,6 +45,49 @@
         },
         "templates": [
           "Invalid request-feed inventory ({capability}: {reason})."
+        ],
+        "since": "1.7.1"
+      }
+    },
+    {
+      "code": "hpo_walkforward_plan_refused",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "option": {
+            "kind": "string",
+            "values": [
+              "calendar",
+              "end_ms",
+              "engine_timezone",
+              "fed_start_ms",
+              "input_tf",
+              "none",
+              "preroll_bars",
+              "rows",
+              "script_tf",
+              "session",
+              "start_ms",
+              "timeframes",
+              "timezone"
+            ]
+          },
+          "status": {
+            "kind": "string",
+            "values": [
+              "boundary_unaligned",
+              "calendar_unsupported",
+              "feed_range_invalid",
+              "internal_error",
+              "request_invalid",
+              "rows_unordered"
+            ]
+          }
+        },
+        "templates": [
+          "Selected-window plan refused ({status}: {option})."
         ],
         "since": "1.7.1"
       }

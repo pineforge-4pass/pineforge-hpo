@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add native selected-window planning over an immutable `DatasetView`, with bounded input,
+  typed planner refusals, plan validation and retained rows/counts for OOS evaluation.
 - Produce and publish source- and plugin-bound request-feed inventories when codegen
   supports them, include the producer schema in cache identity, and add pure Python
   selected-study inventory/timeframe admission with typed refusals.
