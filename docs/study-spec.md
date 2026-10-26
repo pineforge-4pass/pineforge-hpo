@@ -408,9 +408,11 @@ In-place rewriting or truncation of a mapped file is unsupported. Publish a new 
 write-then-`rename`/`os.replace`, keeping each mapped inode immutable for the dataset's lifetime.
 The native runner keeps the original descriptor open and compares `st_dev`, `st_ino`, `st_size`,
 `st_mtim` and `st_ctim` against their load-time values at the end of the run, including the timeout
-path, before rendering results. Timestamps use the full seconds+nanoseconds values the filesystem
-reports. A change to device, inode, size or mtime is refused as `hpo_dataset_invalid` with a
-`changed while mapped` diagnostic. When only ctime moves (chmod, chown, xattr, an extra hard link,
+path, before rendering results. The mtime comparison uses the filesystem-stored `tv_sec`/`tv_nsec`
+fields, so its detection resolution is the filesystem's timestamp granularity: the mtime comparison
+alone cannot see a rewrite that leaves the stored mtime unchanged. A change to device,
+inode, size or mtime is refused as `hpo_dataset_invalid` with a `changed while mapped` diagnostic.
+When only ctime moves (chmod, chown, xattr, an extra hard link,
 or rename-over), the bytes in the held mapping are re-hashed against the sidecar digest parsed
 at load and accepted only if equal; without a digest a ctime change is refused.
 Rename-over hashes the original mapped inode, without reopening the replacement path.

@@ -123,42 +123,80 @@ def append_memory_summary(evidence: dict) -> None:
 def run_child(label: str, command: list[str], inputs: list[Path], *,
               outputs: list[Path] | None = None, tmpdir: Path | None = None,
               pass_fds: tuple[int, ...] = (),
-              after_start: Callable[[subprocess.Popen], None] | None = None) -> dict:
+              after_start: Callable[[subprocess.Popen], None] | None = None,
+              stdout_sink: Path | None = None, pipe_stdout: bool = False) -> dict:
     """wait4 reaps exactly this child; no wrapper/parent usage or exit code is sampled."""
-    stdout = ROOT / f"{label}.stdout"
+    if stdout_sink is not None and pipe_stdout:
+        raise AssertionError("stdout_sink and pipe_stdout are mutually exclusive")
+    stdout = stdout_sink or ROOT / f"{label}.stdout"
+    stdout_diagnostics = (
+        ROOT / f"{label}.stdout.diagnostics" if stdout_sink is not None else stdout)
     stderr = ROOT / f"{label}.stderr"
     exit_file = ROOT / f"{label}.exit"
     result_file = ROOT / f"{label}.result.json"
-    paths = [Path(command[0]), *inputs, *(outputs or []), stdout, stderr,
+    paths = [Path(command[0]), *inputs, *(outputs or []), stdout, stdout_diagnostics, stderr,
              exit_file, result_file, tmpdir or ROOT]
     list_paths(f"{label} (including the anonymous spool directory)", paths)
     print("COMMAND " + json.dumps(command), flush=True)
     environment = os.environ.copy()
     environment["TMPDIR"] = str(allowed_path(tmpdir or ROOT))
     action_error = None
-    with stdout.open("wb") as output, stderr.open("wb") as errors:
-        child = subprocess.Popen(command, stdout=output, stderr=errors,
-                                 cwd=ROOT, env=environment, pass_fds=pass_fds)
-        try:
-            if after_start is not None:
-                after_start(child)
-        except BaseException as error:
-            action_error = error
+    captured_stdout = None
+    pipe_read = None
+    pipe_write = None
+    output = None
+    try:
+        if pipe_stdout:
+            pipe_read, pipe_write = os.pipe()
+            output_descriptor = pipe_write
+        else:
+            output = stdout.open("wb")
+            output_descriptor = output
+        with stderr.open("wb") as errors:
+            child = subprocess.Popen(command, stdout=output_descriptor, stderr=errors,
+                                     cwd=ROOT, env=environment, pass_fds=pass_fds)
+            if pipe_stdout:
+                # The publication test polls this descriptor until the child's stdout pipe is
+                # full, while keeping the read end closed to the child and unread by the parent.
+                child.stdout_pipe_write_fd = pipe_write
             try:
-                child.kill()
-            except ProcessLookupError:
-                pass
-        while True:
-            try:
-                waited_pid, status, usage = os.wait4(child.pid, 0)
-                break
-            except InterruptedError:
-                continue
-        if waited_pid != child.pid:
-            raise AssertionError(f"wait4 returned {waited_pid}, expected {child.pid}")
-        child.returncode = os.waitstatus_to_exitcode(status)
-        # A signalled work process records its negative signal exit, never an echo/wrapper code.
-        exit_file.write_text(f"{child.returncode}\n", encoding="ascii")
+                if after_start is not None:
+                    after_start(child)
+            except BaseException as error:
+                action_error = error
+                try:
+                    # Popen.kill() can poll/reap an exited child; wait4 owns reaping and rusage.
+                    os.kill(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if pipe_stdout:
+                os.close(pipe_write)
+                pipe_write = None
+                with os.fdopen(pipe_read, "rb") as source:
+                    captured_stdout = source.read()
+                pipe_read = None
+            while True:
+                try:
+                    waited_pid, status, usage = os.wait4(child.pid, 0)
+                    break
+                except InterruptedError:
+                    continue
+            if waited_pid != child.pid:
+                raise AssertionError(f"wait4 returned {waited_pid}, expected {child.pid}")
+            child.returncode = os.waitstatus_to_exitcode(status)
+            # A signalled work process records its negative signal exit, never an echo/wrapper code.
+            exit_file.write_text(f"{child.returncode}\n", encoding="ascii")
+    finally:
+        if output is not None:
+            output.close()
+        if pipe_write is not None:
+            os.close(pipe_write)
+        if pipe_read is not None:
+            os.close(pipe_read)
+    if pipe_stdout:
+        stdout.write_bytes(captured_stdout or b"")
+    elif stdout_sink is not None:
+        stdout_diagnostics.write_bytes(b"")
     row = {
         "command": command,
         "pid": child.pid,
@@ -167,6 +205,7 @@ def run_child(label: str, command: list[str], inputs: list[Path], *,
         "ru_maxrss": usage.ru_maxrss,
         "peak_rss_bytes": peak_bytes(usage.ru_maxrss),
         "stdout": str(stdout),
+        "stdout_diagnostics": str(stdout_diagnostics),
         "stderr": str(stderr),
         "exit_file": str(exit_file),
         "result_file": str(result_file),
@@ -197,7 +236,8 @@ def document_diagnostics(document: dict, first_trial: dict | None) -> str:
 
 def child_diagnostics(row: dict, *, include_document: bool = False) -> str:
     names = ("stdout", "stderr")
-    paths = list_paths("child output diagnostics read", [Path(row[name]) for name in names])
+    stdout = Path(row.get("stdout_diagnostics", row["stdout"]))
+    paths = list_paths("child output diagnostics read", [stdout, Path(row["stderr"])])
     messages = [f"child exit code: {row['exit_code']}"]
     for name, path in zip(names, paths):
         with path.open("rb") as source:
@@ -220,6 +260,23 @@ def child_diagnostics(row: dict, *, include_document: bool = False) -> str:
                     break
                 header.extend(line)
     return "\n".join(messages)
+
+
+def deleted_terminal_spool_data_fd(pid: int) -> tuple[Path, str] | None:
+    """Return the anonymous terminal-data fd after listing the proc entries first."""
+    fd_directory = Path(f"/proc/{pid}/fd")
+    try:
+        entries = sorted(fd_directory.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            target = os.readlink(entry)
+        except OSError:
+            continue
+        if ".pineforge-hpo-trials-data-" in target and target.endswith(" (deleted)"):
+            return entry, target
+    return None
 
 
 class StreamedTrialRetentionTests(unittest.TestCase):
@@ -907,6 +964,134 @@ class StreamedTrialRetentionTests(unittest.TestCase):
         self.assertTrue(all(trial["status"] == "ok" for trial in trials))
         pass_row(row, trials_completed=len(trials),
                  check="destination failure names /dev/full, with all terminal rows observed")
+
+    def truncate_spool_after_publication_stalls(self, child: subprocess.Popen) -> None:
+        deadline = time.monotonic() + 30.0
+        data_fd = None
+        publication_stalled = False
+        while time.monotonic() < deadline:
+            data_fd = deleted_terminal_spool_data_fd(child.pid)
+            _, writable, _ = select.select([], [child.stdout_pipe_write_fd], [], 0.0)
+            if data_fd is not None and not writable:
+                publication_stalled = True
+                break
+            if os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                self.fail("child exited before publication stdout became full")
+            time.sleep(0.01)
+        if data_fd is None:
+            self.fail("anonymous terminal spool data fd did not appear")
+        if not publication_stalled:
+            self.fail("publication stdout did not become full before the deadline")
+        data_path, target = data_fd
+        list_paths("publication failure terminal-data fd", [data_path])
+        self.assertIn(".pineforge-hpo-trials-data-", target)
+        self.assertTrue(target.endswith(" (deleted)"), target)
+        self.assertGreater(data_path.stat().st_size, 64 * 1024,
+                           "terminal rows must exceed a 64 KiB publication pipe")
+        os.truncate(data_path, 0)
+
+    def test_18_publication_failure_writes_no_second_document(self) -> None:
+        if not sys.platform.startswith("linux"):
+            reason = "publication-after-first-byte control requires Linux /proc and pipes"
+            print("SKIP publication failure row: " + reason, flush=True)
+            self.skipTest(reason)
+
+        row = run_child(
+            "publication-failure-after-first-byte", self.command(1_000),
+            [PLUGIN, MANIFEST, CSV],
+            after_start=self.truncate_spool_after_publication_stalls, pipe_stdout=True)
+        stdout, stderr = list_paths(
+            "publication failure result read", [Path(row["stdout"]), Path(row["stderr"])])
+        self.assertEqual(row["exit_code"], 1, child_diagnostics(row))
+        result = stdout.read_bytes()
+        self.assertGreater(len(result), 0, "publication wrote no first byte")
+        self.assertEqual(result.count(b'{\n  "schema_version": 1'), 1,
+                         "publication produced more than one result document")
+        self.assertNotIn(b'{"schema_version":1,"ok":false,"failure":', result,
+                         "publication appended a second typed failure document")
+        diagnostic = stderr.read_text(encoding="utf-8")
+        self.assertIn("failed reading terminal trial spool", diagnostic)
+        pass_row(row, stdout_bytes=len(result),
+                 check="a post-publication typed spool failure writes one partial result only")
+
+    def test_19_stdout_sink_failure_names_stdout(self) -> None:
+        if not sys.platform.startswith("linux"):
+            reason = "stdout /dev/full destination failure requires Linux"
+            print("SKIP stdout sink row: " + reason, flush=True)
+            self.skipTest(reason)
+        full = Path("/dev/full")
+        list_paths("stdout sink availability", [full])
+        if not full.exists():
+            reason = "stdout sink control requires the named /dev/full device"
+            print("SKIP stdout sink row: " + reason, flush=True)
+            write_json(ROOT / "stdout-sink-missing.result.json",
+                       {"verdict": "SKIP", "reason": reason})
+            self.skipTest(reason)
+        for trials in (100, 1):
+            with self.subTest(trials=trials):
+                label = f"stdout-sink-{trials}"
+                final = ROOT / f"{label}.final.json"
+                row = run_child(
+                    label, self.command(trials, "--output", str(final)),
+                    [PLUGIN, MANIFEST, CSV], outputs=[final], stdout_sink=full)
+                stderr, final = list_paths(
+                    "stdout sink failure read", [Path(row["stderr"]), final])
+                result = final.read_bytes()
+                if trials == 1:
+                    # A sub-buffer document reaches /dev/full only when stdout is flushed.
+                    self.assertLess(len(result), 4 * 1024,
+                                    "flush control must fit inside the 4 KiB stdio buffer")
+                self.assertEqual(row["exit_code"], 1, child_diagnostics(row))
+                document = json.loads(result)
+                self.assertTrue(document["ok"])
+                self.assertEqual(document["trials_completed"], trials)
+                self.assertEqual(len(document["trials"]), trials)
+                self.assertNotIn("failure", document)
+                diagnostic = stderr.read_text(encoding="utf-8")
+                self.assertIn("failed writing result JSON to stdout", diagnostic)
+                self.assertNotIn("terminal trial spool", diagnostic)
+                pass_row(row, trials_completed=document["trials_completed"],
+                         result_document_bytes=len(result),
+                         check="stdout failure names stdout and leaves --output complete")
+
+    def test_20_timeout_publication_failure_writes_no_second_document(self) -> None:
+        if not sys.platform.startswith("linux"):
+            reason = "timeout publication control requires Linux /proc and pipes"
+            print("SKIP timeout publication failure row: " + reason, flush=True)
+            self.skipTest(reason)
+        # Nine completed 8 KiB payloads exceed a 64 KiB pipe before the tenth trial hangs.
+        trials = 10
+        command = [
+            str(NATIVE), "run", "--strategy", str(PLUGIN), "--ohlcv", str(CSV),
+            "--objective", "metrics.all.net_profit", "--sampler", "grid",
+            "--seed", "17", "--workers", "1", "--batch-size", "1",
+            "--schedule", "batches", "--pruner", "none",
+            "--max-trials", str(trials), "--trials-out", "all",
+            "--input-tf", "1", "--script-tf", "5",
+            "--bar-magnifier", "true", "--magnifier-samples", "6",
+            "--magnifier-distribution", "triangle",
+            "--int-dim", "Length", "1", str(trials), "1",
+            "--categorical-choice", "long_metadata", "x" * 8192,
+            "--fixed-input", "HangAtLength", str(trials), "--trial-timeout-seconds", "1",
+        ]
+        row = run_child(
+            "timeout-publication-failure-after-first-byte", command, [PLUGIN, MANIFEST, CSV],
+            after_start=self.truncate_spool_after_publication_stalls, pipe_stdout=True)
+        stdout, stderr = list_paths(
+            "timeout publication failure result read",
+            [Path(row["stdout"]), Path(row["stderr"])])
+        self.assertEqual(row["exit_code"], 3, child_diagnostics(row))
+        result = stdout.read_bytes()
+        self.assertGreater(len(result), 0, "timeout publication wrote no first byte")
+        self.assertEqual(result.count(b'{\n  "schema_version": 1'), 1,
+                         "timeout publication produced more than one result document")
+        self.assertIn(b'  "stop_reason": "trial_timeout"', result)
+        self.assertNotIn(b'{"schema_version":1,"ok":false,"failure":', result,
+                         "timeout publication appended a second typed failure document")
+        diagnostic = stderr.read_text(encoding="utf-8")
+        self.assertIn("failed reading terminal trial spool", diagnostic)
+        pass_row(row, stdout_bytes=len(result),
+                 check="a post-publication timeout spool failure writes one partial result only")
 
     def test_15_mapped_metadata_changes_keep_the_original_inode(self) -> None:
         # R1/G3: chmod alone changes ctime after the mapping was admitted.
