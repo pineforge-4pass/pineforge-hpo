@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 from types import SimpleNamespace
 import unittest
 
@@ -27,6 +29,7 @@ OLD_ROUTE = """${{ github.event_name != 'pull_request_target' &&
 POST_MERGE_STEPS = (
     "Configure PineForge Engine headers",
     "Configure PineForge HPO",
+    "Build PineForge window planner helper",
     "Build",
     "Test",
     "Cross-vendor reproducibility and Intel checkpoint restore",
@@ -53,6 +56,11 @@ PR_CORE_TEST = (
 ADAPTER_BLOCK_OPEN = "if(UNIX AND TARGET PineForgeHPO::engine_adapter)"
 ENGINE_REFERENCE = re.compile(
     r"engine_adapter|pineforge-hpo-native|PINEFORGE_ENGINE_|fake_strategy"
+)
+AUTHZ_STEP_NAME = "Only our own pull requests and our own events run CI"
+AGGREGATE_STEP_NAME = "Require success or independently proven cheap skips"
+RELEASE_PIN_LIGHT_COMMAND = (
+    "python3 -m unittest tests.python.test_release_pins.RepositoryReleasePinTests -v"
 )
 
 
@@ -88,6 +96,14 @@ def engine_references_outside_block(cmake_text):
     return [line for line in outside if ENGINE_REFERENCE.search(line)]
 
 
+def workflow_step(workflow, job_id, step_name):
+    return job_step(workflow["jobs"][job_id], step_name)
+
+
+def job_step(job, step_name):
+    return next(step for step in job["steps"] if step["name"] == step_name)
+
+
 def evaluate(expression, **context):
     expression = compact(expression).removeprefix("${{").removesuffix("}}").strip()
     expression = expression.replace("&&", " and ").replace("||", " or ")
@@ -121,6 +137,7 @@ class PrTierWorkflowTests(unittest.TestCase):
         routes = (
             ci["release-notification"]["runs-on"],
             ci["python"]["runs-on"],
+            ci["memory-gate"]["runs-on"],
             ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
             benchmark["optuna"]["runs-on"],
         )
@@ -138,12 +155,13 @@ class PrTierWorkflowTests(unittest.TestCase):
     def test_no_route_is_a_conditional_expression(self):
         # Every routed site is now a literal hosted label, so routing can no longer
         # vary by event, actor or fork. Guard that invariant directly: a `${{ }}`
-        # expression creeping back into any of the four routed sites is a regression.
+        # expression creeping back into any of the five routed sites is a regression.
         ci = self.workflows["ci.yml"]["jobs"]
         benchmark = self.workflows["benchmark-smoke.yml"]["jobs"]
         routes = (
             ci["release-notification"]["runs-on"],
             ci["python"]["runs-on"],
+            ci["memory-gate"]["runs-on"],
             ci["native"]["strategy"]["matrix"]["include"][0]["runner"],
             benchmark["optuna"]["runs-on"],
         )
@@ -159,7 +177,7 @@ class PrTierWorkflowTests(unittest.TestCase):
             POOL_ROUTE,
             POOL_ROUTE.replace("'ubuntu-24.04'", f"fromJSON('{json.dumps(POOL)}')"),
         ):
-            for job_id in ("release-notification", "python"):
+            for job_id in ("release-notification", "python", "memory-gate"):
                 with self.subTest(job=job_id, route=bad_route):
                     mutated = copy.deepcopy(self.workflows)
                     mutated["ci.yml"]["jobs"][job_id]["runs-on"] = bad_route
@@ -184,9 +202,11 @@ class PrTierWorkflowTests(unittest.TestCase):
                     "authz": "authz",
                     "changes": "changes",
                     "workflow-lint": "workflow-lint",
+                    "light": "Light",
                     "release-notification": "Release notification contract",
                     "native": "Native (${{ matrix.os }})",
                     "python": "Python ${{ matrix.python }}",
+                    "memory-gate": "HPO memory growth gate",
                     "build-gate": "build-gate",
                 },
             ),
@@ -232,6 +252,289 @@ class PrTierWorkflowTests(unittest.TestCase):
             self.workflows["ci.yml"]["jobs"]["python"]["strategy"]["matrix"]["python"],
             ["3.11", "3.14"],
         )
+
+    def test_license_entity_is_an_unconditional_light_check(self):
+        jobs = self.workflows["ci.yml"]["jobs"]
+        light = jobs["light"]
+        self.assertEqual(light["needs"], ["authz"])
+        self.assertNotIn("if", light)
+        self.assertEqual(light["runs-on"], "ubuntu-24.04")
+        for step in light["steps"]:
+            self.assertEqual(step["if"], "${{ needs.authz.result == 'success' }}")
+        self.assertEqual(
+            job_step(light, "Check license entity")["run"],
+            "python3 -m unittest tests/python/test_license_entity.py -v",
+        )
+        self.assertEqual(
+            jobs["build-gate"]["needs"],
+            [
+                "authz",
+                "changes",
+                "workflow-lint",
+                "light",
+                "release-notification",
+                "native",
+                "python",
+                "memory-gate",
+            ],
+        )
+
+    def assert_light_release_pin_check(self, light):
+        self.assertEqual(
+            [
+                command
+                for step in light.get("steps", [])
+                for command in commands(step.get("run", ""))
+            ],
+            [
+                "python3 -m unittest tests/python/test_license_entity.py -v",
+                RELEASE_PIN_LIGHT_COMMAND,
+            ],
+        )
+        self.assertEqual(light["needs"], ["authz"])
+        self.assertNotIn("if", light)
+        for step in light["steps"]:
+            self.assertEqual(step.get("if"), "${{ needs.authz.result == 'success' }}")
+        checkout = job_step(light, "Check out PineForge HPO")
+        self.assertEqual(checkout.get("with", {}).get("submodules", "false"), "false")
+
+    def test_documentation_only_prs_run_release_pin_checks(self):
+        light = self.workflows["ci.yml"]["jobs"].get("light", {})
+        self.assert_light_release_pin_check(light)
+        # Exact executable commands: mentioning the file cannot cover the README
+        # typo, and selecting the full suite would require the producers.
+        for run in (
+            "true",
+            "# " + RELEASE_PIN_LIGHT_COMMAND,
+            "echo " + RELEASE_PIN_LIGHT_COMMAND,
+            RELEASE_PIN_LIGHT_COMMAND + " || true",
+            RELEASE_PIN_LIGHT_COMMAND.replace(
+                "RepositoryReleasePinTests", "ReleasePinTests"
+            ),
+            "python3 -m unittest discover -s tests/python -v",
+        ):
+            with self.subTest(run=run):
+                mutated = copy.deepcopy(light)
+                job_step(mutated, "Check release pins")["run"] = run
+                with self.assertRaises(AssertionError):
+                    self.assert_light_release_pin_check(mutated)
+        mutated = copy.deepcopy(light)
+        mutated["steps"] = [
+            step for step in mutated["steps"] if step["name"] != "Check release pins"
+        ]
+        with self.assertRaises(AssertionError):
+            self.assert_light_release_pin_check(mutated)
+        for key, value in (
+            ("needs", ["authz", "changes"]),
+            ("if", "needs.changes.outputs.code == 'true'"),
+        ):
+            with self.subTest(job_key=key):
+                mutated = copy.deepcopy(light)
+                mutated[key] = value
+                with self.assertRaises(AssertionError):
+                    self.assert_light_release_pin_check(mutated)
+        for step in light["steps"]:
+            with self.subTest(unguarded_step=step["name"]):
+                mutated = copy.deepcopy(light)
+                job_step(mutated, step["name"])["if"] = "true"
+                with self.assertRaises(AssertionError):
+                    self.assert_light_release_pin_check(mutated)
+        mutated = copy.deepcopy(light)
+        job_step(mutated, "Check out PineForge HPO")["with"] = {"submodules": "true"}
+        with self.assertRaises(AssertionError):
+            self.assert_light_release_pin_check(mutated)
+        mutated = copy.deepcopy(light)
+        job_step(mutated, "Check release pins")["run"] += (
+            "\npython3 -m pip install -e external/pineforge-codegen-oss"
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_light_release_pin_check(mutated)
+
+    def authz_environment(self, **overrides):
+        environment = {
+            "EVENT": "push",
+            "REPO": "pineforge-4pass/pineforge-hpo",
+            "HEAD_REPO": "pineforge-4pass/pineforge-hpo",
+            "HEAD_IS_FORK": "false",
+            "ASSOCIATION": "OWNER",
+            "PR_AUTHOR": "owner",
+            "WR_HEAD_REPO": "pineforge-4pass/pineforge-hpo",
+            "WR_ACTOR": "pineforge-app[bot]",
+            "ALLOWED_BOTS": "dependabot[bot] pineforge-app[bot]",
+        }
+        environment.update(overrides)
+        return environment
+
+    @staticmethod
+    def run_workflow_script(script, environment):
+        process_environment = os.environ.copy()
+        process_environment.update(
+            {
+                "GITHUB_STEP_SUMMARY": "/dev/null",
+                "RUNNER_TEMP": str(ROOT),
+            }
+        )
+        process_environment.update(environment)
+        return subprocess.run(
+            ["bash", "-c", script],
+            cwd=ROOT,
+            env=process_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_authz_script_decision_table_refuses_untrusted_inputs(self):
+        script = workflow_step(self.workflows["ci.yml"], "authz", AUTHZ_STEP_NAME)[
+            "run"
+        ]
+        repository = "pineforge-4pass/pineforge-hpo"
+        cases = (
+            ("trusted push", {"EVENT": "push"}, True),
+            (
+                "trusted workflow run",
+                {
+                    "EVENT": "workflow_run",
+                    "WR_HEAD_REPO": repository,
+                    "WR_ACTOR": "pineforge-app[bot]",
+                },
+                True,
+            ),
+            (
+                "same-repository owner pull request",
+                {
+                    "EVENT": "pull_request",
+                    "HEAD_REPO": repository,
+                    "HEAD_IS_FORK": "false",
+                    "ASSOCIATION": "OWNER",
+                },
+                True,
+            ),
+            (
+                "same-repository allowlisted bot pull request",
+                {
+                    "EVENT": "pull_request",
+                    "HEAD_REPO": repository,
+                    "HEAD_IS_FORK": "false",
+                    "ASSOCIATION": "CONTRIBUTOR",
+                    "PR_AUTHOR": "dependabot[bot]",
+                },
+                True,
+            ),
+            (
+                "foreign fork pull request",
+                {
+                    "EVENT": "pull_request",
+                    "HEAD_REPO": "attacker/example",
+                    "HEAD_IS_FORK": "true",
+                    "ASSOCIATION": "OWNER",
+                },
+                False,
+            ),
+            ("pull request target", {"EVENT": "pull_request_target"}, False),
+        )
+        for name, overrides, expected_success in cases:
+            with self.subTest(case=name):
+                result = self.run_workflow_script(
+                    script, self.authz_environment(**overrides)
+                )
+                self.assertEqual(
+                    result.returncode == 0, expected_success, result.stderr
+                )
+
+    def test_authz_script_rejects_a_noop_fail_mutation(self):
+        script = workflow_step(self.workflows["ci.yml"], "authz", AUTHZ_STEP_NAME)[
+            "run"
+        ]
+        fail_function = (
+            'fail() { echo "::error title=authz::$1"; echo "authz: REFUSED: $1" '
+            '>> "$GITHUB_STEP_SUMMARY"; exit 1; }'
+        )
+        self.assertIn(fail_function, script)
+        environment = self.authz_environment(
+            EVENT="pull_request",
+            HEAD_REPO="attacker/example",
+            HEAD_IS_FORK="true",
+            ASSOCIATION="OWNER",
+        )
+        shipped_result = self.run_workflow_script(script, environment)
+        self.assertNotEqual(shipped_result.returncode, 0, shipped_result.stderr)
+
+        mutated = script.replace(fail_function, "fail() { :; }", 1)
+        self.assertNotEqual(mutated, script)
+        mutant_result = self.run_workflow_script(mutated, environment)
+        self.assertEqual(mutant_result.returncode, 0, mutant_result.stderr)
+
+    def aggregate_environment(self, **overrides):
+        aggregate = self.workflows["ci.yml"]["jobs"]["build-gate"]
+        step = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )
+        needs = {job_id: {"result": "success"} for job_id in aggregate["needs"]}
+        for job_id, result in overrides.items():
+            needs[job_id] = {"result": result}
+        return {
+            "NEEDS": json.dumps(needs),
+            "HEAVY_JOBS": step["env"]["HEAVY_JOBS"],
+            "DOCS_ONLY": "false",
+            "WORKFLOWS_ONLY": "false",
+        }
+
+    def test_aggregate_script_rejects_a_failed_native_result(self):
+        script = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )["run"]
+        result = self.run_workflow_script(
+            script, self.aggregate_environment(native="failure")
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_memory_gate_is_required_and_runs_in_parallel_with_native(self):
+        jobs = self.workflows["ci.yml"]["jobs"]
+        memory = jobs["memory-gate"]
+        self.assertEqual(memory["needs"], ["authz", "changes"])
+        self.assertEqual(memory["if"], jobs["native"]["if"])
+        self.assertIn("memory-gate", jobs["build-gate"]["needs"])
+        step = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )
+        self.assertEqual(
+            json.loads(step["env"]["HEAVY_JOBS"]),
+            ["native", "python", "release-notification", "memory-gate"],
+        )
+        for status in ("failure", "cancelled", "skipped"):
+            with self.subTest(memory=status):
+                result = self.run_workflow_script(
+                    step["run"],
+                    self.aggregate_environment(**{"memory-gate": status}),
+                )
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+
+    def test_aggregate_script_rejects_a_skipped_or_failed_light_job(self):
+        script = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )["run"]
+        for light_result in ("skipped", "failure"):
+            with self.subTest(light=light_result):
+                result = self.run_workflow_script(
+                    script, self.aggregate_environment(light=light_result)
+                )
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+
+    def test_aggregate_script_rejects_a_noop_run_mutation(self):
+        script = workflow_step(
+            self.workflows["ci.yml"], "build-gate", AGGREGATE_STEP_NAME
+        )["run"]
+        environment = self.aggregate_environment(native="failure")
+        shipped_result = self.run_workflow_script(script, environment)
+        self.assertNotEqual(shipped_result.returncode, 0, shipped_result.stderr)
+
+        mutated = copy.deepcopy(self.workflows["ci.yml"])
+        step = workflow_step(mutated, "build-gate", AGGREGATE_STEP_NAME)
+        step["run"] = "true"
+        self.assertNotEqual(step["run"], script)
+        mutant_result = self.run_workflow_script(step["run"], environment)
+        self.assertEqual(mutant_result.returncode, 0, mutant_result.stderr)
 
     def test_concurrency_cancels_only_runs_of_the_same_pull_request(self):
         for workflow in self.workflows.values():
@@ -284,6 +587,24 @@ class PrTierWorkflowTests(unittest.TestCase):
         self.assertEqual(tuple(pr_test), PR_CORE_TEST)
         self.assertEqual(pr_test[1], main_test[1] + " --no-tests=error")
         self.assertEqual(steps["Build"]["run"].strip(), "cmake --build build -j4")
+        planner = steps["Build PineForge window planner helper"]["run"]
+        self.assertIn(
+            "cmake --build external/pineforge-engine/build --target pineforge_window_plan",
+            planner,
+        )
+        self.assertIn("Linux) planner_suffix=so", planner)
+        self.assertIn("macOS) planner_suffix=dylib", planner)
+        self.assertIn(
+            "${{ github.workspace }}/external/pineforge-engine/build/lib/"
+            "libpineforge_window_plan.${planner_suffix}",
+            planner,
+        )
+        self.assertIn('test -f "$planner_helper"', planner)
+        self.assertIn(
+            'echo "PFH_WINDOW_PLAN_LIB=$planner_helper" >> "$GITHUB_ENV"',
+            planner,
+        )
+        self.assertEqual(steps["Test"]["env"]["PFH_REQUIRE_WINDOW_PLAN"], "1")
         self.assertIn(
             "ctest --test-dir build --output-on-failure", steps["Test"]["run"]
         )
@@ -378,7 +699,7 @@ class PrTierWorkflowTests(unittest.TestCase):
             aggregate = "build-gate" if name == "ci.yml" else "benchmark-check"
             self.assertEqual(jobs[aggregate]["if"], "${{ always() }}")
             for job_id, job in jobs.items():
-                if job_id in ("authz", "changes", "workflow-lint", aggregate):
+                if job_id in ("authz", "changes", "workflow-lint", "light", aggregate):
                     continue
                 self.assertEqual(job["needs"], ["authz", "changes"])
                 for result in ("success", "failure", "cancelled", "skipped"):
@@ -401,6 +722,30 @@ class PrTierWorkflowTests(unittest.TestCase):
                                 cancelled=lambda: False,
                             )
                             self.assertEqual(allowed, code == "true")
+
+    def test_draft_ci_pull_requests_keep_the_current_suite_condition(self):
+        workflow = self.workflows["ci.yml"]
+        self.assertIn("ready_for_review", workflow["on"]["pull_request"]["types"])
+        for job_id in ("release-notification", "native", "python", "memory-gate"):
+            job = workflow["jobs"][job_id]
+            for draft in (False, True):
+                for code in ("true", "false", ""):
+                    with self.subTest(job=job_id, draft=draft, code=code):
+                        allowed = evaluate(
+                            job["if"],
+                            github=SimpleNamespace(
+                                event_name="pull_request",
+                                event=SimpleNamespace(
+                                    pull_request=SimpleNamespace(draft=draft)
+                                ),
+                            ),
+                            needs=SimpleNamespace(
+                                changes=SimpleNamespace(
+                                    outputs=SimpleNamespace(code=code)
+                                )
+                            ),
+                        )
+                        self.assertEqual(allowed, code == "true")
 
 
 if __name__ == "__main__":

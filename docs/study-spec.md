@@ -320,6 +320,8 @@ Grid order is `false`, then `true`.
 significant for deterministic grid enumeration. String, integer, real, and
 boolean choice types are preserved in native trial JSON and must match the
 compiled Pine input type.
+Color-typed manifest inputs accept only packed `0xAARRGGBB` integers in `0..4294967295`
+(excluding booleans), while legacy string-typed color inputs retain string values.
 
 Conditional search spaces are not implemented. `log` is valid only on integer
 and real dimensions under the contracts above.
@@ -406,9 +408,11 @@ In-place rewriting or truncation of a mapped file is unsupported. Publish a new 
 write-then-`rename`/`os.replace`, keeping each mapped inode immutable for the dataset's lifetime.
 The native runner keeps the original descriptor open and compares `st_dev`, `st_ino`, `st_size`,
 `st_mtim` and `st_ctim` against their load-time values at the end of the run, including the timeout
-path, before rendering results. Timestamps use the full seconds+nanoseconds values the filesystem
-reports. A change to device, inode, size or mtime is refused as `hpo_dataset_invalid` with a
-`changed while mapped` diagnostic. When only ctime moves (chmod, chown, xattr, an extra hard link,
+path, before rendering results. The mtime comparison uses the filesystem-stored `tv_sec`/`tv_nsec`
+fields, so its detection resolution is the filesystem's timestamp granularity: the mtime comparison
+alone cannot see a rewrite that leaves the stored mtime unchanged. A change to device,
+inode, size or mtime is refused as `hpo_dataset_invalid` with a `changed while mapped` diagnostic.
+When only ctime moves (chmod, chown, xattr, an extra hard link,
 or rename-over), the bytes in the held mapping are re-hashed against the sidecar digest parsed
 at load and accepted only if equal; without a digest a ctime change is refused.
 Rename-over hashes the original mapped inode, without reopening the replacement path.
@@ -1113,9 +1117,9 @@ non-empty `TMPDIR`, or `/tmp` when `TMPDIR` is unset or empty. The directory is 
 files; creation failures do not trigger a retry in another directory. The index is addressed relative
 to the first trial ID of the run, so high continuation IDs and gaps are supported.
 The spool holds the whole trial array on disk until the process exits.
-On read-only root filesystems, `--output` in a writable place and `--trials-out none|best-k` are
-remedies for the native CLI only. The Python `run` wrapper forwards neither `--output` nor
-`--trials-out`, so for `pineforge-hpo run` only a writable `TMPDIR` (or `/tmp`) helps.
+On read-only root filesystems, native `run` and the jailed Python `run` wrapper can use a writable
+`--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it, and the Python
+`run` wrapper forwards `--trials-out` and `--best-k`.
 If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
 not in the native process RSS.
 The final `trials` array copies those rendered rows in trial-ID order

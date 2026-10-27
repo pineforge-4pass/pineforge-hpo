@@ -29,6 +29,23 @@
 
 namespace pineforge {
 namespace hpo {
+
+DatasetView::DatasetView(std::shared_ptr<const Dataset> dataset)
+    : DatasetView(dataset, 0, dataset ? dataset->size() : 0) {}
+
+DatasetView::DatasetView(std::shared_ptr<const Dataset> dataset,
+                         std::size_t first, std::size_t count)
+    : owner(std::move(dataset)), begin(first), length(count) {
+    if (!owner || begin > owner->size() || length > owner->size() - begin)
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_dataset_invalid", {}, "dataset view must be within a non-null owner");
+}
+
+const pf_bar_t* DatasetView::data() const noexcept {
+    // Avoid even zero-offset pointer arithmetic on a possibly null empty-vector data pointer.
+    return begin == 0 ? owner->data() : owner->data() + begin;
+}
+
 namespace {
 
 static_assert(std::is_standard_layout<pf_bar_t>::value &&

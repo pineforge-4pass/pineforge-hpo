@@ -26,8 +26,10 @@ into two conceptual libraries:
 - **Core:** \ref pineforge::hpo::SearchSpace, samplers, candidate types,
   objective expressions, constraints, generic objective functions, and
   coordinator-owned \ref pineforge::hpo::Pruner cut snapshots.
-- **Engine adapter:** \ref pineforge::hpo::Dataset,
-  \ref pineforge::hpo::StrategyPlugin, \ref pineforge::hpo::TrialExecutor, and
+- **Engine adapter:** \ref pineforge::hpo::Dataset, \ref pineforge::hpo::DatasetView,
+  \ref pineforge::hpo::StrategyPlugin, \ref pineforge::hpo::WindowPlanHelper,
+  \ref pineforge::hpo::SelectedPlan,
+  \ref pineforge::hpo::TrialExecutor, \ref pineforge::hpo::SelectedEvaluation, and
   detached report snapshots.
 - **Portfolio contracts:** \ref pineforge::hpo::PortfolioObservation and
   related account-level observation types. These are extension contracts; the
@@ -289,10 +291,19 @@ the sampler; failures leave it unchanged. `reset()` returns to the original empt
 
 `dlib_global` continuation is not supported and fails closed with exit 4.
 
+Best-trial selection and best-k retention require status `ok`, feasibility and a finite objective.
+This includes `trials` under `--trials-out best-k`, `summary.best_k` under `best-k` and `none`,
+and retained winner rows in timeout results. The configured direction ranks eligible trials,
+and equal objectives prefer the lowest trial ID. `constraint_violation` and `trial_error` rows
+cannot win or enter these retained winner lists, even if an exception after scoring left a finite
+objective and feasibility on the row. These rows remain in all-mode `trials`, `--trials-file` /
+`--progress-fd` output and `counts_by_status`.
+
 ## Contract changes in 0.4.0
 
-These controls are native `run` flags, not new StudySpec fields or Python wrapper
-pass-throughs. Existing callers retain `--trials-out all` by default.
+These controls are native `run` flags that the Python `pineforge-hpo run` command
+also forwards. They are not new StudySpec fields. Existing callers retain
+`--trials-out all` by default.
 
 - `--trials-out all` retains every terminal record in `trials`, as before. This
   mode now spools rows in the native child without retaining every trial record or the
@@ -301,11 +312,10 @@ pass-throughs. Existing callers retain `--trials-out all` by default.
   files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files are
   unlinked at creation, but the spool holds the whole trial array on disk until the process
   exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
-  filesystems, `--output` in a writable place and `--trials-out none|best-k` are remedies for
-  the native CLI only; the Python `run` wrapper forwards neither, so for `pineforge-hpo run`
-  only a writable `TMPDIR` (or `/tmp`) helps.
+  filesystems, native `run` and the jailed Python `run` wrapper can use a writable
+  `--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it.
 - `--trials-out best-k --best-k N` retains at most N feasible, finite-objective
-  winners in `trials`; ties prefer the lower trial ID. Records are emitted in
+  winners with status `ok` in `trials`; ties prefer the lower trial ID. Records are emitted in
   trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.
 - `--trials-out none` emits `trials: []`. Both bounded modes include `summary`
   with `counts_by_status`, `best_k` (full terminal-record objects), and

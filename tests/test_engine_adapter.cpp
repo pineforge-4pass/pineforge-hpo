@@ -1,7 +1,13 @@
 #include <pineforge/pineforge.h>
 
-#if defined(PINEFORGE_HPO_FAKE_PLUGIN)
+#if defined(PINEFORGE_HPO_FAKE_SELECTED)
 
+// A separate, explicitly opted-in fixture. The default fake below keeps no selected exports.
+#include "test_selected_evaluation.cpp"
+
+#elif defined(PINEFORGE_HPO_FAKE_PLUGIN)
+
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -38,7 +44,23 @@ struct FakeStrategy {
     std::map<std::string, double> metadata;
     std::map<std::string, std::string> symbol_facts;
     std::map<std::string, std::vector<pf_bar_t>> symbol_feeds;
+    bool scratch_tables_installed = false;
 };
+
+#if defined(PINEFORGE_HPO_FAKE_PLUGIN_SCRATCH)
+std::mutex scratch_mutex;
+std::vector<std::string> scratch_calls;
+std::vector<std::array<unsigned char, 104>> scratch_descriptors;
+std::string scratch_refusal_code;
+std::string scratch_refusal_args;
+
+void record_scratch(const char* call) {
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    scratch_calls.emplace_back(call);
+}
+#else
+void record_scratch(const char*) {}
+#endif
 
 // Every syminfo metadata call of every handle, "key=value" in call order, for the adapter test.
 std::mutex metadata_mutex;
@@ -48,6 +70,7 @@ std::atomic<int> active_handles{0};
 std::atomic<int> outstanding_reports{0};
 std::atomic<int> lifetime_violations{0};
 std::atomic<int> reused_handle_runs{0};
+std::atomic<const pf_bar_t*> last_bars{nullptr};
 
 FakeStrategy* fake(pf_strategy_t strategy) {
     return static_cast<FakeStrategy*>(strategy);
@@ -123,6 +146,7 @@ void allocate_curve_values(pf_report_t* report, const std::vector<double>& equit
 extern "C" {
 
 PF_API pf_strategy_t strategy_create(const char*) {
+    record_scratch("create");
     ++active_handles;
     return new FakeStrategy();
 }
@@ -131,6 +155,7 @@ PF_API void strategy_free(pf_strategy_t strategy) {
     if (strategy == nullptr) {
         return;
     }
+    record_scratch("free");
     if (outstanding_reports.load() != 0) {
         ++lifetime_violations;
     }
@@ -139,12 +164,14 @@ PF_API void strategy_free(pf_strategy_t strategy) {
 }
 
 PF_API void strategy_set_input(pf_strategy_t strategy, const char* key, const char* value) {
+    record_scratch("input");
     fake(strategy)->syminfo_order_error |=
         fake(strategy)->syminfo_stage != 0 || !fake(strategy)->metadata.empty();
     fake(strategy)->inputs[key != nullptr ? key : ""] = value != nullptr ? value : "";
 }
 
 PF_API void strategy_set_override(pf_strategy_t strategy, const char* key, const char* value) {
+    record_scratch("override");
     fake(strategy)->syminfo_order_error |=
         fake(strategy)->syminfo_stage != 0 || !fake(strategy)->metadata.empty();
     fake(strategy)->overrides[key != nullptr ? key : ""] = value != nullptr ? value : "";
@@ -152,6 +179,7 @@ PF_API void strategy_set_override(pf_strategy_t strategy, const char* key, const
 
 #if !defined(PINEFORGE_HPO_FAKE_PLUGIN_NO_TIMEZONE)
 PF_API void strategy_set_chart_timezone(pf_strategy_t strategy, const char* timezone) {
+    record_scratch("timezone");
     fake(strategy)->chart_timezone = timezone != nullptr ? timezone : "";
 }
 #endif
@@ -170,6 +198,7 @@ PF_API void strategy_set_syminfo_metadata(pf_strategy_t strategy, const char* ke
 #endif
 
 PF_API void strategy_set_syminfo_mintick(pf_strategy_t strategy, double value) {
+    record_scratch("mintick");
     auto* state = fake(strategy);
     state->syminfo_order_error |= state->syminfo_stage != 0;
     state->syminfo_stage = 1;
@@ -200,6 +229,7 @@ PF_API void strategy_set_syminfo_session(pf_strategy_t strategy, const char* val
 #if !defined(PINEFORGE_HPO_FAKE_PLUGIN_NO_METADATA)
 PF_API int strategy_set_symbol_facts(pf_strategy_t strategy, const char* key,
                                      const char* field, const char* value) {
+    record_scratch("facts");
     if (std::strcmp(key, "REFUSE") == 0) {
         fake(strategy)->error = "deliberate symbol facts refusal";
         return -1;
@@ -210,6 +240,7 @@ PF_API int strategy_set_symbol_facts(pf_strategy_t strategy, const char* key,
 
 PF_API int strategy_set_symbol_feed(pf_strategy_t strategy, const char* key, const char* timeframe,
                                     const pf_bar_t* bars, const int64_t* closes, int count) {
+    record_scratch("feed");
     if (std::strcmp(key, "REFUSE_FEED") == 0) {
         fake(strategy)->error = "deliberate symbol feed refusal";
         return -1;
@@ -235,6 +266,8 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
                               int magnifier_samples,
                               pf_magnifier_distribution_t magnifier_distribution,
                               pf_report_t* report) {
+    record_scratch("run");
+    last_bars.store(bars);
     FakeStrategy* const state = fake(strategy);
     state->error.clear();
     state->error_code.clear();
@@ -633,6 +666,9 @@ PF_API int fake_lifetime_violations(void) {
 PF_API int fake_reused_handle_runs(void) {
     return reused_handle_runs.load();
 }
+PF_API const pf_bar_t* fake_last_bars(void) {
+    return last_bars.load();
+}
 PF_API int fake_metadata_count(void) {
     const std::lock_guard<std::mutex> lock(metadata_mutex);
     return static_cast<int>(metadata_log.size());
@@ -649,6 +685,83 @@ PF_API void fake_metadata_reset(void) {
     metadata_log.clear();
 }
 
+#if defined(PINEFORGE_HPO_FAKE_PLUGIN_SCRATCH)
+#if !defined(PINEFORGE_HPO_FAKE_PLUGIN_NO_TABLES)
+PF_API int strategy_set_scratch_tables_v1(pf_strategy_t strategy,
+                                         const pf_scratch_tables_v1* descriptor) {
+    record_scratch("tables");
+    if (!strategy || !descriptor || descriptor->struct_size != sizeof(*descriptor) ||
+        descriptor->version != 1 || descriptor->backend > 1 || descriptor->reserved != 0 ||
+        descriptor->V > 27)
+        return -1;
+    static_assert(sizeof(*descriptor) == 104, "fixture follows the engine's v1 wire layout");
+    std::array<unsigned char, 104> bytes{};
+    std::memcpy(bytes.data(), descriptor, bytes.size());
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    scratch_descriptors.push_back(bytes);
+    fake(strategy)->scratch_tables_installed = descriptor->backend == 1;
+    return 0;
+}
+#endif
+
+#if !defined(PINEFORGE_HPO_FAKE_PLUGIN_NO_ARENA)
+PF_API int strategy_require_report_scratch_arena_v1(pf_strategy_t strategy) {
+    record_scratch("arena");
+    if (!strategy)
+        return -1;
+    auto* state = fake(strategy);
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    if (!state->scratch_tables_installed || !scratch_refusal_code.empty()) {
+        state->error = "fixture arena admission refused";
+        state->error_code = scratch_refusal_code.empty() ? "engine_invariant"
+                                                        : scratch_refusal_code;
+        state->error_args = scratch_refusal_code.empty() ? "{}" : scratch_refusal_args;
+        return -1;
+    }
+    return 0;
+}
+#endif
+
+PF_API void fake_scratch_reset(void) {
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    scratch_calls.clear();
+    scratch_descriptors.clear();
+    scratch_refusal_code.clear();
+    scratch_refusal_args.clear();
+}
+
+PF_API int fake_scratch_call_count(void) {
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    return static_cast<int>(scratch_calls.size());
+}
+
+PF_API const char* fake_scratch_call(int index) {
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    return index >= 0 && static_cast<std::size_t>(index) < scratch_calls.size()
+               ? scratch_calls[static_cast<std::size_t>(index)].c_str() : "";
+}
+
+PF_API int fake_scratch_descriptor_count(void) {
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    return static_cast<int>(scratch_descriptors.size());
+}
+
+PF_API int fake_scratch_descriptor(int index, unsigned char* output, std::size_t size) {
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    if (!output || size != 104 || index < 0 ||
+        static_cast<std::size_t>(index) >= scratch_descriptors.size())
+        return -1;
+    std::memcpy(output, scratch_descriptors[static_cast<std::size_t>(index)].data(), size);
+    return 0;
+}
+
+PF_API void fake_scratch_refuse(const char* code, const char* args) {
+    const std::lock_guard<std::mutex> lock(scratch_mutex);
+    scratch_refusal_code = code ? code : "";
+    scratch_refusal_args = args ? args : "";
+}
+#endif
+
 }  // extern "C"
 
 #else
@@ -658,9 +771,12 @@ PF_API void fake_metadata_reset(void) {
 #include <pineforge/hpo/strategy_plugin.hpp>
 #include <pineforge/hpo/trial_executor.hpp>
 
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -671,6 +787,7 @@ PF_API void fake_metadata_reset(void) {
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <dlfcn.h>
@@ -691,6 +808,26 @@ void require(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+void refuse_fixture_path(const std::filesystem::path& path) {
+    const auto refuse = [](const std::filesystem::path& candidate) {
+        std::vector<std::string> parts;
+        for (const auto& part : candidate)
+            parts.push_back(part.string());
+        for (std::size_t index = 0; index < parts.size(); ++index) {
+            const auto& part = parts[index];
+            if (part == ".ssh" || part == ".aws" || part == ".codex" ||
+                (part.size() >= 4 && part.compare(part.size() - 4, 4, ".env") == 0) ||
+                (part == ".config" && index + 1 < parts.size() &&
+                 (parts[index + 1] == "pineforge" ||
+                  (parts[index + 1] == "zsh" && index + 2 < parts.size() &&
+                   parts[index + 2] == "keys"))))
+                throw std::runtime_error("refused sensitive path by name: " + candidate.string());
+        }
+    };
+    refuse(path);
+    refuse(std::filesystem::weakly_canonical(std::filesystem::absolute(path)));
 }
 
 void require_near(double actual, double expected, const std::string& message) {
@@ -1317,12 +1454,216 @@ void test_checked_factory_refusals(const std::filesystem::path& path) {
     }
 }
 
+class ScratchCalls final {
+public:
+    explicit ScratchCalls(const std::filesystem::path& path) {
+        handle_ = ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+        require(handle_ != nullptr, "cannot open scratch fixture");
+        reset_ = load<void (*)()>("fake_scratch_reset");
+        count_ = load<int (*)()>("fake_scratch_call_count");
+        call_ = load<const char* (*)(int)>("fake_scratch_call");
+        descriptor_count_ = load<int (*)()>("fake_scratch_descriptor_count");
+        descriptor_ =
+            load<int (*)(int, unsigned char*, std::size_t)>("fake_scratch_descriptor");
+        refuse_ = load<void (*)(const char*, const char*)>("fake_scratch_refuse");
+    }
+    ~ScratchCalls() { ::dlclose(handle_); }
+    void reset() const { reset_(); }
+    void refuse(const char* code, const char* args) const { refuse_(code, args); }
+    std::vector<std::string> calls() const {
+        std::vector<std::string> result;
+        for (int index = 0; index < count_(); ++index)
+            result.emplace_back(call_(index));
+        return result;
+    }
+    void require_descriptors(int expected_count) const {
+        // Independent wire bytes: four native-endian uint32 headers, eleven zero uint64 maxima.
+        // Do not build this expectation with the product's descriptor or setter.
+        std::array<unsigned char, 104> expected{};
+        const std::array<std::pair<std::size_t, std::uint32_t>, 4> headers{{
+            {0, 104}, {4, 1}, {8, 1}, {12, 0},
+        }};
+        for (const auto& field : headers)
+            std::memcpy(expected.data() + field.first, &field.second, sizeof(field.second));
+        require(descriptor_count_() == expected_count, "wrong number of scratch descriptors");
+        for (int index = 0; index < expected_count; ++index) {
+            std::array<unsigned char, 104> actual{};
+            require(descriptor_(index, actual.data(), actual.size()) == 0,
+                    "fixture did not return its recorded descriptor");
+            require(actual == expected, "bounded-memory default descriptor bytes differ");
+        }
+    }
+
+private:
+    template <typename Function>
+    Function load(const char* name) {
+        auto* symbol = ::dlsym(handle_, name);
+        require(symbol != nullptr, std::string("missing scratch fixture export: ") + name);
+        return reinterpret_cast<Function>(symbol);
+    }
+    void* handle_ = nullptr;
+    void (*reset_)() = nullptr;
+    int (*count_)() = nullptr;
+    const char* (*call_)(int) = nullptr;
+    int (*descriptor_count_)() = nullptr;
+    int (*descriptor_)(int, unsigned char*, std::size_t) = nullptr;
+    void (*refuse_)(const char*, const char*) = nullptr;
+};
+
+class ArenaEnvironment final {
+public:
+    ArenaEnvironment() {
+        if (const char* value = std::getenv("PF_SCRATCH_ARENA_FD"))
+            saved_ = value;
+        set(nullptr);
+    }
+    ~ArenaEnvironment() {
+        if (saved_)
+            ::setenv("PF_SCRATCH_ARENA_FD", saved_->c_str(), 1);
+        else
+            ::unsetenv("PF_SCRATCH_ARENA_FD");
+    }
+    void set(const char* value) const {
+        const int status = value ? ::setenv("PF_SCRATCH_ARENA_FD", value, 1)
+                                 : ::unsetenv("PF_SCRATCH_ARENA_FD");
+        require(status == 0, "cannot configure fixture arena environment");
+    }
+
+private:
+    std::optional<std::string> saved_;
+};
+
+void test_jailed_handle_preparation(const std::filesystem::path& path,
+                                    const std::filesystem::path& no_tables,
+                                    const std::filesystem::path& no_arena) {
+    using pineforge::hpo::EngineError;
+    using pineforge::hpo::FailureOrigin;
+    using pineforge::hpo::HpoError;
+    using pineforge::hpo::TrialExecutionStatus;
+    ArenaEnvironment environment;
+    ScratchCalls calls(path);
+    FakeCounters counters(path);
+    // Exercise both move operations; optional pointers must survive each one.
+    StrategyPlugin source(path);
+    StrategyPlugin moved(std::move(source));
+    StrategyPlugin assigned(path);
+    assigned = std::move(moved);
+    auto plugin = std::make_shared<const StrategyPlugin>(std::move(assigned));
+    auto dataset = test_dataset();
+    BacktestConfiguration configuration = test_configuration();
+    configuration.input_timeframe = "1";
+    configuration.script_timeframe = "1";
+    configuration.chart_timezone = "UTC";
+    configuration.symbol_info = pineforge::hpo::SymbolInfo{};
+    configuration.symbol_info->mintick = 0.01;
+    pineforge::hpo::SymbolFeed feed;
+    feed.timeframe = "1";
+    feed.bars.assign(dataset->data(), dataset->data() + dataset->size());
+    for (const auto& bar : feed.bars)
+        feed.close_ms.push_back(bar.timestamp + 60'000);
+    configuration.symbol_feeds = std::make_shared<const pineforge::hpo::SymbolFeeds>(
+        pineforge::hpo::SymbolFeeds{{"TEST:OTHER", {{"currency", std::string("USD")}}, {feed}}});
+    const ParameterValues inputs{
+        {"BatchPrefixJitter", "0"}, {"BatchPrefixTest", "1"}, {"Length", "14"}};
+    const ParameterValues overrides{{"initial_capital", "100000"}};
+    const std::vector<std::string> feeds_validation{"create", "facts", "feed", "free"};
+    const std::vector<std::string> ordinary{
+        "create", "timezone", "override", "input", "input", "input", "mintick", "facts", "feed",
+        "run", "free"};
+    const std::vector<std::string> jailed{
+        "create", "timezone", "override", "input", "input", "input", "mintick", "facts", "feed",
+        "tables", "arena", "run", "free"};
+    calls.reset();
+    const TrialExecutor unjailed(plugin, dataset, configuration);
+    require(calls.calls() == feeds_validation, "unjailed constructor changed its handle calls");
+    calls.reset();
+    require(unjailed.execute(inputs, overrides).succeeded(), "unjailed scratch fixture failed");
+    require(calls.calls() == ordinary, "unjailed trial called a scratch export");
+    calls.require_descriptors(0);
+    // Old plugins missing either jailed export remain usable outside the jailed profile.
+    for (const auto& missing : {no_tables, no_arena}) {
+        auto legacy = std::make_shared<const StrategyPlugin>(missing);
+        const TrialExecutor executor(legacy, dataset, test_configuration());
+        require(executor.execute(inputs, overrides).succeeded(),
+                "optional scratch export became mandatory without the environment variable");
+    }
+    for (const char* present : {"5", ""}) {
+        environment.set(present);
+        calls.reset();
+        const TrialExecutor executor(plugin, dataset, configuration);
+        auto expected = feeds_validation;
+        expected.insert(expected.end(), {"create", "tables", "arena", "free"});
+        require(calls.calls() == expected, "startup preflight applied settings or ran a trial");
+        calls.require_descriptors(1);
+        require(counters.active_handles() == 0, "startup preflight leaked its validation handle");
+        for (std::size_t count : {dataset->size(), std::size_t{1}}) {
+            calls.reset();
+            require(executor.execute_prefix(inputs, overrides, count).succeeded(),
+                    "jailed trial failed");
+            require(calls.calls() == jailed, "settings/tables/arena/run order differs");
+            calls.require_descriptors(1);
+        }
+        // Inject an arbitrary engine-owned envelope after successful startup.
+        calls.reset();
+        calls.refuse("scratch_capacity_exceeded", R"({"resource":"successor_roots"})");
+        const auto failed = executor.execute(inputs, overrides);
+        require(failed.status == TrialExecutionStatus::kEngineError &&
+                    failed.error_code == "scratch_capacity_exceeded" &&
+                    failed.error_args == R"({"resource":"successor_roots"})",
+                "per-handle admission did not preserve the trial-level engine failure");
+        auto refused = jailed;
+        refused.erase(refused.end() - 2);  // Refused admission must never reach run.
+        require(calls.calls() == refused, "failed admission ran or leaked a handle");
+    }
+    environment.set("5");
+    calls.reset();
+    calls.refuse("report_sink_failed", R"({"reason":"arena_backing"})");
+    bool startup_refused = false;
+    try {
+        const TrialExecutor executor(plugin, dataset, {});
+    } catch (const EngineError& error) {
+        startup_refused = error.code() == "report_sink_failed" &&
+                          error.raw_args() == R"({"reason":"arena_backing"})" &&
+                          error.origin() == FailureOrigin::Engine;
+    }
+    require(startup_refused, "startup swallowed or reclassified the engine refusal");
+    require(calls.calls() == std::vector<std::string>{"create", "tables", "arena", "free"},
+            "refused startup ran or failed to release its handle");
+    const std::array<std::pair<std::filesystem::path, std::string>, 2> omissions{{
+        {no_tables, "setter_missing"}, {no_arena, "symbol_missing"},
+    }};
+    for (const auto& missing : omissions) {
+        auto legacy = std::make_shared<const StrategyPlugin>(missing.first);
+        bool refused = false;
+        try {
+            const TrialExecutor executor(legacy, dataset, {});
+        } catch (const HpoError& error) {
+            const auto reason = error.args().find("reason");
+            refused = error.code() == "strategy_library_incompatible" &&
+                      error.origin() == FailureOrigin::Engine &&
+                      reason != error.args().end() &&
+                      std::get<std::string>(reason->second.value()) == missing.second;
+        }
+        require(refused, "missing jailed export did not refuse with the exact engine envelope");
+        FakeCounters legacy_counters(missing.first);
+        require(legacy_counters.active_handles() == 0, "missing-export preflight leaked a handle");
+    }
+    require(counters.active_handles() == 0 && counters.outstanding_reports() == 0 &&
+                counters.lifetime_violations() == 0,
+            "scratch preparation broke report/handle cleanup");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
-        require(argc == 8, "usage: test_engine_adapter <legacy> <no-timezone> <no-metadata> "
-                           "<coded> <status> <checked-no-getters> <bad-abi>");
+        require(argc == 11, "usage: test_engine_adapter <legacy> <no-timezone> <no-metadata> "
+                            "<coded> <status> <checked-no-getters> <bad-abi> "
+                            "<scratch> <scratch-no-tables> <scratch-no-arena>");
+        for (int index = 1; index < argc; ++index)
+            std::cout << "will follow fixture: " << argv[index] << '\n';
+        for (int index = 1; index < argc; ++index)
+            refuse_fixture_path(argv[index]);
         test_dataset_loader();
         test_trial_executor(argv[1]);
         test_trades_snapshot(argv[4]);
@@ -1336,6 +1677,7 @@ int main(int argc, char** argv) {
         test_checked_factory_refusals(argv[6]);
         require_throws_containing([&] { pineforge::hpo::StrategyPlugin plugin(argv[7]); },
                                   "ABI", "bad ABI plugin was accepted");
+        test_jailed_handle_preparation(argv[8], argv[9], argv[10]);
         std::cout << "engine adapter tests passed\n";
         return 0;
     } catch (const std::exception& error) {

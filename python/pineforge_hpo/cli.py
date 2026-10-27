@@ -286,6 +286,12 @@ def _is_number(value: object) -> bool:
 def _value_matches_input_type(value: object, input_type: str) -> bool:
     if input_type == "int":
         return isinstance(value, int) and not isinstance(value, bool)
+    if input_type == "color":
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= 0xFFFFFFFF
+        )
     if input_type == "float":
         return _is_number(value)
     if input_type == "bool":
@@ -313,6 +319,7 @@ def _validate_value_against_manifest(
             "strategy_set_input",
             {
                 "int": "expected_integer",
+                "color": "expected_integer",
                 "float": "expected_finite_decimal",
                 "bool": "invalid_boolean",
             }.get(input_type, "unparseable_value")
@@ -710,6 +717,7 @@ def _validate_manifest_inputs(
             continue
         expected_kind = {
             "int": "integer",
+            "color": "integer",
             "float": "real",
             "bool": "boolean",
         }.get(input_type)
@@ -1188,6 +1196,13 @@ def prepare_run(
 
 
 def _run(args: argparse.Namespace) -> int:
+    jailed = "PF_SCRATCH_ARENA_FD" in os.environ
+    if jailed and args.progress_fd == 5:
+        raise _cli_error(
+            "hpo_cli_usage",
+            {},
+            "--progress-fd 5 conflicts with the engine's inherited scratch arena",
+        )
     study = load_study_spec(args.study, continuation=args.warm_start is not None)
     command, artifact = prepare_run(
         study.spec_path,
@@ -1205,19 +1220,26 @@ def _run(args: argparse.Namespace) -> int:
         command.extend(
             ("--trials-file", str(Path(args.trials_file).expanduser().resolve()))
         )
+    if args.trials_out is not None:
+        command.extend(("--trials-out", args.trials_out))
+    if args.best_k is not None:
+        command.extend(("--best-k", args.best_k))
     if args.no_improvement_trials:
         command.extend(("--no-improvement-trials", str(args.no_improvement_trials)))
+    if jailed and args.output:
+        # The native trial spool needs the writable output parent even though Python
+        # adds metadata and publishes the final document after the child returns.
+        command.extend(("--output", str(Path(args.output).expanduser().resolve())))
+    inherited_fds = (args.progress_fd,) if args.progress_fd is not None else ()
+    if jailed:
+        inherited_fds = tuple(dict.fromkeys((*inherited_fds, 5)))
     try:
         completed = subprocess.run(
             command,
             text=True,
             capture_output=True,
             check=False,
-            **(
-                {"pass_fds": (args.progress_fd,)}
-                if args.progress_fd is not None
-                else {}
-            ),
+            **({"pass_fds": inherited_fds} if inherited_fds else {}),
         )
     except OSError as error:
         raise _cli_error(
@@ -1334,6 +1356,30 @@ def _uint64_argument(value: str) -> int:
     return number
 
 
+def _trials_out_argument(value: str) -> str:
+    if value not in ("all", "best-k", "none"):
+        raise argparse.ArgumentTypeError("--trials-out must be all, best-k, or none")
+    return value
+
+
+def _best_k_argument(value: str) -> str:
+    # Match native parse_u64/std::stoull, preserving the original argv spelling.
+    integer_error = f"--best-k requires a non-negative integer, got `{value}`"
+    match = re.fullmatch(r"\s*([+-]?)([0-9]+)", value, flags=re.ASCII)
+    if value.startswith("-") or match is None:
+        raise argparse.ArgumentTypeError(integer_error)
+    digits = match[2].lstrip("0") or "0"
+    if len(digits) > 20 or int(digits) > (1 << 64) - 1:
+        raise argparse.ArgumentTypeError(integer_error)
+    number = int(digits)
+    if match[1] == "-":
+        # Native only rejects a minus at the first character, before std::stoull.
+        number = -number % (1 << 64)
+    if not 1 <= number <= 1000000:
+        raise argparse.ArgumentTypeError("--best-k must be between 1 and 1000000")
+    return value
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _FailureArgumentParser(
         prog="pineforge-hpo",
@@ -1367,6 +1413,20 @@ def _parser() -> argparse.ArgumentParser:
         "--progress-fd", type=int, help="terminal new trials descriptor"
     )
     run_parser.add_argument("--trials-file", help="write only new trials as JSONL")
+    run_parser.add_argument(
+        "--trials-out",
+        type=_trials_out_argument,
+        default=None,
+        metavar="{all,best-k,none}",
+        help="final trial retention (native default: all)",
+    )
+    run_parser.add_argument(
+        "--best-k",
+        type=_best_k_argument,
+        default=None,
+        metavar="N",
+        help="retained feasible winners, 1..1000000 (native default: 10)",
+    )
     run_parser.add_argument(
         "--no-improvement-trials",
         type=_uint64_argument,

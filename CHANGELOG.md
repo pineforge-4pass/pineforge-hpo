@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- Forward `--trials-out all|best-k|none` and `--best-k N` from `pineforge-hpo run` to
+  native, preserving default retention. Jailed best-k studies avoid the trial spool,
+  including stdout-only runs without a writable output parent.
+- REFUSAL FIX, not a feature: hpo trials refuse in the engine's jailed profile; this makes the existing engine C ABI path reachable.
+  Preserve inherited arena fd 5, preflight native admission before workers, and install the
+  engine's bounded-memory default tables on fresh trial and selected-window handles.
+  With the arena variable present, `--output` is also forwarded to the native runner (its
+  trial spool needs a writable parent), and on Linux a present arena that is not a sealed
+  memfd is now refused at startup (engine admission rule) where 1.7.0 ran with disk-backed
+  tables, including when `PF_SCRATCH_ARENA_JAILED` is unset or 0.
+- Follow-up to the walk-forward foundations: test hardening and documentation fixes; an unreadable
+  planner helper no longer fails an ordinary artifact build (no `window_plan` block is published);
+  ancestry refusals now identify the offending path, mode (octal) and uid.
+- Add native selected-window planning over an immutable `DatasetView`, with bounded input,
+  typed planner refusals, plan validation and retained rows/counts for OOS evaluation.
+- Produce and publish source- and plugin-bound request-feed inventories when codegen
+  supports them, include the producer schema in cache identity, and add pure Python
+  selected-study inventory/timeframe admission with typed refusals.
+- Add optional selected-window/observer plugin bindings with embedded engine revision admission
+  and a fresh-handle OOS evaluation helper that checks callback identities and plan counts before
+  returning a full owning report snapshot.
+- Add a native planner-helper loader with verified private snapshots, engine ABI pins,
+  a frozen golden self-test, and a typed C planner wrapper that borrows OHLCV rows in place.
+- Record optional planner-helper identity in additive `window_plan` artifact metadata,
+  outside the compile keys. Add Python hash verification, explicit-path relocation,
+  locked source-cache enrichment and typed `hpo_walkforward_unavailable` refusals.
+- Add immutable `DatasetView` ranges and a view-based trial-execution seam; const members make
+  `DatasetView` and therefore `TrialExecutor` no longer assignable. The ordinary native CLI still
+  uses the whole dataset. Split admission, study execution and publication so sequential native
+  studies release their samplers, archives, workers and anonymous trial spools on return, and
+  return an owned best candidate.
+- Require status `ok`, feasibility and a finite objective for best-trial selection and best-k
+  retention, including `summary.best_k` and retained winner rows in timeout results, with the
+  existing direction and lowest-trial-ID tie rule. A post-scoring `trial_error` stays in all-mode
+  `trials`, `--trials-file` / `--progress-fd` output and `counts_by_status`.
+- Accept color-typed input manifests as packed `0xAARRGGBB` integers in `0..4294967295`,
+  including integer sweeps, while preserving legacy string-typed color inputs.
+
 ## 1.7.0 (2026-10-25)
 
 - Final 1.7.0 release (PEP 440 `1.7.0`, tag `v1.7.0`), paired with `pineforge-engine` v1.7.0 and

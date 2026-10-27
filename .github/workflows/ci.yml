@@ -252,6 +252,25 @@ jobs:
           python3 scripts/check_app_token_environments.py
           ACTIONLINT="$lint_dir/actionlint" python3 -m unittest discover -s tests/workflows -v -f
 
+  light:
+    name: Light
+    needs: [authz]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out PineForge HPO
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          submodules: false
+
+      - name: Check license entity
+        if: "${{ needs.authz.result == 'success' }}"
+        run: python3 -m unittest tests/python/test_license_entity.py -v
+
+      - name: Check release pins
+        if: "${{ needs.authz.result == 'success' }}"
+        run: python3 -m unittest tests.python.test_release_pins.RepositoryReleasePinTests -v
+
   release-notification:
     name: Release notification contract
     needs: [authz, changes]
@@ -261,10 +280,10 @@ jobs:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
     steps:
       - name: Check out PineForge HPO
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.14'
 
@@ -276,8 +295,8 @@ jobs:
 
       - name: Lint and format release notification code
         run: |
-          ruff check scripts/notify_release_hub.py tests/release
-          ruff format --check scripts/notify_release_hub.py tests/release
+          ruff check scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
+          ruff format --check --diff scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
 
   native:
     name: Native (${{ matrix.os }})
@@ -298,7 +317,7 @@ jobs:
 
     steps:
       - name: Check out PineForge HPO
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           submodules: ${{ github.event_name != 'pull_request' }}
           fetch-depth: 0
@@ -338,6 +357,19 @@ jobs:
             -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
             -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
             -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
+
+      - name: Build PineForge window planner helper
+        if: github.event_name != 'pull_request'
+        run: |
+          cmake --build external/pineforge-engine/build --target pineforge_window_plan
+          case "${{ runner.os }}" in
+            Linux) planner_suffix=so ;;
+            macOS) planner_suffix=dylib ;;
+            *) echo "::error::unsupported planner helper platform"; exit 1 ;;
+          esac
+          planner_helper="${{ github.workspace }}/external/pineforge-engine/build/lib/libpineforge_window_plan.${planner_suffix}"
+          test -f "$planner_helper"
+          echo "PFH_WINDOW_PLAN_LIB=$planner_helper" >> "$GITHUB_ENV"
 
       # The complete build/proof suite stays on main and dispatch. PRs configure the
       # core-only tree (no engine adapter, no native CLI, no submodules), build its
@@ -382,6 +414,8 @@ jobs:
 
       - name: Test
         if: github.event_name != 'pull_request'
+        env:
+          PFH_REQUIRE_WINDOW_PLAN: '1'
         run: |
           ctest --test-dir build -V \
             -R '^pineforge_hpo_(serial_golden|portable_math_accuracy|portable_math_contraction)$'
@@ -398,7 +432,7 @@ jobs:
               raise SystemExit("Patience CTest log unavailable; inspect the Test step.")
           else:
               lines = log.read_text().splitlines()
-              for marker in ("NO_IMPROVEMENT_LATE_READER_CAPABILITY ",
+              for marker in ("NO_IMPROVEMENT_CAPABILITY ",
                              "NO_IMPROVEMENT_SKIP_SUMMARY "):
                   matches = [line for line in lines if marker in line]
                   if not matches:
@@ -419,7 +453,7 @@ jobs:
 
       - name: Upload cross-vendor evidence
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: portable-proof-${{ runner.os }}-${{ runner.arch }}
           path: build/portable-proof
@@ -429,7 +463,7 @@ jobs:
 
       - name: Set up Python for end-to-end test
         if: runner.os == 'Linux' && github.event_name != 'pull_request'
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
 
@@ -515,13 +549,13 @@ jobs:
 
     steps:
       - name: Check out PineForge HPO
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           submodules: true
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -546,8 +580,76 @@ jobs:
           ruff check python tests/python benchmarks
           ruff format --check python tests/python benchmarks
 
+  memory-gate:
+    name: HPO memory growth gate
+    needs: [authz, changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the exact head and pinned submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build time
+
+      - name: Configure PineForge Engine headers
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
+
+      - name: Configure PineForge HPO
+        run: |
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
+            -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Build PineForge Engine runtime
+        run: cmake --build external/pineforge-engine/build --target pineforge -j4
+
+      - name: Gate child peak RSS growth
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'timestamp,open,high,low,close,volume' \
+            '1700000000000,100,102,99,101,10' \
+            '1700000060000,100,102,99,101,10' > build/memory-gate-bars.csv
+          python3 -I scripts/ci_memory_gate.py \
+            --native build/bin/pineforge-hpo-native \
+            --plugin build/lib/fake_strategy.so \
+            --ohlcv build/memory-gate-bars.csv \
+            --artifacts build/memory-gate --bars-axis
+
   build-gate:
-    needs: [authz, changes, workflow-lint, release-notification, native, python]
+    needs: [authz, changes, workflow-lint, light, release-notification, native, python, memory-gate]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     permissions:
@@ -665,7 +767,7 @@ jobs:
         shell: "bash"
         env:
           NEEDS: "${{ toJSON(needs) }}"
-          HEAVY_JOBS: "[\"native\",\"python\",\"release-notification\"]"
+          HEAVY_JOBS: "[\"native\",\"python\",\"release-notification\",\"memory-gate\"]"
           DOCS_ONLY: "${{ steps.classify.outputs.docs_only }}"
           WORKFLOWS_ONLY: "${{ steps.classify.outputs.workflows_only }}"
         run: |
