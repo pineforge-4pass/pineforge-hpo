@@ -81,8 +81,13 @@ class AppTokenEnvironmentTests(unittest.TestCase):
         # No replacement linter or stand-in policy is used for the main trace.
         cls.actionlint = safe_path(Path(os.environ["ACTIONLINT"]))
 
-    def check(self, sources, *, ci=None):
-        """Run main's actual linter, then any configured environment preflight."""
+    def check(self, sources, *, ci=None, linter_may_reject=False):
+        """Run main's actual linter, then any configured environment preflight.
+
+        linter_may_reject is for fixtures whose syntax actionlint itself refuses (an empty
+        environment name): the preflight must still refuse them on its own, so the linter
+        result is dropped for those fixtures instead of being counted as the refusal.
+        """
         ci = self.ci if ci is None else ci
         directory = safe_path(
             Path(
@@ -117,6 +122,8 @@ class AppTokenEnvironmentTests(unittest.TestCase):
                 cwd=directory,
             )
             # A YAML/schema error must never stand in for the security refusal.
+            if linter_may_reject and lint.returncode != 0:
+                continue
             self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
             results.append(lint)
         for command in preflight_commands(ci):
@@ -174,7 +181,11 @@ class AppTokenEnvironmentTests(unittest.TestCase):
             "environment: {name: ''}\n",
         ):
             with self.subTest(environment=environment):
-                self.assert_refused(self.check({"release.yml": workflow(environment)}))
+                self.assert_refused(
+                    self.check(
+                        {"release.yml": workflow(environment)}, linter_may_reject=True
+                    )
+                )
 
     def test_expression_environment_is_refused(self):
         for environment in (
@@ -205,7 +216,9 @@ class AppTokenEnvironmentTests(unittest.TestCase):
         )
         for source in sources:
             with self.subTest(source=source):
-                self.assert_refused(self.check({"release.yml": source}))
+                self.assert_refused(
+                    self.check({"release.yml": source}, linter_may_reject=True)
+                )
 
     def test_private_key_secret_and_script_minting_are_refused(self):
         steps = (
