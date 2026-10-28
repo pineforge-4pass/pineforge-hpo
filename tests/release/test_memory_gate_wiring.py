@@ -1,4 +1,4 @@
-"""Pin the hosted heavy job and exercise the canonical aggregate's judgments."""
+"""Pin the admitted pod workload and the post-merge aggregate's judgments."""
 
 from __future__ import annotations
 
@@ -14,8 +14,7 @@ import unittest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github/workflows/ci.yml"
-HEAVY_CONDITION = "needs.changes.outputs.code == 'true'"
+WORKFLOW = ROOT / ".github/workflows/ci-post.yml"
 
 
 class MemoryGateWiringTests(unittest.TestCase):
@@ -27,11 +26,11 @@ class MemoryGateWiringTests(unittest.TestCase):
     def test_memory_job_is_hosted_authorized_and_parallel_to_native(self):
         memory = self.jobs["memory-gate"]
         self.assertEqual(memory["name"], "HPO memory growth gate")
-        self.assertEqual(memory["needs"], ["authz", "changes"])
-        self.assertEqual(memory["if"], HEAVY_CONDITION)
-        self.assertEqual(memory["if"], self.jobs["native"]["if"])
+        self.assertEqual(memory["needs"], ["authz"])
+        self.assertNotIn("if", memory)
+        self.assertNotIn("if", self.jobs["native"])
         self.assertNotIn("native", memory["needs"])
-        self.assertEqual(memory["runs-on"], "ubuntu-24.04")
+        self.assertEqual(memory["runs-on"], "gke-16cpu-32gb-amd64")
         self.assertNotIn("strategy", memory)
         self.assertNotIn("timeout-minutes", memory)
         self.assertNotIn("continue-on-error", memory)
@@ -53,6 +52,7 @@ class MemoryGateWiringTests(unittest.TestCase):
         self.assertEqual(
             actions[0]["with"],
             {
+                "repository": "${{ github.repository }}",
                 "ref": "${{ github.event.pull_request.head.sha || github.sha }}",
                 "submodules": "true",
                 "persist-credentials": "false",
@@ -140,30 +140,65 @@ class MemoryGateWiringTests(unittest.TestCase):
             runs,
         )
 
+    def test_admitted_memory_copy_preserves_every_workload_and_safety_property(self):
+        path = ROOT / ".github/workflows/gke-pr.yml"
+        print(f"FILES admitted workflow read: {path}", file=sys.stderr, flush=True)
+        text = path.read_text(encoding="utf-8")
+        jobs = yaml.load(text, Loader=yaml.BaseLoader)["jobs"]
+        memory = copy.deepcopy(jobs["memory-gate"])
+        checkout = memory["steps"][0]["with"]
+        self.assertEqual(checkout["ref"], "${{ needs.admit.outputs.head_sha }}")
+        checkout["ref"] = self.jobs["memory-gate"]["steps"][0]["with"]["ref"]
+        self.assertEqual(memory["needs"], ["admit"])
+        self.assertEqual(
+            memory["if"],
+            "${{ needs.admit.outputs.allowed == 'true' "
+            "&& needs.admit.outputs.docs_only != 'true' }}",
+        )
+        self.assertEqual(memory["if"], jobs["native"]["if"])
+        memory["needs"] = self.jobs["memory-gate"]["needs"]
+        memory.pop("if")
+        self.assertEqual(memory, self.jobs["memory-gate"])
+        aggregate = jobs["result"]
+        self.assertEqual(aggregate["name"], "build-gate")
+        self.assertEqual(aggregate["if"], "always()")
+        self.assertEqual(set(aggregate["needs"]), set(jobs) - {"result"})
+        self.assertIn("memory-gate", aggregate["needs"])
+        self.assertIn("optuna", aggregate["needs"])
+        step = aggregate["steps"][-1]
+        self.assertEqual(
+            step["run"], "python3 -I tests/release/pr_admission.py result"
+        )
+        self.assertEqual(step["env"]["NEEDS"], "${{ toJSON(needs) }}")
+        checkout = aggregate["steps"][1]["with"]
+        self.assertEqual(checkout["ref"], "${{ github.sha }}")
+        self.assertEqual(checkout["persist-credentials"], "false")
+
     def assert_aggregate_contract(self, jobs):
         aggregate = jobs["build-gate"]
         self.assertEqual(aggregate["if"], "${{ always() }}")
         self.assertEqual(sorted(aggregate["needs"]), sorted(set(jobs) - {"build-gate"}))
+        self.assertEqual(len(aggregate["needs"]), len(jobs) - 1)
+        self.assertEqual(len(aggregate["steps"]), 2)
+        first = aggregate["steps"][0]
+        self.assertEqual(first["if"], "${{ needs.authz.result != 'success' }}")
+        self.assertEqual(
+            first["run"],
+            "echo \"::error::authz did not pass; nothing of this run's code "
+            'is checked out or run"\nexit 1\n',
+        )
         step = aggregate["steps"][-1]
-        self.assertEqual(step["env"]["NEEDS"], "${{ toJSON(needs) }}")
+        self.assertEqual(step["env"], {"RESULTS": "${{ toJSON(needs.*.result) }}"})
+        self.assertNotIn("if", step)
         self.assertEqual(
-            step["env"]["DOCS_ONLY"], "${{ steps.classify.outputs.docs_only }}"
-        )
-        self.assertEqual(
-            step["env"]["WORKFLOWS_ONLY"],
-            "${{ steps.classify.outputs.workflows_only }}",
-        )
-        self.assertEqual(
-            sorted(json.loads(step["env"]["HEAVY_JOBS"])),
-            sorted(
-                name
-                for name, job in jobs.items()
-                if job.get("needs") == ["authz", "changes"]
-            ),
+            step["run"],
+            'echo "$RESULTS"\n'
+            "[ \"$(echo \"$RESULTS\" | tr -d '[] \\n\"' | tr ',' '\\n' | "
+            'grep -vc \'^success$\')" = "0" ] || { '
+            'echo "::error::a needed job did not succeed"; exit 1; }\n',
         )
 
     def aggregate(self, docs_only="false", workflows_only="false", **results):
-        self.assert_aggregate_contract(self.jobs)
         step = self.jobs["build-gate"]["steps"][-1]
         required = self.jobs["build-gate"]["needs"]
         needs = {name: {"result": "success"} for name in required}
@@ -185,7 +220,9 @@ class MemoryGateWiringTests(unittest.TestCase):
             env={
                 **os.environ,
                 **step["env"],
+                # Exercise a restored skip gate with valid legacy inputs too.
                 "NEEDS": json.dumps(needs),
+                "RESULTS": json.dumps([value["result"] for value in needs.values()]),
                 "DOCS_ONLY": docs_only,
                 "WORKFLOWS_ONLY": workflows_only,
                 "RUNNER_TEMP": str(directory),
@@ -193,6 +230,9 @@ class MemoryGateWiringTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_post_merge_aggregate_has_canonical_all_success_contract(self):
+        self.assert_aggregate_contract(self.jobs)
 
     def test_aggregate_requires_memory_success_on_code_changes(self):
         result = self.aggregate()
@@ -203,21 +243,29 @@ class MemoryGateWiringTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("::error::", result.stdout)
 
-    def test_only_proven_cheap_changes_accept_skips(self):
+    def test_post_merge_never_accepts_skips_even_with_cheap_class_flags(self):
         skipped = {
             name: "skipped"
-            for name in ("memory-gate", "native", "python", "release-notification")
+            for name in (
+                "memory-gate",
+                "native",
+                "native-macos",
+                "python",
+                "release-notification",
+            )
         }
-        for docs_only, workflows_only in (("true", "false"), ("false", "true")):
+        for docs_only, workflows_only in (
+            ("true", "false"),
+            ("false", "true"),
+            ("false", "false"),
+            ("true", "true"),
+            ("", "false"),
+            ("true", ""),
+        ):
             result = self.aggregate(docs_only, workflows_only, **skipped)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            for name in ("authz", "changes", "workflow-lint", "light", *skipped):
-                statuses = (
-                    ("failure", "cancelled")
-                    if name in skipped
-                    else ("failure", "cancelled", "skipped")
-                )
-                for status in statuses:
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            for name in self.jobs["build-gate"]["needs"]:
+                for status in ("failure", "cancelled", "skipped"):
                     with self.subTest(job=name, status=status):
                         result = self.aggregate(
                             docs_only, workflows_only, **{**skipped, name: status}
@@ -225,28 +273,20 @@ class MemoryGateWiringTests(unittest.TestCase):
                         self.assertNotEqual(
                             result.returncode, 0, result.stdout + result.stderr
                         )
-        for proof in (
-            ("false", "false"),
-            ("true", "true"),
-            ("", "false"),
-            ("true", ""),
-        ):
-            with self.subTest(proof=proof):
-                result = self.aggregate(*proof, **skipped)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_omitting_memory_from_aggregate_or_heavy_jobs_is_rejected(self):
+    def test_omitting_memory_from_aggregate_or_result_transport_is_rejected(self):
         self.assert_aggregate_contract(self.jobs)
-        for field in ("needs", "HEAVY_JOBS"):
+        for field in ("needs", "RESULTS", "run"):
             mutated = copy.deepcopy(self.jobs)
             aggregate = mutated["build-gate"]
             if field == "needs":
                 aggregate["needs"].remove("memory-gate")
+            elif field == "RESULTS":
+                aggregate["steps"][-1]["env"]["RESULTS"] = (
+                    "${{ toJSON(needs.native.result) }}"
+                )
             else:
-                environment = aggregate["steps"][-1]["env"]
-                heavy = json.loads(environment["HEAVY_JOBS"])
-                heavy.remove("memory-gate")
-                environment["HEAVY_JOBS"] = json.dumps(heavy)
+                aggregate["steps"][-1]["run"] = "true"
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 self.assert_aggregate_contract(mutated)
 

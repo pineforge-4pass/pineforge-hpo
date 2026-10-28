@@ -15,19 +15,6 @@ on:
       - "include/**"
       - "python/**"
       - "benchmarks/**/*.md"
-  pull_request:
-    paths:
-      - ".github/workflows/docs-pages.yml"
-      - "Doxyfile"
-      - "VERSION"
-      - "README.md"
-      - "CONTRIBUTING.md"
-      - "LEGAL.md"
-      - "SECURITY.md"
-      - "docs/**"
-      - "include/**"
-      - "python/**"
-      - "benchmarks/**/*.md"
   workflow_dispatch:
 
 permissions:
@@ -40,10 +27,8 @@ concurrency:
 jobs:
   authz:
     name: authz
-    # Standard GitHub-hosted label (owner #1050); never a larger-runner label.
     runs-on: ubuntu-24.04
     permissions: {}
-    # No timeout-minutes: the owner's no-time-limits rule (check-no-time-limits refuses new ones).
     steps:
       - name: Only our own pull requests and our own events run CI
         env:
@@ -56,7 +41,7 @@ jobs:
           WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           WR_ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
           GH_TOKEN: ${{ github.token }}   # read-only use: one permission lookup for workflow_run
-          # Bot logins whose same-repository pull requests count as ours: dependabot[bot] (CI-DEPBOT A)
+          # Bot logins whose same-repository pull requests count as ours: dependabot[bot]
           # and the org's own GitHub App bot logins by name (space-separated), nothing else.
           ALLOWED_BOTS: "dependabot[bot] pineforge-app[bot]"
         run: |
@@ -68,7 +53,7 @@ jobs:
               # events; none of them runs pull-request code.
               ;;
             workflow_run)
-              # LB-437: bind identity to the triggering run and its re-runner.
+              # bind identity to the triggering run and its re-runner.
               # These two App bots are fixed canon policy; ALLOWED_BOTS is PR-only.
               [ -n "${WR_HEAD_REPO:-}" ] || fail "workflow_run head repository is missing"
               [ -n "${WR_ACTOR:-}" ] || fail "workflow_run triggering actor is missing"
@@ -103,10 +88,15 @@ jobs:
   build:
     name: Build API reference
     needs: [authz]
-    runs-on: ubuntu-24.04
+    runs-on: gke-8cpu-16gb-amd64
+    permissions: {contents: read}
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - name: Install Doxygen
         run: |
@@ -115,7 +105,6 @@ jobs:
 
       - name: Generate documentation
         run: |
-          rm -rf build/docs
           mkdir -p build/docs
           PROJECT_NUMBER="$(tr -d '\n' < VERSION)" doxygen Doxyfile
           python3 docs/pages/validate_generated_site.py build/docs/html
