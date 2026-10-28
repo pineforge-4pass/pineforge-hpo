@@ -370,6 +370,17 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
             ENVIRONMENT "PFH_REQUIRE_RETURN_STATS_IDENTITY=1")
     endif()
 
+    # The planner loader refuses a run directory with a group- or world-writable
+    # ancestor that is not sticky. A host whose work directory is group-writable
+    # (a setgid CI work directory, mode 0770) sets PFH_TEST_RUN_ROOT, at configure
+    # time, to a fresh private directory whose ancestors pass; the check itself
+    # stays as it is. Without it the run roots stay under the build directory.
+    if(DEFINED ENV{PFH_TEST_RUN_ROOT} AND NOT "$ENV{PFH_TEST_RUN_ROOT}" STREQUAL "")
+        set(PFH_TEST_RUN_ROOT "$ENV{PFH_TEST_RUN_ROOT}")
+    else()
+        set(PFH_TEST_RUN_ROOT "${CMAKE_CURRENT_BINARY_DIR}")
+    endif()
+
     add_executable(pineforge_hpo_test_window_plan test_window_plan.cpp)
     target_link_libraries(pineforge_hpo_test_window_plan PRIVATE
         PineForgeHPO::engine_adapter ${CMAKE_DL_LIBS})
@@ -378,7 +389,7 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     add_test(NAME pineforge_hpo_window_plan
         COMMAND pineforge_hpo_test_window_plan
             "$<TARGET_FILE:pineforge_hpo_fake_strategy>"
-            "${CMAKE_CURRENT_BINARY_DIR}/window-plan-runs")
+            "${PFH_TEST_RUN_ROOT}/window-plan-runs")
 
     add_executable(pineforge_hpo_test_selected_planning test_selected_planning.cpp)
     target_link_libraries(pineforge_hpo_test_selected_planning PRIVATE
@@ -386,7 +397,7 @@ if(UNIX AND TARGET PineForgeHPO::engine_adapter)
     target_compile_options(pineforge_hpo_test_selected_planning PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME pineforge_hpo_selected_planning
         COMMAND pineforge_hpo_test_selected_planning
-            "${CMAKE_CURRENT_BINARY_DIR}/selected-planning-runs")
+            "${PFH_TEST_RUN_ROOT}/selected-planning-runs")
 
     add_library(pineforge_hpo_fake_strategy_no_timezone SHARED
         test_engine_adapter.cpp)
