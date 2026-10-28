@@ -73,8 +73,14 @@ def preflight_commands(ci):
 class AppTokenEnvironmentTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # The post-merge workflow holds the required workflow-lint job and its
+        # build-gate aggregate; ci.yml keeps only authz.
         cls.ci = yaml.load(
-            safe_path(ROOT / ".github/workflows/ci.yml").read_text(),
+            safe_path(ROOT / ".github/workflows/ci-post.yml").read_text(),
+            Loader=yaml.BaseLoader,
+        )
+        cls.admitted = yaml.load(
+            safe_path(ROOT / ".github/workflows/gke-pr.yml").read_text(),
             Loader=yaml.BaseLoader,
         )
         # The existing, checksum-pinned actionlint step supplies this binary.
@@ -270,6 +276,16 @@ class AppTokenEnvironmentTests(unittest.TestCase):
         jobs = self.ci["jobs"]
         self.assertIn("workflow-lint", jobs["build-gate"]["needs"])
         self.assertNotIn("if", jobs["workflow-lint"])
+
+    def test_preflight_is_enabled_in_the_admitted_lint_job(self):
+        commands = []
+        for step in self.admitted["jobs"]["lint"]["steps"]:
+            for line in step.get("run", "").splitlines():
+                if line.strip() == " ".join(PREFLIGHT):
+                    commands.append(PREFLIGHT.copy())
+        self.assertEqual(commands, [PREFLIGHT])
+        self.assertIn("lint", self.admitted["jobs"]["result"]["needs"])
+        self.assertNotIn("workflow-lint", self.admitted["jobs"])
 
     def test_disabling_the_preflight_breaks_the_refusal_assertion(self):
         disabled = copy.deepcopy(self.ci)
