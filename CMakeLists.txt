@@ -204,7 +204,7 @@ endif()
 
 if(PINEFORGE_HPO_BUILD_NATIVE_CLI)
     find_package(Threads REQUIRED)
-    add_executable(pineforge-hpo-native src/cli/main.cpp)
+    add_executable(pineforge-hpo-native src/cli/main.cpp src/cli/runner_seccomp.cpp)
     target_compile_definitions(pineforge-hpo-native PRIVATE
         PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
     target_include_directories(pineforge-hpo-native PRIVATE

@@ -105,6 +105,27 @@
       ],
       "since": "0.10.0"
     },
+    "hpo_seccomp_unavailable": {
+      "class": "environment",
+      "retryable": false,
+      "args": {
+        "reason": {
+          "kind": "string",
+          "values": [
+            "architecture",
+            "filter",
+            "headers",
+            "kernel",
+            "no_new_privs",
+            "platform"
+          ]
+        }
+      },
+      "templates": [
+        "The requested native seccomp layer is unavailable ({reason})."
+      ],
+      "since": "1.9.0"
+    },
     "hpo_space_exhausted": {
       "class": "continuation",
       "retryable": false,

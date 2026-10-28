@@ -92,6 +92,13 @@ the original message. C++ callers can catch their existing
 standard exception family or inspect the `pineforge::hpo::HpoError` metadata mixin
 declared in `include/pineforge/hpo/error.hpp`.
 
+The native CLI reports `hpo_seccomp_unavailable`, class `environment`,
+`retryable: false`, when the requested seccomp layer cannot be installed. Its one
+closed string argument, `reason`, is `architecture`, `filter`, `headers`, `kernel`,
+`no_new_privs` or `platform`. It exits 1 before plugin loading and publishes no
+result file. This code appears only when `--seccomp` was requested; a run without
+the flag is never refused by it.
+
 The Python planner-identity API raises `WindowPlanError` (also `HpoError` and
 `RuntimeError`) and the native planner loader throws a typed runtime error, both
 with `hpo_walkforward_unavailable`, class `environment`, `retryable: false`, and

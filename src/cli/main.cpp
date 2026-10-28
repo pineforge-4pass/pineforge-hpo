@@ -18,6 +18,7 @@
 #include "failure_json.hpp"
 #include "json.hpp"
 #include "no_improvement.hpp"
+#include "runner_seccomp.hpp"
 #include "sobol_continuation.hpp"
 #include "symbol_feeds.hpp"
 #include "trial_spool.hpp"
@@ -312,6 +313,8 @@ void print_help() {
               << "  --no-improvement-trials N   ordered patience; 0 disables (default)\n"
               << "  --seed N                    sampler seed; dlib max 2147483647\n"
               << "  --workers N                 execution threads\n"
+              << "  --seccomp                   Linux process/exec denylist before plugin load;\n"
+              << "                              opt-in, default: off; outer jail still required\n"
               << "  --schedule batches|rolling  proposal schedule; rolling refills a free\n"
               << "                              worker slot at once (default: batches)\n"
               << "  --batch-size N              proposals per batch; default: workers\n"
@@ -402,6 +405,8 @@ Options parse_options(int argc, char** argv) {
         const std::string option = argv[i];
         if (option == "--strategy") {
             out.strategy = require_value(argc, argv, i, option);
+        } else if (option == "--seccomp") {
+            out.seccomp = true;
         } else if (option == "--ohlcv") {
             out.ohlcv = require_value(argc, argv, i, option);
             ohlcv_given = true;
@@ -2554,6 +2559,10 @@ PreparedStudy prepare(Options options) {
         options.proof_curve_writer = std::make_shared<ProofCurveWriter>(options.proof_curves);
 #endif
 
+    // dlopen runs plugin static initializers. Filter the main thread before any plugin code;
+    // run_study() creates the wall-cap watchdog, writer, trial and TPE threads later.
+    if (options.seccomp)
+        install_runner_seccomp();
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
     auto dataset = std::make_shared<pfh::Dataset>(options.ohlcv_bin.empty()
         ? pfh::Dataset::load_csv(options.ohlcv)

@@ -6,6 +6,13 @@
   search-space metadata in trial rows. The default `full` preserves existing output
   bytes; `hash` keeps the versioned space hash and `none` omits row space fields.
   Every mode retains the full space and its hash at the result's top level.
+- Add opt-in native `--seccomp` on Linux to deny process creation, exec, `ptrace`,
+  `process_vm_readv` and `process_vm_writev` before plugin loading while preserving
+  threads. It is off by default.
+  Unsupported platforms and installation failures refuse with `hpo_seccomp_unavailable`;
+  x86_64 requires kernel 5.4 or newer. The external jail remains responsible for
+  other cross-process reads (for example `/proc/<pid>/mem`), filesystem, network,
+  IPC and resource restrictions.
 - Enforce native `--max-wall-seconds` while trials are running, even without streaming
   or a per-trial timeout. Add `--wall-grace-seconds` (default 30; non-negative, including 0).
   When the wall cap plus grace expires, publish completed trials and a typed

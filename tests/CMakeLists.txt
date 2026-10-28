@@ -579,7 +579,8 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
     # receives no proof definition, dependency or installation change.
     find_package(Threads REQUIRED)
     add_executable(pineforge-hpo-native-proof EXCLUDE_FROM_ALL
-        "${PROJECT_SOURCE_DIR}/src/cli/main.cpp")
+        "${PROJECT_SOURCE_DIR}/src/cli/main.cpp"
+        "${PROJECT_SOURCE_DIR}/src/cli/runner_seccomp.cpp")
     target_compile_definitions(pineforge-hpo-native-proof PRIVATE
         PINEFORGE_HPO_PROOF_CURVES=1 PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
     target_link_libraries(pineforge-hpo-native-proof PRIVATE
@@ -591,7 +592,8 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
     target_compile_options(pineforge-hpo-native-proof PRIVATE -Wall -Wextra -Wpedantic)
     # Like the proof CLI, this includes the real coordinator in a separate test translation.
     # Its hook definition and controlled clock never reach pineforge-hpo-native.
-    add_executable(pineforge_hpo_test_evaluation_completion test_evaluation_completion.cpp)
+    add_executable(pineforge_hpo_test_evaluation_completion test_evaluation_completion.cpp
+        "${PROJECT_SOURCE_DIR}/src/cli/runner_seccomp.cpp")
     target_compile_definitions(pineforge_hpo_test_evaluation_completion PRIVATE
         PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
     target_link_libraries(pineforge_hpo_test_evaluation_completion PRIVATE
@@ -684,7 +686,8 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
 
     # The private native hook includes the production entry point, like the existing
     # signal-macro fixture. No public CLI flag or installation target is added.
-    add_executable(pineforge_hpo_test_study_split test_study_split.cpp)
+    add_executable(pineforge_hpo_test_study_split test_study_split.cpp
+        "${PROJECT_SOURCE_DIR}/src/cli/runner_seccomp.cpp")
     target_compile_definitions(pineforge_hpo_test_study_split PRIVATE
         PINEFORGE_HPO_PROOF_CURVES=1 PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
     target_link_libraries(pineforge_hpo_test_study_split PRIVATE PineForgeHPO::engine_adapter)
@@ -876,6 +879,97 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_native_cli.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        set(PFH_SECCOMP_BUILD_PROBES OFF)
+        set(PFH_SECCOMP_UNAVAILABLE_REASON platform)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            # Check the compiler ABI, including -m32/-mx32 and endian flags, rather than
+            # infer it from a host processor name. Unsupported builds still test refusal.
+            include(CheckCXXSourceCompiles)
+            check_cxx_source_compiles([=[
+                #if !defined(__LP64__) || \
+                    (!defined(__x86_64__) && !defined(__aarch64__)) || \
+                    !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || \
+                    __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+                #error Unsupported seccomp ABI
+                #endif
+                int main() { return 0; }
+            ]=] PFH_SECCOMP_TEST_ARCH_SUPPORTED)
+            set(PFH_SECCOMP_UNAVAILABLE_REASON architecture)
+            if(PFH_SECCOMP_TEST_ARCH_SUPPORTED)
+                # Match production prerequisites: incomplete Linux headers exercise a
+                # typed refusal without breaking the test-fixture build.
+                check_cxx_source_compiles([=[
+                    #include <linux/audit.h>
+                    #include <linux/filter.h>
+                    #include <linux/sched.h>
+                    #include <linux/seccomp.h>
+                    #include <sys/prctl.h>
+                    #include <sys/syscall.h>
+                    #include <sys/utsname.h>
+                    int main() {
+                        const unsigned required[] = {
+                            PR_SET_NO_NEW_PRIVS, PR_SET_SECCOMP, SECCOMP_MODE_FILTER,
+                            SECCOMP_RET_KILL_PROCESS, CLONE_THREAD,
+                            __NR_execve, __NR_execveat, __NR_clone, __NR_clone3,
+                            __NR_ptrace, __NR_process_vm_readv, __NR_process_vm_writev,
+                    #if defined(__x86_64__)
+                            AUDIT_ARCH_X86_64, __X32_SYSCALL_BIT, __NR_fork, __NR_vfork,
+                    #else
+                            AUDIT_ARCH_AARCH64,
+                    #endif
+                        };
+                        (void)required;
+                        return 0;
+                    }
+                ]=] PFH_SECCOMP_TEST_HEADERS_SUPPORTED)
+                set(PFH_SECCOMP_UNAVAILABLE_REASON headers)
+                if(PFH_SECCOMP_TEST_HEADERS_SUPPORTED)
+                    set(PFH_SECCOMP_BUILD_PROBES ON)
+                endif()
+            endif()
+        endif()
+        set(PFH_SECCOMP_TEST_NAME pineforge_hpo_seccomp_unavailable)
+        set(PFH_SECCOMP_TEST_ARGUMENTS --plugin $<TARGET_FILE:pineforge_hpo_fake_strategy>
+            --unavailable-reason ${PFH_SECCOMP_UNAVAILABLE_REASON})
+        if(PFH_SECCOMP_BUILD_PROBES)
+            add_library(pineforge_hpo_seccomp_probe_strategy SHARED seccomp_probe_strategy.cpp)
+            target_include_directories(pineforge_hpo_seccomp_probe_strategy PRIVATE
+                "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+            target_link_libraries(pineforge_hpo_seccomp_probe_strategy PRIVATE Threads::Threads)
+            target_compile_options(pineforge_hpo_seccomp_probe_strategy PRIVATE
+                -Wall -Wextra -Wpedantic)
+            set_target_properties(pineforge_hpo_seccomp_probe_strategy PROPERTIES PREFIX "")
+            add_executable(pineforge_hpo_seccomp_exec_helper seccomp_exec_helper.cpp)
+            target_compile_options(pineforge_hpo_seccomp_exec_helper PRIVATE
+                -Wall -Wextra -Wpedantic)
+            if(PINEFORGE_HPO_ENABLE_SANITIZERS)
+                target_compile_options(pineforge_hpo_seccomp_probe_strategy PRIVATE
+                    -fsanitize=address,undefined -fno-omit-frame-pointer)
+                target_link_options(pineforge_hpo_seccomp_probe_strategy PRIVATE
+                    -fsanitize=address,undefined)
+            elseif(PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
+                target_compile_options(pineforge_hpo_seccomp_probe_strategy PRIVATE
+                    -fsanitize=thread -fno-omit-frame-pointer)
+                target_link_options(pineforge_hpo_seccomp_probe_strategy PRIVATE -fsanitize=thread)
+            endif()
+            set(PFH_SECCOMP_TEST_NAME pineforge_hpo_seccomp_e2e)
+            set(PFH_SECCOMP_TEST_ARGUMENTS
+                --plugin $<TARGET_FILE:pineforge_hpo_seccomp_probe_strategy>
+                --exec-helper $<TARGET_FILE:pineforge_hpo_seccomp_exec_helper>)
+        else()
+            add_test(NAME pineforge_hpo_seccomp_e2e
+                COMMAND "${CMAKE_COMMAND}" -E echo
+                    "SKIP: seccomp syscall probes need Linux ABI/headers:"
+                    "${PFH_SECCOMP_UNAVAILABLE_REASON}")
+            set_tests_properties(pineforge_hpo_seccomp_e2e PROPERTIES
+                SKIP_REGULAR_EXPRESSION "SKIP: seccomp syscall probes")
+        endif()
+        add_test(NAME ${PFH_SECCOMP_TEST_NAME}
+            COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/test_seccomp_e2e.py"
+                --native $<TARGET_FILE:pineforge-hpo-native>
+                ${PFH_SECCOMP_TEST_ARGUMENTS}
+                --output "${CMAKE_CURRENT_BINARY_DIR}/seccomp")
+        set_tests_properties(${PFH_SECCOMP_TEST_NAME} PROPERTIES TIMEOUT 180)
         add_test(NAME pineforge_hpo_batching
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_batching.py"

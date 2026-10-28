@@ -99,6 +99,7 @@ struct Options {
 #endif
     std::uint64_t no_improvement_trials = 0;
     unsigned workers = 1;
+    bool seccomp = false;
     int progress_fd = -1;
     double max_wall_seconds = 0.0;
     double wall_grace_seconds = 30.0;

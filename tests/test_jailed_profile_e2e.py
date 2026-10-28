@@ -645,6 +645,55 @@ def run_suite(args):
     native_command, _ = prepare_run(
         study, ROOT / "external/pineforge-engine", directory / "cache", native=native
     )
+    require(
+        "--workers" in native_command
+        and native_command[native_command.index("--workers") + 1] == "2",
+        f"seccomp parity requires two requested native workers: {native_command}",
+    )
+    # Preserve the real engine's arena, reports and worker/writer paths. Invoke native
+    # directly because --seccomp is a native-only option.
+    seccomp_results = {}
+    seccomp_trials = {}
+    for seccomp_name, seccomp_flags in (
+        ("native-seccomp-off", []),
+        ("native-seccomp-on", ["--seccomp"]),
+    ):
+        seccomp_output = checked_path(directory / f"{seccomp_name}.json")
+        seccomp_stream = checked_path(directory / f"{seccomp_name}.jsonl")
+        seccomp_run = invoke(
+            seccomp_name,
+            [
+                *native_command, "--output", str(seccomp_output),
+                "--trials-file", str(seccomp_stream), *seccomp_flags,
+            ],
+            jailed_environment,
+        )
+        require(seccomp_run.returncode == 0, seccomp_run.stderr)
+        seccomp_document = read_json(seccomp_output)
+        require(seccomp_document == json.loads(seccomp_run.stdout), seccomp_run.stdout)
+        require(
+            seccomp_document["ok"] is True and seccomp_document["trials"] == expected["trials"],
+            seccomp_document,
+        )
+        seccomp_results[seccomp_name] = seccomp_output.read_bytes()
+        seccomp_trials[seccomp_name] = seccomp_stream.read_bytes()
+    # Native timings are in the optional scheduler sidecar, outside result.json.
+    require(
+        seccomp_results["native-seccomp-off"] == seccomp_results["native-seccomp-on"],
+        "seccomp changed the real two-worker engine result.json bytes",
+    )
+    require(
+        seccomp_trials["native-seccomp-off"]
+        == seccomp_trials["native-seccomp-on"]
+        == checked_path(directory / "baseline.jsonl").read_bytes(),
+        "seccomp changed the real two-worker engine trial stream",
+    )
+    record(
+        "native-seccomp-two-workers-byte-parity",
+        workers=workers,
+        result_bytes=len(seccomp_results["native-seccomp-on"]),
+        trial_stream_bytes=len(seccomp_trials["native-seccomp-on"]),
+    )
     for name, mode in (
         ("write-sealed", "write-sealed"),
         ("missing-fd", "closed"),
