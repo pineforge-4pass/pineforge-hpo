@@ -1073,8 +1073,21 @@ The native executable accepts additional flags without extending StudySpec v1:
   order matches trial-ID order.
 - `--max-wall-seconds S`: positive finite wall seconds, including native
   initialization. Workers check before claiming a candidate and adaptive samplers
-  check before a batch. SIGTERM/SIGINT likewise stop new work. Existing in-flight
-  trials can finish, and unstarted candidates never become terminal records.
+  check before a batch. At S, new work stops with `stop_reason: "deadline"`.
+  Existing in-flight trials can finish during a bounded grace. SIGTERM/SIGINT
+  likewise stop new work, and unstarted candidates never become terminal records.
+- `--wall-grace-seconds G`: non-negative finite grace for draining the study after
+  S; default 30, with 0 allowed. A watchdog runs whenever `--max-wall-seconds` is
+  set, including without streaming or a per-trial timeout. At S + G, if any trial
+  remains active, it records every in-flight trial as `trial_timeout` with typed
+  `failure_code: "hpo_trial_timeout"`, `failure_origin: "hpo"`, and empty
+  `failure_args`. It keeps `stop_reason: "deadline"` or an earlier `"cancelled"`,
+  publishes completed trials plus these unfinished records, then `_exit(3)` without worker joins.
+  With no active trials the deadline keeps its cooperative exit 0/2 behavior.
+  This grace has no effect without `--max-wall-seconds`.
+  Behavior change: a study with a wall cap whose in-flight trials outlast the default grace
+  of 30 seconds now exits 3 with those trials recorded as timeouts; users with long trials
+  must pass a larger `--wall-grace-seconds`.
 - `--record-metric PATH`: repeatable extra report metric, validated before
   execution and recorded under the exact path spelling in every trial's `metrics`.
   Unavailable values are `null`; extra metrics do not affect scoring or feasibility.
@@ -1102,10 +1115,10 @@ When a progress pipe is full, the writer can observe cancellation or a deadline 
 the final drain with patience enabled or disabled, and the result reports that observed stop.
 
 Exit codes are 0 if a feasible best trial exists, 1 for initialization/I/O failure,
-2 if no feasible trial exists, and 3 on a trial timeout even if an earlier trial
-was feasible. Cooperative stops can write an empty trial table and exit 2.
+2 if no feasible trial exists, and 3 on a trial timeout or study wall grace expiry
+even if an earlier trial was feasible. Cooperative stops can write an empty trial table and exit 2.
 Final JSON is emitted to stdout and to native `--output FILE`, including stop
-paths. `trials_completed` includes the timeout terminal record; coverage and best
+paths. `trials_completed` includes timeout terminal records; coverage and best
 selection use only the terminal table. Timeout records cannot be feasible and
 make `exhaustive_equivalent` false.
 
