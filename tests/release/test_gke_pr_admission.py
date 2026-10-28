@@ -104,9 +104,7 @@ class MigrationRedTests(unittest.TestCase):
                 self.assertEqual(trusted["on"]["push"], {"branches": ["main"]})
                 self.assertNotIn("changes", trusted["jobs"])
                 self.assertNotIn("if", trusted["jobs"]["workflow-lint"])
-                self.assertEqual(
-                    trusted["jobs"]["workflow-lint"]["needs"], ["authz"]
-                )
+                self.assertEqual(trusted["jobs"]["workflow-lint"]["needs"], ["authz"])
         self.assertNotIn("if", workflow("ci-post.yml")["jobs"]["light"])
         pages = workflow("docs-pages.yml")
         self.assertEqual(set(pages["on"]), {"push", "workflow_dispatch"})
@@ -274,8 +272,9 @@ class AdmissionTests(unittest.TestCase):
                 1,
             )
             self.assertNotEqual(bad[name], self.sources[name])
-            with self.subTest(reference=reference), self.assertRaisesRegex(
-                ValueError, reason
+            with (
+                self.subTest(reference=reference),
+                self.assertRaisesRegex(ValueError, reason),
             ):
                 self.policy.lint_sources(
                     bad, self.sources, Path(tempfile.mkdtemp(dir=parent))
@@ -479,8 +478,9 @@ class AdmissionTests(unittest.TestCase):
                 **self.sources,
                 name: yaml.safe_dump(bad, sort_keys=False, width=1000),
             }
-            with self.subTest(workflow=name), self.assertRaisesRegex(
-                ValueError, "pull_request.*GKE"
+            with (
+                self.subTest(workflow=name),
+                self.assertRaisesRegex(ValueError, "pull_request.*GKE"),
             ):
                 self.policy.check_sources(sources, sources)
         target_workflows = {
@@ -504,8 +504,9 @@ class AdmissionTests(unittest.TestCase):
                 **self.sources,
                 name: yaml.safe_dump(bad, sort_keys=False, width=1000),
             }
-            with self.subTest(event=event), self.assertRaisesRegex(
-                ValueError, "pull_request.*GKE"
+            with (
+                self.subTest(event=event),
+                self.assertRaisesRegex(ValueError, "pull_request.*GKE"),
             ):
                 self.policy.check_sources(sources, sources)
 
@@ -842,10 +843,7 @@ class AdmissionTests(unittest.TestCase):
         self.policy.parse_yaml("x: " + "[" * 40 + "a" + "]" * 40)
         self.policy.parse_yaml("\n".join("  " * index + "x:" for index in range(40)))
         self.policy.parse_yaml("x: y\n" + "\n" * 19998)
-        alias = (
-            "runner: &pool\n  group: gke-runners\n"
-            "jobs:\n  x:\n    runs-on: *pool\n"
-        )
+        alias = "runner: &pool\n  group: gke-runners\njobs:\n  x:\n    runs-on: *pool\n"
         self.assertEqual(
             yaml.load(alias, Loader=yaml.BaseLoader)["jobs"]["x"]["runs-on"],
             {"group": "gke-runners"},
@@ -1194,8 +1192,9 @@ class AdmissionTests(unittest.TestCase):
             for status in ("failure", "cancelled", "skipped"):
                 bad = copy.deepcopy(needs)
                 bad[name]["result"] = status
-                with self.subTest(job=name, status=status), self.assertRaisesRegex(
-                    ValueError, "result"
+                with (
+                    self.subTest(job=name, status=status),
+                    self.assertRaisesRegex(ValueError, "result"),
                 ):
                     self.policy.judge(bad, ["src/a.cpp"], False)
         for name in self.policy.HEAVY_JOBS:
@@ -1209,8 +1208,11 @@ class AdmissionTests(unittest.TestCase):
                     continue
                 bad = copy.deepcopy(needs)
                 bad[name]["result"] = status
-                with self.subTest(docs_job=name, status=status), self.assertRaisesRegex(
-                    ValueError, f"result {name} must be {expected}"
+                with (
+                    self.subTest(docs_job=name, status=status),
+                    self.assertRaisesRegex(
+                        ValueError, f"result {name} must be {expected}"
+                    ),
                 ):
                     self.policy.judge(bad, ["docs/a.md"], True)
         with self.assertRaisesRegex(ValueError, "classification"):

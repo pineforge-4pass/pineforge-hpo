@@ -457,13 +457,12 @@ def check_admission_contract(data):
         raise ValueError("result inventory transport envelope differs")
     first = result["steps"][0]
     refusal = (
-        "set -euo pipefail\n"
-        'test "$ADMIT_RESULT" = success\n'
-        'test "$ALLOWED" = true\n'
+        'set -euo pipefail\ntest "$ADMIT_RESULT" = success\ntest "$ALLOWED" = true\n'
     )
     if (
         first.get("if") is not None
-        or first.get("env") != {
+        or first.get("env")
+        != {
             "ADMIT_RESULT": "${{ needs.admit.result }}",
             "ALLOWED": "${{ needs.admit.outputs.allowed }}",
         }
@@ -883,9 +882,7 @@ def main(argv=None):
         live_identity(identity)
         repo, head, base = (identity[key] for key in ("repo", "head_sha", "base_sha"))
         compare = f"repos/{repo}/compare/{base}...{head}?per_page=100&page="
-        paths = compare_paths(
-            api(compare + "1"), lambda page: api(compare + str(page))
-        )
+        paths = compare_paths(api(compare + "1"), lambda page: api(compare + str(page)))
         cheap = docs_only(paths)
         if args.mode == "admit":
             rows = tree_entries(api(f"repos/{repo}/git/trees/{head}?recursive=1"))

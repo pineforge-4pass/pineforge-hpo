@@ -166,9 +166,7 @@ class MemoryGateWiringTests(unittest.TestCase):
         self.assertIn("memory-gate", aggregate["needs"])
         self.assertIn("optuna", aggregate["needs"])
         step = aggregate["steps"][-1]
-        self.assertEqual(
-            step["run"], "python3 -I tests/release/pr_admission.py result"
-        )
+        self.assertEqual(step["run"], "python3 -I tests/release/pr_admission.py result")
         self.assertEqual(step["env"]["NEEDS"], "${{ toJSON(needs) }}")
         checkout = aggregate["steps"][1]["with"]
         self.assertEqual(checkout["ref"], "${{ github.sha }}")

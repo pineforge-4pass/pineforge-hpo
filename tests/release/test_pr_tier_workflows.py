@@ -284,7 +284,9 @@ class PrTierWorkflowTests(unittest.TestCase):
         macos = self.workflows["ci-post.yml"]["jobs"]["native-macos"]
         self.assertEqual(macos["strategy"]["matrix"]["os"], ["macos-latest"])
         self.assertEqual(
-            self.workflows["ci-post.yml"]["jobs"]["python"]["strategy"]["matrix"]["python"],
+            self.workflows["ci-post.yml"]["jobs"]["python"]["strategy"]["matrix"][
+                "python"
+            ],
             ["3.11", "3.14"],
         )
 
