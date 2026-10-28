@@ -497,11 +497,11 @@ class ArtifactBuilder:
         Ordinary builds do not call this method. An existing block is re-resolved
         and verified without changing its expected hash. An interrupted two-file
         enrichment leaves selected admission refused until enrichment is re-run.
-        A retry repairs missing or stale metadata from the validating side under
-        the same lock. A validated old cache with a matching local engine may
-        acquire metadata, never new plugin bytes or keys. An explicit path also
-        supports the non-derivable third archive layout. Arbitrary precompiled
-        artifacts cannot acquire an identity here.
+        A retry repairs missing or stale metadata, including a stale request_identity,
+        from the validating side under the same lock. A validated old cache with a
+        matching local engine may acquire metadata, never new plugin bytes or keys.
+        An explicit path also supports the non-derivable third archive layout.
+        Arbitrary precompiled artifacts cannot acquire an identity here.
         """
 
         keys = (artifact.request_key, artifact.artifact_key)
@@ -554,6 +554,8 @@ class ArtifactBuilder:
                     "window_plan_manifest_invalid",
                     "source-cache manifest and provenance must be JSON objects",
                 )
+            # Shallow copies suffice: repairs replace top-level values and never
+            # mutate shared nested objects in place.
             originals = (dict(manifest), dict(provenance))
             block = None
             request_identity = manifest.get("request_identity")
@@ -590,6 +592,9 @@ class ArtifactBuilder:
                         "manifest.window_plan differs from provenance.window_plan",
                     )
                 block = identity.to_dict()
+                # A valid identity in a file without a valid block cannot rescue a
+                # block stored with a stale identity; ordinary builds treat that
+                # stale request identity as a cache miss.
                 request_identity = next(
                     (
                         document["request_identity"]
@@ -663,6 +668,8 @@ class ArtifactBuilder:
                     (manifest, provenance),
                     originals,
                 ):
+                    # Equal metadata is not rewritten just to canonicalize key
+                    # order; readers access fields by key.
                     if payload != original:
                         self._write_window_plan_metadata(destination, payload)
             except OSError as error:

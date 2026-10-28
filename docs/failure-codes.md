@@ -128,7 +128,7 @@ and every other refusal is `hpo_invariant`:
 
 | Reason | Refusal |
 | --- | --- |
-| `missing_pf_selected_window_version`, `missing_strategy_set_selected_window_v1`, `missing_strategy_selected_window_counts_v1`, `missing_pf_execution_observer_version`, `missing_strategy_set_execution_observer_v1`, `missing_strategy_execution_observation_v1` | The plugin does not export that one of the six selected-window / observer entry points; the reason names the first absent one in protocol order and the diagnostic lists them all. |
+| `missing_pf_selected_window_version`, `missing_strategy_set_selected_window_v1`, `missing_strategy_selected_window_counts_v1`, `missing_pf_execution_observer_version`, `missing_strategy_set_execution_observer_v1`, `missing_strategy_execution_observation_v1` | The plugin lacks this one of the six selected-window / observer exports; the reason names the first absent one in protocol order and the diagnostic lists them all. |
 | `selected_window_version`, `execution_observer_version` | The plugin's selected-window or execution-observer ABI version is not 1. |
 | `selected_window_contract`, `execution_observer_contract` | The plugin refused the selected-window or observer setter with status -2 (unsupported contract). |
 | `engine_version_missing` | The plugin lacks `pf_version_get` or `pf_version_string`, or the string is null. |
