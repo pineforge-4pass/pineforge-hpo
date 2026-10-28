@@ -28,16 +28,17 @@ def check_progress(result: dict, lines: list[dict]) -> None:
                 for trial in lines), "terminal records lack failure metadata")
 
 
-def process(native: Path, plugin: Path, csv: Path, progress: int, *extra: str,
-            sampler: str = "grid", workers: int = 4) -> subprocess.Popen:
+def process(native: Path, plugin: Path, csv: Path, progress: int | None, *extra: str,
+            sampler: str = "grid", workers: int = 4, max_trials: int = 120) -> subprocess.Popen:
+    progress_options = ["--progress-fd", str(progress)] if progress is not None else []
     command = [str(native), "run", "--strategy", str(plugin), "--ohlcv", str(csv),
                "--objective", "metrics.all.net_profit", "--sampler", sampler,
-               "--seed", "37", "--max-trials", "120", "--workers", str(workers),
+               "--seed", "37", "--max-trials", str(max_trials), "--workers", str(workers),
                "--input-tf", "1", "--script-tf", "5", "--chart-timezone", "Asia/Taipei",
                "--bar-magnifier", "true", "--magnifier-samples", "6",
                "--magnifier-distribution", "triangle", "--int-dim", "Length", "14", "133",
-               "1", "--progress-fd", str(progress), *extra]
-    return subprocess.Popen(command, pass_fds=(progress,), text=True,
+               "1", *progress_options, *extra]
+    return subprocess.Popen(command, pass_fds=() if progress is None else (progress,), text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
@@ -72,6 +73,94 @@ def interrupted(native: Path, plugin: Path, csv: Path, directory: Path,
         if child.poll() is None:
             child.kill()
             child.wait()
+
+
+def wall_timeout_contract(native: Path, plugin: Path, csv: Path, directory: Path) -> None:
+    wall_seconds = 4
+    grace_seconds = 1
+    process_bound_seconds = 30
+    wall_options = ("--max-wall-seconds", str(wall_seconds),
+                    "--wall-grace-seconds", str(grace_seconds))
+
+    def run(name: str, *extra: str, progress: int | None = None,
+            max_trials: int = 2) -> tuple[int, dict, float]:
+        final = directory / f"{name}.json"
+        started = time.monotonic()
+        child = process(native, plugin, csv, progress, *extra, "--output", str(final),
+                        workers=2, max_trials=max_trials)
+        try:
+            stdout, stderr = child.communicate(timeout=process_bound_seconds)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait()
+        elapsed = time.monotonic() - started
+        require(elapsed < process_bound_seconds,
+                f"{name} exceeded the process wall bound: {elapsed}: {stderr}")
+        result = json.loads(stdout)
+        require(result == json.loads(final.read_text()), f"{name} final output file differs")
+        return child.returncode, result, elapsed
+
+    def check_timeout(result: dict, unfinished_lengths: set[int]) -> None:
+        require(result["stop_reason"] == "deadline", "wrong hard wall stop reason")
+        timeouts = [trial for trial in result["trials"] if trial["status"] == "trial_timeout"]
+        require(len(timeouts) == len(unfinished_lengths) and
+                {trial["parameters"]["Length"] for trial in timeouts} == unfinished_lengths,
+                "wall watchdog did not record every in-flight trial")
+        require(all(trial["failure_code"] == "hpo_trial_timeout" and
+                    trial["failure_origin"] == "hpo" and trial["failure_args"] == {} and
+                    not trial["feasible"] and trial["objective"] is None for trial in timeouts),
+                "wall timeout lacks typed unfinished-trial metadata")
+        completed = [trial for trial in result["trials"] if trial["status"] == "ok"]
+        require(len(completed) == 1 and completed[0]["parameters"]["Length"] == 14,
+                "wall watchdog discarded or changed the completed trial")
+        require(result["best_trial_id"] == completed[0]["trial_id"] and
+                result["best_value"] == completed[0]["objective"],
+                "wall watchdog discarded the completed best result")
+        require(result["trials_completed"] == len(result["trials"]) == 1 + len(timeouts) and
+                len({trial["trial_id"] for trial in result["trials"]}) == len(result["trials"]),
+                "wall timeout duplicated trials or reported unstarted candidates")
+        require(not result["exhaustive_equivalent"], "unfinished trials claimed exhaustive success")
+
+    baseline_code, baseline, _ = run("wall-baseline", "--fixed-input", "HangAtLength", "-1")
+    control_code, control, _ = run("wall-control", "--fixed-input", "HangAtLength", "-1",
+                                  *wall_options)
+    require(baseline_code == control_code == 0, "returning wall control changed the old exit code")
+    require(control == baseline and all(trial["status"] == "ok" for trial in control["trials"]),
+            "returning wall control changed output or fabricated an overrun record")
+    grace_code, grace_only, _ = run("grace-only", "--fixed-input", "HangAtLength", "-1",
+                                  "--wall-grace-seconds", "0")
+    require(grace_code == baseline_code and grace_only == baseline,
+            "wall grace alone changed a study without a wall cap")
+
+    # No progress stream, trials file or per-trial timeout can start the watchdog here.
+    code, result, elapsed = run("wall-timeout", "--fixed-input", "HangAtLength", "15",
+                               *wall_options)
+    require(code == 3, f"hung trial did not exit 3 at the study wall cap: {code}")
+    require(elapsed >= wall_seconds + grace_seconds,
+            f"wall watchdog ignored the configured grace: {elapsed}")
+    # HangAtLength never returns; exit 3 proves the hung worker was not joined.
+    check_timeout(result, {15})
+
+    with (directory / "wall-progress.jsonl").open("w+") as progress:
+        code, result, elapsed = run(
+            "wall-multiple", "--fixed-input", "HangAtLength", "15",
+            "--fixed-input", "DelayAtLength", "16", "--fixed-input", "DelayAtLengthMs", "60000",
+            "--batch-size", "4", "--max-wall-seconds", str(wall_seconds),
+            "--wall-grace-seconds", "0",
+            progress=progress.fileno(), max_trials=4)
+        require(code == 3, "zero-grace wall cap did not exit 3 with multiple in-flight trials")
+        require(elapsed >= wall_seconds, "zero-grace watchdog expired before the study cap")
+        # Length 14 finishes, 15 hangs, 16 sleeps past the bound, and 17 remains unclaimed.
+        check_timeout(result, {15, 16})
+        progress.seek(0)
+        check_progress(result, [json.loads(line) for line in progress])
+
+    for invalid in ("-0.1", "nan", "inf", "not-a-number"):
+        rejected = invoke(native, plugin, csv, "--wall-grace-seconds", invalid)
+        require(rejected.returncode == 1 and
+                json.loads(rejected.stdout)["failure"]["code"] == "hpo_cli_usage",
+                f"invalid wall grace was not rejected: {invalid}")
 
 
 def main() -> int:
@@ -293,6 +382,8 @@ def main() -> int:
                         "watchdog discarded completed trials")
                 progress.seek(0)
                 check_progress(result, [json.loads(line) for line in progress])
+        elif case == "wall_timeout":
+            wall_timeout_contract(native, plugin, csv, directory)
         elif case == "timeout_progress_error":
             read_fd, write_fd = os.pipe()
             os.close(read_fd)

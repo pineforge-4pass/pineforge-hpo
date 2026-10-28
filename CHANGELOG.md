@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Enforce native `--max-wall-seconds` while trials are running, even without streaming
+  or a per-trial timeout. Add `--wall-grace-seconds` (default 30; non-negative, including 0).
+  When the wall cap plus grace expires, publish completed trials and a typed
+  `hpo_trial_timeout` record for each unfinished trial, preserve an earlier `cancelled`
+  stop reason or use `deadline`, and exit 3 without joining workers.
+  Deadlines with no active trials keep exit 0/2.
+  Behavior change: a study with a wall cap whose in-flight trials outlast the default grace
+  of 30 seconds now exits 3 with those trials recorded as timeouts; users with long trials
+  must pass a larger `--wall-grace-seconds`.
 - Forward `--trials-out all|best-k|none` and `--best-k N` from `pineforge-hpo run` to
   native, preserving default retention. Jailed best-k studies avoid the trial spool,
   including stdout-only runs without a writable output parent.

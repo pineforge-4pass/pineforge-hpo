@@ -63,17 +63,21 @@ from this site.
 
 ## Native runner controls
 
-Version 0.2.0 adds the following native `run` flags; they are not StudySpec fields
-or Python CLI pass-throughs:
+The following native `run` flags are not StudySpec fields or Python CLI pass-throughs:
 
 | Flag | Semantics |
 | --- | --- |
 | `--syminfo FILE` | Flat or wrapped instrument JSON. Optional positive finite `mintick`/`pointvalue` and NUL-free `timezone`/`session` strings are applied after inputs and overrides, in harness order. Empty strings keep defaults; unrelated catalog keys are ignored. |
 | `--symbol-feeds FILE` | Release-harness JSON index for fixed other-symbol reads. CSV paths are relative to the index; values are validated/hashed once and installed into each fresh trial. Also accepted by `space-info` and `warm-encode`; overrides work.json's `symbol_feeds`. String-input search requires engine/codegen >= 1.1.0 metadata; `input.symbol` dimensions are refused (D7). |
 | `--progress-fd N` | An inherited writable descriptor receives one complete, flushed JSONL object per terminal trial, serialized by one writer in increasing trial-ID order. Objects use the unchanged terminal-trial schema regardless of final retention mode. Consumers must drain a pipe concurrently. |
-| `--max-wall-seconds S` | Positive finite study wall cap, measured from native initialization. SIGTERM/SIGINT and the cap stop new worker claims and adaptive batches; in-flight trials can finish. |
+| `--max-wall-seconds S` | Positive finite study wall cap, measured from native initialization. Stops new worker claims and adaptive batches at S with `stop_reason: "deadline"`; `--wall-grace-seconds` bounds the drain after the wall cap. SIGTERM/SIGINT also stop new work; without a wall cap or per-trial timeout, a hung trial has no bound. |
+| `--wall-grace-seconds G` | Non-negative finite drain grace for the study wall cap; default 30, with 0 allowed. At S + G, if any trials are still active, record each as `trial_timeout` with `failure_code: "hpo_trial_timeout"`, retain `stop_reason: "deadline"` or an earlier `"cancelled"`, publish completed results and unfinished records, then `_exit(3)` without worker joins. Unstarted candidates are excluded. Has no effect without `--max-wall-seconds`. |
 | `--record-metric PATH` | Repeatable extra metric path, validated before the first trial. Keys preserve expression spelling, including aliases, and unavailable values are `null`. |
 | `--trial-timeout-seconds T` | Positive finite per-trial wall cap, starting at worker claim. On the first expiry, record one `trial_timeout`, flush progress and final JSON from terminal trials, and `_exit(3)` without joining any hung worker. Other in-flight/unstarted trials are excluded. |
+
+Behavior change: a study with a wall cap whose in-flight trials outlast the default grace
+of 30 seconds now exits 3 with those trials recorded as timeouts; users with long trials
+must pass a larger `--wall-grace-seconds`.
 
 Since 0.3.1, `--syminfo FILE` also reads an optional `mincontract`, the instrument lot-size
 grid (TradingView `syminfo.mincontract`). A finite number above zero is applied before
@@ -99,12 +103,12 @@ are `trial_budget_reached`, `search_space_exhausted`, `sampler_stopped`,
 (study cap), and `trial_timeout`.
 
 Exit codes remain 0 (a feasible best trial), 1 (initialization/I/O failure), and
-2 (no feasible trial); 3 denotes a trial timeout regardless of earlier feasible
-results. A timeout may therefore have `ok: true` and a best trial while exiting
+2 (no feasible trial); 3 denotes a trial timeout or study wall grace expiry regardless of
+earlier feasible results. A timeout may therefore have `ok: true` and a best trial while exiting
 3. Cooperative stops and timeouts publish final JSON to stdout and `--output`
 when configured, provided those result destinations remain writable.
-`trials_completed` counts terminal records, including the timeout record.
-Cancellation/deadline can validly return an empty table and exit 2.
+`trials_completed` counts terminal records, including timeout records.
+Cooperative cancellation/deadline stops can validly return an empty table and exit 2.
 Non-blocking progress descriptors are supported: temporary backpressure waits
 for writability and retries instead of cancelling the study. A permanent progress
 I/O failure stops new claims, publishes the completed trials to the writable result
@@ -323,8 +327,9 @@ also forwards. They are not new StudySpec fields. Existing callers retain
 - `--trials-file FILE` optionally writes every full terminal record as flushed
   NDJSON, independently of retention, with or without fd progress.
 - `--max-trials 0 --max-wall-seconds 3600` runs adaptive sampling without a trial
-  cap. `trials_requested: 0` denotes this deadline-only budget. In-flight work
-  finishes cooperatively; a wall cap is not a hard interrupt of engine execution.
+  cap. `trials_requested: 0` denotes this deadline-only budget. New work stops at
+  3600 seconds; if any trial remains active at 3600 + `--wall-grace-seconds`,
+  the watchdog publishes the completed trials and unfinished timeout records, then exits 3.
 
 The fd progress stream is the complete billing record, not the retained final
 list. Each line still has `trial_id`, `status`, `feasible`, `objective`,
@@ -336,7 +341,8 @@ field is removed, renamed, or added. IDs are unique and increasing; unstarted
 proposals can leave gaps. SIGTERM/deadline drains terminal lines before final
 output. Progress pipes are nonblocking, with 50-ms readiness checks and a two-second
 grace for a stalled reader after SIGTERM, deadline, or trial timeout. Expiring that
-grace is an explicit I/O error, not successful delivery; trial timeouts still exit 3.
+grace is an explicit I/O error, not successful delivery; trial timeouts and study wall
+grace expiry still exit 3. The progress-reader grace is separate from `--wall-grace-seconds`.
 The runner queries `fpathconf(fd, _PC_PIPE_BUF)` for each progress pipe, falling back
 to the platform's `PIPE_BUF` if no positive limit is available. Writes never exceed
 that limit. One writer owns the descriptor and finishes every record, including
