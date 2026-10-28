@@ -460,6 +460,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Identical to the Linux native job's step (a contract test keeps the two
+      # jobs' step lists equal); it runs on Linux only and is skipped here.
+      - name: Create a private run root for the planner tests
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
+        run: |
+          run_root=$(mktemp -d /tmp/pfh-test-run-root.XXXXXXXX)
+          stat -c '%a %U %n' / /tmp "$run_root"
+          echo "PFH_TEST_RUN_ROOT=$run_root" >> "$GITHUB_ENV"
+
       - name: Install native dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
