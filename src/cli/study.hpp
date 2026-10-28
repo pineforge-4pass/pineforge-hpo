@@ -30,6 +30,7 @@ struct ResultDocument;
 namespace pineforge::hpo::cli {
 
 enum class Direction { kMaximize, kMinimize };
+enum class RowSpace : std::uint8_t { kFull, kHash, kNone };
 
 #ifdef PINEFORGE_HPO_PROOF_CURVES
 class ProofCurveWriter;
@@ -55,6 +56,7 @@ struct Options {
     std::string numeric_build_identity;
     std::string parent_numeric_build_identity;
     std::string trials_out = "all";
+    RowSpace row_space = RowSpace::kFull;
     std::uint64_t best_k = 10;
     std::filesystem::path syminfo;
     std::filesystem::path symbol_feeds_path;

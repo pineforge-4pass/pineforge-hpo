@@ -1059,6 +1059,121 @@ class CliTests(unittest.TestCase):
                         self.assertNotIn(option, command)
 
     @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_run_forwards_row_space_only_when_given(
+        self, builder_type: mock.Mock, run: mock.Mock
+    ) -> None:
+        builder_type.return_value.build.return_value = self._artifact()
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"ok": true, "trials": []}', stderr=""
+        )
+        arguments = [
+            "run",
+            str(self.study_path),
+            "--engine-root",
+            str(self.root),
+            "--native",
+            str(self.native),
+        ]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(arguments), 0)
+        default_command = list(run.call_args.args[0])
+        self.assertNotIn("--row-space", default_command)
+        for mode in ("full", "hash", "none"):
+            with self.subTest(mode=mode):
+                run.reset_mock()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main([*arguments, "--row-space", mode]), 0)
+                run.assert_called_once()
+                self.assertEqual(
+                    run.call_args.args[0], [*default_command, "--row-space", mode]
+                )
+
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    def test_row_space_parser_rejects_invalid_values_with_typed_error(
+        self, run: mock.Mock
+    ) -> None:
+        for value in ("unknown", "FULL", "", "best-k"):
+            with self.subTest(value=value):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    contextlib.redirect_stdout(stdout),
+                    contextlib.redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    main(["run", str(self.study_path), "--row-space", value])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertEqual(
+                    json.loads(stdout.getvalue())["failure"],
+                    {
+                        "origin": "hpo",
+                        "code": "hpo_cli_usage",
+                        "args": {},
+                        "exit_code": 2,
+                    },
+                )
+                self.assertIn(
+                    "--row-space must be full, hash, or none", stderr.getvalue()
+                )
+                run.assert_not_called()
+
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
+    def test_run_preserves_compact_row_space_result(
+        self, builder_type: mock.Mock, run: mock.Mock
+    ) -> None:
+        from pineforge_hpo.continuation import recorded_space, space_hash
+
+        builder_type.return_value.build.return_value = self._artifact()
+        study = load_study_spec(self.study_path)
+        for mode in ("hash", "none"):
+            with self.subTest(mode=mode):
+                row = {
+                    "trial_id": 0,
+                    "status": "ok",
+                    "feasible": True,
+                    "objective": 7.0,
+                    "parameters": {"Length": 10, "Threshold": 0.5, "Enabled": True},
+                }
+                if mode == "hash":
+                    row.update(space_hash_version=1, space_hash=space_hash(study))
+                result = {
+                    "ok": True,
+                    "space": recorded_space(study),
+                    "space_hash_version": 1,
+                    "space_hash": space_hash(study),
+                    "trials": [row],
+                    "summary": {"best_k": [row]},
+                }
+                run.return_value = subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=json.dumps(result), stderr=""
+                )
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(
+                        main(
+                            [
+                                "run",
+                                str(self.study_path),
+                                "--engine-root",
+                                str(self.root),
+                                "--native",
+                                str(self.native),
+                                "--row-space",
+                                mode,
+                            ]
+                        ),
+                        0,
+                    )
+                emitted = json.loads(stdout.getvalue())
+                for key, value in result.items():
+                    self.assertEqual(emitted[key], value)
+                self.assertNotIn("space", emitted["trials"][0])
+                if mode == "none":
+                    self.assertNotIn("space_hash", emitted["trials"][0])
+                    self.assertNotIn("space_hash_version", emitted["trials"][0])
+
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
     def test_trial_retention_parser_rejects_invalid_values(
         self, run: mock.Mock
     ) -> None:

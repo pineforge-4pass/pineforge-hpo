@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add native and Python `run --row-space full|hash|none` to reduce repeated
+  search-space metadata in trial rows. The default `full` preserves existing output
+  bytes; `hash` keeps the versioned space hash and `none` omits row space fields.
+  Every mode retains the full space and its hash at the result's top level.
 - Enforce native `--max-wall-seconds` while trials are running, even without streaming
   or a per-trial timeout. Add `--wall-grace-seconds` (default 30; non-negative, including 0).
   When the wall cap plus grace expires, publish completed trials and a typed

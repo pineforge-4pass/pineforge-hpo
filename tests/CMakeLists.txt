@@ -955,6 +955,10 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_trial_outputs.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
+        add_test(NAME pineforge_hpo_row_space
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_row_space.py"
+                $<TARGET_FILE:pineforge-hpo-native>
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         add_test(NAME pineforge_hpo_streamed_trial_retention
             COMMAND "${Python3_EXECUTABLE}" -I
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_streamed_trial_retention.py"
