@@ -964,7 +964,8 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
                 $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         foreach(contract syminfo progress final_write_signal progress_nonblocking progress_error
-                         cancel deadline metrics magnifier timeout timeout_progress_error)
+                         cancel deadline metrics magnifier timeout wall_timeout
+                         timeout_progress_error)
             add_test(NAME pineforge_hpo_runner_${contract}
                 COMMAND "${Python3_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/test_runner_contract.py"

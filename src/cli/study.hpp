@@ -99,6 +99,7 @@ struct Options {
     unsigned workers = 1;
     int progress_fd = -1;
     double max_wall_seconds = 0.0;
+    double wall_grace_seconds = 30.0;
     double trial_timeout_seconds = 0.0;
     std::uint64_t batch_size = 0;
     unsigned batch_lag = 0;
