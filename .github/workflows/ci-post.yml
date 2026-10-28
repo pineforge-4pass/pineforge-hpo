@@ -213,6 +213,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The planner tests refuse a run directory whose ancestors include a
+      # group-writable directory that is not sticky, and the GKE pod's work
+      # directory is one (setgid, mode 0770). mktemp -d makes a 0700 directory
+      # under /tmp (sticky, root-owned); tests/CMakeLists.txt reads it at configure
+      # time through PFH_TEST_RUN_ROOT. The ancestry check is not changed.
+      - name: Create a private run root for the planner tests
+        if: runner.os == 'Linux' && github.event_name != 'pull_request'
+        run: |
+          run_root=$(mktemp -d /tmp/pfh-test-run-root.XXXXXXXX)
+          stat -c '%a %U %n' / /tmp "$run_root"
+          echo "PFH_TEST_RUN_ROOT=$run_root" >> "$GITHUB_ENV"
+
       - name: Install native dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
