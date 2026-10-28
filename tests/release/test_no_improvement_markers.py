@@ -65,10 +65,16 @@ def printed_markers(source):
 
 class NoImprovementMarkerTests(unittest.TestCase):
     def test_ci_required_markers_have_printers(self):
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         source = (ROOT / "tests/test_no_improvement.py").read_text(encoding="utf-8")
         printers = printed_markers(source)
-        for marker in required_markers(workflow):
+        workflows = {
+            name: (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
+            for name in ("ci.yml", "ci-post.yml", "gke-pr.yml")
+        }
+        self.assertNotIn(f"- name: {STEP}", workflows["ci.yml"])
+        self.assertNotIn(f"- name: {STEP}", workflows["gke-pr.yml"])
+        self.assertIn(f"- name: {STEP}", workflows["ci-post.yml"])
+        for marker in required_markers(workflows["ci-post.yml"]):
             with self.subTest(marker=marker):
                 self.assertIn(
                     marker, printers, "CI requires a marker the test never prints"

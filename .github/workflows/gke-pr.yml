@@ -1,0 +1,567 @@
+name: GKE PR
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+
+run-name: "gke-pr #${{ github.event.pull_request.number }} ${{ github.event.pull_request.head.sha }}"
+
+permissions: {}
+
+concurrency:
+  group: gke-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  admit:
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    outputs:
+      allowed: ${{ steps.admit.outputs.allowed }}
+      head_sha: ${{ steps.admit.outputs.head_sha }}
+      base_sha: ${{ steps.admit.outputs.base_sha }}
+      docs_only: ${{ steps.admit.outputs.docs_only }}
+      code: ${{ steps.admit.outputs.code }}
+    steps:
+      - name: Check out the main-owned admission rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install the pinned admission parsers
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/admission-python"
+          "$RUNNER_TEMP/admission-python/bin/python" -m pip install PyYAML==6.0.3
+          echo "$RUNNER_TEMP/admission-python/bin" >> "$GITHUB_PATH"
+          tools_dir="$RUNNER_TEMP/admission-tools"
+          mkdir -p "$tools_dir"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$tools_dir/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+            "$tools_dir/actionlint.tar.gz" | sha256sum --check --strict --status
+          tar -xzf "$tools_dir/actionlint.tar.gz" -C "$tools_dir" actionlint
+          echo "$tools_dir" >> "$GITHUB_PATH"
+
+      - name: Admit the live immutable member head
+        id: admit
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          HEAD_IS_FORK: ${{ toJSON(github.event.pull_request.head.repo.fork) }}
+          DRAFT: ${{ toJSON(github.event.pull_request.draft) }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I tests/release/pr_admission.py admit
+
+  lint:
+    name: workflow-lint
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' }}
+    runs-on: gke-8cpu-16gb-amd64
+    permissions:
+      contents: read
+    steps:
+      - name: "Check out the exact head with full history"
+        if: "${{ needs.admit.result == 'success' }}"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: "Lint all workflow definitions with pinned actionlint v1.7.12"
+        if: "${{ needs.admit.result == 'success' }}"
+        shell: "bash"
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)
+              archive=actionlint_1.7.12_linux_amd64.tar.gz
+              sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 ;;
+            aarch64|arm64)
+              archive=actionlint_1.7.12_linux_arm64.tar.gz
+              sha256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 ;;
+            *)
+              echo "::error::workflow-lint requires a supported Linux architecture"
+              exit 1 ;;
+          esac
+          lint_dir=$(mktemp -d "$RUNNER_TEMP/workflow-lint.XXXXXXXX")
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors \
+            --output "$lint_dir/$archive" "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+          if ! printf '%s  %s\n' "$sha256" "$lint_dir/$archive" | sha256sum --check --strict --status; then
+            echo "::error::actionlint archive checksum did not match the published pin"
+            exit 1
+          fi
+          tar -xzf "$lint_dir/$archive" -C "$lint_dir" actionlint
+          "$lint_dir/actionlint" -version
+          git ls-files -z -- .github/workflows > "$lint_dir/workflows"
+          workflows=()
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              *.yml|*.yaml) workflows+=("$path") ;;
+            esac
+          done < "$lint_dir/workflows"
+          if [[ -n "${path-}" ]]; then
+            echo "::error::unterminated Git workflow path"
+            exit 1
+          fi
+          if [[ "${#workflows[@]}" -eq 0 ]]; then
+            echo "::error::no workflow YAML files were found"
+            exit 1
+          fi
+          "$lint_dir/actionlint" -config-file .github/actionlint.yaml -shellcheck= -pyflakes= "${workflows[@]}"
+          python3 -m venv "$RUNNER_TEMP/workflow-python"
+          export PATH="$RUNNER_TEMP/workflow-python/bin:$PATH"
+          echo "$RUNNER_TEMP/workflow-python/bin" >> "$GITHUB_PATH"
+          python3 -m pip install PyYAML==6.0.3
+          python3 -I tests/release/pr_admission.py check
+          python3 scripts/check_app_token_environments.py
+          ACTIONLINT="$lint_dir/actionlint" python3 -m unittest discover -s tests/workflows -v -f
+
+  light:
+    name: Light
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' }}
+    runs-on: gke-8cpu-16gb-amd64
+    permissions: {contents: read}
+    steps:
+      - name: Check out PineForge HPO
+        if: "${{ needs.admit.result == 'success' }}"
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          submodules: false
+          persist-credentials: false
+
+      - name: Check license entity
+        if: "${{ needs.admit.result == 'success' }}"
+        run: python3 -m unittest tests/python/test_license_entity.py -v
+
+      - name: Check release pins
+        if: "${{ needs.admit.result == 'success' }}"
+        run: python3 -m unittest tests.python.test_release_pins.RepositoryReleasePinTests -v
+
+  release-notification:
+    name: Release notification contract
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
+    runs-on: gke-8cpu-16gb-amd64
+    permissions: {contents: read}
+    env:
+      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.14'
+
+      - name: Install release-check dependencies
+        run: python -m pip install PyYAML==6.0.3 ruff==0.15.20
+
+      - name: Producer notification and replay contract tests
+        run: python -m unittest discover -s tests/release -v
+
+      - name: Lint and format release notification code
+        run: |
+          ruff check scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
+          ruff format --check --diff scripts/notify_release_hub.py scripts/ci_memory_gate.py tests/release
+
+  native:
+    name: Native (${{ matrix.os }})
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
+    runs-on: gke-16cpu-32gb-amd64
+    permissions: {contents: read}
+    env:
+      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          submodules: ${{ github.event_name != 'pull_request_target' }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install native dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeigen3-dev libmpfr-dev ninja-build
+
+      - name: Install native dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install eigen mpfr ninja
+
+      - name: Configure PR native core
+        if: github.event_name == 'pull_request_target'
+        run: |
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=OFF \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=OFF \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
+            -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
+
+      - name: Build PR native core
+        if: github.event_name == 'pull_request_target'
+        run: cmake --build build -j4
+
+      - name: Check failure catalog diff
+        run: python3 scripts/gen_catalog_diff.py --check
+
+      - name: Test PR native core
+        if: github.event_name == 'pull_request_target'
+        run: |
+          ctest --test-dir build -V --no-tests=error \
+            -R '^pineforge_hpo_(serial_golden|portable_math_accuracy|portable_math_contraction)$'
+          ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Run public C++ API example
+        run: ./build/bin/pineforge_hpo_example_ask_tell
+
+  native-macos:
+    name: Native (${{ matrix.os }})
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
+    runs-on: macos-latest
+    permissions: {contents: read}
+    env:
+      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          submodules: ${{ github.event_name != 'pull_request_target' }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install native dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libeigen3-dev libmpfr-dev ninja-build
+
+      - name: Install native dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install eigen mpfr ninja
+
+      - name: Configure PR native core
+        if: github.event_name == 'pull_request_target'
+        run: |
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=OFF \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=OFF \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
+            -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
+
+      - name: Build PR native core
+        if: github.event_name == 'pull_request_target'
+        run: cmake --build build -j4
+
+      - name: Check failure catalog diff
+        run: python3 scripts/gen_catalog_diff.py --check
+
+      - name: Test PR native core
+        if: github.event_name == 'pull_request_target'
+        run: |
+          ctest --test-dir build -V --no-tests=error \
+            -R '^pineforge_hpo_(serial_golden|portable_math_accuracy|portable_math_contraction)$'
+          ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Run public C++ API example
+        run: ./build/bin/pineforge_hpo_example_ask_tell
+
+  python:
+    name: Python ${{ matrix.python }}
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
+    runs-on: gke-16cpu-32gb-amd64
+    permissions: {contents: read}
+    env:
+      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.14']
+
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          python -m pip install -e external/pineforge-codegen-oss
+          python -m pip install -e .
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests/python -v
+
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps --wheel-dir dist
+
+      - name: Lint and format check
+        if: matrix.python == '3.14'
+        run: |
+          python -m pip install ruff==0.15.20
+          ruff check python tests/python benchmarks
+          ruff format --check python tests/python benchmarks
+
+  memory-gate:
+    name: HPO memory growth gate
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
+    runs-on: gke-16cpu-32gb-amd64
+    permissions: {contents: read}
+    steps:
+      - name: Check out the exact head and pinned submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build time
+
+      - name: Configure PineForge Engine headers
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
+
+      - name: Configure PineForge HPO
+        run: |
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
+            -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
+
+      - name: Build
+        run: cmake --build build -j4
+
+      - name: Build PineForge Engine runtime
+        run: cmake --build external/pineforge-engine/build --target pineforge -j4
+
+      - name: Gate child peak RSS growth
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'timestamp,open,high,low,close,volume' \
+            '1700000000000,100,102,99,101,10' \
+            '1700000060000,100,102,99,101,10' > build/memory-gate-bars.csv
+          python3 -I scripts/ci_memory_gate.py \
+            --native build/bin/pineforge-hpo-native \
+            --plugin build/lib/fake_strategy.so \
+            --ohlcv build/memory-gate-bars.csv \
+            --artifacts build/memory-gate --bars-axis
+
+  optuna:
+    name: Native TPE vs Optuna
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
+    runs-on: gke-16cpu-32gb-amd64
+    permissions: {contents: read}
+    env:
+      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
+
+    steps:
+      - name: Check out PineForge HPO
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Install benchmark environment
+        run: python -m pip install -r benchmarks/optuna/requirements.txt
+
+      - name: Build native benchmark
+        run: |
+          cmake -S benchmarks/optuna -B build/benchmarks/optuna -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/benchmarks/optuna \
+            --target pineforge_hpo_optuna_native -j4
+
+      - name: Run paired smoke profile
+        run: |
+          python benchmarks/optuna/run_benchmark.py \
+            --native build/benchmarks/optuna/pineforge_hpo_optuna_native \
+            --smoke \
+            --output build/benchmarks/optuna/smoke.csv
+
+      - name: Upload raw benchmark evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: optuna-smoke-${{ github.run_id }}
+          path: |
+            build/benchmarks/optuna/smoke.csv
+            build/benchmarks/optuna/smoke.csv.metadata.json
+          if-no-files-found: error
+          retention-days: 14
+
+  docs:
+    name: Build API reference
+    needs: [admit]
+    if: ${{ needs.admit.outputs.allowed == 'true' }}
+    runs-on: gke-8cpu-16gb-amd64
+    permissions: {contents: read}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.admit.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends doxygen
+
+      - name: Generate documentation
+        run: |
+          mkdir -p build/docs
+          PROJECT_NUMBER="$(tr -d '\n' < VERSION)" doxygen Doxyfile
+          python3 docs/pages/validate_generated_site.py build/docs/html
+          touch build/docs/html/.nojekyll
+          test -s build/docs/html/index.html
+          test -s build/docs/html/annotated.html
+          test ! -s build/docs/doxygen-warnings.log
+
+  result:
+    name: build-gate
+    needs: [admit, lint, light, release-notification, native, native-macos, python, memory-gate, optuna, docs]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - name: Refuse unsuccessful admission
+        env:
+          ADMIT_RESULT: ${{ needs.admit.result }}
+          ALLOWED: ${{ needs.admit.outputs.allowed }}
+        run: |
+          set -euo pipefail
+          test "$ADMIT_RESULT" = success
+          test "$ALLOWED" = true
+
+      - name: Check out the same main-owned result judge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install the pinned result parser
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/result-python"
+          "$RUNNER_TEMP/result-python/bin/python" -m pip install PyYAML==6.0.3
+          echo "$RUNNER_TEMP/result-python/bin" >> "$GITHUB_PATH"
+
+      - name: Re-read live identity and payload diff before judging every job
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          HEAD_IS_FORK: ${{ toJSON(github.event.pull_request.head.repo.fork) }}
+          DRAFT: ${{ toJSON(github.event.pull_request.draft) }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 -I tests/release/pr_admission.py result
