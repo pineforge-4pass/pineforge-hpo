@@ -20,6 +20,17 @@
   x86_64 requires kernel 5.4 or newer. The external jail remains responsible for
   other cross-process reads (for example `/proc/<pid>/mem`), filesystem, network,
   IPC and resource restrictions.
+
+## 1.8.0 (2026-10-29)
+
+- Final 1.8.0 release (PEP 440 `1.8.0`, tag `v1.8.0`), paired with `pineforge-engine` v1.8.0 and
+  `pineforge-codegen` 1.8.0 (tags `v1.8.0`). The `transpile` extra keeps
+  `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.8.0`. The optional submodule gitlinks in
+  `external/pineforge-engine` (`9836309`) and `external/pineforge-codegen-oss` (`3a02eb3`) pin
+  the `v1.8.0` release commits. The C ABI version `PF_ABI_VERSION` is 5 in engine 1.8.0 (it was 4
+  through 1.7.x): a plugin built against engine 1.7.x or earlier is refused with an ABI mismatch,
+  so regenerate and rebuild precompiled plugins with codegen 1.8.0.
 - Enforce native `--max-wall-seconds` while trials are running, even without streaming
   or a per-trial timeout. Add `--wall-grace-seconds` (default 30; non-negative, including 0).
   When the wall cap plus grace expires, publish completed trials and a typed
