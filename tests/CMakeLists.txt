@@ -885,11 +885,17 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
             # Check the compiler ABI, including -m32/-mx32 and endian flags, rather than
             # infer it from a host processor name. Unsupported builds still test refusal.
             include(CheckCXXSourceCompiles)
+            # No backslash line continuations in the source below: check_cxx_source_compiles is a
+            # macro, which drops the backslash but keeps the newline, leaving "#if a ||" with
+            # nothing after it, a preprocessor error that made the check fail on x86_64.
             check_cxx_source_compiles([=[
-                #if !defined(__LP64__) || \
-                    (!defined(__x86_64__) && !defined(__aarch64__)) || \
-                    !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || \
-                    __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+                #if !defined(__LP64__)
+                #error Unsupported seccomp ABI
+                #endif
+                #if !defined(__x86_64__) && !defined(__aarch64__)
+                #error Unsupported seccomp ABI
+                #endif
+                #if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
                 #error Unsupported seccomp ABI
                 #endif
                 int main() { return 0; }
