@@ -4,6 +4,14 @@
 
 ## 1.9.0 (2026-10-30)
 
+- Final 1.9.0 release (PEP 440 `1.9.0`, tag `v1.9.0`), paired with `pineforge-engine` v1.9.0 and
+  `pineforge-codegen` 1.9.0 (tags `v1.9.0`). The `transpile` extra keeps
+  `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.9.0`. The optional submodule gitlinks in
+  `external/pineforge-engine` (`ec44968`) and `external/pineforge-codegen-oss` (`7c1b3de`) pin
+  the `v1.9.0` release commits. The C ABI version `PF_ABI_VERSION` stays 5 as in engine 1.8.0,
+  so plugins built against engine 1.8.x need no ABI change; rebuild precompiled plugins with
+  codegen 1.9.0 to pair with the pinned release.
 - Add `ArtifactBuilder(plugin_load="deferred")` and the matching
   `build_strategy_artifact` option to compile without loading the plugin.
   `ArtifactBuilder.validate_built_plugin` performs pending validation in the
