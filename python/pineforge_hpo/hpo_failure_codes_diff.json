@@ -6,9 +6,8 @@
     "catalogSha256": "d273e7aabb8474f613a53ce6077ed3a982fd898f91f9d06136224d7022b5a558"
   },
   "to": {
-    "version": null,
-    "unreleased": true,
-    "catalogSha256": "e79fc262d688651bac0347808d88f7f8d48488d4202611cad0667fb80f416f40"
+    "version": "1.8.0",
+    "catalogSha256": "813b7b11790cdaf9517b4bd464c7220e0409cb077315e4205cc969c19e7a0f66"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
@@ -16,31 +15,6 @@
   },
   "metadataChanges": [],
   "added": [
-    {
-      "code": "hpo_seccomp_unavailable",
-      "collection": "codes",
-      "entry": {
-        "class": "environment",
-        "retryable": false,
-        "args": {
-          "reason": {
-            "kind": "string",
-            "values": [
-              "architecture",
-              "filter",
-              "headers",
-              "kernel",
-              "no_new_privs",
-              "platform"
-            ]
-          }
-        },
-        "templates": [
-          "The requested native seccomp layer is unavailable ({reason})."
-        ],
-        "since": "1.9.0"
-      }
-    },
     {
       "code": "hpo_walkforward_inventory_invalid",
       "collection": "codes",
