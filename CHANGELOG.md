@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Add `ArtifactBuilder(plugin_load="deferred")` and the matching
+  `build_strategy_artifact` option to compile without loading the plugin.
+  `ArtifactBuilder.validate_built_plugin` performs pending validation in the
+  caller's chosen process without invoking the compiler or codegen. Deferred
+  metadata records no confirmed ABI or symbols; default builds validate pending
+  cache entries before returning them. The default `plugin_load="build"` keeps
+  existing cache keys and metadata bytes. Callers supply process isolation.
+- Add native and Python `run --row-space full|hash|none` to reduce repeated
+  search-space metadata in trial rows. The default `full` preserves existing output
+  bytes; `hash` keeps the versioned space hash and `none` omits row space fields.
+  Every mode retains the full space and its hash at the result's top level.
+- Add opt-in native `--seccomp` on Linux to deny process creation, exec, `ptrace`,
+  `process_vm_readv` and `process_vm_writev` before plugin loading while preserving
+  threads. It is off by default.
+  Unsupported platforms and installation failures refuse with `hpo_seccomp_unavailable`;
+  x86_64 requires kernel 5.4 or newer. The external jail remains responsible for
+  other cross-process reads (for example `/proc/<pid>/mem`), filesystem, network,
+  IPC and resource restrictions.
+
 ## 1.8.0 (2026-10-29)
 
 - Final 1.8.0 release (PEP 440 `1.8.0`, tag `v1.8.0`), paired with `pineforge-engine` v1.8.0 and

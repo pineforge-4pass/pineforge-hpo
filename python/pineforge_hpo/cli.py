@@ -1222,6 +1222,8 @@ def _run(args: argparse.Namespace) -> int:
         )
     if args.trials_out is not None:
         command.extend(("--trials-out", args.trials_out))
+    if args.row_space is not None:
+        command.extend(("--row-space", args.row_space))
     if args.best_k is not None:
         command.extend(("--best-k", args.best_k))
     if args.no_improvement_trials:
@@ -1362,6 +1364,12 @@ def _trials_out_argument(value: str) -> str:
     return value
 
 
+def _row_space_argument(value: str) -> str:
+    if value not in ("full", "hash", "none"):
+        raise argparse.ArgumentTypeError("--row-space must be full, hash, or none")
+    return value
+
+
 def _best_k_argument(value: str) -> str:
     # Match native parse_u64/std::stoull, preserving the original argv spelling.
     integer_error = f"--best-k requires a non-negative integer, got `{value}`"
@@ -1419,6 +1427,13 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         metavar="{all,best-k,none}",
         help="final trial retention (native default: all)",
+    )
+    run_parser.add_argument(
+        "--row-space",
+        type=_row_space_argument,
+        default=None,
+        metavar="{full,hash,none}",
+        help="row space metadata (native default: full)",
     )
     run_parser.add_argument(
         "--best-k",

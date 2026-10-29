@@ -67,6 +67,7 @@ The following native `run` flags are not StudySpec fields or Python CLI pass-thr
 
 | Flag | Semantics |
 | --- | --- |
+| `--seccomp` | Opt-in Linux process/exec denylist, off by default. Sets no-new-privs and installs before plugin `dlopen`, covering static initializers and later workers. Denies exec, process creation, `ptrace`, `process_vm_readv` and `process_vm_writev`; threads, files and sockets remain allowed. Unsupported platforms or failed installation refuse with `hpo_seccomp_unavailable`. Other cross-process reads (for example `/proc/<pid>/mem`) remain the outer jail's responsibility, along with filesystem, network, IPC and resource limits; see [the jailed profile](jailed-profile.md). |
 | `--syminfo FILE` | Flat or wrapped instrument JSON. Optional positive finite `mintick`/`pointvalue` and NUL-free `timezone`/`session` strings are applied after inputs and overrides, in harness order. Empty strings keep defaults; unrelated catalog keys are ignored. |
 | `--symbol-feeds FILE` | Release-harness JSON index for fixed other-symbol reads. CSV paths are relative to the index; values are validated/hashed once and installed into each fresh trial. Also accepted by `space-info` and `warm-encode`; overrides work.json's `symbol_feeds`. String-input search requires engine/codegen >= 1.1.0 metadata; `input.symbol` dimensions are refused (D7). |
 | `--progress-fd N` | An inherited writable descriptor receives one complete, flushed JSONL object per terminal trial, serialized by one writer in increasing trial-ID order. Objects use the unchanged terminal-trial schema regardless of final retention mode. Consumers must drain a pipe concurrently. |
@@ -210,8 +211,30 @@ ordinary, non-continuation validation remains unchanged.
 
 ### Result and terminal-trial fields
 
-Every result and new terminal-trial line records `space_hash_version: 1`, `space_hash`
-and declarative `space`. The hash covers parameter names, typed domains, bounds/steps,
+Every result records `space_hash_version: 1`, `space_hash` and declarative `space` at
+the top level. Native `run` and Python `pineforge-hpo run` accept
+`--row-space full|hash|none` to choose which space fields appear on trial rows:
+
+| Mode | Row fields |
+| --- | --- |
+| `full` (default) | `space_hash_version`, `space_hash` and `space`; preserves the existing output bytes. |
+| `hash` | `space_hash_version` and `space_hash`, matching the top-level hash; no row `space`. |
+| `none` | No row `space`, `space_hash_version` or `space_hash`; space identity is available only from the containing result. |
+
+The mode applies to `trials[]`, `summary.best_k[]`, terminal lines on
+`--progress-fd` and `--trials-file`, and ancestor rows in `warm_start_trials[]`.
+In `full` mode, rows inherited from a compact (`hash` or `none`) parent are copied
+as recorded, so the continuation can contain compact ancestor rows.
+The mode is independent of `--trials-out` retention. Every mode preserves the full
+top-level space and hash. Compact JSONL or extracted arrays need the containing
+result's space kept alongside them; hash rows can be joined using `space_hash`,
+while `none` rows have no space join key. Bare compact rows are not self-describing
+continuation inputs; attach the containing result's declarative `space` to each
+row before importing them alone. Complete `trials_out=all` results remain valid
+continuation parents in every row-space mode. Unknown mode values use the existing
+typed `hpo_cli_usage` refusal (native exit 1; Python argument parsing exit 2).
+
+The hash covers parameter names, typed domains, bounds/steps,
 ordered choices, log flags, objective expression, direction and sorted constraints.
 Its exact portable canonical form is specified in [StudySpec](study-spec.md).
 Compatibility is recomputed from recorded space, including for older hash versions.
@@ -322,10 +345,11 @@ also forwards. They are not new StudySpec fields. Existing callers retain
   winners with status `ok` in `trials`; ties prefer the lower trial ID. Records are emitted in
   trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.
 - `--trials-out none` emits `trials: []`. Both bounded modes include `summary`
-  with `counts_by_status`, `best_k` (full terminal-record objects), and
+  with `counts_by_status`, `best_k` (terminal-record objects), and
   `space_coverage` (finite/cardinality/overflow/unique/full/exhaustive facts).
-- `--trials-file FILE` optionally writes every full terminal record as flushed
-  NDJSON, independently of retention, with or without fd progress.
+- `--trials-file FILE` optionally writes every terminal record as flushed
+  NDJSON, independently of retention, with or without fd progress. Trial rows,
+  including retained winners, use the selected `--row-space` mode.
 - `--max-trials 0 --max-wall-seconds 3600` runs adaptive sampling without a trial
   cap. `trials_requested: 0` denotes this deadline-only budget. New work stops at
   3600 seconds; if any trial remains active at 3600 + `--wall-grace-seconds`,
@@ -337,7 +361,8 @@ list. Each line still has `trial_id`, `status`, `feasible`, `objective`,
 plus the existing optional pruning object. The `backtest` counters remain
 `input_bars_processed`, `script_bars_processed`, and
 `magnifier_sample_ticks_total`, with unchanged names and types. No terminal-line
-field is removed, renamed, or added. IDs are unique and increasing; unstarted
+field is removed, renamed, or added by retention controls; `--row-space` separately
+controls the space fields described above. IDs are unique and increasing; unstarted
 proposals can leave gaps. SIGTERM/deadline drains terminal lines before final
 output. Progress pipes are nonblocking, with 50-ms readiness checks and a two-second
 grace for a stalled reader after SIGTERM, deadline, or trial timeout. Expiring that

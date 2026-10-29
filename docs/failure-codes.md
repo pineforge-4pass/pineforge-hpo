@@ -92,6 +92,13 @@ the original message. C++ callers can catch their existing
 standard exception family or inspect the `pineforge::hpo::HpoError` metadata mixin
 declared in `include/pineforge/hpo/error.hpp`.
 
+The native CLI reports `hpo_seccomp_unavailable`, class `environment`,
+`retryable: false`, when the requested seccomp layer cannot be installed. Its one
+closed string argument, `reason`, is `architecture`, `filter`, `headers`, `kernel`,
+`no_new_privs` or `platform`. It exits 1 before plugin loading and publishes no
+result file. This code appears only when `--seccomp` was requested; a run without
+the flag is never refused by it.
+
 The Python planner-identity API raises `WindowPlanError` (also `HpoError` and
 `RuntimeError`) and the native planner loader throws a typed runtime error, both
 with `hpo_walkforward_unavailable`, class `environment`, `retryable: false`, and
@@ -128,7 +135,7 @@ and every other refusal is `hpo_invariant`:
 
 | Reason | Refusal |
 | --- | --- |
-| `missing_pf_selected_window_version`, `missing_strategy_set_selected_window_v1`, `missing_strategy_selected_window_counts_v1`, `missing_pf_execution_observer_version`, `missing_strategy_set_execution_observer_v1`, `missing_strategy_execution_observation_v1` | The plugin does not export that one of the six selected-window / observer entry points; the reason names the first absent one in protocol order and the diagnostic lists them all. |
+| `missing_pf_selected_window_version`, `missing_strategy_set_selected_window_v1`, `missing_strategy_selected_window_counts_v1`, `missing_pf_execution_observer_version`, `missing_strategy_set_execution_observer_v1`, `missing_strategy_execution_observation_v1` | The plugin lacks this one of the six selected-window / observer exports; the reason names the first absent one in protocol order and the diagnostic lists them all. |
 | `selected_window_version`, `execution_observer_version` | The plugin's selected-window or execution-observer ABI version is not 1. |
 | `selected_window_contract`, `execution_observer_contract` | The plugin refused the selected-window or observer setter with status -2 (unsupported contract). |
 | `engine_version_missing` | The plugin lacks `pf_version_get` or `pf_version_string`, or the string is null. |

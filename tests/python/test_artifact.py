@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 
 import copy
 import hashlib
@@ -11,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
@@ -23,6 +24,7 @@ from pineforge_hpo.artifact import (  # noqa: E402
     CANONICAL_COMPILE_FLAGS,
     _canonical_json,
     _KeyLock,
+    build_strategy_artifact,
 )
 from pineforge_hpo.transpile import (  # noqa: E402
     CodegenIdentity,
@@ -429,6 +431,714 @@ class ArtifactBuilderTest(unittest.TestCase):
             with self.assertRaises(ArtifactBuildError) as caught:
                 builder.build("source")
         self.assertEqual(caught.exception.stage, "plugin_validation")
+
+
+class DeferredPluginValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.engine = make_engine(self.root)
+        self.eigen = make_eigen(self.root)
+        self.compiler, _ = make_compiler(self.root)
+        self.cache = self.root / "cache"
+        self.validate = Mock(side_effect=validator)
+        self.compiles = []
+        self.transpiled = TranspileResult(
+            generated_cpp='extern "C" int generated_strategy = 1;\n',
+            inputs=({"title": "Length", "type": "int", "default": 14},),
+            strategy_params={"initial_capital": 10000},
+        )
+        patches = (
+            patch(
+                "pineforge_hpo.artifact.subprocess.run", side_effect=self.run_compiler
+            ),
+            patch(
+                "pineforge_hpo.artifact.codegen_identity",
+                return_value=CodegenIdentity(
+                    "1.1.0", "c" * 64, "/fake/codegen/__init__.py"
+                ),
+            ),
+            patch(
+                "pineforge_hpo.artifact.codegen_supports_request_inventory",
+                return_value=False,
+            ),
+            patch(
+                "pineforge_hpo.artifact.transpile_source",
+                return_value=self.transpiled,
+            ),
+            patch(
+                "pineforge_hpo.artifact.ctypes.CDLL",
+                side_effect=AssertionError("unexpected native plugin load"),
+            ),
+        )
+        started = []
+        for item in patches:
+            started.append(item.start())
+            self.addCleanup(item.stop)
+        self.transpile = started[3]
+        self.cdll = started[4]
+
+    def run_compiler(self, command, **_options):
+        if "--version" in command:
+            stdout = "fake-cxx 1.2.3"
+        elif "-dumpmachine" in command:
+            stdout = "fake-target"
+        else:
+            self.compiles.append(tuple(command))
+            Path(command[command.index("-o") + 1]).write_bytes(b"fake strategy plugin")
+            stdout = ""
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    def builder(self, cache: Path | None = None, **options) -> ArtifactBuilder:
+        options.setdefault("plugin_validator", self.validate)
+        return ArtifactBuilder(
+            engine_root=self.engine,
+            cache_dir=self.cache if cache is None else cache,
+            compiler=self.compiler,
+            eigen_include=self.eigen,
+            **options,
+        )
+
+    def documents(self, artifact) -> tuple[dict, dict]:
+        return (
+            json.loads(artifact.manifest_path.read_text(encoding="utf-8")),
+            json.loads(artifact.provenance_path.read_text(encoding="utf-8")),
+        )
+
+    def metadata_bytes(self, artifact) -> tuple[bytes, bytes]:
+        return (
+            artifact.manifest_path.read_bytes(),
+            artifact.provenance_path.read_bytes(),
+        )
+
+    def assert_validation_refused(
+        self, builder, artifact, message: str, *, stage: str = "cache"
+    ) -> None:
+        before = self.metadata_bytes(artifact)
+        with (
+            patch("pineforge_hpo.artifact._KeyLock", wraps=_KeyLock) as lock,
+            patch.object(
+                builder,
+                "_write_artifact_metadata",
+                wraps=builder._write_artifact_metadata,
+            ) as write,
+        ):
+            with self.assertRaises(ArtifactBuildError) as caught:
+                builder.validate_built_plugin(artifact)
+
+        self.assertEqual(caught.exception.stage, stage)
+        self.assertEqual(str(caught.exception), message)
+        lock.assert_not_called()
+        write.assert_not_called()
+        self.validate.assert_not_called()
+        self.cdll.assert_not_called()
+        self.assertEqual(self.metadata_bytes(artifact), before)
+
+    def test_default_build_validates_exactly_once_and_cache_hit_does_not(self) -> None:
+        first = self.builder().build("source")
+        before = self.metadata_bytes(first)
+        hit = self.builder().build("source")
+
+        self.validate.assert_called_once()
+        path, abi = self.validate.call_args.args
+        self.assertEqual(path.name, first.plugin_path.name)
+        self.assertEqual(path.parent.parent, first.plugin_path.parent.parent)
+        self.assertEqual(abi, 2)
+        self.assertFalse(first.cache_hit)
+        self.assertTrue(hit.cache_hit)
+        self.assertEqual(self.metadata_bytes(hit), before)
+        self.assertEqual(len(self.compiles), 1)
+        for document in self.documents(hit):
+            self.assertEqual(
+                document["plugin_validation"],
+                {"abi_version": 2, "required_symbols": REQUIRED_SYMBOLS},
+            )
+
+    def test_deferred_build_and_hit_record_pending_without_validation(self) -> None:
+        first = self.builder(plugin_load="deferred").build("source")
+        hit = self.builder(plugin_load="deferred").build("source")
+
+        self.assertEqual(self.validate.call_count, 0)
+        self.cdll.assert_not_called()
+        self.assertFalse(first.cache_hit)
+        self.assertTrue(hit.cache_hit)
+        self.assertEqual(hit.plugin_path, first.plugin_path)
+        self.assertEqual(len(self.compiles), 1)
+        self.transpile.assert_called_once()
+        for document in self.documents(first):
+            self.assertEqual(document["plugin_validation"], {"status": "deferred"})
+            self.assertNotIn("abi_version", document["plugin_validation"])
+            self.assertNotIn("required_symbols", document["plugin_validation"])
+
+    def test_explicit_validation_uses_published_path_without_build_dependencies(
+        self,
+    ) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        before = self.documents(artifact)
+        plugin_bytes = artifact.plugin_path.read_bytes()
+        later_validator = Mock(side_effect=validator)
+        later = ArtifactBuilder(
+            engine_root=self.root / "unavailable-engine",
+            cache_dir=self.cache,
+            compiler="unavailable-compiler",
+            plugin_validator=later_validator,
+        )
+        with (
+            patch(
+                "pineforge_hpo.artifact.subprocess.run",
+                side_effect=AssertionError("validation must not launch a process"),
+            ),
+            patch(
+                "pineforge_hpo.artifact.codegen_identity",
+                side_effect=AssertionError("validation must not probe codegen"),
+            ),
+            patch(
+                "pineforge_hpo.artifact.transpile_source",
+                side_effect=AssertionError("validation must not transpile"),
+            ),
+            patch("pineforge_hpo.artifact._KeyLock", wraps=_KeyLock) as lock,
+        ):
+            validated = later.validate_built_plugin(artifact)
+
+        self.assertEqual(self.validate.call_count, 0)
+        later_validator.assert_called_once_with(artifact.plugin_path, 2)
+        lock.assert_called_once_with(
+            self.cache / "locks" / f"{artifact.request_key}.lock", 120.0
+        )
+        self.assertEqual(validated, artifact)
+        for original, document in zip(before, self.documents(validated)):
+            expected = copy.deepcopy(original)
+            expected["plugin_validation"] = {
+                "abi_version": 2,
+                "required_symbols": REQUIRED_SYMBOLS,
+            }
+            self.assertEqual(document, expected)
+        self.assertEqual(validated.plugin_path.read_bytes(), plugin_bytes)
+        after = self.metadata_bytes(validated)
+        self.assertEqual(later.validate_built_plugin(validated), validated)
+        later_validator.assert_called_once()
+        self.assertEqual(self.metadata_bytes(validated), after)
+        self.assertEqual(len(self.compiles), 1)
+
+    def test_validation_refuses_malformed_keys(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        for field in ("request_key", "artifact_key"):
+            for key in ("a" * 63, "a" * 65, "g" * 64, "A" * 64):
+                with self.subTest(field=field, key=key):
+                    self.assert_validation_refused(
+                        self.builder(),
+                        replace(artifact, **{field: key}),
+                        "validation requires valid source-cache keys",
+                    )
+
+    def test_validation_refuses_nonpositive_lock_timeout(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        for timeout in (0.0, -1.0):
+            with self.subTest(timeout=timeout):
+                self.assert_validation_refused(
+                    self.builder(lock_timeout_seconds=timeout),
+                    artifact,
+                    "build timeouts must be positive",
+                    stage="configuration",
+                )
+
+    def test_validation_refuses_paths_outside_cache(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        before = self.metadata_bytes(artifact)
+        outside = self.root / "outside"
+        outside.mkdir()
+        for field in (
+            "manifest_path",
+            "provenance_path",
+            "generated_cpp_path",
+            "plugin_path",
+        ):
+            with self.subTest(field=field):
+                original = getattr(artifact, field)
+                external_path = outside / original.name
+                external_bytes = original.read_bytes()
+                external_path.write_bytes(external_bytes)
+                self.assert_validation_refused(
+                    self.builder(),
+                    replace(artifact, **{field: external_path}),
+                    "only this builder's source-cache artifacts may be validated",
+                )
+                self.assertEqual(external_path.read_bytes(), external_bytes)
+                self.assertEqual(self.metadata_bytes(artifact), before)
+
+    def test_validation_refuses_noncanonical_cache_paths(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        artifact_dir = artifact.manifest_path.parent
+        for field in (
+            "manifest_path",
+            "provenance_path",
+            "generated_cpp_path",
+            "plugin_path",
+        ):
+            with self.subTest(field=field):
+                original = getattr(artifact, field)
+                alias = artifact_dir / ".." / artifact.artifact_key / original.name
+                self.assertNotEqual(alias, original)
+                self.assertEqual(alias.resolve(), original)
+                self.assert_validation_refused(
+                    self.builder(),
+                    replace(artifact, **{field: alias}),
+                    "only this builder's source-cache artifacts may be validated",
+                )
+
+    def test_validation_refuses_another_cache(self) -> None:
+        local = self.builder(plugin_load="deferred").build("source")
+        other = self.builder(self.root / "other-cache", plugin_load="deferred")
+        foreign = other.build("source")
+        self.assertEqual(foreign.request_key, local.request_key)
+        self.assertEqual(foreign.artifact_key, local.artifact_key)
+        before = self.metadata_bytes(local)
+
+        self.assert_validation_refused(
+            self.builder(),
+            foreign,
+            "only this builder's source-cache artifacts may be validated",
+        )
+
+        self.assertEqual(self.metadata_bytes(local), before)
+
+    def test_validation_refuses_symlink_escape(self) -> None:
+        other_cache = self.root / "other-cache"
+        foreign = self.builder(other_cache, plugin_load="deferred").build("source")
+        self.cache.mkdir()
+        (self.cache / "artifacts").symlink_to(
+            other_cache / "artifacts", target_is_directory=True
+        )
+        artifact_dir = self.cache / "artifacts" / foreign.artifact_key
+        # The paths match this cache lexically but resolve into the other cache.
+        paths = {
+            field: artifact_dir / getattr(foreign, field).name
+            for field in (
+                "manifest_path",
+                "provenance_path",
+                "generated_cpp_path",
+                "plugin_path",
+            )
+        }
+
+        self.assert_validation_refused(
+            self.builder(),
+            replace(foreign, **paths),
+            "only this builder's source-cache artifacts may be validated",
+        )
+
+    def test_validator_runs_while_request_lock_is_held(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        lock_path = self.cache / "locks" / f"{artifact.request_key}.lock"
+        # Zero timeout still attempts the real nonblocking lock without sleeping.
+        with _KeyLock(lock_path, 0.0):
+            pass
+
+        def check_lock(path, abi):
+            with self.assertRaisesRegex(
+                ArtifactBuildError, "timed out waiting for artifact lock"
+            ) as caught:
+                with _KeyLock(lock_path, 0.0):
+                    pass
+            self.assertEqual(caught.exception.stage, "cache")
+            return validator(path, abi)
+
+        later_validator = Mock(side_effect=check_lock)
+        later = self.builder(plugin_validator=later_validator)
+        validated = later.validate_built_plugin(artifact)
+
+        later_validator.assert_called_once_with(artifact.plugin_path, 2)
+        self.assertEqual(validated, artifact)
+        self.validate.assert_not_called()
+        with _KeyLock(lock_path, 0.0):
+            pass
+
+    def test_default_build_validates_pending_cache_before_returning(self) -> None:
+        pending = self.builder(plugin_load="deferred").build("source")
+        self.assertEqual(self.validate.call_count, 0)
+        hit = self.builder().build("source")
+
+        self.validate.assert_called_once_with(pending.plugin_path, 2)
+        self.assertTrue(hit.cache_hit)
+        self.assertEqual(hit, replace(pending, cache_hit=True))
+        self.assertEqual(len(self.compiles), 1)
+        self.transpile.assert_called_once()
+        for document in self.documents(hit):
+            self.assertEqual(
+                document["plugin_validation"],
+                {"abi_version": 2, "required_symbols": REQUIRED_SYMBOLS},
+            )
+        self.assertTrue(self.builder().build("source").cache_hit)
+        self.validate.assert_called_once()
+
+    def test_existing_pending_metadata_is_not_recompiled_by_default(self) -> None:
+        # This fixture reaches the old cache path without needing the new option.
+        artifact = self.builder().build("source")
+        for path, document in zip(
+            (artifact.manifest_path, artifact.provenance_path),
+            self.documents(artifact),
+        ):
+            document["plugin_validation"] = {"status": "deferred"}
+            path.write_text(_canonical_json(document) + "\n", encoding="utf-8")
+        self.validate.reset_mock()
+
+        hit = self.builder().build("source")
+
+        self.assertTrue(hit.cache_hit)
+        self.validate.assert_called_once_with(artifact.plugin_path, 2)
+        self.assertEqual(len(self.compiles), 1)
+        self.transpile.assert_called_once()
+
+    def test_pending_artifact_without_request_index_is_validated_without_recompile(
+        self,
+    ) -> None:
+        pending = self.builder(plugin_load="deferred").build("source")
+        index = self.cache / "requests" / f"{pending.request_key}.json"
+        index.write_text("{", encoding="utf-8")
+
+        hit = self.builder().build("source")
+
+        self.assertTrue(hit.cache_hit)
+        self.validate.assert_called_once_with(pending.plugin_path, 2)
+        self.assertEqual(len(self.compiles), 1)
+        self.assertEqual(self.transpile.call_count, 2)
+        self.assertEqual(
+            json.loads(index.read_text(encoding="utf-8"))["artifact_key"],
+            pending.artifact_key,
+        )
+
+    def test_deferred_hit_preserves_existing_success_metadata(self) -> None:
+        artifact = self.builder().build("source")
+        before = self.metadata_bytes(artifact)
+        self.validate.reset_mock()
+
+        hit = self.builder(plugin_load="deferred").build("source")
+
+        self.assertTrue(hit.cache_hit)
+        self.validate.assert_not_called()
+        self.assertEqual(self.metadata_bytes(hit), before)
+        self.assertEqual(len(self.compiles), 1)
+        self.transpile.assert_called_once()
+
+    def test_pending_marker_cannot_claim_confirmed_abi_or_symbols(self) -> None:
+        builder = self.builder()
+        artifact = builder.build("source")
+        manifest, provenance = self.documents(artifact)
+        for path, document in zip(
+            (artifact.manifest_path, artifact.provenance_path),
+            (manifest, provenance),
+        ):
+            document["plugin_validation"]["status"] = "deferred"
+            path.write_text(_canonical_json(document) + "\n", encoding="utf-8")
+        options = {
+            "artifact_key": artifact.artifact_key,
+            "request_key": artifact.request_key,
+            "request_identity": manifest["request_identity"],
+            "output_extension": artifact.plugin_path.suffix,
+            "cache_hit": True,
+        }
+
+        self.assertIsNone(builder._load_artifact(**options))
+        self.assertIsNone(builder._load_artifact(**options, allow_deferred=True))
+
+    def test_plugin_load_option_preserves_default_keys_and_metadata_bytes(self) -> None:
+        created_at = "2026-01-02T03:04:05+00:00"
+        with patch("pineforge_hpo.artifact.datetime") as clock:
+            clock.now.return_value = datetime.fromisoformat(created_at)
+            default = self.builder().build("source", filename="example.pine")
+            explicit = self.builder(
+                self.root / "explicit-cache", plugin_load="build"
+            ).build("source", filename="example.pine")
+            deferred = self.builder(
+                self.root / "deferred-cache", plugin_load="deferred"
+            ).build("source", filename="example.pine")
+
+        for artifact in (explicit, deferred):
+            self.assertFalse(artifact.cache_hit)
+            self.assertEqual(artifact.request_key, default.request_key)
+            self.assertEqual(artifact.artifact_key, default.artifact_key)
+        self.assertEqual(self.metadata_bytes(explicit), self.metadata_bytes(default))
+        manifest, provenance = self.documents(default)
+        common = {
+            "schema_version": 1,
+            "artifact_key": default.artifact_key,
+            "request_key": default.request_key,
+            "created_at": created_at,
+            "source_name": "example.pine",
+            "request_identity": manifest["request_identity"],
+            "generated_cpp_sha256": hashlib.sha256(
+                self.transpiled.generated_cpp.encode("utf-8")
+            ).hexdigest(),
+            "plugin_sha256": hashlib.sha256(b"fake strategy plugin").hexdigest(),
+            "plugin_validation": {
+                "abi_version": 2,
+                "required_symbols": REQUIRED_SYMBOLS,
+            },
+        }
+        expected_manifest = {
+            **common,
+            "plugin_filename": default.plugin_path.name,
+            "inputs": list(self.transpiled.inputs),
+            "strategy_params": dict(self.transpiled.strategy_params),
+            "diagnostics": [],
+        }
+        expected_provenance = {
+            **common,
+            "compile": common["request_identity"]["compile"],
+        }
+        for actual, expected in zip(
+            self.metadata_bytes(default), (expected_manifest, expected_provenance)
+        ):
+            expected_bytes = (
+                json.dumps(
+                    expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                )
+                + "\n"
+            ).encode("utf-8")
+            self.assertEqual(actual, expected_bytes)
+        self.assertEqual(provenance, expected_provenance)
+        self.assertNotIn("plugin_load", manifest["request_identity"])
+        self.assertEqual(self.validate.call_count, 2)
+        self.assertEqual(len(self.compiles), 3)
+
+    def test_deferred_path_never_calls_even_a_rejecting_validator(self) -> None:
+        self.validate.side_effect = RuntimeError("must run only in the later process")
+        try:
+            artifact = self.builder(plugin_load="deferred").build("source")
+        finally:
+            # Mutation guard: calling the validator fails this count assertion even
+            # if the implementation swallows its exception and publishes anyway.
+            self.assertEqual(self.validate.call_count, 0)
+        self.assertTrue(artifact.plugin_path.is_file())
+        self.assertEqual(
+            self.documents(artifact)[0]["plugin_validation"], {"status": "deferred"}
+        )
+
+    def test_deferred_mode_skips_the_default_ctypes_loader(self) -> None:
+        builder = ArtifactBuilder(
+            engine_root=self.engine,
+            cache_dir=self.cache,
+            compiler=self.compiler,
+            eigen_include=self.eigen,
+            plugin_load="deferred",
+        )
+        artifact = builder.build("source")
+
+        self.cdll.assert_not_called()
+        self.assertEqual(
+            self.documents(artifact)[0]["plugin_validation"], {"status": "deferred"}
+        )
+
+    def test_invalid_load_mode_is_refused_before_compiler_probes(self) -> None:
+        with patch("pineforge_hpo.artifact.subprocess.run") as run:
+            with self.assertRaisesRegex(ArtifactBuildError, "plugin_load") as caught:
+                self.builder(plugin_load="unknown").build("source")
+        self.assertEqual(caught.exception.stage, "configuration")
+        run.assert_not_called()
+        self.validate.assert_not_called()
+
+    def test_failed_later_validation_never_records_success(self) -> None:
+        for fault in ("load", "abi", "symbols"):
+            with self.subTest(fault=fault):
+                artifact = self.builder(plugin_load="deferred").build(fault)
+                before = self.metadata_bytes(artifact)
+                later_validator = Mock()
+                if fault == "load":
+                    later_validator.side_effect = OSError("intentional load failure")
+                else:
+                    later_validator.return_value = {
+                        "abi_version": 99 if fault == "abi" else 2,
+                        "required_symbols": (
+                            [] if fault == "symbols" else REQUIRED_SYMBOLS
+                        ),
+                    }
+                later = self.builder(plugin_validator=later_validator)
+                with self.assertRaises(ArtifactBuildError) as caught:
+                    later.validate_built_plugin(artifact)
+                self.assertEqual(caught.exception.stage, "plugin_validation")
+                self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
+                later_validator.assert_called_once_with(artifact.plugin_path, 2)
+                self.assertEqual(self.metadata_bytes(artifact), before)
+        self.validate.assert_not_called()
+
+    def test_default_build_propagates_pending_cache_validation_failure(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        before = self.metadata_bytes(artifact)
+        self.validate.side_effect = OSError("intentional load failure")
+
+        with self.assertRaises(ArtifactBuildError) as caught:
+            self.builder().build("source")
+
+        self.assertEqual(caught.exception.stage, "plugin_validation")
+        self.validate.assert_called_once_with(artifact.plugin_path, 2)
+        self.assertEqual(self.metadata_bytes(artifact), before)
+        self.assertEqual(len(self.compiles), 1)
+        self.transpile.assert_called_once()
+
+    def test_content_changes_are_refused_before_later_load(self) -> None:
+        for field in ("plugin_path", "generated_cpp_path"):
+            with self.subTest(field=field):
+                artifact = self.builder(plugin_load="deferred").build(field)
+                before = self.metadata_bytes(artifact)
+                getattr(artifact, field).write_bytes(b"changed after compilation")
+                with self.assertRaises(ArtifactBuildError) as caught:
+                    self.builder().validate_built_plugin(artifact)
+                self.assertEqual(caught.exception.stage, "cache")
+                self.validate.assert_not_called()
+                self.assertEqual(self.metadata_bytes(artifact), before)
+
+    def test_validator_cannot_rebind_changed_plugin_bytes(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        before = self.metadata_bytes(artifact)
+
+        def change_plugin(path, abi):
+            path.write_bytes(b"changed during validation")
+            return validator(path, abi)
+
+        later_validator = Mock(side_effect=change_plugin)
+        with self.assertRaises(ArtifactBuildError) as caught:
+            self.builder(plugin_validator=later_validator).validate_built_plugin(
+                artifact
+            )
+        self.assertEqual(caught.exception.stage, "plugin_validation")
+        later_validator.assert_called_once_with(artifact.plugin_path, 2)
+        self.assertEqual(self.metadata_bytes(artifact), before)
+
+    def test_interrupted_validation_metadata_is_not_trusted(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        later = self.builder()
+        original = later._write_artifact_metadata
+
+        def publish(path, payload):
+            if path == artifact.provenance_path:
+                raise OSError("intentional second publication failure")
+            original(path, payload)
+
+        with patch.object(later, "_write_artifact_metadata", side_effect=publish):
+            with self.assertRaises(ArtifactBuildError) as caught:
+                later.validate_built_plugin(artifact)
+        self.assertEqual(caught.exception.stage, "cache")
+        self.validate.assert_called_once_with(artifact.plugin_path, 2)
+        manifest, provenance = self.documents(artifact)
+        self.assertEqual(manifest["plugin_validation"]["abi_version"], 2)
+        self.assertEqual(provenance["plugin_validation"], {"status": "deferred"})
+        for allow_deferred in (False, True):
+            self.assertIsNone(
+                later._load_artifact(
+                    artifact_key=artifact.artifact_key,
+                    request_key=artifact.request_key,
+                    request_identity=manifest["request_identity"],
+                    output_extension=artifact.plugin_path.suffix,
+                    cache_hit=True,
+                    allow_deferred=allow_deferred,
+                )
+            )
+        with self.assertRaises(ArtifactBuildError):
+            later.validate_built_plugin(artifact)
+        self.validate.assert_called_once()
+
+    def test_default_build_recompiles_interrupted_validation(self) -> None:
+        for validated_field in ("manifest_path", "provenance_path"):
+            with self.subTest(validated_field=validated_field):
+                compiles_before = len(self.compiles)
+                transpiles_before = self.transpile.call_count
+                self.validate.reset_mock()
+                artifact = self.builder(plugin_load="deferred").build(validated_field)
+                confirmed = {
+                    "abi_version": 2,
+                    "required_symbols": REQUIRED_SYMBOLS,
+                }
+                pending = {"status": "deferred"}
+                # Reproduce both directions of a disagreeing metadata pair.
+                path = getattr(artifact, validated_field)
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document["plugin_validation"] = confirmed
+                path.write_text(_canonical_json(document) + "\n", encoding="utf-8")
+                manifest, provenance = self.documents(artifact)
+                for field, document in zip(
+                    ("manifest_path", "provenance_path"), (manifest, provenance)
+                ):
+                    self.assertEqual(
+                        document["plugin_validation"],
+                        confirmed if field == validated_field else pending,
+                    )
+                before = self.metadata_bytes(artifact)
+                later = self.builder()
+                for allow_deferred in (False, True):
+                    self.assertIsNone(
+                        later._load_artifact(
+                            artifact_key=artifact.artifact_key,
+                            request_key=artifact.request_key,
+                            request_identity=manifest["request_identity"],
+                            output_extension=artifact.plugin_path.suffix,
+                            cache_hit=True,
+                            allow_deferred=allow_deferred,
+                        )
+                    )
+                with patch.object(
+                    later,
+                    "_write_artifact_metadata",
+                    wraps=later._write_artifact_metadata,
+                ) as write:
+                    with self.assertRaisesRegex(
+                        ArtifactBuildError,
+                        "cannot validate an invalid source-cache artifact",
+                    ) as caught:
+                        later.validate_built_plugin(artifact)
+                self.assertEqual(caught.exception.stage, "cache")
+                write.assert_not_called()
+                self.validate.assert_not_called()
+                self.assertEqual(self.metadata_bytes(artifact), before)
+                self.assertEqual(len(self.compiles), compiles_before + 1)
+                self.assertEqual(self.transpile.call_count, transpiles_before + 1)
+
+                rebuilt = later.build(validated_field)
+
+                self.assertFalse(rebuilt.cache_hit)
+                self.assertEqual(rebuilt.artifact_key, artifact.artifact_key)
+                self.assertEqual(rebuilt.request_key, artifact.request_key)
+                self.assertEqual(len(self.compiles), compiles_before + 2)
+                self.assertEqual(self.transpile.call_count, transpiles_before + 2)
+                self.validate.assert_called_once()
+                for document in self.documents(rebuilt):
+                    self.assertEqual(document["plugin_validation"], confirmed)
+                self.assertTrue(later.build(validated_field).cache_hit)
+                self.assertEqual(len(self.compiles), compiles_before + 2)
+                self.assertEqual(self.transpile.call_count, transpiles_before + 2)
+                self.validate.assert_called_once()
+
+    def test_pending_artifact_cannot_be_enriched_without_validation(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        before = self.metadata_bytes(artifact)
+
+        with self.assertRaises(ArtifactBuildError) as caught:
+            self.builder(plugin_load="deferred").enrich_window_plan(artifact)
+
+        self.assertEqual(caught.exception.stage, "plugin_validation")
+        self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
+        self.assertEqual(
+            str(caught.exception),
+            "artifact plugin validation is pending; call validate_built_plugin first",
+        )
+        self.validate.assert_not_called()
+        self.assertEqual(self.metadata_bytes(artifact), before)
+
+    def test_convenience_build_forwards_deferred_mode(self) -> None:
+        artifact = build_strategy_artifact(
+            "source",
+            engine_root=self.engine,
+            cache_dir=self.cache,
+            compiler=self.compiler,
+            eigen_include=self.eigen,
+            plugin_load="deferred",
+        )
+
+        self.cdll.assert_not_called()
+        self.assertEqual(
+            self.documents(artifact)[0]["plugin_validation"], {"status": "deferred"}
+        )
+        self.assertEqual(len(self.compiles), 1)
 
 
 class RequestInventoryArtifactTests(unittest.TestCase):

@@ -1132,7 +1132,7 @@ to the first trial ID of the run, so high continuation IDs and gaps are supporte
 The spool holds the whole trial array on disk until the process exits.
 On read-only root filesystems, native `run` and the jailed Python `run` wrapper can use a writable
 `--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it, and the Python
-`run` wrapper forwards `--trials-out` and `--best-k`.
+`run` wrapper forwards `--trials-out`, `--best-k` and `--row-space`.
 If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
 not in the native process RSS.
 The final `trials` array copies those rendered rows in trial-ID order
@@ -1207,9 +1207,25 @@ behavior: the caller is responsible for keeping observations semantically compar
 The input is auto-detected as binary v2 blocks (0.6.0), terminal-trial JSONL,
 a standalone trial array, or a complete result object. Result objects combine
 `warm_start_trials` with new `trials`.
-Space metadata is intentionally repeated on each new trial so a standalone trial
-array remains self-describing. Budget for that per-line storage/transport overhead;
-the 256 MiB input cap is a byte cap, not a constant-memory import guarantee.
+By default, space metadata is repeated on each new trial so a standalone trial
+array remains self-describing. Native `run` and Python `pineforge-hpo run` accept
+`--row-space full|hash|none` as a CLI output control, independent of retention;
+it is not a StudySpec field. `full` preserves the existing bytes, including each
+row's declarative `space`, `space_hash_version` and `space_hash`. `hash` omits
+row `space` and keeps only `space_hash_version` and `space_hash` for space identity.
+`none` omits all three row fields. Every mode retains the full declarative space
+and its versioned hash at the result's top level.
+
+The mode applies to terminal rows in `trials`, `summary.best_k`, `--trials-file`
+and `--progress-fd`, and to ancestor rows in `warm_start_trials`. In `full` mode,
+rows inherited from a compact (`hash` or `none`) parent are copied as recorded,
+so the continuation can contain compact ancestor rows. Compact streams and
+extracted arrays require the containing result's space alongside them.
+Hash rows can be joined to it by `space_hash`; `none` rows have no space join key.
+To import compact rows alone as a continuation, attach that declarative `space`
+to each row; complete `trials_out=all` results remain valid parents in every mode.
+Budget for per-line space overhead when using `full`; the 256 MiB input cap is a
+byte cap, not a constant-memory import guarantee.
 Trial IDs must be unique uint64 integers leaving room for a continuation ID, parameters
 must lie in the declared space, objectives/rung scores must be finite or null, and
 statuses must be `ok`, `constraint_violation`, `engine_error`, `objective_error`,

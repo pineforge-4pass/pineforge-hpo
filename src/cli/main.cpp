@@ -18,6 +18,7 @@
 #include "failure_json.hpp"
 #include "json.hpp"
 #include "no_improvement.hpp"
+#include "runner_seccomp.hpp"
 #include "sobol_continuation.hpp"
 #include "symbol_feeds.hpp"
 #include "trial_spool.hpp"
@@ -121,6 +122,7 @@ private:
 #endif
 
 struct TrialRecord {
+    RowSpace row_space = RowSpace::kFull;
     std::shared_ptr<const std::string> space_json;
     std::string space_hash;
     bool tpe_enabled = false;
@@ -311,18 +313,21 @@ void print_help() {
               << "  --no-improvement-trials N   ordered patience; 0 disables (default)\n"
               << "  --seed N                    sampler seed; dlib max 2147483647\n"
               << "  --workers N                 execution threads\n"
+              << "  --seccomp                   Linux process/exec denylist before plugin load;\n"
+              << "                              opt-in, default: off; outer jail still required\n"
               << "  --schedule batches|rolling  proposal schedule; rolling refills a free\n"
               << "                              worker slot at once (default: batches)\n"
               << "  --batch-size N              proposals per batch; default: workers\n"
               << "  --batch-lag 0|1             fixed feedback lag; default: 0\n"
               << "  --scheduler-stats FILE      nondeterministic timing sidecar\n"
               << "  --trials-out all|best-k|none final trial retention; default: all\n"
+              << "  --row-space full|hash|none  row space metadata; default: full\n"
               << "  --pbo-blocks S              full-window bar-return blocks; even S >= 2\n"
 #ifdef PINEFORGE_HPO_PROOF_CURVES
               << "  --proof-curves FILE         original full-window equity bits (proof only)\n"
 #endif
               << "  --best-k N                  retained feasible winners; default: 10\n"
-              << "  --trials-file FILE          flushed full terminal-trial NDJSON\n"
+              << "  --trials-file FILE          flushed terminal-trial NDJSON\n"
               << "  --pruner none|median|halving default: none\n"
               << "  --pruner-rungs F,F          increasing prefixes; default: 0.25,0.5\n"
               << "  --pruner-eta N              elimination factor >= 2; default: 2\n"
@@ -400,6 +405,8 @@ Options parse_options(int argc, char** argv) {
         const std::string option = argv[i];
         if (option == "--strategy") {
             out.strategy = require_value(argc, argv, i, option);
+        } else if (option == "--seccomp") {
+            out.seccomp = true;
         } else if (option == "--ohlcv") {
             out.ohlcv = require_value(argc, argv, i, option);
             ohlcv_given = true;
@@ -479,6 +486,16 @@ Options parse_options(int argc, char** argv) {
             out.trials_out = require_value(argc, argv, i, option);
             if (out.trials_out != "all" && out.trials_out != "best-k" && out.trials_out != "none")
                 usage_error("--trials-out must be all, best-k, or none");
+        } else if (option == "--row-space") {
+            const auto mode = require_value(argc, argv, i, option);
+            if (mode == "full")
+                out.row_space = RowSpace::kFull;
+            else if (mode == "hash")
+                out.row_space = RowSpace::kHash;
+            else if (mode == "none")
+                out.row_space = RowSpace::kNone;
+            else
+                usage_error("--row-space must be full, hash, or none");
         } else if (option == "--pbo-blocks") {
             out.pbo_blocks = parse_pbo_blocks(i + 1 < argc ? argv[++i] : "");
 #ifdef PINEFORGE_HPO_PROOF_CURVES
@@ -892,6 +909,7 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
 
 TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& options) {
     TrialRecord record;
+    record.row_space = options.row_space;
     record.space_json = options.space_json;
     record.space_hash = options.space_hash;
     if (options.sampler == "tpe") {
@@ -1035,10 +1053,12 @@ std::string render_trial(const TrialRecord& trial) {
         }
         out << '}';
     }
-    if (trial.space_json)
+    if (trial.space_json && trial.row_space != RowSpace::kNone) {
         out << ", \"space_hash_version\": " << pfh::detail::space_hash_version
-            << ", \"space_hash\": \"" << trial.space_hash << "\", \"space\": "
-            << *trial.space_json;
+            << ", \"space_hash\": \"" << trial.space_hash << '"';
+        if (trial.row_space == RowSpace::kFull)
+            out << ", \"space\": " << *trial.space_json;
+    }
     out << "}";
     return out.str();
 }
@@ -2019,7 +2039,20 @@ pfh::detail::ResultDocument render_results(
             for (std::uint64_t index = 0; index < warm.size(); ++index) {
                 if (index)
                     out << ',';
-                out << pfh::detail::dump_json(warm.record(space, index));
+                auto record = warm.record(space, index);
+                if (options.row_space != RowSpace::kFull) {
+                    record.members.erase("space");
+                    if (options.row_space == RowSpace::kHash) {
+                        record.members["space_hash_version"] = pfh::detail::Json::number(
+                            std::to_string(pfh::detail::space_hash_version));
+                        record.members["space_hash"] =
+                            pfh::detail::Json::string(options.space_hash);
+                    } else {
+                        record.members.erase("space_hash_version");
+                        record.members.erase("space_hash");
+                    }
+                }
+                out << pfh::detail::dump_json(record);
             }
             out << ']';
         }
@@ -2526,6 +2559,10 @@ PreparedStudy prepare(Options options) {
         options.proof_curve_writer = std::make_shared<ProofCurveWriter>(options.proof_curves);
 #endif
 
+    // dlopen runs plugin static initializers. Filter the main thread before any plugin code;
+    // run_study() creates the wall-cap watchdog, writer, trial and TPE threads later.
+    if (options.seccomp)
+        install_runner_seccomp();
     auto plugin = std::make_shared<pfh::StrategyPlugin>(options.strategy);
     auto dataset = std::make_shared<pfh::Dataset>(options.ohlcv_bin.empty()
         ? pfh::Dataset::load_csv(options.ohlcv)

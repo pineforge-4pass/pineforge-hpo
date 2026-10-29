@@ -9,6 +9,83 @@ readable strategy artifacts and OHLCV data. HPO consumes that existing C ABI;
 it does not create the jail or the arena. Compile the strategy artifact before
 entering the jail.
 
+## Optional native seccomp layer
+
+On Linux, add `--seccomp` to `pineforge-hpo-native run` for a second layer
+restricting process creation, exec, `ptrace`, `process_vm_readv` and
+`process_vm_writev`. It is **off by default**, independent of the arena environment
+variables, and is a native CLI option only. Compile artifacts before launching the
+runner. Inside the outer jail:
+
+```bash
+pineforge-hpo-native run --seccomp \
+    --strategy /artifacts/strategy.so --ohlcv /data/bars.csv \
+    --objective metrics.all.net_profit --int-dim Length 10 20 1 --workers 2 \
+    --output /output/result.json
+```
+
+The runner sets `PR_SET_NO_NEW_PRIVS`, then installs a seccomp BPF filter
+immediately before loading the strategy plugin. It covers static initializers
+executed inside `dlopen` and all later strategy entry points. Dataset loading and
+engine arena admission follow. Repeating no-new-privs after the jailer set it is
+harmless. With the flag absent, neither operation is attempted.
+
+Installation runs on the native main thread before HPO creates any threads.
+The progress writer/watchdog, including the `--max-wall-seconds` watchdog,
+execution workers and lazy TPE dimension workers start later and inherit the
+filter. They use thread-form `clone`, which remains allowed. No runner thread
+needs process creation before loading the plugin. Installation does not use
+TSYNC and does not retrofit unrelated threads in an embedded host.
+
+| Call | Filter result |
+| --- | --- |
+| `execve`, `execveat`, `fork`, `vfork` | `-1`, `errno = EPERM` |
+| `clone` without `CLONE_THREAD` in its flags | `-1`, `errno = EPERM` |
+| `clone` with `CLONE_THREAD` | Allowed; the kernel still validates the other flags. |
+| `clone3` | `-1`, `errno = ENOSYS` |
+| `ptrace`, `process_vm_readv`, `process_vm_writev` | `-1`, `errno = EPERM` |
+| Other native-ABI syscalls | Allowed by this layer, subject to the outer jail. |
+
+On aarch64 there are no separate `fork`/`vfork` syscall entries; libc uses
+`clone`, whose flags are checked. Syscall numbers come from target Linux headers.
+Ordinary denials return `EPERM` so a plugin can handle a refused operation and
+continue. They do not automatically terminate the study or create an HPO trial
+failure. `clone3` deliberately returns `ENOSYS` so glibc versions that use it for
+`pthread_create` can fall back to `clone` with `CLONE_THREAD`. Verify that
+fallback with the deployment image's libc and the thread tests; the repository
+does not pin that libc. The outer jail's `clone3` policy must also permit the
+fallback, and a stronger outer seccomp action still wins.
+
+Supported ABIs are little-endian Linux x86_64 LP64 and aarch64 LP64. The x86_64
+path requires kernel 5.4 or newer to exclude legacy untagged x32 syscall aliases;
+aarch64 requires 4.14 or newer for `KILL_PROCESS` semantics. Startup refuses an
+old or unreadable kernel release. An unexpected audit architecture, including
+i386 compatibility calls, terminates the process with
+`SECCOMP_RET_KILL_PROCESS` (`SIGSYS`); x32 syscall numbers on x86_64 also terminate
+it. Other operating systems/ABIs, missing kernel/header support, and failed
+installation refuse before plugin loading with `hpo_seccomp_unavailable`,
+exit 1 and no result file. Its closed `reason` is `platform`, `architecture`,
+`headers`, `kernel`, `no_new_privs` or `filter`. Installation is never silently
+skipped.
+
+This default-allow denylist is **not a syscall jail by itself** and does not make
+arbitrary native plugins safe. Threads, files, sockets, memory mappings and other
+syscalls remain allowed. Other cross-process reads and operations, including
+`/proc/<pid>/mem`, `pidfd_getfd` and `kcmp`, remain the outer jail's responsibility,
+along with filesystem, network and IPC policy, arena provisioning, and resource
+limits (rlimits), including memory and thread limits.
+
+The Linux seccomp regression uses real plugin-side syscalls in static
+initializers and two execution workers, plus threads created inside the plugin.
+Its flag-off controls must succeed, including a real `clone3` child; an existing
+`ENOSYS` or `EPERM` fails that prerequisite. Run them outside an outer jail that
+already denies those calls, on a kernel supporting `clone3`. Other platforms
+skip syscall probes with a stated reason and still test the typed refusal.
+Thread checks compare full result bytes with the option off/on. The worker/writer
+and TPE rows also compare trial-stream bytes; the wall-cap watchdog row compares
+result bytes only. The Linux real-engine jailed gate also compares bytes with two
+workers and fd 5.
+
 ## Environment and descriptors
 
 Presence of `PF_SCRATCH_ARENA_FD` selects this path, including an empty or malformed
