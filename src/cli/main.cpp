@@ -335,7 +335,9 @@ void print_help() {
                  "periods_per_year,\n"
               << "                              mean,std,sharpe_per_period,skew,kurt_raw,status}\n"
               << "                              are return statistics, computed only when named\n"
-              << "  --max-wall-seconds S        positive study wall limit; cooperative stop\n"
+              << "  --max-wall-seconds S        positive study wall limit; stop new trials at S\n"
+              << "  --wall-grace-seconds G      non-negative drain grace; default: 30 (0 allowed)\n"
+              << "                              unfinished trials at S+G time out and exit 3\n"
               << "  --trial-timeout-seconds T   positive per-trial limit; exits 3 on timeout\n\n"
               << "TPE options:\n"
               << "  --tpe-startup-trials N      random observations before model fitting\n"
@@ -366,10 +368,12 @@ void print_help() {
                  "completed trials remain.\n"
               << "Study wall cap: stop_reason deadline. "
                  "Trial cap: status/stop_reason trial_timeout.\n"
+              << "Wall grace expiry records every unfinished trial as trial_timeout.\n"
               << "Stop reasons: trial_budget_reached, search_space_exhausted, sampler_stopped,\n"
               << "              no_improvement, cancelled, deadline, trial_timeout.\n"
               << "Exit codes: 0 best feasible trial; 1 initialization/I/O error;\n"
-              << "            2 no feasible trial; 3 trial timeout (no worker join);\n"
+              << "            2 no feasible trial; 3 trial timeout or wall grace expiry\n"
+              << "            (no worker join);\n"
               << "            4 warm-start incompatible; 5 space exhausted.\n";
 }
 
@@ -437,6 +441,11 @@ Options parse_options(int argc, char** argv) {
                 out.max_wall_seconds = seconds;
             else
                 out.trial_timeout_seconds = seconds;
+        } else if (option == "--wall-grace-seconds") {
+            const double seconds = parse_double(require_value(argc, argv, i, option), option);
+            if (seconds < 0.0)
+                usage_error(option + " requires a non-negative number");
+            out.wall_grace_seconds = seconds;
         } else if (option == "--record-metric") {
             out.recorded_metrics.push_back(require_value(argc, argv, i, option));
         } else if (option == "--objective") {
@@ -1058,7 +1067,7 @@ public:
         }
     }
 
-    // Called only under RunState's mutex (finish() and the single timeout record), so the
+    // Called only under RunState's mutex (finish() and timeout records), so the
     // coverage and the Sobol part accounting need no lock of their own and a position is never
     // recorded twice. Every terminal trial feeds them, whether or not its row is retained.
     void add(const TrialRecord& record) {
@@ -1202,7 +1211,7 @@ public:
     using Clock = std::chrono::steady_clock;
 #endif
     using TimeoutResult =
-        std::function<void(const std::vector<TrialRecord>&, std::exception_ptr)>;
+        std::function<void(const std::vector<TrialRecord>&, const char*, std::exception_ptr)>;
 
     RunState(const Options& options, Clock::time_point started, TrialArchive& archive,
              std::function<bool()> cancelled,
@@ -1236,7 +1245,7 @@ public:
                 throw pfh::TypedHpoError<std::runtime_error>(
                     "hpo_output_io_failed", {}, "cannot make --progress-fd nonblocking");
         }
-        if (streaming() || options_.trial_timeout_seconds > 0.0)
+        if (streaming() || options_.trial_timeout_seconds > 0.0 || options_.max_wall_seconds > 0.0)
             writer_ = std::thread([this] { watch(); });
     }
 
@@ -1258,7 +1267,7 @@ public:
     }
 
     bool begin(const pfh::Candidate& candidate) {
-        if (options_.trial_timeout_seconds == 0.0)
+        if (options_.trial_timeout_seconds == 0.0 && options_.max_wall_seconds == 0.0)
             return !stopped();
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopped())
@@ -1418,25 +1427,42 @@ private:
         }
     }
 
+    void record_timeout(std::uint64_t trial_id, const ActiveTrial& trial, const char* diagnostic) {
+        auto record = make_trial_record(trial.candidate, options_);
+        record.status = "trial_timeout";
+        record.error = diagnostic;
+        record.failure = {"hpo_trial_timeout", "{}", "hpo"};
+        archive_.add(record);
+        if (auto* spool = archive_.spool())
+            spool->append(trial_id, render_trial(record) + "\n");
+        if (streaming() && !progress_failed_)
+            pending_.emplace(trial_id, render_trial(record) + "\n");
+    }
+
     void check_timeouts() {
-        if (timed_out_ || options_.trial_timeout_seconds == 0.0)
+        if (timed_out_)
             return;
-        for (const auto& [trial_id, trial] : active_) {
-            if (seconds_since(trial.started) < options_.trial_timeout_seconds)
-                continue;
+        if (options_.trial_timeout_seconds > 0.0) {
+            for (const auto& [trial_id, trial] : active_) {
+                if (seconds_since(trial.started) < options_.trial_timeout_seconds)
+                    continue;
+                timed_out_ = true;
+                reason_.store(StopReason::kTrialTimeout);
+                record_timeout(trial_id, trial, "trial exceeded --trial-timeout-seconds");
+                changed_.notify_all();
+                return;
+            }
+        }
+        if (options_.max_wall_seconds > 0.0 && !active_.empty() &&
+            seconds_since(started_) >= options_.max_wall_seconds + options_.wall_grace_seconds) {
             timed_out_ = true;
-            reason_.store(StopReason::kTrialTimeout);
-            auto record = make_trial_record(trial.candidate, options_);
-            record.status = "trial_timeout";
-            record.error = "trial exceeded --trial-timeout-seconds";
-            record.failure = {"hpo_trial_timeout", "{}", "hpo"};
-            archive_.add(record);
-            if (auto* spool = archive_.spool())
-                spool->append(trial_id, render_trial(record) + "\n");
-            if (streaming() && !progress_failed_)
-                pending_.emplace(trial_id, render_trial(record) + "\n");
+            StopReason expected = reason_.load();
+            if (expected == StopReason::kNone || expected == StopReason::kDeadline)
+                reason_.compare_exchange_strong(expected, StopReason::kDeadline);
+            for (const auto& [trial_id, trial] : active_)
+                record_timeout(trial_id, trial,
+                               "trial exceeded --max-wall-seconds plus --wall-grace-seconds");
             changed_.notify_all();
-            break;
         }
     }
 
@@ -1476,7 +1502,7 @@ private:
                 if (timed_out_) {
                     auto trials = archive_.retained();
                     lock.unlock();
-                    timeout_result_(trials, error_exception_);
+                    timeout_result_(trials, stop_reason(), error_exception_);
                     // The outer handler exits the process.
                     std::abort();
                     return;
@@ -2541,10 +2567,11 @@ StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
     for (const auto& metric : prepared.recorded_metrics)
         expressions.push_back(&metric);
     const bool rolling = options.schedule == "rolling";
-    if (options.trial_timeout_seconds > 0.0 &&
+    if ((options.trial_timeout_seconds > 0.0 || options.max_wall_seconds > 0.0) &&
         (!callbacks.timeout_publish || !callbacks.timeout_exit || !callbacks.timeout_failure))
         throw pfh::TypedHpoError<std::invalid_argument>(
-            "hpo_invariant", {}, "trial timeout requires outer publication and exit handlers");
+            "hpo_invariant", {},
+            "wall or trial timeout requires outer publication and exit handlers");
     const pfh::TrialExecutor executor(prepared.plugin, std::move(view), prepared.configuration);
     const auto bar_counts = pruner.bar_counts(executor.view().size());
     pfh::EvaluationPolicy constraint_policy = options.evaluation_policy;
@@ -2570,13 +2597,14 @@ StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
         return rolling ? &rolling_log : nullptr;
     };
     RunState state(options, started, archive, callbacks.cancelled,
-                   [&](const std::vector<TrialRecord>& completed, std::exception_ptr failure) {
+                   [&](const std::vector<TrialRecord>& completed, const char* stop_reason,
+                       std::exception_ptr failure) {
         if (callbacks.before_publish)
             callbacks.before_publish();
         callbacks.timeout_publish(append_process_failure(
             render_results(options, space, finite_cardinality, completed, archive,
                            duplicate_proposals_skipped.load(),
-                           "trial_timeout", no_improvement.snapshot(),
+                           stop_reason, no_improvement.snapshot(),
                            rolling_log_ptr()), failure, 3));
         if (auto* spool = archive.spool())
             spool->close();
