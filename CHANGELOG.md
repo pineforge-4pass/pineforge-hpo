@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.8.0 (2026-10-29)
+
+- Final 1.8.0 release (PEP 440 `1.8.0`, tag `v1.8.0`), paired with `pineforge-engine` v1.8.0 and
+  `pineforge-codegen` 1.8.0 (tags `v1.8.0`). The `transpile` extra keeps
+  `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.8.0`. The optional submodule gitlinks in
+  `external/pineforge-engine` (`ed9e08e`) and `external/pineforge-codegen-oss` (`3218bb9`) pin
+  the `v1.8.0` release commits.
 - Enforce native `--max-wall-seconds` while trials are running, even without streaming
   or a per-trial timeout. Add `--wall-grace-seconds` (default 30; non-negative, including 0).
   When the wall cap plus grace expires, publish completed trials and a typed
