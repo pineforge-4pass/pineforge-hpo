@@ -391,21 +391,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build time
 
-      # Same script as the ci-post jobs (a contract test keeps the memory gate's copy equal); the
-      # macOS branch never runs on this Linux job.
       - name: Configure PineForge Engine headers
-        run: |
-          engine_args=()
-          if [ "${{ runner.os }}" = macOS ]; then
-            engine_args+=("-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-U,_strategy_reads_trade_history")
-          fi
-          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPINEFORGE_BUILD_TESTS=OFF \
-            -DPINEFORGE_BUILD_TUTORIAL=OFF \
-            -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF \
-            -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF \
-            -DPINEFORGE_BUILD_SPEED_BENCH=OFF "${engine_args[@]}"
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
 
       - name: Configure PineForge HPO
         run: |
