@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.9.0 (2026-10-30)
+
 - Add `ArtifactBuilder(plugin_load="deferred")` and the matching
   `build_strategy_artifact` option to compile without loading the plugin.
   `ArtifactBuilder.validate_built_plugin` performs pending validation in the
