@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 from .error import HpoError
 
@@ -119,7 +119,13 @@ class ArtifactBuildError(HpoError, RuntimeError):
 
 @dataclass(frozen=True)
 class StrategyArtifact:
-    """Paths and metadata consumed by the native strategy-plugin loader."""
+    """Paths and metadata consumed by the native strategy-plugin loader.
+
+    A deferred build can return a pending artifact. Read ``plugin_validation``
+    in the recorded manifest and provenance: ``{"status": "deferred"}`` means
+    pending until ``ArtifactBuilder.validate_built_plugin`` succeeds. Successful
+    validation records ``abi_version`` and ``required_symbols`` instead.
+    """
 
     artifact_key: str
     request_key: str
@@ -333,6 +339,8 @@ class ArtifactBuilder:
     Compilation has no time limit by default. Set ``compile_timeout_seconds`` to
     a positive number to limit it; ``None`` means no limit. Artifact lock waits
     default to 120 seconds; a lock that never frees is a deadlock to report.
+    ``plugin_load="deferred"`` skips loading the compiled plugin during a build;
+    call ``validate_built_plugin`` later in the process chosen by the caller.
     """
 
     def __init__(
@@ -343,6 +351,7 @@ class ArtifactBuilder:
         compiler: str | os.PathLike[str] | None = None,
         eigen_include: str | os.PathLike[str] | None = None,
         plugin_validator: Callable[[Path, int], Mapping[str, Any]] | None = None,
+        plugin_load: Literal["build", "deferred"] = "build",
         lock_timeout_seconds: float = 120.0,
         compile_timeout_seconds: float | None = None,
     ) -> None:
@@ -359,6 +368,7 @@ class ArtifactBuilder:
             else None
         )
         self.plugin_validator = plugin_validator or self._validate_plugin
+        self.plugin_load = plugin_load
         self.lock_timeout_seconds = lock_timeout_seconds
         self.compile_timeout_seconds = compile_timeout_seconds
 
@@ -370,6 +380,10 @@ class ArtifactBuilder:
             and self.compile_timeout_seconds <= 0
         ):
             raise ArtifactBuildError("configuration", "build timeouts must be positive")
+        if self.plugin_load not in ("build", "deferred"):
+            raise ArtifactBuildError(
+                "configuration", "plugin_load must be 'build' or 'deferred'"
+            )
 
         engine = self._resolve_engine_layout()
         compiler = self._resolve_compiler_identity()
@@ -418,14 +432,23 @@ class ArtifactBuilder:
         }
         request_key = _json_sha256(request_identity)
 
-        hit = self._lookup_request(request_key, request_identity, output_extension)
+        hit = self._lookup_request(
+            request_key,
+            request_identity,
+            output_extension,
+            allow_deferred=self.plugin_load == "deferred",
+        )
         if hit is not None:
             return hit
 
         lock_path = self.cache_dir / "locks" / f"{request_key}.lock"
         with _KeyLock(lock_path, self.lock_timeout_seconds):
-            hit = self._lookup_request(request_key, request_identity, output_extension)
+            hit = self._lookup_request(
+                request_key, request_identity, output_extension, allow_deferred=True
+            )
             if hit is not None:
+                if self.plugin_load == "build":
+                    return self._validate_built_plugin_locked(hit)
                 return hit
 
             transpile_result = transpile_source(pine_source, filename=filename)
@@ -461,8 +484,11 @@ class ArtifactBuilder:
                 request_identity=request_identity,
                 output_extension=output_extension,
                 cache_hit=True,
+                allow_deferred=True,
             )
             if existing is not None:
+                if self.plugin_load == "build":
+                    existing = self._validate_built_plugin_locked(existing)
                 self._write_request_index(request_key, artifact_key)
                 return existing
 
@@ -485,6 +511,121 @@ class ArtifactBuilder:
             )
             self._write_request_index(request_key, artifact_key)
             return artifact
+
+    def validate_built_plugin(self, artifact: StrategyArtifact) -> StrategyArtifact:
+        """Load and validate a pending source-cache plugin in the calling process.
+
+        Call this in a fresh process to separate the first plugin load from
+        compilation. This method starts no process and needs neither codegen nor
+        a local engine/compiler installation. It checks the recorded engine ABI
+        and content hashes under the request lock before publishing success.
+        Already validated artifacts are checked without loading or rewriting.
+        The caller supplies process isolation; this method does not install a jail.
+        """
+
+        if self.lock_timeout_seconds <= 0:
+            raise ArtifactBuildError("configuration", "build timeouts must be positive")
+        keys = (artifact.request_key, artifact.artifact_key)
+        if any(
+            len(key) != 64
+            or any(character not in "0123456789abcdef" for character in key)
+            for key in keys
+        ):
+            raise ArtifactBuildError(
+                "cache", "validation requires valid source-cache keys"
+            )
+        artifact_dir = self.cache_dir / "artifacts" / artifact.artifact_key
+        output_extension, _ = self._platform_link_mode()
+        expected_paths = (
+            artifact_dir / "manifest.json",
+            artifact_dir / "provenance.json",
+            artifact_dir / "generated.cpp",
+            artifact_dir / f"strategy{output_extension}",
+        )
+        actual_paths = (
+            artifact.manifest_path,
+            artifact.provenance_path,
+            artifact.generated_cpp_path,
+            artifact.plugin_path,
+        )
+        if actual_paths != expected_paths or any(
+            path.resolve().parent != artifact_dir for path in actual_paths
+        ):
+            raise ArtifactBuildError(
+                "cache", "only this builder's source-cache artifacts may be validated"
+            )
+        lock_path = self.cache_dir / "locks" / f"{artifact.request_key}.lock"
+        with _KeyLock(lock_path, self.lock_timeout_seconds):
+            return self._validate_built_plugin_locked(artifact)
+
+    def _validate_built_plugin_locked(
+        self, artifact: StrategyArtifact
+    ) -> StrategyArtifact:
+        try:
+            manifest = json.loads(artifact.manifest_path.read_text(encoding="utf-8"))
+            provenance = json.loads(
+                artifact.provenance_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as error:
+            raise ArtifactBuildError(
+                "cache", f"cannot read cached manifest/provenance: {error}"
+            ) from error
+        if not isinstance(manifest, dict) or not isinstance(provenance, dict):
+            raise ArtifactBuildError(
+                "cache", "source-cache manifest and provenance must be JSON objects"
+            )
+        request_identity = manifest.get("request_identity")
+        engine = (
+            request_identity.get("engine")
+            if isinstance(request_identity, Mapping)
+            else None
+        )
+        if (
+            not isinstance(engine, Mapping)
+            or type(engine.get("abi_version")) is not int
+            or _json_sha256(request_identity) != artifact.request_key
+        ):
+            raise ArtifactBuildError("cache", "invalid source-cache request identity")
+        load_options = {
+            "artifact_key": artifact.artifact_key,
+            "request_key": artifact.request_key,
+            "request_identity": request_identity,
+            "output_extension": artifact.plugin_path.suffix,
+            "cache_hit": artifact.cache_hit,
+            "metadata": (manifest, provenance),
+        }
+        cached = self._load_artifact(**load_options, allow_deferred=True)
+        if cached is None:
+            raise ArtifactBuildError(
+                "cache",
+                "cannot validate an invalid source-cache artifact: "
+                f"{artifact.artifact_key}",
+            )
+        if manifest["plugin_validation"] != {"status": "deferred"}:
+            return cached
+
+        plugin_validation = self._run_plugin_validator(
+            cached.plugin_path, engine["abi_version"]
+        )
+        manifest["plugin_validation"] = plugin_validation
+        provenance["plugin_validation"] = plugin_validation
+        # Recheck content after loading user code, and require the same ABI and
+        # symbol evidence as an ordinary validated cache entry before any write.
+        validated = self._load_artifact(**load_options)
+        if validated is None:
+            raise ArtifactBuildError(
+                "plugin_validation",
+                "validated strategy plugin differs from its cache metadata "
+                "or lacks required symbol confirmation",
+            )
+        try:
+            self._write_artifact_metadata(artifact.manifest_path, manifest)
+            self._write_artifact_metadata(artifact.provenance_path, provenance)
+        except OSError as error:
+            raise ArtifactBuildError(
+                "cache", f"cannot publish plugin validation metadata: {error}"
+            ) from error
+        return validated
 
     def enrich_window_plan(
         self,
@@ -627,11 +768,18 @@ class ArtifactBuilder:
                 output_extension=output_extension,
                 cache_hit=True,
                 metadata=(manifest, provenance),
+                allow_deferred=True,
             )
             if cached is None:
                 raise ArtifactBuildError(
                     "cache",
                     f"cannot enrich an invalid source-cache artifact: {artifact_dir}",
+                )
+            if manifest["plugin_validation"] == {"status": "deferred"}:
+                raise ArtifactBuildError(
+                    "plugin_validation",
+                    "artifact plugin validation is pending; "
+                    "call validate_built_plugin first",
                 )
             try:
                 engine = self._resolve_engine_layout()
@@ -680,6 +828,13 @@ class ArtifactBuilder:
             return block
 
     def _write_window_plan_metadata(
+        self,
+        destination: Path,
+        payload: Mapping[str, Any],
+    ) -> None:
+        self._write_artifact_metadata(destination, payload)
+
+    def _write_artifact_metadata(
         self,
         destination: Path,
         payload: Mapping[str, Any],
@@ -885,6 +1040,8 @@ class ArtifactBuilder:
         request_key: str,
         request_identity: Mapping[str, Any],
         output_extension: str,
+        *,
+        allow_deferred: bool = False,
     ) -> StrategyArtifact | None:
         index_path = self.cache_dir / "requests" / f"{request_key}.json"
         try:
@@ -907,6 +1064,7 @@ class ArtifactBuilder:
             request_identity=request_identity,
             output_extension=output_extension,
             cache_hit=True,
+            allow_deferred=allow_deferred,
         )
 
     def _load_artifact(
@@ -918,6 +1076,7 @@ class ArtifactBuilder:
         output_extension: str,
         cache_hit: bool,
         metadata: tuple[Mapping[str, Any], Mapping[str, Any]] | None = None,
+        allow_deferred: bool = False,
     ) -> StrategyArtifact | None:
         artifact_dir = self.cache_dir / "artifacts" / artifact_key
         manifest_path = artifact_dir / "manifest.json"
@@ -952,14 +1111,18 @@ class ArtifactBuilder:
             return None
         if not isinstance(plugin_validation, Mapping):
             return None
-        expected_abi = request_identity.get("engine", {}).get("abi_version")
-        if plugin_validation.get("abi_version") != expected_abi:
-            return None
-        validated_symbols = plugin_validation.get("required_symbols")
-        if not isinstance(validated_symbols, list) or not set(
-            _REQUIRED_PLUGIN_SYMBOLS
-        ).issubset(validated_symbols):
-            return None
+        if plugin_validation.get("status") == "deferred":
+            if not allow_deferred or plugin_validation != {"status": "deferred"}:
+                return None
+        else:
+            expected_abi = request_identity.get("engine", {}).get("abi_version")
+            if plugin_validation.get("abi_version") != expected_abi:
+                return None
+            validated_symbols = plugin_validation.get("required_symbols")
+            if not isinstance(validated_symbols, list) or not set(
+                _REQUIRED_PLUGIN_SYMBOLS
+            ).issubset(validated_symbols):
+                return None
         if (
             _json_sha256(
                 {
@@ -1089,20 +1252,11 @@ class ArtifactBuilder:
                         f"{plugin_path}: {error}",
                     ) from error
 
-            try:
-                plugin_validation = dict(
-                    self.plugin_validator(plugin_path, engine.abi_version)
-                )
-            except ArtifactBuildError:
-                raise
-            except Exception as error:
-                raise ArtifactBuildError(
-                    "plugin_validation", f"strategy plugin validation failed: {error}"
-                ) from error
-            if plugin_validation.get("abi_version") != engine.abi_version:
-                raise ArtifactBuildError(
-                    "plugin_validation",
-                    "strategy plugin validator did not confirm the expected engine ABI",
+            if self.plugin_load == "deferred":
+                plugin_validation = {"status": "deferred"}
+            else:
+                plugin_validation = self._run_plugin_validator(
+                    plugin_path, engine.abi_version
                 )
 
             plugin_hash = _file_sha256(plugin_path)
@@ -1176,8 +1330,11 @@ class ArtifactBuilder:
                     request_identity=request_identity,
                     output_extension=output_extension,
                     cache_hit=True,
+                    allow_deferred=True,
                 )
                 if cached is not None:
+                    if self.plugin_load == "build":
+                        return self._validate_built_plugin_locked(cached)
                     return cached
                 shutil.rmtree(final_dir)
             os.rename(staging, final_dir)
@@ -1192,12 +1349,31 @@ class ArtifactBuilder:
             request_identity=request_identity,
             output_extension=output_extension,
             cache_hit=False,
+            allow_deferred=self.plugin_load == "deferred",
         )
         if artifact is None:
             raise ArtifactBuildError(
                 "cache", f"published artifact failed validation: {artifact_key}"
             )
         return artifact
+
+    def _run_plugin_validator(
+        self, plugin_path: Path, expected_abi: int
+    ) -> dict[str, Any]:
+        try:
+            plugin_validation = dict(self.plugin_validator(plugin_path, expected_abi))
+        except ArtifactBuildError:
+            raise
+        except Exception as error:
+            raise ArtifactBuildError(
+                "plugin_validation", f"strategy plugin validation failed: {error}"
+            ) from error
+        if plugin_validation.get("abi_version") != expected_abi:
+            raise ArtifactBuildError(
+                "plugin_validation",
+                "strategy plugin validator did not confirm the expected engine ABI",
+            )
+        return plugin_validation
 
     def _validate_plugin(
         self, plugin_path: Path, expected_abi: int
@@ -1289,6 +1465,7 @@ def build_strategy_artifact(
     cache_dir: str | os.PathLike[str] | None = None,
     compiler: str | os.PathLike[str] | None = None,
     eigen_include: str | os.PathLike[str] | None = None,
+    plugin_load: Literal["build", "deferred"] = "build",
     filename: str = "<input>",
 ) -> StrategyArtifact:
     """Convenience entry point for a one-off CLI artifact build."""
@@ -1298,6 +1475,7 @@ def build_strategy_artifact(
         cache_dir=cache_dir,
         compiler=compiler,
         eigen_include=eigen_include,
+        plugin_load=plugin_load,
     )
     return builder.build(pine_source, filename=filename)
 

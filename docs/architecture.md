@@ -137,24 +137,66 @@ expression chains nests deeper than Clang's default limit of 256. GCC has no suc
 The flags used are part of the cache identity.
 
 The engine static library is linked with GNU whole-archive on Linux or
-`force_load` on macOS. Before publication, the builder loads the plugin,
-requires `pf_abi_version`, `strategy_create`, `strategy_free`,
+`force_load` on macOS. By default (`plugin_load="build"`), before publication the
+builder loads the plugin, requires `pf_abi_version`, `strategy_create`, `strategy_free`,
 `strategy_set_input`, `strategy_set_override`, `strategy_get_last_error`,
 `run_backtest_full`, and `report_free`, then checks that `pf_abi_version()`
 matches the selected engine ABI.
 
-That load happens while a fresh artifact is published. A study whose enum input
-carries an `options` list and whose search gives that dimension ordinal choices
-also loads the plugin in the HPO process, and only then, cached and precompiled
-artifacts included, with the same user rights as the native runner that later
-loads and runs it: it reads the strategy's settings receipt to learn the
-declaration index of each enum member, because the manifest lists an enum
-input's `options` as their tags only. A tag choice needs no load; it is matched
-exactly as the manifest lists it (a bare member name or a tag of another case is
-refused), checked against the manifest options alone, and reaches the runner
-unchanged. A plugin whose receipt cannot be read is refused rather than checked
-against the positions in `options`, which are the declaration indices only for a
-fully listed enum.
+For callers that separate compilation from execution, construct
+`ArtifactBuilder(..., plugin_load="deferred")` or pass the same option to
+`build_strategy_artifact`. A fresh deferred build compiles and publishes without
+loading the plugin. Both metadata files record
+`"plugin_validation":{"status":"deferred"}`, with no confirmed `abi_version` or
+`required_symbols`. The option stays outside both cache identities. A deferred
+build can reuse an already validated cache entry without loading it or changing
+its validation metadata.
+
+Pass the returned `StrategyArtifact` to a fresh process and call
+`ArtifactBuilder.validate_built_plugin(artifact)` on a builder configured for the
+same cache. This method loads the published plugin in the calling process,
+checks its required symbols and recorded engine ABI, and replaces the pending
+metadata with the usual `abi_version` and `required_symbols` result only after
+the content checks also succeed. It starts no process and probes neither the
+compiler nor codegen; the recorded engine ABI suffices without a local engine
+installation. The method returns the checked artifact. Calling it on an already
+validated entry checks the cache contents without loading or rewriting it.
+
+The plugin load runs user static initializers while the request lock is held.
+A hanging initializer makes other builders that need the same request lock time
+out after `lock_timeout_seconds` (120 seconds by default).
+
+A later default build that finds a pending cache entry validates it under the
+request lock before returning, without compiling again. If the request index is
+missing or invalid, it transpiles again to find the artifact key. Validation
+failures propagate without recording success. Each metadata replacement is
+atomic; explicit validation refuses an interrupted, disagreeing pair. A later
+default build discards that cache entry and transpiles and compiles it again.
+Recovery when the manifest records validation but provenance remains pending
+requires a rebuild in a process that permits forking to run the compiler.
+Window-plan enrichment continues to require a validated artifact.
+
+Deferred loading is not a jail: it moves the first plugin load, including user
+code in static initializers, to a process the caller chooses. The caller creates
+that process and installs any restrictions before calling the validation entry.
+The option does not restrict the compiler or install process restrictions.
+The ordinary CLI retains its default build-and-run behavior.
+
+With the default option, the builder's load happens while a fresh artifact is
+published. During study preparation, `_plugin_option_values` performs a second
+in-process plugin load when a study's enum input carries an `options` list and
+its search gives that dimension ordinal choices. Cached and precompiled
+artifacts also take this path, with the same user rights as the native runner
+that later loads and runs the plugin: it reads the strategy's settings receipt
+to learn the declaration index of each enum member, because the manifest lists
+an enum input's `options` as their tags only. A tag choice needs no load; it is
+matched exactly as the manifest lists it (a bare member name or a tag of another
+case is refused), checked against the manifest options alone, and reaches the
+runner unchanged. A plugin whose receipt cannot be read is refused rather than
+checked against the positions in `options`, which are the declaration indices
+only for a fully listed enum. A launcher using deferred artifacts must call
+`validate_built_plugin` before study preparation in its chosen restricted
+process, or avoid the enum-receipt path that loads the plugin.
 
 ### Search spaces and samplers
 

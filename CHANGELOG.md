@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add `ArtifactBuilder(plugin_load="deferred")` and the matching
+  `build_strategy_artifact` option to compile without loading the plugin.
+  `ArtifactBuilder.validate_built_plugin` performs pending validation in the
+  caller's chosen process without invoking the compiler or codegen. Deferred
+  metadata records no confirmed ABI or symbols; default builds validate pending
+  cache entries before returning them. The default `plugin_load="build"` keeps
+  existing cache keys and metadata bytes. Callers supply process isolation.
 - Add native and Python `run --row-space full|hash|none` to reduce repeated
   search-space metadata in trial rows. The default `full` preserves existing output
   bytes; `hash` keeps the versioned space hash and `none` omits row space fields.
