@@ -885,9 +885,10 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
             # Check the compiler ABI, including -m32/-mx32 and endian flags, rather than
             # infer it from a host processor name. Unsupported builds still test refusal.
             include(CheckCXXSourceCompiles)
-            # No backslash line continuations in the source below: check_cxx_source_compiles is a
-            # macro, which drops the backslash but keeps the newline, leaving "#if a ||" with
-            # nothing after it, a preprocessor error that made the check fail on x86_64.
+            # No backslash line continuations in the source below. With them the kept compile
+            # source had "#if !defined(__LP64__) ||" at the end of a line with nothing after it
+            # (seen in the try_compile source on x86_64 GCC 13.3), a preprocessor error that made
+            # the check fail on every platform.
             check_cxx_source_compiles([=[
                 #if !defined(__LP64__)
                 #error Unsupported seccomp ABI
@@ -937,12 +938,14 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
         # On Linux x86_64 and aarch64 the seccomp filter is supported, so a build that cannot
         # build the real probes must fail here instead of registering a test that skips: a
         # skipped or missing seccomp end-to-end test reads green in CI and proves nothing.
+        # A local -m32 or -mx32 build on an x86_64 host is not LP64, so it also fails here.
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
                 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|aarch64|arm64)$"
                 AND NOT PFH_SECCOMP_BUILD_PROBES)
             message(FATAL_ERROR
                 "The seccomp end-to-end probes cannot be built on this ${CMAKE_SYSTEM_PROCESSOR} "
-                "Linux build (reason: ${PFH_SECCOMP_UNAVAILABLE_REASON}). Check "
+                "Linux build with ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
+                "(${CMAKE_CXX_COMPILER}) (reason: ${PFH_SECCOMP_UNAVAILABLE_REASON}). Check "
                 "PFH_SECCOMP_TEST_ARCH_SUPPORTED and PFH_SECCOMP_TEST_HEADERS_SUPPORTED in "
                 "CMakeFiles/CMakeConfigureLog.yaml; this configuration must not skip the test.")
         endif()
