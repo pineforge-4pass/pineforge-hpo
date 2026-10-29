@@ -61,10 +61,12 @@ Draft conversion refuses admission; `ready_for_review` starts a fresh run.
 
 The PR-reachable `ci.yml` and `benchmark-smoke.yml` retain only their hosted
 fail-closed `authz` jobs. A workflow with an event starting with `pull_request`,
-except `pull_request_target`, cannot name a GKE runner. Complete push-to-main and dispatch proofs live in `ci-post.yml` and
-`benchmark-smoke-post.yml`, including engine integration and historical
-comparisons, with no `changes` job and every proof needing `authz`. The hosted native macOS job stays with `build-gate` in `ci-post.yml`;
-its admitted PR counterpart stays in `gke-pr.yml`.
+except `pull_request_target`, cannot name a GKE runner. Complete push-to-main
+and dispatch proofs live in `ci-post.yml` and `benchmark-smoke-post.yml`,
+including engine integration and historical comparisons, with no `changes` job
+and every proof needing `authz`. The hosted native macOS job stays with
+`build-gate` in `ci-post.yml`; its admitted PR counterpart stays in
+`gke-pr.yml`.
 Linux jobs use bare scalar labels; macOS remains hosted as a separate native
 job with the original displayed matrix name.
 `docs-pages.yml` runs only for its filtered pushes to main and dispatches. Its
