@@ -235,25 +235,16 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install eigen mpfr ninja
 
-      # Engine 1.8.0 bug: the shared pineforge_window_plan target links the static kernel, whose
-      # report code references the weak strategy_reads_trade_history, and no strategy defines it
-      # there; the macOS linker rejects the unresolved symbol. On macOS the flag leaves it
-      # undefined, which the engine reads as "keep the full trade history". Remove the macOS
-      # branch when hpo pins engine 1.9.0. Both native jobs carry the same step.
       - name: Configure PineForge Engine headers
         if: github.event_name != 'pull_request'
-        run: |
-          engine_args=()
-          if [ "${{ runner.os }}" = macOS ]; then
-            engine_args+=("-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-U,_strategy_reads_trade_history")
-          fi
-          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPINEFORGE_BUILD_TESTS=OFF \
-            -DPINEFORGE_BUILD_TUTORIAL=OFF \
-            -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF \
-            -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF \
-            -DPINEFORGE_BUILD_SPEED_BENCH=OFF "${engine_args[@]}"
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
 
       - name: Configure PineForge HPO
         if: github.event_name != 'pull_request'
@@ -488,25 +479,16 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install eigen mpfr ninja
 
-      # Engine 1.8.0 bug: the shared pineforge_window_plan target links the static kernel, whose
-      # report code references the weak strategy_reads_trade_history, and no strategy defines it
-      # there; the macOS linker rejects the unresolved symbol. On macOS the flag leaves it
-      # undefined, which the engine reads as "keep the full trade history". Remove the macOS
-      # branch when hpo pins engine 1.9.0. Both native jobs carry the same step.
       - name: Configure PineForge Engine headers
         if: github.event_name != 'pull_request'
-        run: |
-          engine_args=()
-          if [ "${{ runner.os }}" = macOS ]; then
-            engine_args+=("-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-U,_strategy_reads_trade_history")
-          fi
-          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPINEFORGE_BUILD_TESTS=OFF \
-            -DPINEFORGE_BUILD_TUTORIAL=OFF \
-            -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF \
-            -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF \
-            -DPINEFORGE_BUILD_SPEED_BENCH=OFF "${engine_args[@]}"
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
 
       - name: Configure PineForge HPO
         if: github.event_name != 'pull_request'
@@ -771,21 +753,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build time
 
-      # Same script as the native jobs (a contract test keeps them equal); the macOS branch never
-      # runs on this Linux job.
       - name: Configure PineForge Engine headers
-        run: |
-          engine_args=()
-          if [ "${{ runner.os }}" = macOS ]; then
-            engine_args+=("-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-U,_strategy_reads_trade_history")
-          fi
-          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPINEFORGE_BUILD_TESTS=OFF \
-            -DPINEFORGE_BUILD_TUTORIAL=OFF \
-            -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF \
-            -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF \
-            -DPINEFORGE_BUILD_SPEED_BENCH=OFF "${engine_args[@]}"
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
 
       - name: Configure PineForge HPO
         run: |
