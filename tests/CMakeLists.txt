@@ -934,6 +934,18 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
                 endif()
             endif()
         endif()
+        # On Linux x86_64 and aarch64 the seccomp filter is supported, so a build that cannot
+        # build the real probes must fail here instead of registering a test that skips: a
+        # skipped or missing seccomp end-to-end test reads green in CI and proves nothing.
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+                AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|aarch64|arm64)$"
+                AND NOT PFH_SECCOMP_BUILD_PROBES)
+            message(FATAL_ERROR
+                "The seccomp end-to-end probes cannot be built on this ${CMAKE_SYSTEM_PROCESSOR} "
+                "Linux build (reason: ${PFH_SECCOMP_UNAVAILABLE_REASON}). Check "
+                "PFH_SECCOMP_TEST_ARCH_SUPPORTED and PFH_SECCOMP_TEST_HEADERS_SUPPORTED in "
+                "CMakeFiles/CMakeConfigureLog.yaml; this configuration must not skip the test.")
+        endif()
         set(PFH_SECCOMP_TEST_NAME pineforge_hpo_seccomp_unavailable)
         set(PFH_SECCOMP_TEST_ARGUMENTS --plugin $<TARGET_FILE:pineforge_hpo_fake_strategy>
             --unavailable-reason ${PFH_SECCOMP_UNAVAILABLE_REASON})
