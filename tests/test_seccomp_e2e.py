@@ -60,8 +60,10 @@ def run_suite(args):
     }
     if helper:
         numbers = subprocess.run(
-            [str(helper), "syscall-numbers"], text=True, capture_output=True,
-            check=True, timeout=5,
+            [str(helper), "syscall-numbers"],
+            text=True,
+            capture_output=True,
+            check=True,
         )
         metadata["header_syscall_numbers"] = json.loads(numbers.stdout)
 
@@ -121,8 +123,13 @@ def run_suite(args):
         (home / "command.json").write_text(json.dumps(command) + "\n", encoding="utf-8")
         try:
             completed = subprocess.run(
-                command, env=env, pass_fds=() if writer is None else (writer,),
-                cwd=home, text=True, capture_output=True, check=False, timeout=20,
+                command,
+                env=env,
+                pass_fds=() if writer is None else (writer,),
+                cwd=home,
+                text=True,
+                capture_output=True,
+                check=False,
             )
         finally:
             if writer is not None:

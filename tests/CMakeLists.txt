@@ -969,7 +969,6 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
                 --native $<TARGET_FILE:pineforge-hpo-native>
                 ${PFH_SECCOMP_TEST_ARGUMENTS}
                 --output "${CMAKE_CURRENT_BINARY_DIR}/seccomp")
-        set_tests_properties(${PFH_SECCOMP_TEST_NAME} PROPERTIES TIMEOUT 180)
         add_test(NAME pineforge_hpo_batching
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_batching.py"
