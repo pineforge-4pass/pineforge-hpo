@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 1.9.1 (2026-10-31)
+
+- Final 1.9.1 release (PEP 440 `1.9.1`, tag `v1.9.1`), paired with `pineforge-engine` v1.9.1 and
+  `pineforge-codegen` 1.9.1 (tags `v1.9.1`). HPO itself has no behaviour change in 1.9.1: the
+  engine, codegen and HPO releases share one version, so HPO moves with the pair. The
+  `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; install the lockstep codegen with
+  `pineforge-codegen==1.9.1`. The optional submodule gitlinks in
+  `external/pineforge-engine` (`fc0a2df`) and `external/pineforge-codegen-oss` (`6ad0718`) pin
+  the `v1.9.1` release commits. The C ABI version `PF_ABI_VERSION` stays 5 as in engine 1.9.0,
+  so plugins built against engine 1.9.x need no ABI change; rebuild precompiled plugins with
+  codegen 1.9.1 to pair with the pinned release.
+- The failure-code catalog is unchanged since 1.9.0 (22 codes); the packaged catalog diff now
+  compares 1.9.0 with 1.9.1 and lists no addition, change, removal or deprecation.
+
 ## 1.9.0 (2026-10-30)
 
 - Final 1.9.0 release (PEP 440 `1.9.0`, tag `v1.9.0`), paired with `pineforge-engine` v1.9.0 and
