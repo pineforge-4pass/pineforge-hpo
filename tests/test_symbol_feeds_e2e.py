@@ -184,7 +184,7 @@ if selected <= open
     require({trial["parameters"]["Side"] for trial in trials} == {0, 1}, trials)
     (directory / "input-kinds-result.json").write_bytes(result.stdout)
     print(
-        "PASS input.source/input.enum: real v1.9.0 artifact, Python + native, 12 trials",
+        "PASS input.source/input.enum: real v1.9.1 artifact, Python + native, 12 trials",
         flush=True,
     )
 
@@ -318,7 +318,7 @@ if selected <= open
     require({trial["parameters"]["Side"] for trial in trials} == {1, 2}, trials)
     (directory / "enum-subset-result.json").write_bytes(result.stdout)
     print(
-        "PASS input.enum options subset: real v1.9.0 artifact, Python + native, "
+        "PASS input.enum options subset: real v1.9.1 artifact, Python + native, "
         "12 trials, ordinals 1 and 2",
         flush=True,
     )
@@ -414,7 +414,7 @@ def enum_tag_probe(args, directory, document):
     )
     (directory / "enum-tag-result.json").write_bytes(result.stdout)
     print(
-        "PASS input.enum tag strings: real v1.9.0 artifact, Python + native, "
+        "PASS input.enum tag strings: real v1.9.1 artifact, Python + native, "
         "tag choices reach the runner",
         flush=True,
     )
@@ -533,7 +533,7 @@ if selected <= open
     )
     (directory / "symbol-free-strings-result.json").write_bytes(result.stdout)
     print(
-        "PASS symbol-free input.string/input.timeframe: real v1.9.0 artifact, "
+        "PASS symbol-free input.string/input.timeframe: real v1.9.1 artifact, "
         "Python + native, 8 trials, no input kinds",
         flush=True,
     )
@@ -792,7 +792,7 @@ if eth4 < threshold or eth4 <= ethD
         refused.stderr.decode(),
     )
     print(
-        "PASS D7: real codegen v1.9.0 input.symbol artifact refused by Python and native",
+        "PASS D7: real codegen v1.9.1 input.symbol artifact refused by Python and native",
         flush=True,
     )
     run = subprocess.run(command, capture_output=True)
