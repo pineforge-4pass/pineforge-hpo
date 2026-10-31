@@ -68,8 +68,8 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-The gitlinks pin the releases this HPO revision targets: engine v1.9.0 (`ec44968`,
-C ABI 5) and codegen v1.9.0 (`7c1b3de`). Linux CI gates the nine-trial example, real
+The gitlinks pin the releases this HPO revision targets: engine v1.9.1 (`fc0a2df`,
+C ABI 5) and codegen v1.9.1 (`6ad0718`). Linux CI gates the nine-trial example, real
 multi-symbol C-ABI equality and real-artifact D7 refusal; both native CI runners require
 the independently pinned serial golden rather than silently skipping it. From 1.0.0 on,
 codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may still compile,
@@ -78,12 +78,12 @@ same behavior. An enum input's categorical choice is accepted in either form a S
 may carry: the manifest tag (for example `Side.long`) or the member's ordinal, so a study
 written for either form runs against a codegen 1.4.0 or later artifact. The optional
 `transpile` extra requires `pineforge-codegen` >= 1.1.0 and < 2, so install the release
-that matches your engine (`pineforge-codegen==1.9.0` for the gitlinks). The native adapter reads the equity statistics by their engine 1.0 names, so
+that matches your engine (`pineforge-codegen==1.9.1` for the gitlinks). The native adapter reads the equity statistics by their engine 1.0 names, so
 it needs engine headers >= 1.1.0 (including the checked-settings API). Regenerate a
-precompiled plugin referenced from a StudySpec with codegen 1.9.0 and rebuild it
-against engine v1.9.0: plugins from engine v1.7.x or earlier (ABI 4 or lower) are
-refused with an ABI mismatch, while plugins from engine development builds between v1.8.0
-and v1.9.0 may also report ABI 5 and load without an error although they do not pair with the
+precompiled plugin referenced from a StudySpec with codegen 1.9.1 and rebuild it
+against engine v1.9.1: plugins from engine v1.7.x or earlier (ABI 4 or lower) are
+refused with an ABI mismatch, while plugins from engine development builds between v1.9.0
+and v1.9.1 may also report ABI 5 and load without an error although they do not pair with the
 pinned releases.
 C++ code that reads `ReportSnapshot::metrics.equity.sharpe_tv` or `sortino_tv` must use
 `sharpe_monthly` or `sortino_monthly`.
@@ -199,7 +199,7 @@ For example, append these controls to a native `run` command:
 Numeric symbol values must be finite and positive; timezone/session values must
 be strings without embedded NULs. Empty strings and omitted fields are no-ops;
 other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
-The four setters mirror the pinned engine v1.9.0 release harness.
+The four setters mirror the pinned engine v1.9.1 release harness.
 
 ### Fixed other-symbol feeds (0.8.0)
 
@@ -236,7 +236,7 @@ sufficient history; there is no network fetching. Initialization validates/hashe
 then every fresh trial installs facts/bars/closes through the public C ABI with no file I/O.
 Index/CSV/setter refusal is exit 1 with `--symbol-feeds:`, before any terminal trial output.
 **`input.symbol` search dimensions are refused (D7)**; such inputs may be fixed only.
-This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.9.0).
+This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.9.1).
 Direct native artifact users must keep the adjacent codegen `manifest.json` when searching
 string-valued inputs. `input.source` and `input.enum` dimensions are supported; only a
 `type: "string"` input requires the manifest's explicit `"input_kind_schema": 1` marker.
@@ -328,7 +328,7 @@ range such as `1e999` or `1e-400`) is an initialization error with the message
 `invalid JSON at byte N`, which does not name the key).
 
 Applying the grid needs the plugin to export `strategy_set_syminfo_metadata`, which the
-pinned engine v1.9.0 does (declared in `pineforge.h`; the engine honours the
+pinned engine v1.9.1 does (declared in `pineforge.h`; the engine honours the
 `qty_step` key). A plugin without it keeps working for every syminfo that has no
 `mincontract`; with one, each trial fails with a `trial_error` that names the key and the
 run exits 2 because no trial is feasible, instead of running without the grid.

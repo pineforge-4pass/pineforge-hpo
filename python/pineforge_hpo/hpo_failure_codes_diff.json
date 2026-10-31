@@ -1,12 +1,12 @@
 {
   "schema": "pineforge-hpo-failure-catalog-diff/v1",
   "from": {
-    "version": "1.8.0",
-    "tag": "v1.8.0",
-    "catalogSha256": "813b7b11790cdaf9517b4bd464c7220e0409cb077315e4205cc969c19e7a0f66"
+    "version": "1.9.0",
+    "tag": "v1.9.0",
+    "catalogSha256": "e79fc262d688651bac0347808d88f7f8d48488d4202611cad0667fb80f416f40"
   },
   "to": {
-    "version": "1.9.0",
+    "version": "1.9.1",
     "catalogSha256": "e79fc262d688651bac0347808d88f7f8d48488d4202611cad0667fb80f416f40"
   },
   "catalogSchema": {
@@ -14,33 +14,7 @@
     "after": "pineforge-hpo-failure-catalog/v1"
   },
   "metadataChanges": [],
-  "added": [
-    {
-      "code": "hpo_seccomp_unavailable",
-      "collection": "codes",
-      "entry": {
-        "class": "environment",
-        "retryable": false,
-        "args": {
-          "reason": {
-            "kind": "string",
-            "values": [
-              "architecture",
-              "filter",
-              "headers",
-              "kernel",
-              "no_new_privs",
-              "platform"
-            ]
-          }
-        },
-        "templates": [
-          "The requested native seccomp layer is unavailable ({reason})."
-        ],
-        "since": "1.9.0"
-      }
-    }
-  ],
+  "added": [],
   "changed": [],
   "removed": [],
   "deprecated": []
