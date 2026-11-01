@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Ignore unrequested empty input titles in artifact manifests while preserving validation of
-  named inputs and refusal of requested empty, non-string, or missing titles.
+  named inputs. Non-string and missing titles are still refused, as is an empty title the study
+  names.
 
 ## 1.9.1 (2026-10-31)
 
