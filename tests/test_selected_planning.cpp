@@ -936,11 +936,15 @@ void real_rows(const pfh::WindowPlanHelper& helper) {
                 "window_input_bars strict=" +
                     std::to_string(strict_counts.window_input_bars) +
                     ", tolerant=" + std::to_string(tolerant_counts.window_input_bars));
-        require(strict_counts.fed_input_bars >= strict_counts.window_input_bars + 1 &&
-                    tolerant_counts.fed_input_bars >= tolerant_counts.window_input_bars + 1,
-                "fed tail does not retain the 09:30 row: strict{" +
-                    counts_text(strict_counts) + "} tolerant{" +
-                    counts_text(tolerant_counts) + "}");
+        // Counts alone do not identify the retained pre-roll row across this session gap.
+        const auto gap_edge_ms = strict_tape.data()[1].timestamp;  // 09:30 from the input.
+        for (const auto* plan : {strict_plan.get(), tolerant_plan.get()}) {
+            require(!plan->retained.empty(), "strict/tolerant retained tail is empty");
+            require(plan->retained.data()[0].timestamp <= gap_edge_ms,
+                    "fed tail starts after the input's 09:30 row: first_ms=" +
+                        std::to_string(plan->retained.data()[0].timestamp) +
+                        ", gap_edge_ms=" + std::to_string(gap_edge_ms));
+        }
     });
     row("real-feed-range-unreachable-after-bounding", [&] {
         // The valid Dataset contains both offending kinds, but plan_selected_window excludes
