@@ -381,6 +381,8 @@ Launchers can use public `pineforge_hpo.prepare_run(study_path, engine_root,
 cache_dir)` to obtain `(native_argv, artifact_json)` without starting the native
 process, then append native flags and execute directly. Optional keyword arguments
 `native`, `compiler`, and `eigen_include` preserve existing CLI overrides.
+Jailed launchers must keep sealed fd 5 open across exec, pass `--output` for the trial
+spool's writable parent directory, and avoid `--progress-fd 5`.
 
 CMake accepts either an engine source/build tree or an installed release prefix,
 for example `-DPINEFORGE_ENGINE_ROOT=/opt/pineforge`. Generated `version.h` is
