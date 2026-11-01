@@ -520,7 +520,8 @@ WindowPlanHelper WindowPlanHelper::load_impl(
         if (directory_before.st_dev != directory_now.st_dev ||
             directory_before.st_ino != directory_now.st_ino ||
             !same_source(snapshot_identity, snapshot_now) || !S_ISREG(snapshot_now.st_mode) ||
-            // Defense in depth: no row can isolate this check because chmod changes ctime.
+            // Keep this guard as defense in depth: chmod also changes ctime, so the mode
+            // row proves the combined refusal rather than isolating this term.
             (snapshot_now.st_mode & 0222) != 0) {
             unavailable("window_plan_changed", "planner snapshot path changed before loading");
         }

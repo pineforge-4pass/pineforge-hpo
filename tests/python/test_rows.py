@@ -257,6 +257,27 @@ class ValidateRowTests(RowsTestCase):
         del missing["feasible"]
         self.assertEqual(self.refusal(validate_row, missing, 0).kind, "input_invalid")
 
+    def test_post_scoring_trial_error_cannot_remain_feasible(self):
+        # A late writer failure can leave the already-computed score and metrics intact.
+        raw = copy.deepcopy(fixture_document("result_all.json")["trials"][0])
+        raw.update(
+            status="trial_error", error="proof curve writer failed after scoring"
+        )
+        self.assertIs(raw["feasible"], True)
+        self.assertTrue(math.isfinite(raw["objective"]))
+        for source in ([raw], {"trials": [raw], "trials_completed": 1}):
+            with self.subTest(source_type=type(source).__name__):
+                error = self.refusal(read_source, source)
+                self.assertEqual(error.kind, "input_invalid")
+                self.assertEqual(error.ids, (raw["trial_id"],))
+                self.assertIn("feasible", error.detail)
+        # Clearing feasibility admits the error row while preserving its scored evidence.
+        raw["feasible"] = False
+        row = read_source([raw]).rows[0]
+        self.assertEqual(row.status, raw["status"])
+        self.assertEqual(row.objective, raw["objective"])
+        self.assertEqual(row.metrics, raw.get("metrics"))
+
     def test_scored_row_needs_a_finite_objective(self):
         """Rule: ok and constraint_violation rows need a finite number (N-draft 3.2(b))."""
         bad = (

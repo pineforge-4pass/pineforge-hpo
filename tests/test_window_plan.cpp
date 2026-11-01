@@ -428,17 +428,15 @@ void loader_failure_rows(const fs::path& fake, const fs::path& base) {
         require(::stat(parent.c_str(), &parent_identity) == 0,
                 "cannot inspect unsafe ancestor");
         // The loader prints the canonical path (a symlinked /tmp or /var on macOS differs).
-        require(diagnostic.find(fs::canonical(parent).string()) != std::string::npos,
-                "ancestry diagnostic omitted the offending path");
         char expected_mode[16];
         std::snprintf(expected_mode, sizeof(expected_mode), "mode=0%o",
                       static_cast<unsigned>(parent_identity.st_mode & 07777));
-        require(diagnostic.find(expected_mode) != std::string::npos,
-                "ancestry diagnostic omitted the offending mode in octal");
-        require(diagnostic.find(
-                    "uid=" + std::to_string(static_cast<unsigned long>(parent_identity.st_uid))) !=
-                    std::string::npos,
-                "ancestry diagnostic omitted the offending uid");
+        const auto expected_identity = "path='" + fs::canonical(parent).string() + "', " +
+            expected_mode + ", uid=" +
+            std::to_string(static_cast<unsigned long>(parent_identity.st_uid));
+        require(diagnostic.find(expected_identity) != std::string::npos,
+                "ancestry diagnostic omitted the offending ancestor's path/mode/uid: " +
+                    diagnostic);
         require(::chmod(parent.c_str(), 0700) == 0, "cannot restore test ancestor permissions");
     });
     row("fifo-source-refused-without-writer", [&] {
@@ -802,7 +800,8 @@ void swap_rows(const std::string& original, const std::string& digest, const fs:
     });
     row("real-snapshot-directory-replaced-after-close", [&] {
         // Red if the whole post-close directory/file identity refusal block is removed:
-        // retained directory: "snapshot-directory-retained"; decoy: "snapshot-directory".
+        // Caller cleanup owns both snapshot-directory-XXXXXX-retained (the held original)
+        // and snapshot-directory-XXXXXX (the decoy), including snapshots left by refusal.
         // The decoy is private (0700) and its same-named 0400 file is a loadable helper.
         const auto directory = checked_path(
             private_directory(base, "snapshot-directory"), "snapshot directory rename source");

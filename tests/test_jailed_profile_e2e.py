@@ -650,6 +650,41 @@ def run_suite(args):
         and native_command[native_command.index("--workers") + 1] == "2",
         f"seccomp parity requires two requested native workers: {native_command}",
     )
+    # A direct launcher supplies the spool's output parent and preserves sealed fd 5.
+    # _run adds exactly these four Python metadata fields after native exits.
+    prepare_expected = expected.copy()
+    for key in ("study", "strategy_id", "dataset_id", "artifact"):
+        prepare_expected.pop(key)
+    prepare_directory = checked_path(directory / "prepare-run-output")
+    prepare_directory.mkdir(mode=0o700)
+    prepare_output = checked_path(prepare_directory / "result.json")
+    prepare_result = invoke(
+        "prepare-run-output-sealed-fd",
+        [*native_command, "--output", str(prepare_output)],
+        jailed_environment,
+    )
+    require(prepare_result.returncode == 0, prepare_result.stderr)
+    prepare_document = read_json(prepare_output)
+    require(
+        prepare_document == json.loads(prepare_result.stdout) == prepare_expected,
+        "prepare_run output/stdout differs from the unjailed study: "
+        f"{prepare_document}",
+    )
+    prepare_entries = sorted(path.name for path in prepare_directory.iterdir())
+    require(
+        prepare_entries == [prepare_output.name],
+        f"prepare_run left a trial spool in the output parent: {prepare_entries}",
+    )
+    require(
+        not missing_tmp.exists(), f"prepare_run created fallback directory {missing_tmp}"
+    )
+    record(
+        "prepare-run-output-sealed-fd",
+        work_exit=prepare_result.returncode,
+        trials=prepare_document["trials"],
+        output_entries=prepare_entries,
+        missing_tmp_exists=missing_tmp.exists(),
+    )
     # Preserve the real engine's arena, reports and worker/writer paths. Invoke native
     # directly because --seccomp is a native-only option.
     seccomp_results = {}

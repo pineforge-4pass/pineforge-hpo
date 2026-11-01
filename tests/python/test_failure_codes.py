@@ -265,6 +265,70 @@ class ColorInputTests(unittest.TestCase):
             command[-5:], ["--int-dim", "Line color", "0", "4294967295", "1"]
         )
 
+    def test_color_manifest_rejects_real_and_boolean_dimensions(self):
+        # A packed color is an integer domain even when real bounds are integral.
+        name = self.manifest["title"]
+        for parameter in (
+            ParameterSpec(kind="real", low=0.0, high=255.0, step=1.0),
+            ParameterSpec(kind="boolean"),
+        ):
+            with self.subTest(kind=parameter.kind):
+                study = self.study(search_space={name: parameter})
+                with self.assertRaises(CliError) as caught:
+                    _validate_manifest_inputs(study, self.inputs)
+                self.assertEqual(caught.exception.code, "hpo_study_spec_invalid")
+                self.assertEqual(
+                    caught.exception.failure_args, {"reason": "artifact_metadata"}
+                )
+                self.assertIn(f"search_space.{name}", str(caught.exception))
+                self.assertIn(repr(parameter.kind), str(caught.exception))
+                self.assertIn(repr(self.manifest["type"]), str(caught.exception))
+
+    def test_color_categorical_integer_choices_preserve_argv(self):
+        name = self.manifest["title"]
+        choices = (0, self.manifest["default"], (1 << 32) - 1)
+        study = self.study(
+            search_space={name: ParameterSpec(kind="categorical", choices=choices)}
+        )
+        _validate_manifest_inputs(study, self.inputs)
+        command = _native_command(
+            study,
+            native=Path("native"),
+            plugin=Path("plugin.so"),
+            artifact_key="a" * 64,
+        )
+        expected = [
+            argument
+            for choice in choices
+            for argument in ("--categorical-int-choice", name, str(choice))
+        ]
+        self.assertEqual(command[-len(expected) :], expected)
+
+    def test_color_log_integer_dimension_matches_integer_input(self):
+        # Keep ordinary integer log geometry; color only adds the uint32 bounds.
+        name = self.manifest["title"]
+        parameter = ParameterSpec(
+            kind="integer", low=1, high=self.manifest["default"], step=1, log=True
+        )
+        study = self.study(search_space={name: parameter})
+        commands = []
+        for input_type in (self.manifest["type"], "int"):
+            manifest = {**self.manifest, "type": input_type}
+            _validate_manifest_inputs(study, [manifest])
+            commands.append(
+                _native_command(
+                    study,
+                    native=Path("native"),
+                    plugin=Path("plugin.so"),
+                    artifact_key="a" * 64,
+                )
+            )
+        self.assertEqual(commands[0], commands[1])
+        self.assertEqual(
+            commands[0][-4:],
+            ["--log-int-dim", name, str(parameter.low), str(parameter.high)],
+        )
+
     def test_color_integer_dimension_rejects_bounds_outside_uint32(self):
         # Proves both dimension endpoints use the same packed-word range check.
         # False pass: integer dimension admission bypasses low/high validation.

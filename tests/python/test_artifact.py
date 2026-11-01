@@ -1305,18 +1305,26 @@ class RequestInventoryArtifactTests(unittest.TestCase):
         # False pass: a fake transpile result or copied hash claims publication.
         from pineforge_hpo.transpile import (
             codegen_identity as real_codegen_identity,
+            codegen_supports_request_inventory as real_inventory_support,
             transpile_source as real_transpile_source,
         )
 
+        requested_timeframe = "1"
         source = (
             '//@version=6\nstrategy("inventory e2e", initial_capital=7000)\n'
-            'length = input.int(7, "Length")\nplot(ta.sma(close, length))\n'
+            'length = input.int(7, "Length")\n'
+            f'requested = request.security(syminfo.tickerid, "{requested_timeframe}", close)\n'
+            "plot(ta.sma(requested, length))\n"
         )
         with (
             patch(
                 "pineforge_hpo.artifact.codegen_identity",
                 wraps=real_codegen_identity,
             ) as identity,
+            patch(
+                "pineforge_hpo.artifact.codegen_supports_request_inventory",
+                wraps=real_inventory_support,
+            ) as supports,
             patch(
                 "pineforge_hpo.artifact.transpile_source",
                 wraps=real_transpile_source,
@@ -1325,6 +1333,7 @@ class RequestInventoryArtifactTests(unittest.TestCase):
             artifact = self.builder.build(source, filename="inventory-e2e.pine")
 
         identity.assert_called_once_with()
+        supports.assert_called_once_with()
         transpile.assert_called_once_with(source, filename="inventory-e2e.pine")
         manifest, provenance = self.documents(artifact)
         sidecar = json.loads(
@@ -1335,6 +1344,9 @@ class RequestInventoryArtifactTests(unittest.TestCase):
         self.assertEqual(manifest["request_feed_inventory"], sidecar)
         self.assertEqual(provenance["request_feed_inventory"], sidecar)
         self.assertEqual(
+            sidecar["entries"], [{"kind": "token", "timeframe": requested_timeframe}]
+        )
+        self.assertEqual(
             sidecar["source_sha256"],
             hashlib.sha256(artifact.generated_cpp_path.read_bytes()).hexdigest(),
         )
@@ -1343,6 +1355,32 @@ class RequestInventoryArtifactTests(unittest.TestCase):
             hashlib.sha256(artifact.plugin_path.read_bytes()).hexdigest(),
         )
         self.assertEqual(len(self.log.read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_binder_error_preserves_original_diagnostic_and_cause(self) -> None:
+        from pineforge_codegen.request_feed_inventory import RequestFeedInventoryError
+
+        original = RequestFeedInventoryError(
+            "inventory source digest differs before binding"
+        )
+        with (
+            patch(
+                "pineforge_codegen.request_feed_inventory.bind_request_feed_inventory",
+                side_effect=original,
+            ) as bind,
+            patch.object(self.builder, "plugin_validator") as validate,
+        ):
+            with self.assertRaises(ArtifactBuildError) as caught:
+                self.builder.build("binder diagnostic source")
+        self.assertEqual(caught.exception.stage, "inventory")
+        self.assertIn("cannot bind request_feed_inventory for ", str(caught.exception))
+        self.assertIn(str(original), str(caught.exception))
+        self.assertIs(caught.exception.__cause__, original)
+        bind.assert_called_once_with(
+            self.inventory, self.generated.encode("utf-8"), b"fake strategy plugin"
+        )
+        validate.assert_not_called()
+        self.assertEqual(list((self.cache / "artifacts").iterdir()), [])
+        self.assertFalse((self.cache / "requests").exists())
 
     def test_binder_errors_and_each_hash_mismatch_publish_nothing(self) -> None:
         # Proves each binding failure is an inventory-stage build failure.
