@@ -647,6 +647,8 @@ def _validate_manifest_inputs(
     by_title: dict[str, Mapping[str, Any]] = {}
     for item in inputs:
         title = item.get("title")
+        if isinstance(title, str) and not title and title not in requested:
+            continue
         if not isinstance(title, str) or not title:
             raise _cli_error(
                 "hpo_study_spec_invalid",

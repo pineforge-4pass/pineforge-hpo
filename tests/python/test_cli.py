@@ -181,6 +181,68 @@ class CliTests(unittest.TestCase):
         with self.assertRaisesRegex(CliError, "duplicate title 'Length'"):
             _validate_manifest_inputs(study, inputs)
 
+    def test_manifest_ignores_unrequested_empty_titles(self) -> None:
+        study = load_study_spec(self.study_path)
+        study.strategy.search_space.pop("Length")
+        study.strategy.fixed_inputs.clear()
+        parameter = study.strategy.search_space["Threshold"]
+        threshold = {
+            "title": "Threshold",
+            "type": "float",
+            "min": parameter.low,
+            "max": parameter.high,
+        }
+        for empty_titles in (1, 2):
+            with self.subTest(empty_titles=empty_titles):
+                inputs = [{"title": "", "type": "int"} for _ in range(empty_titles)] + [
+                    threshold
+                ]
+                _validate_manifest_inputs(study, inputs)
+
+        threshold["max"] = parameter.low
+        with self.assertRaisesRegex(CliError, "above the Pine input maximum"):
+            _validate_manifest_inputs(study, inputs)
+
+    def test_manifest_refuses_requested_empty_titles(self) -> None:
+        for setting in ("fixed_inputs", "search_space"):
+            with self.subTest(setting=setting):
+                study = load_study_spec(self.study_path)
+                integer = study.strategy.search_space.pop("Length")
+                study.strategy.fixed_inputs.clear()
+                threshold = study.strategy.search_space["Threshold"]
+                inputs = [
+                    {"title": "", "type": "int"},
+                    {
+                        "title": "Threshold",
+                        "type": "float",
+                        "min": threshold.low,
+                        "max": threshold.high,
+                    },
+                ]
+                requested = getattr(study.strategy, setting)
+                requested[inputs[0]["title"]] = (
+                    integer if setting == "search_space" else integer.low
+                )
+                with self.assertRaisesRegex(CliError, "invalid title") as caught:
+                    _validate_manifest_inputs(study, inputs)
+                self.assertEqual(caught.exception.code, "hpo_study_spec_invalid")
+                self.assertEqual(
+                    caught.exception.failure_args, {"reason": "artifact_metadata"}
+                )
+
+    def test_manifest_refuses_non_string_and_missing_titles(self) -> None:
+        study = load_study_spec(self.study_path)
+        for invalid in ({"title": 5, "type": "int"}, {"type": "int"}):
+            with self.subTest(manifest=invalid):
+                with self.assertRaisesRegex(CliError, "invalid title") as caught:
+                    _validate_manifest_inputs(
+                        study, [invalid, *self._artifact().inputs]
+                    )
+                self.assertEqual(caught.exception.code, "hpo_study_spec_invalid")
+                self.assertEqual(
+                    caught.exception.failure_args, {"reason": "artifact_metadata"}
+                )
+
     def _write_single_input_study(self, name: str, choices: list[object]) -> StudySpec:
         document = json.loads(self.study_path.read_text(encoding="utf-8"))
         strategy = document["strategies"][0]
