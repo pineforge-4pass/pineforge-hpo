@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -83,13 +84,18 @@ class RequestInventoryAdmissionTests(unittest.TestCase):
 
     def test_support_policy_matches_engine_candidate_constants(self) -> None:
         # Proves Python admission mirrors the checked-out engine candidate policy.
-        # False pass: changing one policy silently leaves the layers divergent.
+        # CI checks out the engine: an import failure must not turn this row green.
+        def unavailable(detail: str) -> None:
+            reason = f"{self.id()}: {detail}"
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                self.fail(reason)
+            print(f"SKIP {reason}", flush=True)
+            self.skipTest(reason)
+
         engine_dir = ROOT / "external" / "pineforge-engine" / "docker"
         engine_path = engine_dir / "selected_window_report.py"
         if not engine_path.is_file():
-            reason = f"engine support_policy source is absent: {engine_path}"
-            print(f"SKIP {reason}")
-            raise unittest.SkipTest(reason)
+            unavailable(f"engine support_policy source is absent: {engine_path}")
         try:
             spec = importlib.util.spec_from_file_location(
                 "_pineforge_engine_selected_window_report",
@@ -106,9 +112,7 @@ class RequestInventoryAdmissionTests(unittest.TestCase):
                 sys.modules.pop("request_feed_inventory", None)
                 sys.modules.pop(spec.name, None)
         except (ImportError, OSError, SyntaxError) as error:
-            reason = f"engine support_policy is not importable: {error}"
-            print(f"SKIP {reason}")
-            raise unittest.SkipTest(reason) from error
+            unavailable(f"engine support_policy is not importable: {error}")
 
         expected = {
             key: list(value) if isinstance(value, tuple) else value
