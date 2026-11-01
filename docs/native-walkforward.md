@@ -10,7 +10,8 @@ before normalization or filesystem access. There is no implicit path search or t
 fallback. A worker owns one helper and reuses it for its planning calls.
 The loader requires that every ancestor of the run directory is root- or user-owned and not
 writable by others unless sticky.
-ACLs and a group-only owner are not covered by this ancestry check.
+This ancestry check does not inspect ACLs or cover a group-only owner: ownership must
+match root or the effective user, not just one of the user's groups.
 
 The loader opens the source read-only with close-on-exec and `O_NONBLOCK`, so opening a FIFO
 never waits for a writer. It requires a regular file and copies from that held descriptor into
