@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Ignore unrequested empty input titles in artifact manifests while preserving validation of
+  named inputs. Non-string and missing titles are still refused, as is an empty title the study
+  names.
+
 ## 1.9.1 (2026-10-31)
 
 - Final 1.9.1 release (PEP 440 `1.9.1`, tag `v1.9.1`), paired with `pineforge-engine` v1.9.1 and

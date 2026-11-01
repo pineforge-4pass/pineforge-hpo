@@ -236,6 +236,7 @@ Other strategy fields:
 - `search_space`: non-empty map of tunable Pine input titles.
 
 An input cannot appear in both `fixed_inputs` and `search_space`.
+Inputs with an empty title are ignored. A study that names an empty title is refused.
 
 ### Runtime overrides
 
