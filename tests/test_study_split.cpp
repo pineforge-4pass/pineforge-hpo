@@ -701,13 +701,38 @@ void suite(const Path& self, const Path& native, const Path& plugin, const Path&
     row_verdict(fd_control, "PASS", "fd checker rejected actual descriptor retention");
     const auto one = lifecycle("lifecycle-1", 1, "none");
     require(one.code == 0, "one-study work failed");
-    check_fds(detail::parse_json(read_file(one.output)), 1);
+    const auto one_document = detail::parse_json(read_file(one.output));
+    check_fds(one_document, 1);
     row_verdict(one, "PASS", "one-study baseline completed and released every study descriptor");
     const auto many = lifecycle("lifecycle-50", 50, "none");
     require(many.code == 0, "50-study work failed");
-    check_fds(detail::parse_json(read_file(many.output)), 50);
+    const auto many_document = detail::parse_json(read_file(many.output));
+    check_fds(many_document, 50);
 #ifdef PINEFORGE_HPO_STUDY_RSS_GATE
     check_rss(one, many);
+    // Synthetic controls isolate the exact slope boundary from allocator/page-size noise.
+    // Derive the allowance independently from the completed children's trial counts.
+    const auto trial_count = [](const detail::Json& document) {
+        return detail::json_integer(detail::field(document, "studies")) *
+            detail::json_integer(detail::field(document, "trials_per_study"));
+    };
+    const auto additional_trials = trial_count(many_document) - trial_count(one_document);
+    const auto allowance = additional_trials * 32;
+    auto threshold = many;
+    threshold.peak_bytes = one.peak_bytes + allowance - 1;
+    check_rss(one, threshold);
+    ++threshold.peak_bytes;
+    check_rss(one, threshold);
+    ++threshold.peak_bytes;
+    must_reject([&] { check_rss(one, threshold); },
+                "RSS checker accepted one byte beyond the 32 bytes/trial allowance");
+    write_file(root / "rss-threshold-controls.result.json",
+        "{\"verdict\":\"PASS\",\"samples\":\"synthetic\",\"baseline_peak_rss_bytes\":" +
+        std::to_string(one.peak_bytes) + ",\"additional_trials\":" +
+        std::to_string(additional_trials) + ",\"limit_bytes_per_trial\":32,"
+        "\"accepted_deltas\":[" + std::to_string(allowance - 1) + "," +
+        std::to_string(allowance) + "],\"rejected_delta\":" +
+        std::to_string(allowance + 1) + "}\n");
     const auto rss_control = lifecycle("rss-control", 50, "rss");
     require(rss_control.code == 0, "RSS planted-control work failed");
     check_fds(detail::parse_json(read_file(rss_control.output)), 50);

@@ -198,6 +198,7 @@ jobs:
     permissions: {contents: read}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
+      PFH_REQUIRE_RETURN_STATS_IDENTITY: '1'
     strategy:
       fail-fast: false
       matrix:
