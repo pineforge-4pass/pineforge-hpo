@@ -322,6 +322,8 @@ boolean choice types are preserved in native trial JSON and must match the
 compiled Pine input type.
 Color-typed manifest inputs accept only packed `0xAARRGGBB` integers in `0..4294967295`
 (excluding booleans), while legacy string-typed color inputs retain string values.
+Integer dimensions over color inputs support `log: true` with the same positive bounds
+and step of `1` required for ordinary integer inputs; this samples the packed numeric word.
 
 Conditional search spaces are not implemented. `log` is valid only on integer
 and real dimensions under the contracts above.

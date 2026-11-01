@@ -238,6 +238,34 @@ class FailureCodesTests(unittest.TestCase):
             "exit_code": 1,
         })
 
+    def test_color_manifest_categorical_argv_reaches_plugin_loading(self):
+        # Only test manifest admission: this absent plugin must fail later at loading.
+        # The string argv spelling also carries a decimal packed word through the ABI.
+        manifest = {"title": "Line color", "type": "color", "default": 0xFFAABBCC}
+        (self.root / "manifest.json").write_text(
+            json.dumps({"inputs": [manifest]}), encoding="utf-8"
+        )
+        plugin = self.root / "missing-color-plugin.so"
+        control = subprocess.run(
+            self.command(plugin=plugin), capture_output=True, text=True
+        )
+        self.assertEqual(control.returncode, 1, control.stderr)
+        expected = json.loads(control.stdout)
+        self.assertEqual(expected["failure"]["code"], "hpo_plugin_invalid")
+        for flag in ("--categorical-int-choice", "--categorical-choice"):
+            with self.subTest(flag=flag):
+                completed = subprocess.run(
+                    self.command(
+                        flag, manifest["title"], str(manifest["default"]), plugin=plugin
+                    ),
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(
+                    completed.returncode, control.returncode, completed.stderr
+                )
+                self.assertEqual(json.loads(completed.stdout), expected)
+
     def test_checked_and_legacy_success_are_identical(self):
         results = []
         for plugin in (LEGACY, CODED, CHECKED):

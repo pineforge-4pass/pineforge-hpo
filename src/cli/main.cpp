@@ -2310,7 +2310,7 @@ void validate_search_input_kinds(const Options& options) {
                     std::string(pfh::dimension_name(dimension)));
         if (needs_kind && type->value != "int" && type->value != "float" &&
             type->value != "bool" && type->value != "string" &&
-            type->value != "source" && type->value != "enum")
+            type->value != "source" && type->value != "enum" && type->value != "color")
             throw pfh::TypedHpoError<std::invalid_argument>(
                 "hpo_study_spec_invalid", {{"reason", "input"}},
                 "search_space." + std::string(pfh::dimension_name(dimension)) +
