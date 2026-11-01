@@ -1314,7 +1314,7 @@ class RequestInventoryArtifactTests(unittest.TestCase):
             '//@version=6\nstrategy("inventory e2e", initial_capital=7000)\n'
             'length = input.int(7, "Length")\n'
             f'requested = request.security(syminfo.tickerid, "{requested_timeframe}", close)\n'
-            'plot(ta.sma(requested, length))\n'
+            "plot(ta.sma(requested, length))\n"
         )
         with (
             patch(
