@@ -1139,7 +1139,14 @@ On read-only root filesystems, native `run` and the jailed Python `run` wrapper 
 The wrapper adds two anonymous spools in non-empty `TMPDIR` (or `/tmp`): raw stdout and the
 indented rendering published as the result, formatted without loading trial arrays into Python
 memory. These require a writable directory even with a writable `--output` parent or reduced
-trial retention. The formatted spool is typically about 1.5 to 2 times the raw stdout size.
+trial retention. The formatted spool is larger than the raw stdout.
+Wrapper reads and copies use the chunk size (`--result-chunk-bytes`, default 64 KiB,
+minimum 2 bytes), including stderr drains. Captured stderr, each extracted failure field,
+decoded JSON member names and JSON scalar tokens use `--diagnostic-bytes` (default 64 KiB,
+minimum 1 byte). Smaller diagnostic bounds can refuse longer tokens or member names.
+Both options take decimal integers with no maximum and are checked before starting the child
+or creating a wrapper spool. Oversized failure args become `null` while code and origin
+are retained when they fit; truncated stderr has `\n[native stderr truncated]` appended.
 Both wrapper spools are closed on success or failure; a selected directory is not retried
 elsewhere if creation fails. If `TMPDIR` is on tmpfs, both wrapper spools and the native spool
 live in RAM; their growth appears in system memory, not in process RSS.

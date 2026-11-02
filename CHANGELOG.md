@@ -4,12 +4,19 @@
 
 - Stream native stdout through two anonymous files in the Python `run` wrapper, preserving
   its augmented, sorted JSON bytes and atomic `--output` publication without loading trial
-  arrays into Python memory, including on native failures. Stderr capture is capped at
-  64 KiB; failure lookup scans the whole spool in chunks of at most 64 KiB, with each
-  extracted metadata field also capped at 64 KiB. The wrapper needs writable non-empty
+  arrays into Python memory, including on native failures. The chunk size
+  (`--result-chunk-bytes`, default 64 KiB / 65536 bytes, minimum 2 bytes) controls spool
+  reads, stderr drains, stdout and `--output` copies. Stderr capture, each extracted failure
+  field, decoded JSON member names and JSON scalar tokens are capped by `--diagnostic-bytes`
+  (default 64 KiB / 65536 bytes, minimum 1 byte). Smaller diagnostic bounds can refuse
+  longer tokens or member names. Both options take decimal integers with no maximum,
+  checked before starting the child or creating a spool; omitted options preserve existing
+  behavior. Failure lookup scans the whole spool; oversized args become `null` while code
+  and origin are retained when they fit, and truncated stderr has
+  `\n[native stderr truncated]` appended. The wrapper needs writable non-empty
   `TMPDIR` (or `/tmp`) for raw stdout and the indented result, closes both on every exit,
-  and does not retry another directory after selection. The formatted spool is typically
-  about 1.5 to 2 times the raw stdout size; both consume system RAM on tmpfs.
+  and does not retry another directory after selection. The formatted spool is larger
+  than the raw stdout; both consume system RAM on tmpfs.
   Native stdout that cannot be decoded after exit 0 or 2 now reports `hpo_plugin_invalid`
   (`{"reason": "validation"}`) instead of `hpo_unclassified_error`.
 - Compare numeric Pine input options by value so float inputs with integer-written options

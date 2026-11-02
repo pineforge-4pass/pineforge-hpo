@@ -1205,8 +1205,8 @@ def prepare_run(
     return command, artifact
 
 
-_RUN_CHUNK_BYTES = 64 * 1024
-_RUN_DIAGNOSTIC_BYTES = 64 * 1024
+_RUN_CHUNK_BYTES_DEFAULT = 64 * 1024
+_RUN_DIAGNOSTIC_BYTES_DEFAULT = 64 * 1024
 _JSON_STRING_SPECIAL = re.compile(rb'["\\\x00-\x1f]')
 _JSON_WHITESPACE = re.compile(rb"[ \t\r\n]*")
 _JSON_TOKEN_END = re.compile(rb"[ \t\r\n,\]}]")
@@ -1220,8 +1220,12 @@ class _ResultJson:
     Rendering uses the previous json.dumps(indent=2, sort_keys=True) spelling.
     """
 
-    def __init__(self, source: BinaryIO) -> None:
+    def __init__(
+        self, source: BinaryIO, *, chunk_bytes: int, diagnostic_bytes: int
+    ) -> None:
         self.source = source
+        self.chunk_bytes = chunk_bytes
+        self.diagnostic_bytes = diagnostic_bytes
         self.buffer = b""
         self.buffer_start = source.tell()
         self.position = 0
@@ -1241,9 +1245,9 @@ class _ResultJson:
     def peek(self) -> bytes:
         if self.position == len(self.buffer):
             # Retain nearby keys when a small object crosses a refill boundary.
-            retained = self.buffer[-(_RUN_CHUNK_BYTES // 2) :]
+            retained = self.buffer[-(self.chunk_bytes // 2) :]
             self.buffer_start += len(self.buffer) - len(retained)
-            self.buffer = retained + self.source.read(_RUN_CHUNK_BYTES - len(retained))
+            self.buffer = retained + self.source.read(self.chunk_bytes - len(retained))
             self.position = len(retained)
         return self.buffer[self.position : self.position + 1]
 
@@ -1303,7 +1307,7 @@ class _ResultJson:
             end = match.start() if match else len(self.buffer)
             raw.extend(self.buffer[self.position : end])
             self.position = end
-            if len(raw) > _RUN_DIAGNOSTIC_BYTES:
+            if len(raw) > self.diagnostic_bytes:
                 self.invalid("Oversized native JSON scalar")
             if match:
                 break
@@ -1340,7 +1344,7 @@ class _ResultJson:
 
     def bounded_value(self, span: tuple[int, int]) -> Any:
         begin, end = span
-        if end - begin > _RUN_DIAGNOSTIC_BYTES:
+        if end - begin > self.diagnostic_bytes:
             raise ValueError("oversized native failure metadata")
         self.seek(begin)
         raw = bytearray()
@@ -1442,10 +1446,15 @@ class _ResultJson:
 
 
 def _run_native(
-    command: Sequence[str], stdout: BinaryIO, inherited_fds: tuple[int, ...]
+    command: Sequence[str],
+    stdout: BinaryIO,
+    inherited_fds: tuple[int, ...],
+    *,
+    chunk_bytes: int,
+    diagnostic_bytes: int,
 ) -> subprocess.CompletedProcess:
     # stdout cannot fill a pipe; drain stderr while the child runs, retaining only
-    # its first 64 KiB. Do not use communicate(), which accumulates pipe contents.
+    # the requested prefix. Do not use communicate(), which accumulates pipe contents.
     captured = bytearray()
     truncated = False
     with subprocess.Popen(
@@ -1456,8 +1465,8 @@ def _run_native(
     ) as process:
         assert process.stderr is not None
         try:
-            while chunk := process.stderr.read(_RUN_CHUNK_BYTES):
-                remaining = _RUN_DIAGNOSTIC_BYTES - len(captured)
+            while chunk := process.stderr.read(chunk_bytes):
+                remaining = diagnostic_bytes - len(captured)
                 captured.extend(chunk[:remaining])
                 truncated |= len(chunk) > remaining
             process.wait()
@@ -1473,30 +1482,30 @@ def _run_native(
     return subprocess.CompletedProcess(command, process.returncode, stderr=diagnostic)
 
 
-def _stdout_diagnostic(source: BinaryIO) -> str:
+def _stdout_diagnostic(source: BinaryIO, *, diagnostic_bytes: int) -> str:
     source.seek(0)
-    raw = source.read(_RUN_DIAGNOSTIC_BYTES)
+    raw = source.read(diagnostic_bytes)
     decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))()
     return decoder.decode(raw).strip()
 
 
-def _copy_run_stdout(source: BinaryIO) -> None:
+def _copy_run_stdout(source: BinaryIO, *, chunk_bytes: int) -> None:
     source.seek(0)
     binary = getattr(sys.stdout, "buffer", None)
     if binary is not None:
         sys.stdout.flush()
-        while chunk := source.read(_RUN_CHUNK_BYTES):
+        while chunk := source.read(chunk_bytes):
             binary.write(chunk)
         binary.flush()
     else:
         # redirect_stdout(StringIO) and other text-only library callers.
         decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))()
-        while chunk := source.read(_RUN_CHUNK_BYTES):
+        while chunk := source.read(chunk_bytes):
             sys.stdout.write(decoder.decode(chunk))
         sys.stdout.write(decoder.decode(b"", final=True))
 
 
-def _write_run_output(path: Path, source: BinaryIO) -> None:
+def _write_run_output(path: Path, source: BinaryIO, *, chunk_bytes: int) -> None:
     try:
         path = path.expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1506,7 +1515,7 @@ def _write_run_output(path: Path, source: BinaryIO) -> None:
         try:
             with os.fdopen(descriptor, "wb") as output:
                 source.seek(0)
-                shutil.copyfileobj(source, output, _RUN_CHUNK_BYTES)
+                shutil.copyfileobj(source, output, chunk_bytes)
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, path)
@@ -1520,12 +1529,22 @@ def _write_run_output(path: Path, source: BinaryIO) -> None:
 
 
 def _native_run_error(
-    completed: subprocess.CompletedProcess, source: BinaryIO
+    completed: subprocess.CompletedProcess,
+    source: BinaryIO,
+    *,
+    chunk_bytes: int,
+    diagnostic_bytes: int,
 ) -> CliError:
-    detail = completed.stderr.strip() or _stdout_diagnostic(source) or "no diagnostics"
+    detail = (
+        completed.stderr.strip()
+        or _stdout_diagnostic(source, diagnostic_bytes=diagnostic_bytes)
+        or "no diagnostics"
+    )
     error = CliError(f"native runner failed with exit {completed.returncode}: {detail}")
     try:
-        reader = _ResultJson(source)
+        reader = _ResultJson(
+            source, chunk_bytes=chunk_bytes, diagnostic_bytes=diagnostic_bytes
+        )
         reader.seek(0)
         reader.whitespace()
         members = reader.members()
@@ -1559,7 +1578,26 @@ def _native_run_error(
     return error
 
 
+def _run_byte_bound(value: str | int, option: str, minimum: int) -> int:
+    try:
+        raw = str(value)
+        if not raw.isascii() or not raw.isdecimal():
+            raise ValueError
+        number = int(raw)
+        if number < minimum:
+            raise ValueError
+    except ValueError as error:
+        raise _cli_error(
+            "hpo_cli_usage", {}, f"{option} must be an integer of at least {minimum}"
+        ) from error
+    return number
+
+
 def _run(args: argparse.Namespace) -> int:
+    # A chunk of 1 retains the entire buffer through the [-0:] slice in peek().
+    chunk_bytes = _run_byte_bound(args.result_chunk_bytes, "--result-chunk-bytes", 2)
+    # Every diagnostic read needs a positive size; no retention slice uses this bound.
+    diagnostic_bytes = _run_byte_bound(args.diagnostic_bytes, "--diagnostic-bytes", 1)
     jailed = "PF_SCRATCH_ARENA_FD" in os.environ
     if jailed and args.progress_fd == 5:
         raise _cli_error(
@@ -1608,7 +1646,13 @@ def _run(args: argparse.Namespace) -> int:
         raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
     try:
         try:
-            completed = _run_native(command, stdout, inherited_fds)
+            completed = _run_native(
+                command,
+                stdout,
+                inherited_fds,
+                chunk_bytes=chunk_bytes,
+                diagnostic_bytes=diagnostic_bytes,
+            )
         except OSError as error:
             raise _cli_error(
                 "hpo_toolchain_unavailable",
@@ -1619,13 +1663,17 @@ def _run(args: argparse.Namespace) -> int:
             print(completed.stderr.strip(), file=sys.stderr, flush=True)
             stdout.seek(0)
             if any(
-                chunk.strip()
-                for chunk in iter(lambda: stdout.read(_RUN_CHUNK_BYTES), b"")
+                chunk.strip() for chunk in iter(lambda: stdout.read(chunk_bytes), b"")
             ):
-                _copy_run_stdout(stdout)
+                _copy_run_stdout(stdout, chunk_bytes=chunk_bytes)
             return completed.returncode
         if completed.returncode not in {0, 2}:
-            raise _native_run_error(completed, stdout)
+            raise _native_run_error(
+                completed,
+                stdout,
+                chunk_bytes=chunk_bytes,
+                diagnostic_bytes=diagnostic_bytes,
+            )
         try:
             rendered = tempfile.TemporaryFile(
                 prefix="pineforge-hpo-run-", dir=directory
@@ -1633,7 +1681,9 @@ def _run(args: argparse.Namespace) -> int:
         except OSError as error:
             raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
         try:
-            reader = _ResultJson(stdout)
+            reader = _ResultJson(
+                stdout, chunk_bytes=chunk_bytes, diagnostic_bytes=diagnostic_bytes
+            )
             reader.seek(0)
             try:
                 reader.whitespace()
@@ -1659,11 +1709,11 @@ def _run(args: argparse.Namespace) -> int:
                 # Preserve the stdlib diagnostic for small malformed documents,
                 # without ever giving json.loads an unbounded result.
                 detail = error
-                if stdout.seek(0, os.SEEK_END) <= _RUN_DIAGNOSTIC_BYTES:
+                if stdout.seek(0, os.SEEK_END) <= diagnostic_bytes:
                     stdout.seek(0)
                     try:
                         json.loads(
-                            stdout.read(_RUN_DIAGNOSTIC_BYTES).decode(
+                            stdout.read(diagnostic_bytes).decode(
                                 locale.getpreferredencoding(False)
                             )
                         )
@@ -1682,8 +1732,8 @@ def _run(args: argparse.Namespace) -> int:
             except OSError as error:
                 raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
             if args.output:
-                _write_run_output(Path(args.output), rendered)
-            _copy_run_stdout(rendered)
+                _write_run_output(Path(args.output), rendered, chunk_bytes=chunk_bytes)
+            _copy_run_stdout(rendered, chunk_bytes=chunk_bytes)
             return completed.returncode
         finally:
             rendered.close()
@@ -1788,6 +1838,18 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("study", help="StudySpec JSON path")
     run_parser.add_argument("--native", help="pineforge-hpo-native executable")
     run_parser.add_argument("--output", help="write the final JSON result atomically")
+    run_parser.add_argument(
+        "--result-chunk-bytes",
+        default=_RUN_CHUNK_BYTES_DEFAULT,
+        metavar="N",
+        help="result and stderr read/copy chunk bytes (minimum 2; default 65536)",
+    )
+    run_parser.add_argument(
+        "--diagnostic-bytes",
+        default=_RUN_DIAGNOSTIC_BYTES_DEFAULT,
+        metavar="N",
+        help="stderr, failure field and scalar byte cap (minimum 1; default 65536)",
+    )
     run_parser.add_argument(
         "--symbol-feeds",
         help="other-symbol CSV index (overrides work.json symbol_feeds)",

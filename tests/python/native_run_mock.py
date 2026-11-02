@@ -10,7 +10,12 @@ def native_completion(
     completed: subprocess.CompletedProcess,
 ) -> Callable[..., subprocess.CompletedProcess]:
     def run(
-        command: Sequence[str], stdout: BinaryIO, inherited_fds: tuple[int, ...]
+        command: Sequence[str],
+        stdout: BinaryIO,
+        inherited_fds: tuple[int, ...],
+        *,
+        chunk_bytes: int,
+        diagnostic_bytes: int,
     ) -> subprocess.CompletedProcess:
         stdout.write((completed.stdout or "").encode("utf-8"))
         return subprocess.CompletedProcess(

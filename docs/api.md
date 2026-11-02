@@ -332,15 +332,28 @@ These controls are native `run` flags that the Python `pineforge-hpo run` comman
 also forwards. They are not new StudySpec fields. Existing callers retain
 `--trials-out all` by default.
 
+The Python `run` wrapper also accepts two decimal integer byte bounds:
+
+- `--result-chunk-bytes N` sets the chunk size for result-spool reads, stderr drains,
+  stdout copies and `--output` copies (default 65536, minimum 2 bytes).
+- `--diagnostic-bytes N` sets the captured stderr, extracted failure-field and JSON
+  scalar-token bound (default 65536, minimum 1 byte). Decoded JSON member names
+  also use this bound. Smaller bounds can refuse longer tokens or member names.
+
+Both bounds are checked before starting the child or creating a spool and have no
+maximum. They are wrapper options and are not passed to the native command.
+
 - `--trials-out all` retains every terminal record in `trials`, as before. This
   mode now spools rows in the native child without retaining every trial record or the
   full result document in memory. The Python `run` wrapper spools the child's stdout and
   formats the augmented, sorted JSON without loading trial arrays into memory. It streams
-  the formatted result to stdout in 64 KiB chunks and atomically copies it to its own
-  `--output`, when requested. Stderr capture is capped at 64 KiB; failure lookup scans the
-  whole spool in chunks of at most 64 KiB, with each extracted metadata field also capped
-  at 64 KiB. Oversized failure args become `null` while the code and origin are retained;
-  oversized stderr is drained and its captured prefix is marked as truncated.
+  the formatted result to stdout using the chunk size (`--result-chunk-bytes`, default
+  64 KiB) and atomically copies it to its own `--output`, when requested. Stderr capture
+  is capped by `--diagnostic-bytes` (default 64 KiB); failure lookup scans the whole spool
+  using the chunk size, with each extracted metadata field also capped by
+  `--diagnostic-bytes`. Oversized failure args become `null` while the code and origin
+  are retained when they fit the bound; oversized stderr is drained and its captured
+  prefix has `\n[native stderr truncated]` appended.
   The default native `--trials-out all` requires a writable directory for two anonymous
   files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files
   are unlinked at creation, but the spool holds the whole trial array on disk until the
@@ -350,7 +363,7 @@ also forwards. They are not new StudySpec fields. Existing callers retain
   The wrapper adds two anonymous spools in non-empty `TMPDIR` (or `/tmp`): raw stdout and
   the indented rendering published as the result. These require a writable directory even
   with a writable `--output` parent or reduced trial retention. The formatted spool is
-  typically about 1.5 to 2 times the raw stdout size. These consume system RAM when `TMPDIR`
+  larger than the raw stdout. These consume system RAM when `TMPDIR`
   is on tmpfs. It closes both on success or failure. An explicitly selected non-empty `TMPDIR`
   is not retried elsewhere if file creation fails.
 - `--trials-out best-k --best-k N` retains at most N feasible, finite-objective

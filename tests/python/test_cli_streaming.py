@@ -195,6 +195,7 @@ class RunStreamingTests(unittest.TestCase):
         )
         self.prepare = self.enterContext(mock.patch.object(cli, "prepare_run"))
         self.files = []
+        self.read_bound = 64 * 1024
         temporary_file = tempfile.TemporaryFile
         test = self
 
@@ -207,6 +208,7 @@ class RunStreamingTests(unittest.TestCase):
             def read(self, size: int = -1) -> bytes:
                 test.assertGreater(size, 0, "unbounded result-spool read")
                 test.assertLessEqual(size, 64 * 1024)
+                test.assertLessEqual(size, test.read_bound)
                 data = self.source.read(size)
                 self.read_calls += 1
                 self.bytes_read += len(data)
@@ -238,7 +240,7 @@ class RunStreamingTests(unittest.TestCase):
             )
 
     def _run_payload(self, payload: bytes, *arguments: str, returncode: int = 0) -> int:
-        def complete(command, stdout, inherited_fds):
+        def complete(command, stdout, inherited_fds, *, chunk_bytes, diagnostic_bytes):
             stdout.write(payload)
             return subprocess.CompletedProcess(command, returncode, stderr="")
 
@@ -343,6 +345,216 @@ class RunStreamingTests(unittest.TestCase):
                 self.assertEqual(destination.read_bytes(), expected_bytes)
                 text_stdout.detach()
                 self._assert_clean()
+
+    def test_result_chunk_sizes_preserve_oracle_bytes_and_bound_every_copy(
+        self,
+    ) -> None:
+        payload = (
+            '{"z":-0.0,"a":1e-6,"trials":[{"z":"é\\\\\\"\\n",'
+            '"a":"\\ud83d\\ude80","padding":"'
+            + "x"
+            * (64 * 1024 + 7)
+            + '"}],"nested":{"z":[],"a":[{},[],true,false,null]},'
+            '"unicode\x7f\u2028🚀":"\x7f\u2028🚀",'
+            '"duplicate":0,"duplicate":1,"artifact":"replaced","ok":true}'
+        )
+        expected = json.loads(payload)
+        expected.update(
+            study=str(self.study.spec_path),
+            strategy_id="strategy",
+            dataset_id="bars",
+            artifact=self.artifact,
+        )
+        expected_bytes = (
+            json.dumps(expected, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        ).encode("utf-8")
+        popen = subprocess.Popen
+        drains = []
+
+        def launch(*args, **kwargs):
+            process = popen(*args, **kwargs)
+            drains.append(
+                self.enterContext(
+                    mock.patch.object(process.stderr, "read", wraps=process.stderr.read)
+                )
+            )
+            return process
+
+        for chunk_bytes in (2, 3, 7, 64, 4096, 65536):
+            for binary in (False, True):
+                with self.subTest(chunk_bytes=chunk_bytes, binary=binary):
+                    self.read_bound = chunk_bytes
+                    destination = self.root / f"chunk-{chunk_bytes}-{binary}.json"
+                    binary_stdout = io.BytesIO()
+                    stdout = (
+                        io.TextIOWrapper(binary_stdout, encoding="utf-8")
+                        if binary
+                        else io.StringIO()
+                    )
+                    self.prepare.return_value = (
+                        _native_command("--payload", payload, "--stderr", "é🚀\n"),
+                        self.artifact,
+                    )
+                    with (
+                        mock.patch.object(cli.subprocess, "Popen", side_effect=launch),
+                        contextlib.redirect_stdout(stdout),
+                        contextlib.redirect_stderr(self.errors),
+                    ):
+                        returned = cli.main(
+                            [
+                                "run",
+                                str(self.study.spec_path),
+                                "--result-chunk-bytes",
+                                str(chunk_bytes),
+                                "--output",
+                                str(destination),
+                            ]
+                        )
+                    stdout.flush()
+                    printed = (
+                        binary_stdout.getvalue()
+                        if binary
+                        else stdout.getvalue().encode("utf-8")
+                    )
+                    self.assertEqual(returned, 0)
+                    self.assertEqual(printed, expected_bytes)
+                    self.assertEqual(destination.read_bytes(), expected_bytes)
+                    self.assertTrue(drains[-1].call_args_list)
+                    for call in drains[-1].call_args_list:
+                        self.assertEqual(call.args, (chunk_bytes,))
+                    if binary:
+                        stdout.detach()
+                    self._assert_clean()
+
+    def test_diagnostic_bound_controls_failure_args_and_stderr_prefix(self) -> None:
+        self.read_bound = 7
+        failure_args = {"detail": "é🚀" * 64}
+        payload = json.dumps(
+            {
+                "failure": {
+                    "origin": "engine",
+                    "code": "engine_rejected",
+                    "args": failure_args,
+                }
+            }
+        )
+        stderr = "é" * 96
+        for diagnostic_bytes in (64, None):
+            with self.subTest(diagnostic_bytes=diagnostic_bytes):
+                self.output = io.StringIO()
+                self.errors = io.StringIO()
+                self.prepare.return_value = (
+                    _native_command(
+                        "--payload", payload, "--stderr", stderr, "--exit-code", "1"
+                    ),
+                    self.artifact,
+                )
+                arguments = [
+                    "run",
+                    str(self.study.spec_path),
+                    "--result-chunk-bytes",
+                    "7",
+                ]
+                if diagnostic_bytes is not None:
+                    arguments.extend(("--diagnostic-bytes", str(diagnostic_bytes)))
+                with (
+                    contextlib.redirect_stdout(self.output),
+                    contextlib.redirect_stderr(self.errors),
+                ):
+                    returned = cli.main(arguments)
+                self.assertEqual(returned, 1)
+                self.assertEqual(
+                    json.loads(self.output.getvalue())["failure"],
+                    {
+                        "origin": "engine",
+                        "code": "engine_rejected",
+                        "args": None if diagnostic_bytes else failure_args,
+                        "exit_code": 1,
+                    },
+                )
+                detail = (
+                    "é" * 32 + "\n[native stderr truncated]"
+                    if diagnostic_bytes
+                    else stderr
+                )
+                self.assertEqual(
+                    self.errors.getvalue(),
+                    f"pineforge-hpo: native runner failed with exit 1: {detail}\n",
+                )
+                self._assert_clean()
+
+    def test_diagnostic_minimum_bounds_stdout_fallback(self) -> None:
+        self.read_bound = 2
+        with self.assertRaises(cli.CliError) as caught:
+            self._run(
+                _native_command("--payload", "xyz", "--exit-code", "1"),
+                "--diagnostic-bytes",
+                "1",
+                "--result-chunk-bytes",
+                "2",
+            )
+        self.assertEqual(caught.exception.code, "hpo_unclassified_error")
+        self.assertEqual(str(caught.exception), "native runner failed with exit 1: x")
+        self._assert_clean()
+
+    def test_diagnostic_bound_controls_json_scalar_tokens(self) -> None:
+        payload = b'{"n":' + b"7" * 65 + b"}"
+        with self.assertRaises(cli.CliError) as caught:
+            self._run_payload(payload, "--diagnostic-bytes", "64")
+        self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
+        self.assertEqual(caught.exception.failure_args, {"reason": "validation"})
+        self.assertIn("Oversized native JSON scalar", str(caught.exception))
+        self.assertEqual(self.output.getvalue(), "")
+        self.assertEqual(self._run_payload(payload), 0)
+        expected = {
+            "n": int("7" * 65),
+            "study": str(self.study.spec_path),
+            "strategy_id": "strategy",
+            "dataset_id": "bars",
+            "artifact": self.artifact,
+        }
+        self.assertEqual(
+            self.output.getvalue(),
+            json.dumps(expected, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        )
+        self._assert_clean()
+
+    def test_invalid_byte_bounds_fail_before_native_or_spool_creation(self) -> None:
+        for option, minimum, invalid_values in (
+            ("--result-chunk-bytes", 2, ("0", "-1", "1", "abc", "1.5", "")),
+            ("--diagnostic-bytes", 1, ("0", "-1", "abc", "1.5", "")),
+        ):
+            for value in invalid_values:
+                with self.subTest(option=option, value=value):
+                    self.output = io.StringIO()
+                    self.errors = io.StringIO()
+                    with (
+                        mock.patch.object(cli, "_run_native") as native,
+                        contextlib.redirect_stdout(self.output),
+                        contextlib.redirect_stderr(self.errors),
+                    ):
+                        returned = cli.main(
+                            ["run", str(self.study.spec_path), option, value]
+                        )
+                    self.assertEqual(returned, 1)
+                    self.assertEqual(
+                        json.loads(self.output.getvalue())["failure"],
+                        {
+                            "origin": "hpo",
+                            "code": "hpo_cli_usage",
+                            "args": {},
+                            "exit_code": 1,
+                        },
+                    )
+                    self.assertEqual(
+                        self.errors.getvalue(),
+                        f"pineforge-hpo: {option} must be an integer "
+                        f"of at least {minimum}\n",
+                    )
+                    native.assert_not_called()
+                    self.prepare.assert_not_called()
+                    self.assertEqual(self.files, [])
+                    self._assert_clean()
 
     def test_warm_start_and_space_exhausted_print_stderr_before_raw_stdout(
         self,
