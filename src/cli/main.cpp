@@ -121,6 +121,13 @@ private:
 };
 #endif
 
+struct TrialContextIdentity {
+    pfh::detail::DataContextId id;
+    std::string symbol;
+    std::string dataset_id;
+    std::string data_context_sha256;
+};
+
 struct TrialRecord {
     RowSpace row_space = RowSpace::kFull;
     std::shared_ptr<const std::string> space_json;
@@ -129,6 +136,7 @@ struct TrialRecord {
     std::optional<std::uint64_t> tpe_history_switch;
     std::uint64_t trial_id = 0;
     pfh::Candidate candidate;
+    std::optional<TrialContextIdentity> data_context;
     std::string status = "pending";
     std::string error;
     pfh::detail::FailureDetails failure;
@@ -908,6 +916,14 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
 }
 
 TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& options) {
+    std::optional<TrialContextIdentity> data_context;
+    if (options.context_selector) {
+        const auto id = options.context_selector->resolve(candidate);
+        const auto& catalogue = options.context_selector->catalogue();
+        const auto& context = catalogue.context(id);
+        data_context = TrialContextIdentity{
+            id, context.identity.symbol, context.identity.id, catalogue.data_context_sha256()};
+    }
     TrialRecord record;
     record.row_space = options.row_space;
     record.space_json = options.space_json;
@@ -918,6 +934,7 @@ TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& op
     }
     record.trial_id = candidate.id;
     record.candidate = candidate;
+    record.data_context = std::move(data_context);
     record.constraint_values.resize(options.constraints.size());
     record.pruning_enabled = options.pruner != pfh::PrunerKind::None;
     for (const auto& name : options.recorded_metrics)
@@ -1052,6 +1069,12 @@ std::string render_trial(const TrialRecord& trial) {
             render_real_array(out, trial.return_blocks->m2);
         }
         out << '}';
+    }
+    if (trial.data_context) {
+        out << ", \"symbol\": \"" << json_escape(trial.data_context->symbol)
+            << "\", \"dataset_id\": \"" << json_escape(trial.data_context->dataset_id)
+            << "\", \"data_context_sha256\": \"" << trial.data_context->data_context_sha256
+            << '"';
     }
     if (trial.space_json && trial.row_space != RowSpace::kNone) {
         out << ", \"space_hash_version\": " << pfh::detail::space_hash_version
@@ -1286,13 +1309,13 @@ public:
         return reason_.load() != StopReason::kNone;
     }
 
-    bool begin(const pfh::Candidate& candidate) {
+    bool begin(const TrialRecord& record) {
         if (options_.trial_timeout_seconds == 0.0 && options_.max_wall_seconds == 0.0)
             return !stopped();
         std::lock_guard<std::mutex> lock(mutex_);
         if (stopped())
             return false;
-        active_.emplace(candidate.id, ActiveTrial{candidate, Clock::now()});
+        active_.emplace(record.trial_id, ActiveTrial{record, Clock::now()});
         changed_.notify_all();
         return true;
     }
@@ -1381,7 +1404,7 @@ public:
 
 private:
     struct ActiveTrial {
-        pfh::Candidate candidate;
+        TrialRecord record;
         Clock::time_point started;
     };
 
@@ -1448,7 +1471,7 @@ private:
     }
 
     void record_timeout(std::uint64_t trial_id, const ActiveTrial& trial, const char* diagnostic) {
-        auto record = make_trial_record(trial.candidate, options_);
+        auto record = trial.record;
         record.status = "trial_timeout";
         record.error = diagnostic;
         record.failure = {"hpo_trial_timeout", "{}", "hpo"};
@@ -1605,7 +1628,7 @@ void validate_metric_identifiers(const std::vector<const pfh::MetricExpression*>
     }
 }
 
-TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
+TrialRecord evaluate_candidate(TrialRecord record,
                                const pfh::SearchSpace& space,
                                const Options& options,
                                const pfh::TrialExecutor& executor,
@@ -1616,7 +1639,6 @@ TrialRecord evaluate_candidate(const pfh::Candidate& candidate,
                                const pfh::Pruner& pruner,
                                const std::vector<std::size_t>& bar_counts,
                                const std::vector<std::optional<double>>& cuts) {
-    TrialRecord record = make_trial_record(candidate, options);
     try {
         auto serialized = space.serialize_candidate(record.candidate);
         for (const auto& [key, value] : options.fixed_inputs) {
@@ -1841,7 +1863,26 @@ pfh::detail::ResultDocument render_results(
         << "  \"space\": " << *options.space_json << ",\n"
         << "  \"pineforge_hpo_version\": \"" << PINEFORGE_HPO_VERSION << "\",\n"
         << "  \"sampler_implementation\": \"" << sampler_implementation << "\",\n";
-    if (options.symbol_feeds_record) {
+    if (options.context_selector) {
+        const auto& catalogue = options.context_selector->catalogue();
+        out << "  \"dataset_id\": null,\n  \"dataset_ids\": [";
+        std::size_t index = 0;
+        for (const auto& context : catalogue.contexts()) {
+            if (index++)
+                out << ", ";
+            out << '"' << json_escape(context.identity.id) << '"';
+        }
+        out << "],\n  \"data_context_sha256\": \"" << catalogue.data_context_sha256()
+            << "\",\n  \"applied_runtime\": {\"data_context\": "
+            << catalogue.canonical_descriptor();
+        if (options.symbol_feeds_record)
+            out << ", \"symbol_feeds\": "
+                << pfh::detail::dump_json(*options.symbol_feeds_record);
+        out << "},\n";
+        if (options.symbol_feeds_record)
+            out << "  \"runtime_sha256\": \""
+                << pfh::detail::symbol_feeds_identity(&*options.symbol_feeds_record) << "\",\n";
+    } else if (options.symbol_feeds_record) {
         out << "  \"applied_runtime\": {\"symbol_feeds\": "
             << pfh::detail::dump_json(*options.symbol_feeds_record) << "},\n"
             << "  \"runtime_sha256\": \""
@@ -2353,12 +2394,8 @@ bool same_dataset_file(const std::filesystem::path& input,
            std::filesystem::absolute(output).lexically_normal();
 }
 
-void refuse_mapped_output_aliases(const Options& options) {
-    if (options.ohlcv_bin.empty())
-        return;
-    const std::filesystem::path inputs[] = {
-        options.ohlcv_bin, options.ohlcv_bin.string() + ".json",
-    };
+void refuse_mapped_output_aliases(
+    const Options& options, const std::vector<std::filesystem::path>& inputs) {
     const std::pair<const char*, const std::filesystem::path*> outputs[] = {
         {"--trials-file", &options.trials_file},
         {"--output", &options.output},
@@ -2374,6 +2411,73 @@ void refuse_mapped_output_aliases(const Options& options) {
                             output.second->string());
         }
     }
+}
+
+void refuse_mapped_output_aliases(const Options& options) {
+    if (!options.ohlcv_bin.empty())
+        refuse_mapped_output_aliases(
+            options, {options.ohlcv_bin, options.ohlcv_bin.string() + ".json"});
+}
+
+ContextSelector::ContextSelector(
+    std::shared_ptr<const pfh::detail::AdmittedDataCatalogue> catalogue,
+    pfh::SearchSpace space, std::string input_title,
+    const ConfigurationForContext& configuration)
+    : catalogue_(std::move(catalogue)), space_(std::move(space)),
+      input_title_(std::move(input_title)) {
+    if (!catalogue_ || !configuration)
+        pfh::detail::binding_error("input_symbol", "context selector requires admitted data");
+    if (input_title_ != catalogue_->chart_input_title())
+        pfh::detail::binding_error("input_symbol", input_title_ + ": requires the chart binding");
+    const auto* dimension = space_.find(input_title_);
+    const auto* categorical = dimension ? std::get_if<pfh::CategoricalDimension>(dimension)
+                                        : nullptr;
+    if (!categorical)
+        pfh::detail::binding_error("input_symbol", input_title_ + ": requires categorical input");
+    choices_ = categorical->choices();
+    const auto& admitted_choices = catalogue_->choices(input_title_);
+    if (choices_.size() != admitted_choices.size())
+        pfh::detail::binding_error("input_symbol", input_title_ + ": choice domain differs");
+    for (std::size_t ordinal = 0; ordinal < choices_.size(); ++ordinal) {
+        const auto* value = std::get_if<std::string>(&choices_[ordinal]);
+        if (!value || *value != admitted_choices[ordinal])
+            pfh::detail::binding_error("input_symbol", input_title_ + ": choice order differs");
+        ordinal_contexts_.push_back(catalogue_->resolve(
+            input_title_, pfh::detail::SymbolChoiceOrdinal{static_cast<std::uint64_t>(ordinal)}));
+    }
+    configurations_.reserve(catalogue_->contexts().size());
+    for (const auto& context : catalogue_->contexts()) {
+        auto settings = configuration(context);
+        const auto& chart = context.identity;
+        const auto& facts = chart.syminfo;
+        const auto& info = settings.symbol_info;
+        if (settings.input_timeframe != chart.input_tf ||
+            settings.script_timeframe != chart.script_tf ||
+            settings.chart_timezone != chart.chart_timezone || !info ||
+            info->mintick != facts.mintick || info->pointvalue != facts.pointvalue ||
+            info->mincontract != facts.mincontract || info->timezone != facts.timezone ||
+            info->session != facts.session)
+            pfh::detail::binding_error(
+                "backtest", "execution settings differ from admitted dataset " + chart.id);
+        configurations_.push_back(std::move(settings));
+    }
+}
+
+pfh::detail::DataContextId ContextSelector::resolve(const pfh::Candidate& candidate) const {
+    if (!space_.is_valid(candidate))
+        pfh::detail::binding_error(
+            "input_symbol", "context selection requires a complete candidate");
+    const auto& value = candidate.values.at(input_title_);
+    const auto found = std::find(choices_.begin(), choices_.end(), value);
+    if (found == choices_.end())
+        pfh::detail::binding_error("input_symbol", input_title_ + ": unknown choice");
+    return ordinal_contexts_[static_cast<std::size_t>(found - choices_.begin())];
+}
+
+const pfh::BacktestConfiguration& ContextSelector::configuration(
+    pfh::detail::DataContextId id) const {
+    (void)catalogue_->context(id);
+    return configurations_.at(static_cast<std::size_t>(id.value));
 }
 
 PreparedStudy prepare(Options options) {
@@ -2585,14 +2689,28 @@ PreparedStudy prepare(Options options) {
     configuration.symbol_feeds = options.symbol_feeds;
     if (!options.syminfo.empty())
         configuration.symbol_info = read_symbol_info(options.syminfo);
+    const auto context_selector = options.context_selector;
     return {std::move(options), std::move(space), finite_cardinality, std::move(pruner),
             std::move(objective), std::move(constraints), std::move(recorded_metrics),
-            std::move(plugin), std::move(dataset), std::move(configuration)};
+            std::move(plugin), std::move(dataset), std::move(configuration), context_selector};
 }
 
-StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
-                      const StudyCallbacks& callbacks, StudyClock::time_point started) {
+struct TrialContextPlan {
+    TrialContextPlan(std::shared_ptr<const pfh::StrategyPlugin> plugin, pfh::DatasetView view,
+                     pfh::BacktestConfiguration configuration, const pfh::Pruner& pruner)
+        : executor(std::move(plugin), std::move(view), std::move(configuration)),
+          bar_counts(pruner.bar_counts(executor.view().size())) {}
+
+    const pfh::TrialExecutor executor;
+    const std::vector<std::size_t> bar_counts;
+};
+
+StudyResult run_study_contexts(
+    const PreparedStudy& prepared, std::optional<pfh::DatasetView> single_view,
+    std::shared_ptr<const ContextSelector> selector,
+    const StudyCallbacks& callbacks, StudyClock::time_point started) {
     auto options = prepared.options;
+    options.context_selector = std::move(selector);
     const auto& space = prepared.space;
     const auto& finite_cardinality = prepared.finite_cardinality;
     auto pruner = prepared.pruner;
@@ -2609,8 +2727,31 @@ StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
         throw pfh::TypedHpoError<std::invalid_argument>(
             "hpo_invariant", {},
             "wall or trial timeout requires outer publication and exit handlers");
-    const pfh::TrialExecutor executor(prepared.plugin, std::move(view), prepared.configuration);
-    const auto bar_counts = pruner.bar_counts(executor.view().size());
+    // All executors and their validation handles are prepared on the coordinator thread.
+    // Workers only borrow const plans; no shared configuration changes between trials.
+    std::vector<std::unique_ptr<const TrialContextPlan>> contexts;
+    if (options.context_selector) {
+        const auto& catalogue = options.context_selector->catalogue();
+        refuse_mapped_output_aliases(options, catalogue.binary_inputs());
+        catalogue.verify_unchanged();
+        contexts.reserve(catalogue.contexts().size());
+        for (const auto& context : catalogue.contexts()) {
+            contexts.push_back(std::make_unique<const TrialContextPlan>(
+                prepared.plugin, context.view, options.context_selector->configuration(context.id),
+                pruner));
+        }
+    } else {
+        contexts.push_back(std::make_unique<const TrialContextPlan>(
+            prepared.plugin, *single_view, prepared.configuration, pruner));
+    }
+    const auto context_for = [&](const TrialRecord& record) -> const TrialContextPlan& {
+        const auto id = record.data_context ? record.data_context->id.value : 0;
+        return *contexts.at(static_cast<std::size_t>(id));
+    };
+    const auto verify_bound_inputs = [&] {
+        if (options.context_selector)
+            options.context_selector->catalogue().verify_unchanged();
+    };
     pfh::EvaluationPolicy constraint_policy = options.evaluation_policy;
     constraint_policy.division_by_zero = pfh::DivisionByZeroPolicy::Reject;
     constraint_policy.non_finite_metric = pfh::NonFinitePolicy::Reject;
@@ -2638,11 +2779,14 @@ StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
                        std::exception_ptr failure) {
         if (callbacks.before_publish)
             callbacks.before_publish();
-        callbacks.timeout_publish(append_process_failure(
+        verify_bound_inputs();
+        const auto document = append_process_failure(
             render_results(options, space, finite_cardinality, completed, archive,
                            duplicate_proposals_skipped.load(),
                            stop_reason, no_improvement.snapshot(),
-                           rolling_log_ptr()), failure, 3));
+                           rolling_log_ptr()), failure, 3);
+        verify_bound_inputs();
+        callbacks.timeout_publish(document);
         if (auto* spool = archive.spool())
             spool->close();
         callbacks.timeout_exit(failure);
@@ -2686,14 +2830,16 @@ StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
                     break;
                 }
                 ++proposed;
-                batch.push_back(workers.submit([&, candidate = std::move(*candidate), cuts] {
-                    if (!state.begin(candidate)) {
-                        state.skip(candidate.id);
-                        return make_trial_record(candidate, options);
+                auto record = make_trial_record(*candidate, options);
+                batch.push_back(workers.submit([&, record = std::move(record), cuts] {
+                    if (!state.begin(record)) {
+                        state.skip(record.trial_id);
+                        return record;
                     }
-                    auto trial = evaluate_candidate(candidate, space, options, executor, objective,
-                                                    constraints, expressions, constraint_policy,
-                                                    pruner, bar_counts, cuts);
+                    const auto& context = context_for(record);
+                    auto trial = evaluate_candidate(
+                        record, space, options, context.executor, objective, constraints,
+                        expressions, constraint_policy, pruner, context.bar_counts, cuts);
                     state.finish(trial);
                     return trial;
                 }));
@@ -2785,17 +2931,18 @@ StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
             const auto cuts = pruner.cuts();
             rolling_log.note_proposal(candidate->id);
             ++proposed;
+            auto record = make_trial_record(*candidate, options);
             // Every task takes its finish number as its last step, whichever way it returns.
-            inflight.push_back(workers.submit([&, candidate = std::move(*candidate), cuts] {
-                if (!state.begin(candidate)) {
-                    state.skip(candidate.id);
-                    auto never_started = make_trial_record(candidate, options);
-                    rolling_finish.stamp(never_started.trial_id);
-                    return never_started;
+            inflight.push_back(workers.submit([&, record = std::move(record), cuts] {
+                if (!state.begin(record)) {
+                    state.skip(record.trial_id);
+                    rolling_finish.stamp(record.trial_id);
+                    return record;
                 }
-                auto trial = evaluate_candidate(candidate, space, options, executor, objective,
-                                                constraints, expressions, constraint_policy,
-                                                pruner, bar_counts, cuts);
+                const auto& context = context_for(record);
+                auto trial = evaluate_candidate(
+                    record, space, options, context.executor, objective, constraints,
+                    expressions, constraint_policy, pruner, context.bar_counts, cuts);
                 state.finish(trial);
                 rolling_finish.stamp(trial.trial_id);
                 return trial;
@@ -3000,6 +3147,7 @@ StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
     result.exit_code = progress_failure ? 1 : (archive.best_trial_id ? 0 : 2);
     if (callbacks.before_publish)
         callbacks.before_publish();
+    verify_bound_inputs();
     const auto json = append_process_failure(
         render_results(options, space, finite_cardinality, trials, archive,
                        duplicate_proposals_skipped.load(), stop_reason, early_stop,
@@ -3009,11 +3157,26 @@ StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
         capacity, workers.busy_seconds(), proposal_seconds, barrier_seconds,
         state.serialization_seconds(), state.progress_write_seconds(), state.progress_bytes(),
         render_start};
+    verify_bound_inputs();
     if (callbacks.publish)
         callbacks.publish(json, statistics);
     if (auto* spool = archive.spool())
         spool->close();
     return result;
+}
+
+StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
+                      const StudyCallbacks& callbacks, StudyClock::time_point started) {
+    return run_study_contexts(prepared, std::move(view), nullptr, callbacks, started);
+}
+
+StudyResult run_study(const PreparedStudy& prepared, const StudyCallbacks& callbacks,
+                      StudyClock::time_point started) {
+    if (!prepared.context_selector)
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_invariant", {}, "bound study requires an internally prepared context selector");
+    return run_study_contexts(
+        prepared, std::nullopt, prepared.context_selector, callbacks, started);
 }
 
 void publish(const Options& options, const pfh::detail::ResultDocument& json,
@@ -3060,7 +3223,7 @@ int run(Options options) {
     const auto prepared = prepare(std::move(options));
     StudyCallbacks callbacks;
     callbacks.cancelled = [] { return signal_cancelled.load(std::memory_order_relaxed); };
-    callbacks.before_publish = [&] { prepared.dataset->verify_unchanged(); };
+    callbacks.before_publish = [&] { prepared.verify_unchanged(); };
     callbacks.publish = [&](const pfh::detail::ResultDocument& json,
                             const StudyStatistics& statistics) {
         publish(prepared.options, json, statistics);

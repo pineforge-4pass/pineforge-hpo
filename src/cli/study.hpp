@@ -11,6 +11,7 @@
 #include "candidate_list.hpp"
 #include "continuation.hpp"
 #include "sobol_continuation.hpp"
+#include "symbol_bindings.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -31,6 +32,43 @@ namespace pineforge::hpo::cli {
 
 enum class Direction { kMaximize, kMinimize };
 enum class RowSpace : std::uint8_t { kFull, kHash, kNone };
+
+// Reserved integration seam for a verified public engine contract. No implementation is
+// supplied here: the current adapter cannot bind or attest primary ticker and quote currency.
+// Public bound admission must require this contract and apply it on every fresh handle.
+class PrimaryChartIdentityContract {
+public:
+    virtual ~PrimaryChartIdentityContract() = default;
+    virtual void require_supported(
+        const StrategyPlugin&, const detail::ChartSymbolFacts&) const = 0;
+    virtual void bind_and_verify(const StrategyPlugin&, pf_strategy_t,
+                                 const detail::ChartSymbolFacts&) const = 0;
+};
+
+// Internal callers supply admitted settings, never argv or a StudySpec field. Selection only
+// maps the complete candidate's categorical value to its declared ordinal and catalogue ID.
+// It consumes no sampler state and does not establish the primary-chart contract above.
+class ContextSelector final {
+public:
+    using ConfigurationForContext =
+        std::function<BacktestConfiguration(const detail::BoundTrialContext&)>;
+
+    ContextSelector(std::shared_ptr<const detail::AdmittedDataCatalogue> catalogue,
+                    SearchSpace space, std::string input_title,
+                    const ConfigurationForContext& configuration);
+
+    detail::DataContextId resolve(const Candidate& candidate) const;
+    const detail::AdmittedDataCatalogue& catalogue() const noexcept { return *catalogue_; }
+    const BacktestConfiguration& configuration(detail::DataContextId id) const;
+
+private:
+    std::shared_ptr<const detail::AdmittedDataCatalogue> catalogue_;
+    SearchSpace space_;
+    std::string input_title_;
+    std::vector<ParameterValue> choices_;
+    std::vector<detail::DataContextId> ordinal_contexts_;
+    std::vector<BacktestConfiguration> configurations_;
+};
 
 #ifdef PINEFORGE_HPO_PROOF_CURVES
 class ProofCurveWriter;
@@ -63,6 +101,8 @@ struct Options {
     std::filesystem::path symbol_feeds_spec;
     std::shared_ptr<const SymbolFeeds> symbol_feeds;
     std::optional<detail::Json> symbol_feeds_record;
+    // Supplied only by internal callers; no public parser constructs a selector.
+    std::shared_ptr<const ContextSelector> context_selector = nullptr;
     std::string objective;
     std::vector<std::string> constraints;
     std::vector<std::string> recorded_metrics;
@@ -141,6 +181,14 @@ struct PreparedStudy {
     std::shared_ptr<const StrategyPlugin> plugin;
     std::shared_ptr<const Dataset> dataset;
     BacktestConfiguration configuration;
+    std::shared_ptr<const ContextSelector> context_selector = nullptr;
+
+    void verify_unchanged() const {
+        if (context_selector)
+            context_selector->catalogue().verify_unchanged();
+        else
+            dataset->verify_unchanged();
+    }
 };
 
 using StudyClock = std::chrono::steady_clock;
@@ -186,6 +234,11 @@ PreparedStudy prepare(Options options);
 // Dataset with the same execution configuration. No process-global latch is read or reset here.
 StudyResult run_study(const PreparedStudy& prepared, DatasetView view,
                       const StudyCallbacks& callbacks = {},
+                      StudyClock::time_point started = StudyClock::now());
+
+// Internal bound entry point. The selector must already be prepared; the public run path
+// continues to use the single-view overload above.
+StudyResult run_study(const PreparedStudy& prepared, const StudyCallbacks& callbacks,
                       StudyClock::time_point started = StudyClock::now());
 
 }  // namespace pineforge::hpo::cli

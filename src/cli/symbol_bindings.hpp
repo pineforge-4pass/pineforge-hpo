@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -314,11 +315,15 @@ inline std::shared_ptr<const Dataset> load_bound_chart(const ChartDataDeclaratio
 // An empty list is refused here (exactly one chart role); Python returns an empty tuple for it.
 class AdmittedDataCatalogue final {
 public:
+    using ChartLoader =
+        std::function<std::shared_ptr<const Dataset>(const ChartDataDeclaration&)>;
+
     AdmittedDataCatalogue(const std::vector<ChartDataDeclaration>& declarations,
                           const std::vector<std::string>& referenced_dataset_ids,
                           const std::vector<SymbolBindingDeclaration>& bindings,
                           const DataContextSettings& settings,
-                          const std::set<std::string>& approved_alignment_modes) {
+                          const std::set<std::string>& approved_alignment_modes,
+                          ChartLoader load_chart = load_bound_chart) {
         std::map<std::string, ChartDataDeclaration> datasets;
         for (const auto& declaration : declarations) {
             auto normalized = normalized_chart(declaration);
@@ -345,6 +350,8 @@ public:
                 binding.role != SymbolBindingRole::Request)
                 binding_error("input_symbol", where + ": unknown role");
             charts += binding.role == SymbolBindingRole::Chart ? 1 : 0;
+            if (binding.role == SymbolBindingRole::Chart)
+                chart_input_title_ = binding.input_title;
             std::set<std::string> domain;
             auto choices = array_json();
             for (const auto& choice : binding.choices) {
@@ -418,7 +425,9 @@ public:
         contexts_.reserve(references.size());
         for (const auto& id : references) {
             const auto& declaration = datasets.at(id);
-            const auto owner = load_bound_chart(declaration);
+            const auto owner = load_chart(declaration);
+            if (!owner || owner->empty())
+                binding_dataset_error("dataset " + id + ": chart must not be empty");
             const auto values = chart_values_sha256(*owner);
             const DataContextId context_id{static_cast<std::uint64_t>(contexts_.size())};
             ids.emplace(id, context_id);
@@ -503,6 +512,27 @@ public:
         return contexts_[static_cast<std::size_t>(id.value)];
     }
 
+    const std::vector<BoundTrialContext>& contexts() const noexcept { return contexts_; }
+    const std::string& chart_input_title() const noexcept { return chart_input_title_; }
+
+    const std::vector<std::string>& choices(const std::string& input_title) const {
+        const auto found = choices_.find(input_title);
+        if (found == choices_.end())
+            binding_error("input_symbol", "unknown binding input " + input_title);
+        return found->second;
+    }
+
+    std::vector<std::filesystem::path> binary_inputs() const {
+        std::vector<std::filesystem::path> inputs;
+        for (const auto& context : contexts_) {
+            if (context.identity.format == ChartDataFormat::Binary) {
+                inputs.push_back(context.identity.path);
+                inputs.emplace_back(context.identity.path.string() + ".json");
+            }
+        }
+        return inputs;
+    }
+
     const std::string& canonical_descriptor() const noexcept { return descriptor_; }
     const std::string& data_context_sha256() const noexcept { return digest_; }
 
@@ -515,6 +545,7 @@ private:
     std::vector<BoundTrialContext> contexts_;
     std::map<std::string, std::vector<DataContextId>> selectors_;
     std::map<std::string, std::vector<std::string>> choices_;
+    std::string chart_input_title_;
     std::string descriptor_;
     std::string digest_;
 };
