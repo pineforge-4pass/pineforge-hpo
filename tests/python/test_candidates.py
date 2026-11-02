@@ -22,8 +22,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-from native_run_mock import native_completion
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
 sys.path.insert(0, str(ROOT / "external" / "pineforge-codegen-oss"))
@@ -318,7 +316,7 @@ class CandidatesRouteTests(unittest.TestCase):
 
     # ---- run route ---------------------------------------------------------------------------
 
-    @mock.patch("pineforge_hpo.cli._run_native")
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_relays_the_native_document_unchanged(
         self, builder: mock.Mock, run: mock.Mock
@@ -343,10 +341,8 @@ class CandidatesRouteTests(unittest.TestCase):
             "sampler": "candidates",
             "candidate_list": block,
         }
-        run.side_effect = native_completion(
-            subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
-            )
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
         )
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -365,7 +361,7 @@ class CandidatesRouteTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertIn("--candidates", command)
 
-    @mock.patch("pineforge_hpo.cli._run_native")
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_native_admission_failure_is_relayed_not_reinterpreted(
         self, builder: mock.Mock, run: mock.Mock
@@ -382,13 +378,11 @@ class CandidatesRouteTests(unittest.TestCase):
                 "exit_code": 1,
             },
         }
-        run.side_effect = native_completion(
-            subprocess.CompletedProcess(
-                args=[],
-                returncode=1,
-                stdout=json.dumps(failure),
-                stderr="candidate list is empty",
-            )
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=json.dumps(failure),
+            stderr="candidate list is empty",
         )
         stdout = io.StringIO()
         with (
@@ -424,7 +418,7 @@ class CandidatesRouteTests(unittest.TestCase):
             )
         builder.return_value.build.assert_not_called()
 
-    @mock.patch("pineforge_hpo.cli._run_native")
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_patience_is_left_to_native(
         self, builder: mock.Mock, run: mock.Mock
@@ -441,10 +435,8 @@ class CandidatesRouteTests(unittest.TestCase):
                 "exit_code": 1,
             },
         }
-        run.side_effect = native_completion(
-            subprocess.CompletedProcess(
-                args=[], returncode=1, stdout=json.dumps(failure), stderr="usage"
-            )
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout=json.dumps(failure), stderr="usage"
         )
         with (
             contextlib.redirect_stdout(io.StringIO()),

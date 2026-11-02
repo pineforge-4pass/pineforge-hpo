@@ -24,8 +24,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-from native_run_mock import native_completion
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
 sys.path.insert(0, str(ROOT / "external" / "pineforge-codegen-oss"))
@@ -335,7 +333,7 @@ class SobolRouteTests(unittest.TestCase):
 
     # ---- run route -----------------------------------------------------------------------------
 
-    @mock.patch("pineforge_hpo.cli._run_native")
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_the_native_sobol_block_is_relayed_unchanged(
         self, builder: mock.Mock, run: mock.Mock
@@ -361,10 +359,8 @@ class SobolRouteTests(unittest.TestCase):
             "sampler": "sobol",
             "sobol": block,
         }
-        run.side_effect = native_completion(
-            subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
-            )
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
         )
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -381,7 +377,7 @@ class SobolRouteTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["sobol"], block)
 
-    @mock.patch("pineforge_hpo.cli._run_native")
+    @mock.patch("pineforge_hpo.cli.subprocess.run")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_native_refusals_are_relayed_with_their_registered_codes(
         self, builder: mock.Mock, run: mock.Mock
@@ -406,13 +402,11 @@ class SobolRouteTests(unittest.TestCase):
                         "exit_code": exit_code,
                     },
                 }
-                run.side_effect = native_completion(
-                    subprocess.CompletedProcess(
-                        args=[],
-                        returncode=exit_code,
-                        stdout=json.dumps(failure),
-                        stderr="native diagnostic",
-                    )
+                run.return_value = subprocess.CompletedProcess(
+                    args=[],
+                    returncode=exit_code,
+                    stdout=json.dumps(failure),
+                    stderr="native diagnostic",
                 )
                 stdout, stderr = io.StringIO(), io.StringIO()
                 with (
