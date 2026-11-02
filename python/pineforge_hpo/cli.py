@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import ctypes
 import hashlib
 import json
+import locale
 import math
 import os
 from pathlib import Path
@@ -14,7 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, Mapping, Sequence
+from typing import Any, BinaryIO, Iterator, Mapping, Sequence
 
 from . import __version__
 from .artifact import ArtifactBuildError, ArtifactBuilder, StrategyArtifact
@@ -1203,7 +1205,402 @@ def prepare_run(
     return command, artifact
 
 
+_RUN_CHUNK_BYTES_DEFAULT = 64 * 1024
+_RUN_DIAGNOSTIC_BYTES_DEFAULT = 64 * 1024
+_JSON_STRING_SPECIAL = re.compile(rb'["\\\x00-\x1f]')
+_JSON_WHITESPACE = re.compile(rb"[ \t\r\n]*")
+_JSON_TOKEN_END = re.compile(rb"[ \t\r\n,\]}]")
+
+
+class _ResultJson:
+    """Seekable JSON reader; arrays and even checkpoint strings stay on disk.
+
+    Only an object's member names and file spans are indexed for sorting. Native
+    result/trial objects have a fixed schema; no index is built for array entries.
+    Rendering uses the previous json.dumps(indent=2, sort_keys=True) spelling.
+    """
+
+    def __init__(
+        self, source: BinaryIO, *, chunk_bytes: int, diagnostic_bytes: int
+    ) -> None:
+        self.source = source
+        self.chunk_bytes = chunk_bytes
+        self.diagnostic_bytes = diagnostic_bytes
+        self.buffer = b""
+        self.buffer_start = source.tell()
+        self.position = 0
+
+    def tell(self) -> int:
+        return self.buffer_start + self.position
+
+    def seek(self, offset: int) -> None:
+        if self.buffer_start <= offset <= self.buffer_start + len(self.buffer):
+            self.position = offset - self.buffer_start
+            return
+        self.source.seek(offset)
+        self.buffer = b""
+        self.buffer_start = offset
+        self.position = 0
+
+    def peek(self) -> bytes:
+        if self.position == len(self.buffer):
+            # Retain nearby keys when a small object crosses a refill boundary.
+            retained = self.buffer[-(self.chunk_bytes // 2) :]
+            self.buffer_start += len(self.buffer) - len(retained)
+            self.buffer = retained + self.source.read(self.chunk_bytes - len(retained))
+            self.position = len(retained)
+        return self.buffer[self.position : self.position + 1]
+
+    def invalid(self, message: str) -> None:
+        raise json.JSONDecodeError(message, "", self.tell())
+
+    def take(self, expected: bytes) -> None:
+        if self.peek() != expected:
+            self.invalid(f"Expecting {expected.decode('ascii')!r}")
+        self.position += 1
+
+    def whitespace(self) -> None:
+        while self.peek():
+            match = _JSON_WHITESPACE.match(self.buffer, self.position)
+            self.position = match.end()
+            if self.position != len(self.buffer):
+                break
+
+    def string_chunks(self) -> Iterator[str]:
+        self.take(b'"')
+        decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))()
+        while self.peek():
+            match = _JSON_STRING_SPECIAL.search(self.buffer, self.position)
+            end = match.start() if match else len(self.buffer)
+            if end != self.position:
+                text = decoder.decode(self.buffer[self.position : end])
+                self.position = end
+                yield text
+                continue
+            special = self.peek()
+            self.position += 1
+            yield decoder.decode(b"", final=True)
+            decoder.reset()
+            if special == b'"':
+                return
+            if special != b"\\":
+                self.invalid("Invalid control character")
+            escape = self.peek()
+            if not escape:
+                self.invalid("Unterminated string")
+            self.position += 1
+            raw = b"\\" + escape
+            if escape == b"u":
+                for _ in range(4):
+                    digit = self.peek()
+                    if not digit:
+                        self.invalid("Invalid \\uXXXX escape")
+                    raw += digit
+                    self.position += 1
+            yield json.loads((b'"' + raw + b'"').decode("ascii"))
+        self.invalid("Unterminated string")
+
+    def scalar(self) -> Any:
+        raw = bytearray()
+        while self.peek():
+            match = _JSON_TOKEN_END.search(self.buffer, self.position)
+            end = match.start() if match else len(self.buffer)
+            raw.extend(self.buffer[self.position : end])
+            self.position = end
+            if len(raw) > self.diagnostic_bytes:
+                self.invalid("Oversized native JSON scalar")
+            if match:
+                break
+        return json.loads(raw.decode("ascii"))
+
+    def skip(self) -> None:
+        self.whitespace()
+        kind = self.peek()
+        if kind == b'"':
+            for _ in self.string_chunks():
+                pass
+        elif kind in (b"{", b"["):
+            self.position += 1
+            closing = b"}" if kind == b"{" else b"]"
+            self.whitespace()
+            if self.peek() == closing:
+                self.position += 1
+                return
+            while True:
+                if kind == b"{":
+                    for _ in self.string_chunks():
+                        pass
+                    self.whitespace()
+                    self.take(b":")
+                self.skip()
+                self.whitespace()
+                if self.peek() == closing:
+                    self.position += 1
+                    return
+                self.take(b",")
+                self.whitespace()
+        else:
+            self.scalar()
+
+    def bounded_value(self, span: tuple[int, int]) -> Any:
+        begin, end = span
+        if end - begin > self.diagnostic_bytes:
+            raise ValueError("oversized native failure metadata")
+        self.seek(begin)
+        raw = bytearray()
+        while self.tell() < end:
+            if not self.peek():
+                self.invalid("Unexpected end of native JSON value")
+            count = min(end - self.tell(), len(self.buffer) - self.position)
+            raw.extend(self.buffer[self.position : self.position + count])
+            self.position += count
+        return json.loads(raw.decode(locale.getpreferredencoding(False)))
+
+    def members(self) -> dict[str, tuple[int, int]]:
+        self.take(b"{")
+        members = {}
+        self.whitespace()
+        if self.peek() == b"}":
+            self.position += 1
+            return members
+        while True:
+            begin = self.tell()
+            for _ in self.string_chunks():
+                pass
+            end = self.tell()
+            name = self.bounded_value((begin, end))
+            self.seek(end)
+            self.whitespace()
+            self.take(b":")
+            self.whitespace()
+            begin = self.tell()
+            self.skip()
+            members[name] = (begin, self.tell())
+            self.whitespace()
+            if self.peek() == b"}":
+                self.position += 1
+                return members
+            self.take(b",")
+            self.whitespace()
+
+    def finish(self) -> None:
+        self.whitespace()
+        if self.peek():
+            self.invalid("Extra data")
+
+    def render(
+        self,
+        output: BinaryIO,
+        level: int = 0,
+        overrides: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.whitespace()
+        kind = self.peek()
+        indent = b"  " * level
+        if kind == b"{":
+            members = self.members()
+            end = self.tell()
+            names = sorted(members.keys() | (overrides or {}).keys())
+            output.write(b"{")
+            for index, name in enumerate(names):
+                output.write(b",\n" if index else b"\n")
+                output.write(indent + b"  " + json.dumps(name).encode("ascii") + b": ")
+                if overrides is not None and name in overrides:
+                    encoder = json.JSONEncoder(
+                        indent=2, sort_keys=True, allow_nan=False
+                    )
+                    padding = "\n" + "  " * (level + 1)
+                    for chunk in encoder.iterencode(overrides[name]):
+                        output.write(chunk.replace("\n", padding).encode("ascii"))
+                else:
+                    self.seek(members[name][0])
+                    self.render(output, level + 1)
+            if names:
+                output.write(b"\n" + indent)
+            output.write(b"}")
+            self.seek(end)
+        elif kind == b"[":
+            self.position += 1
+            output.write(b"[")
+            self.whitespace()
+            if self.peek() != b"]":
+                output.write(b"\n")
+                while True:
+                    output.write(indent + b"  ")
+                    self.render(output, level + 1)
+                    self.whitespace()
+                    if self.peek() == b"]":
+                        output.write(b"\n" + indent)
+                        break
+                    self.take(b",")
+                    output.write(b",\n")
+            self.take(b"]")
+            output.write(b"]")
+        elif kind == b'"':
+            output.write(b'"')
+            for text in self.string_chunks():
+                output.write(json.dumps(text)[1:-1].encode("ascii"))
+            output.write(b'"')
+        else:
+            output.write(json.dumps(self.scalar(), allow_nan=False).encode("ascii"))
+
+
+def _run_native(
+    command: Sequence[str],
+    stdout: BinaryIO,
+    inherited_fds: tuple[int, ...],
+    *,
+    chunk_bytes: int,
+    diagnostic_bytes: int,
+) -> subprocess.CompletedProcess:
+    # stdout cannot fill a pipe; drain stderr while the child runs, retaining only
+    # the requested prefix. Do not use communicate(), which accumulates pipe contents.
+    captured = bytearray()
+    truncated = False
+    with subprocess.Popen(
+        command,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        **({"pass_fds": inherited_fds} if inherited_fds else {}),
+    ) as process:
+        assert process.stderr is not None
+        try:
+            while chunk := process.stderr.read(chunk_bytes):
+                remaining = diagnostic_bytes - len(captured)
+                captured.extend(chunk[:remaining])
+                truncated |= len(chunk) > remaining
+            process.wait()
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+    decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))()
+    diagnostic = decoder.decode(captured, final=not truncated)
+    diagnostic = diagnostic.replace("\r\n", "\n").replace("\r", "\n")
+    if truncated:
+        diagnostic += "\n[native stderr truncated]"
+    return subprocess.CompletedProcess(command, process.returncode, stderr=diagnostic)
+
+
+def _stdout_diagnostic(source: BinaryIO, *, diagnostic_bytes: int) -> str:
+    source.seek(0)
+    raw = source.read(diagnostic_bytes)
+    decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))()
+    return decoder.decode(raw).strip()
+
+
+def _copy_run_stdout(source: BinaryIO, *, chunk_bytes: int) -> None:
+    source.seek(0)
+    binary = getattr(sys.stdout, "buffer", None)
+    if binary is not None:
+        sys.stdout.flush()
+        while chunk := source.read(chunk_bytes):
+            binary.write(chunk)
+        binary.flush()
+    else:
+        # redirect_stdout(StringIO) and other text-only library callers.
+        decoder = codecs.getincrementaldecoder(locale.getpreferredencoding(False))()
+        while chunk := source.read(chunk_bytes):
+            sys.stdout.write(decoder.decode(chunk))
+        sys.stdout.write(decoder.decode(b"", final=True))
+
+
+def _write_run_output(path: Path, source: BinaryIO, *, chunk_bytes: int) -> None:
+    try:
+        path = path.expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", dir=path.parent
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                source.seek(0)
+                shutil.copyfileobj(source, output, chunk_bytes)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+    except OSError as error:
+        raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
+
+
+def _native_run_error(
+    completed: subprocess.CompletedProcess,
+    source: BinaryIO,
+    *,
+    chunk_bytes: int,
+    diagnostic_bytes: int,
+) -> CliError:
+    detail = (
+        completed.stderr.strip()
+        or _stdout_diagnostic(source, diagnostic_bytes=diagnostic_bytes)
+        or "no diagnostics"
+    )
+    error = CliError(f"native runner failed with exit {completed.returncode}: {detail}")
+    try:
+        reader = _ResultJson(
+            source, chunk_bytes=chunk_bytes, diagnostic_bytes=diagnostic_bytes
+        )
+        reader.seek(0)
+        reader.whitespace()
+        members = reader.members()
+        reader.finish()
+        reader.seek(members["failure"][0])
+        failure = reader.members()
+        origin = reader.bounded_value(failure["origin"])
+        code = reader.bounded_value(failure["code"])
+        try:
+            failure_args = reader.bounded_value(failure["args"])
+        except ValueError:
+            # A process failure can follow an arbitrarily large trials array.
+            # failure_json.hpp bounds engine input args at 16 KiB, but does not
+            # bound every HPO argument. Oversized args must not discard a code.
+            failure_args = None
+        if failure_args is not None and (
+            not isinstance(failure_args, dict)
+            or any(
+                not isinstance(value, (str, int, float, bool, type(None)))
+                or isinstance(value, float)
+                and not math.isfinite(value)
+                for value in failure_args.values()
+            )
+        ):
+            failure_args = None
+        if origin not in {"hpo", "engine"} or not isinstance(code, (str, type(None))):
+            raise ValueError("invalid failure metadata")
+        error.with_failure(code, failure_args, origin)
+    except (ValueError, KeyError, TypeError):
+        error.with_failure("hpo_unclassified_error", {})
+    return error
+
+
+def _run_byte_bound(value: str | int, option: str, minimum: int) -> int:
+    try:
+        raw = str(value)
+        if not raw.isascii() or not raw.isdecimal():
+            raise ValueError
+        number = int(raw)
+        if number < minimum or number > sys.maxsize:
+            raise ValueError
+    except ValueError as error:
+        raise _cli_error(
+            "hpo_cli_usage",
+            {},
+            f"{option} must be an integer of at least {minimum} "
+            f"and at most {sys.maxsize}",
+        ) from error
+    return number
+
+
 def _run(args: argparse.Namespace) -> int:
+    # A chunk of 1 retains the entire buffer through the [-0:] slice in peek().
+    chunk_bytes = _run_byte_bound(args.result_chunk_bytes, "--result-chunk-bytes", 2)
+    # Every diagnostic read needs a positive size; no retention slice uses this bound.
+    diagnostic_bytes = _run_byte_bound(args.diagnostic_bytes, "--diagnostic-bytes", 1)
     jailed = "PF_SCRATCH_ARENA_FD" in os.environ
     if jailed and args.progress_fd == 5:
         raise _cli_error(
@@ -1236,88 +1633,117 @@ def _run(args: argparse.Namespace) -> int:
         command.extend(("--best-k", args.best_k))
     if args.no_improvement_trials:
         command.extend(("--no-improvement-trials", str(args.no_improvement_trials)))
+    # Share the explicit output parent in the jailed profile. Otherwise honor
+    # non-empty TMPDIR; neither choice is retried elsewhere on failure.
+    directory = os.environ.get("TMPDIR") or "/tmp"
     if jailed and args.output:
         # The native trial spool needs the writable output parent even though Python
         # adds metadata and publishes the final document after the child returns.
-        command.extend(("--output", str(Path(args.output).expanduser().resolve())))
+        output_path = Path(args.output).expanduser().resolve()
+        command.extend(("--output", str(output_path)))
+        directory = str(output_path.parent)
     inherited_fds = (args.progress_fd,) if args.progress_fd is not None else ()
     if jailed:
         inherited_fds = tuple(dict.fromkeys((*inherited_fds, 5)))
     try:
-        completed = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            check=False,
-            **({"pass_fds": inherited_fds} if inherited_fds else {}),
-        )
+        stdout = tempfile.TemporaryFile(prefix="pineforge-hpo-run-", dir=directory)
     except OSError as error:
-        raise _cli_error(
-            "hpo_toolchain_unavailable",
-            {"reason": "native_runner"},
-            f"cannot start native runner: {error}",
-        ) from error
-    if completed.returncode in {WARM_START_EXIT, SPACE_EXHAUSTED_EXIT}:
-        print(completed.stderr.strip(), file=sys.stderr)
-        if completed.stdout.strip():
-            print(completed.stdout, end="")
-        return completed.returncode
-    if completed.returncode not in {0, 2}:
-        detail = (
-            completed.stderr.strip() or completed.stdout.strip() or "no diagnostics"
-        )
-        error = CliError(
-            f"native runner failed with exit {completed.returncode}: {detail}"
-        )
-        try:
-            failure = json.loads(completed.stdout)["failure"]
-            failure_args = failure["args"]
-            if failure_args is not None and (
-                not isinstance(failure_args, dict)
-                or any(
-                    not isinstance(value, (str, int, float, bool, type(None)))
-                    or isinstance(value, float)
-                    and not math.isfinite(value)
-                    for value in failure_args.values()
-                )
-            ):
-                failure_args = None
-            if failure["origin"] not in {"hpo", "engine"} or not isinstance(
-                failure["code"], (str, type(None))
-            ):
-                raise ValueError("invalid failure metadata")
-            error.with_failure(failure["code"], failure_args, failure["origin"])
-        except (ValueError, KeyError, TypeError):
-            error.with_failure("hpo_unclassified_error", {})
-        raise error
+        raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
     try:
-        result = json.loads(completed.stdout)
-    except json.JSONDecodeError as error:
-        raise _cli_error(
-            "hpo_plugin_invalid",
-            {"reason": "validation"},
-            f"native runner returned invalid JSON: {error}",
-        ) from error
-    if not isinstance(result, dict):
-        raise _cli_error(
-            "hpo_plugin_invalid",
-            {"reason": "validation"},
-            "native runner returned a non-object JSON result",
-        )
-
-    dataset_id = study.strategy.dataset_ids[0]
-    result.update(
-        {
-            "study": str(study.spec_path),
-            "strategy_id": study.strategy.id,
-            "dataset_id": dataset_id,
-            "artifact": artifact,
-        }
-    )
-    if args.output:
-        _write_json(Path(args.output), result)
-    print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
-    return completed.returncode
+        try:
+            completed = _run_native(
+                command,
+                stdout,
+                inherited_fds,
+                chunk_bytes=chunk_bytes,
+                diagnostic_bytes=diagnostic_bytes,
+            )
+        except OSError as error:
+            raise _cli_error(
+                "hpo_toolchain_unavailable",
+                {"reason": "native_runner"},
+                f"cannot start native runner: {error}",
+            ) from error
+        if completed.returncode in {WARM_START_EXIT, SPACE_EXHAUSTED_EXIT}:
+            print(completed.stderr.strip(), file=sys.stderr, flush=True)
+            stdout.seek(0)
+            if any(
+                chunk.strip() for chunk in iter(lambda: stdout.read(chunk_bytes), b"")
+            ):
+                _copy_run_stdout(stdout, chunk_bytes=chunk_bytes)
+            return completed.returncode
+        if completed.returncode not in {0, 2}:
+            raise _native_run_error(
+                completed,
+                stdout,
+                chunk_bytes=chunk_bytes,
+                diagnostic_bytes=diagnostic_bytes,
+            )
+        try:
+            rendered = tempfile.TemporaryFile(
+                prefix="pineforge-hpo-run-", dir=directory
+            )
+        except OSError as error:
+            raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
+        try:
+            reader = _ResultJson(
+                stdout, chunk_bytes=chunk_bytes, diagnostic_bytes=diagnostic_bytes
+            )
+            reader.seek(0)
+            try:
+                reader.whitespace()
+                if reader.peek() != b"{":
+                    reader.skip()
+                    reader.finish()
+                    raise _cli_error(
+                        "hpo_plugin_invalid",
+                        {"reason": "validation"},
+                        "native runner returned a non-object JSON result",
+                    )
+                reader.render(
+                    rendered,
+                    overrides={
+                        "study": str(study.spec_path),
+                        "strategy_id": study.strategy.id,
+                        "dataset_id": study.strategy.dataset_ids[0],
+                        "artifact": artifact,
+                    },
+                )
+                reader.finish()
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                # Preserve the stdlib diagnostic for small malformed documents,
+                # without ever giving json.loads an unbounded result.
+                detail = error
+                if stdout.seek(0, os.SEEK_END) <= diagnostic_bytes:
+                    stdout.seek(0)
+                    try:
+                        json.loads(
+                            stdout.read(diagnostic_bytes).decode(
+                                locale.getpreferredencoding(False)
+                            )
+                        )
+                    except (json.JSONDecodeError, UnicodeDecodeError) as original:
+                        detail = original
+                raise _cli_error(
+                    "hpo_plugin_invalid",
+                    {"reason": "validation"},
+                    f"native runner returned invalid JSON: {detail}",
+                ) from error
+            except OSError as error:
+                raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
+            try:
+                rendered.write(b"\n")
+                rendered.flush()
+            except OSError as error:
+                raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
+            if args.output:
+                _write_run_output(Path(args.output), rendered, chunk_bytes=chunk_bytes)
+            _copy_run_stdout(rendered, chunk_bytes=chunk_bytes)
+            return completed.returncode
+        finally:
+            rendered.close()
+    finally:
+        stdout.close()
 
 
 def _space_info(args: argparse.Namespace) -> int:
@@ -1417,6 +1843,18 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument("study", help="StudySpec JSON path")
     run_parser.add_argument("--native", help="pineforge-hpo-native executable")
     run_parser.add_argument("--output", help="write the final JSON result atomically")
+    run_parser.add_argument(
+        "--result-chunk-bytes",
+        default=_RUN_CHUNK_BYTES_DEFAULT,
+        metavar="N",
+        help="result and stderr read/copy chunk bytes (minimum 2; default 65536)",
+    )
+    run_parser.add_argument(
+        "--diagnostic-bytes",
+        default=_RUN_DIAGNOSTIC_BYTES_DEFAULT,
+        metavar="N",
+        help="stderr, failure field and scalar byte cap (minimum 1; default 65536)",
+    )
     run_parser.add_argument(
         "--symbol-feeds",
         help="other-symbol CSV index (overrides work.json symbol_feeds)",
