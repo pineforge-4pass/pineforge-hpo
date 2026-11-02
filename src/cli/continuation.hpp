@@ -465,6 +465,131 @@ inline std::string candidate_key(const Candidate& candidate) {
     return dump_json(result);
 }
 
+// An internal caller supplies the exact descriptor of its already admitted catalogue.
+// This contract performs no data loading, engine admission or sampler work.
+class ContinuationDataContext final {
+public:
+    explicit ContinuationDataContext(const std::string& descriptor)
+        : descriptor_(parse_json(descriptor, descriptor.size())),
+          canonical_descriptor_(dump_json(descriptor_)) {
+        if (field(descriptor_, "schema").text() != "pineforge-hpo-data-context/v1" ||
+            field(descriptor_, "datasets").kind != Json::Kind::Object ||
+            field(descriptor_, "datasets").members.empty() ||
+            field(descriptor_, "bindings").kind != Json::Kind::Object)
+            throw WarmStartError("invalid admitted data context");
+        for (const auto& dataset : field(descriptor_, "datasets").members)
+            dataset_ids_.insert(dataset.first);
+        constexpr char domain[] = "pineforge:hpo:data-context:v1";
+        digest_ = sha256(std::string(domain, sizeof(domain)) + canonical_descriptor_);
+    }
+
+    const std::string& canonical_descriptor() const noexcept { return canonical_descriptor_; }
+    const std::string& data_context_sha256() const noexcept { return digest_; }
+    const std::set<std::string>& dataset_ids() const noexcept { return dataset_ids_; }
+
+    void validate_owner(const Json& owner, bool required = false, bool complete = false) const {
+        const auto* digest = owner.find("data_context_sha256");
+        if ((required || digest) && (!digest || digest->text() != digest_))
+            throw WarmStartError("missing or differing data_context_sha256");
+        const auto* ids = owner.find("dataset_ids");
+        if (complete || ids) {
+            if (!ids || ids->kind != Json::Kind::Array)
+                throw WarmStartError("missing or differing dataset_ids");
+            std::set<std::string> actual;
+            for (const auto& id : ids->items) {
+                if (!actual.insert(id.text()).second)
+                    throw WarmStartError("duplicate dataset_ids");
+            }
+            if (actual != dataset_ids_)
+                throw WarmStartError("missing or differing dataset_ids");
+        }
+        const auto* runtime = owner.find("applied_runtime");
+        const auto* descriptor = runtime ? runtime->find("data_context") : nullptr;
+        if (complete || descriptor) {
+            if (!descriptor || dump_json(*descriptor) != canonical_descriptor_)
+                throw WarmStartError("missing or differing data context descriptor");
+        }
+        if (const auto* direct = owner.find("data_context");
+            direct && dump_json(*direct) != canonical_descriptor_)
+            throw WarmStartError("differing data context descriptor");
+        if (const auto* id = owner.find("dataset_id");
+            complete && id && id->kind != Json::Kind::Null)
+            throw WarmStartError("bound result cannot declare one global dataset_id");
+    }
+
+    Json row_identity(const Json& parameters) const {
+        const Json* chart = nullptr;
+        std::string title;
+        for (const auto& binding : field(descriptor_, "bindings").members) {
+            if (field(binding.second, "role").text() == "chart") {
+                if (chart)
+                    throw WarmStartError("data context requires one chart binding");
+                title = binding.first;
+                chart = &binding.second;
+            }
+        }
+        if (!chart)
+            throw WarmStartError("data context requires one chart binding");
+        const auto& symbol = field(parameters, title);
+        const auto& choices = field(*chart, "choices");
+        if (symbol.kind != Json::Kind::String || choices.kind != Json::Kind::Array ||
+            std::none_of(choices.items.begin(), choices.items.end(), [&](const auto& choice) {
+                return choice.kind == Json::Kind::String && choice.text() == symbol.text();
+            }))
+            throw WarmStartError("trial symbol is outside the admitted binding");
+        const auto& id = field(field(*chart, "datasets"), symbol.text());
+        const auto& dataset = field(field(descriptor_, "datasets"), id.text());
+        if (field(dataset, "symbol").text() != symbol.text())
+            throw WarmStartError("trial binding contradicts dataset symbol");
+        auto result = object_json();
+        result.members = {{"symbol", symbol}, {"dataset_id", id},
+                          {"data_context_sha256", Json::string(digest_)}};
+        return result;
+    }
+
+    void annotate_row(Json& row) const {
+        const auto identity = row_identity(field(row, "parameters"));
+        for (const auto& item : identity.members)
+            row.members[item.first] = item.second;
+    }
+
+    void validate_row(const Json& row) const {
+        validate_owner(row, true);
+        const auto identity = row_identity(field(row, "parameters"));
+        for (const auto& item : identity.members) {
+            const auto* value = row.find(item.first);
+            if (!value || value->kind != Json::Kind::String || value->text() != item.second.text())
+                throw WarmStartError(
+                    "trial symbol or dataset_id contradicts its parameters and binding");
+        }
+    }
+
+private:
+    Json descriptor_;
+    std::string canonical_descriptor_;
+    std::string digest_;
+    std::set<std::string> dataset_ids_;
+};
+
+inline bool has_warm_data_context(const Json& owner) {
+    const auto* runtime = owner.find("applied_runtime");
+    const auto* space = owner.find("space");
+    return owner.find("data_context_sha256") || owner.find("data_context") ||
+        owner.find("dataset_ids") || (runtime && runtime->find("data_context")) ||
+        (owner.find("parameters") && owner.find("symbol") && owner.find("dataset_id")) ||
+        (space && has_warm_data_context(*space));
+}
+
+inline void validate_warm_data_context(const Json& owner, const ContinuationDataContext* context,
+                                       bool required = false, bool complete = false) {
+    if (context)
+        context->validate_owner(owner, required, complete);
+    else if (has_warm_data_context(owner))
+        throw WarmStartError("bound parent requires a data context; binding cannot be dropped");
+    if (const auto* space = owner.find("space"))
+        validate_warm_data_context(*space, context);
+}
+
 inline std::string read_document(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input)
@@ -498,6 +623,7 @@ struct WarmHistory {
     std::uint64_t feasible = 0;
     std::uint64_t next_id = 0;
     std::shared_ptr<const BinaryWarmSource> binary;
+    std::optional<ContinuationDataContext> data_context;
 
     std::uint64_t size() const;
     std::uint64_t tried_count() const;
@@ -508,8 +634,11 @@ struct WarmHistory {
 };
 
 inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
-                                     const SearchSpace& space, const Json& current_space) {
+                                     const SearchSpace& space, const Json& current_space,
+                                     const ContinuationDataContext* data_context = nullptr) {
     WarmHistory history;
+    if (data_context)
+        history.data_context = *data_context;
     if (path.empty())
         return history;
     try {
@@ -523,6 +652,7 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
         const Json* parent_space = nullptr;
         std::optional<Json> legacy_space;
         if (document && document->kind == Json::Kind::Object && document->find("trials")) {
+            validate_warm_data_context(*document, data_context, true, data_context != nullptr);
             if (const auto* state = document->find("tpe_sampler_state")) {
                 history.sampler_state = state->text();
                 const auto& checkpoint = history.sampler_state;
@@ -597,11 +727,12 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
             throw TypedHpoError<std::runtime_error>(
                 "hpo_study_spec_invalid", {{"reason", "study"}},
                 "search space or objective differs (space_hash)");
-        if (parent_space)
+        if (parent_space && (!data_context || parent_space->find("symbol_feeds")))
             validate_symbol_feeds_identity(parent_space->find("symbol_feeds"), current_space);
         if (document && document->kind == Json::Kind::Object) {
             if (const auto* runtime = document->find("applied_runtime")) {
-                validate_symbol_feeds_identity(runtime->find("symbol_feeds"), current_space);
+                if (!data_context || runtime->find("symbol_feeds"))
+                    validate_symbol_feeds_identity(runtime->find("symbol_feeds"), current_space);
             }
             if (const auto* digest = document->find("runtime_sha256")) {
                 if (digest->text() != symbol_feeds_identity(current_space.find("symbol_feeds")))
@@ -627,7 +758,7 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
                 throw TypedHpoError<std::runtime_error>(
                     "hpo_study_spec_invalid", {{"reason", "study"}},
                     "search space or objective differs (space_hash)");
-            if (recorded)
+            if (recorded && (!data_context || recorded->find("symbol_feeds")))
                 validate_symbol_feeds_identity(recorded->find("symbol_feeds"), current_space);
             verify_hash(record);
             const auto status = field(record, "status").text();
@@ -666,6 +797,9 @@ inline WarmHistory load_json_warm_history(const std::filesystem::path& path,
             if (values.members.size() != candidate.values.size() || !space.is_valid(candidate))
                 throw TypedHpoError<std::runtime_error>(
                     "hpo_study_spec_invalid", {{"reason", "study"}}, "invalid trial parameters");
+            validate_warm_data_context(record, data_context, true);
+            if (data_context)
+                data_context->validate_row(record);
             try {
                 if (space.finite_cardinality())
                     candidate = space.candidate_at(space.candidate_ordinal(candidate),

@@ -189,7 +189,10 @@ public:
 class BinaryWarmSource final : public WarmStartSource {
 public:
     BinaryWarmSource(const std::filesystem::path& path, const SearchSpace& space,
-                     const Json& recorded) : mapping_(path), space_(space) {
+                     const Json& recorded, const ContinuationDataContext* data_context = nullptr)
+        : mapping_(path), space_(space) {
+        if (data_context)
+            data_context_ = *data_context;
         std::map<std::string, Dimension> sorted;
         for (const auto& dimension : space.dimensions())
             sorted.emplace(std::string(dimension_name(dimension)), dimension);
@@ -206,9 +209,15 @@ public:
         for (std::size_t column = 0; column < constraints; ++column)
             constraint_columns_[constraint_order[column]] = column;
         std::array<unsigned char, 32> digest{};
+        std::array<unsigned char, 32> context_digest{};
         for (std::size_t index = 0; index < digest.size(); ++index)
             digest[index] = static_cast<unsigned char>(std::stoul(hash.substr(index * 2, 2),
                                                                  nullptr, 16));
+        if (data_context) {
+            for (std::size_t index = 0; index < context_digest.size(); ++index)
+                context_digest[index] = static_cast<unsigned char>(std::stoul(
+                    data_context->data_context_sha256().substr(index * 2, 2), nullptr, 16));
+        }
         std::uint64_t offset = 0;
         std::uint64_t checkpoint_rows = 0;
         std::map<std::uint64_t, std::string> checkpoints;
@@ -269,7 +278,7 @@ public:
             const auto block_bytes = warm_integer<std::uint64_t>(header + 16);
             const auto count = warm_integer<std::uint64_t>(header + 24);
             const auto flags = warm_integer<std::uint16_t>(header + 10);
-            if ((flags & ~1U) != 0 ||
+            if ((flags & ~3U) != 0 ||
                 warm_integer<std::uint32_t>(header + 44) != 0)
                 throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
                                                         {{"reason", "study"}},
@@ -291,6 +300,7 @@ public:
                                                         {{"reason", "study"}},
                                                         "truncated or invalid binary block length");
             std::optional<Json> symbol_record;
+            auto extension_end = base_header_bytes;
             if (flags & 1U) {
                 if (header_bytes < base_header_bytes + 4)
                     throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
@@ -298,19 +308,36 @@ public:
                                                             "truncated symbol feeds header");
                 const auto length = warm_integer<std::uint32_t>(header + base_header_bytes);
                 if (!length || length > 8 * 1024 * 1024 ||
-                    header_bytes != base_header_bytes + 4 + length)
+                    header_bytes < warm_add(base_header_bytes, 4 + length))
                     throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
                                                             {{"reason", "study"}},
                                                             "invalid symbol feeds header length");
                 symbol_record = parse_json(std::string_view(
                     reinterpret_cast<const char*>(header + base_header_bytes + 4), length),
                     8 * 1024 * 1024);
-            } else if (header_bytes != base_header_bytes) {
+                extension_end = warm_add(base_header_bytes, 4 + length);
+            }
+            if (flags & 2U) {
+                if (header_bytes != warm_add(extension_end, 36))
+                    throw WarmStartError("invalid data context header length");
+                if (!data_context ||
+                    warm_integer<std::uint32_t>(header + extension_end) != 1 ||
+                    !std::equal(context_digest.begin(), context_digest.end(),
+                                header + extension_end + 4))
+                    throw WarmStartError("missing or differing data_context_sha256");
+                extension_end = warm_add(extension_end, 36);
+            } else if (data_context) {
+                throw WarmStartError("bound parent is missing data context identity");
+            }
+            if (header_bytes != extension_end) {
                 throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid",
                                                         {{"reason", "study"}},
                                                         "invalid binary block header length");
             }
-            validate_symbol_feeds_identity(symbol_record ? &*symbol_record : nullptr, recorded);
+            // Check the complete context before allowing it to replace the legacy feed block.
+            // When both extensions exist, the feed block must independently match as well.
+            if ((flags & 1U) || !(flags & 2U))
+                validate_symbol_feeds_identity(symbol_record ? &*symbol_record : nullptr, recorded);
             std::uint64_t row_bytes = warm_add(17, warm_multiply(8, constraints));
             for (std::size_t index = 0; index < codecs_.size(); ++index) {
                 const auto* descriptor = header + 80 + index * 4;
@@ -377,6 +404,10 @@ public:
         tried_.erase(std::unique(tried_.begin(), tried_.end(), [&](auto left, auto right) {
             return compare(left, right) == 0;
         }), tried_.end());
+        if (data_context_) {
+            for (std::uint64_t row = 0; row < rows_; ++row)
+                data_context_->validate_row(record(row));
+        }
     }
 
     std::uint64_t size() const noexcept override { return rows_; }
@@ -447,6 +478,8 @@ public:
             constraints.items.push_back(std::isfinite(value) ? scalar_json(value) : Json{});
         }
         result.members["constraint_values"] = std::move(constraints);
+        if (data_context_)
+            data_context_->annotate_row(result);
         return result;
     }
     std::string digest() const {
@@ -548,6 +581,7 @@ private:
     std::vector<std::uint32_t> order_;
     std::vector<std::uint32_t> tried_;
     std::uint64_t rows_ = 0;
+    std::optional<ContinuationDataContext> data_context_;
 };
 
 inline std::uint64_t WarmHistory::size() const {
@@ -578,12 +612,15 @@ inline bool binary_warm_file(const std::filesystem::path& path) {
 }
 
 inline WarmHistory load_warm_history(const std::filesystem::path& path,
-                                     const SearchSpace& space, const Json& recorded) {
+                                     const SearchSpace& space, const Json& recorded,
+                                     const ContinuationDataContext* data_context = nullptr) {
     if (path.empty() || !binary_warm_file(path))
-        return load_json_warm_history(path, space, recorded);
+        return load_json_warm_history(path, space, recorded, data_context);
     try {
         WarmHistory history;
-        auto source = std::make_shared<BinaryWarmSource>(path, space, recorded);
+        auto source = std::make_shared<BinaryWarmSource>(path, space, recorded, data_context);
+        if (data_context)
+            history.data_context = *data_context;
         history.completed = source->completed;
         history.feasible = source->feasible;
         history.sampler_state = source->sampler_state;
@@ -592,6 +629,23 @@ inline WarmHistory load_warm_history(const std::filesystem::path& path,
         return history;
     } catch (const std::exception& error) {
         throw WarmStartError(error.what());
+    }
+}
+
+inline void validate_warm_history_context(const WarmHistory& history, const SearchSpace& space,
+                                          const ContinuationDataContext* context) {
+    if (context) {
+        if (!history.data_context ||
+            history.data_context->canonical_descriptor() != context->canonical_descriptor())
+            throw WarmStartError("missing or differing data_context_sha256");
+    } else if (history.data_context) {
+        throw WarmStartError("bound parent requires a data context; binding cannot be dropped");
+    }
+    for (std::uint64_t index = 0; index < history.size(); ++index) {
+        const auto row = history.record(space, index);
+        validate_warm_data_context(row, context, true);
+        if (context)
+            context->validate_row(row);
     }
 }
 
@@ -612,13 +666,15 @@ inline void warm_write_real(std::ostream& output, const Json& value) {
 
 inline void encode_warm_history(const std::filesystem::path& path, const SearchSpace& space,
                                 const Json& recorded, const WarmHistory& history,
-                                std::uint64_t block_trials) {
+                                std::uint64_t block_trials,
+                                const ContinuationDataContext* data_context = nullptr) {
     const auto temporary = path.string() + ".tmp." + std::to_string(::getpid());
     try {
         if (!history.size())
             throw TypedHpoError<std::runtime_error>(
                 "hpo_study_spec_invalid", {{"reason", "study"}},
                 "binary warm input must contain at least one trial");
+        validate_warm_history_context(history, space, data_context);
         std::map<std::string, Dimension> sorted;
         for (const auto& dimension : space.dimensions())
             sorted.emplace(std::string(dimension_name(dimension)), dimension);
@@ -628,7 +684,7 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
         const auto constraints = field(field(recorded, "objective"), "constraints").items.size();
         const auto constraint_order = warm_constraint_order(recorded);
         const auto hash = space_hash(recorded);
-        const auto* symbol_record = recorded.find("symbol_feeds");
+        const auto* symbol_record = data_context ? nullptr : recorded.find("symbol_feeds");
         const auto symbol_json = symbol_record ? dump_json(*symbol_record) : std::string{};
         if (symbol_json.size() > 8 * 1024 * 1024)
             throw TypedHpoError<std::runtime_error>("hpo_study_spec_invalid", {{"reason", "study"}},
@@ -642,13 +698,16 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
         for (std::uint64_t begin = 0; begin < history.size();) {
             const auto count = std::min(block_trials, history.size() - begin);
             const auto header_bytes = warm_add(warm_add(80, warm_multiply(4, codecs.size())),
-                symbol_record ? 4 + symbol_json.size() : 0);
+                data_context ? 36 : symbol_record ? 4 + symbol_json.size() : 0);
+            if (header_bytes > std::numeric_limits<std::uint32_t>::max())
+                throw WarmStartError("binary block header length overflow");
             std::uint64_t row_bytes = warm_add(17, warm_multiply(8, constraints));
             for (const auto& codec : codecs)
                 row_bytes = warm_add(row_bytes, codec.encoding == 1 ? 4 : 8);
             output.write(reinterpret_cast<const char*>(warm_magic.data()), warm_magic.size());
             warm_write_integer(output, std::uint16_t{2});
-            warm_write_integer(output, static_cast<std::uint16_t>(symbol_record ? 1 : 0));
+            warm_write_integer(output, static_cast<std::uint16_t>(
+                data_context ? 2 : symbol_record ? 1 : 0));
             warm_write_integer(output, static_cast<std::uint32_t>(header_bytes));
             warm_write_integer(output, warm_add(header_bytes, warm_multiply(count, row_bytes)));
             warm_write_integer(output, count);
@@ -666,6 +725,12 @@ inline void encode_warm_history(const std::filesystem::path& path, const SearchS
             if (symbol_record) {
                 warm_write_integer(output, static_cast<std::uint32_t>(symbol_json.size()));
                 output.write(symbol_json.data(), static_cast<std::streamsize>(symbol_json.size()));
+            }
+            if (data_context) {
+                warm_write_integer(output, std::uint32_t{1});
+                for (std::size_t index = 0; index < 32; ++index)
+                    output.put(static_cast<char>(std::stoul(
+                        data_context->data_context_sha256().substr(index * 2, 2), nullptr, 16)));
             }
             for (std::uint64_t row = begin; row < begin + count; ++row)
                 warm_write_integer(output, history.binary ? history.binary->id(row) :
