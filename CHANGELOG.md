@@ -9,11 +9,16 @@
   reads, stderr drains, stdout and `--output` copies. Stderr capture, each extracted failure
   field, decoded JSON member names and JSON scalar tokens are capped by `--diagnostic-bytes`
   (default 64 KiB / 65536 bytes, minimum 1 byte). Smaller diagnostic bounds can refuse
-  longer tokens or member names. Both options take decimal integers with no maximum,
-  checked before starting the child or creating a spool; omitted options preserve existing
-  behavior. Failure lookup scans the whole spool; oversized args become `null` while code
-  and origin are retained when they fit, and truncated stderr has
-  `\n[native stderr truncated]` appended. The wrapper needs writable non-empty
+  longer tokens or member names. Both options take decimal integers, checked before
+  starting the child or creating a spool; omitted options preserve existing behavior.
+  For both options, the largest accepted value is the platform's read-size limit,
+  `sys.maxsize`; larger values are refused before the child starts. Failure lookup
+  scans the whole spool; oversized args become `null` while code and origin are
+  retained when they fit, and truncated stderr has
+  `\n[native stderr truncated]` appended.
+  A very small `--diagnostic-bytes` can make a failure's `code` or `origin` oversized,
+  in which case the failure is reported as `hpo_unclassified_error` and the stdout
+  fallback is shortened to the bound. The wrapper needs writable non-empty
   `TMPDIR` (or `/tmp`) for raw stdout and the indented result, closes both on every exit,
   and does not retry another directory after selection. The formatted spool is larger
   than the raw stdout; both consume system RAM on tmpfs.

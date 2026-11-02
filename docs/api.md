@@ -340,8 +340,10 @@ The Python `run` wrapper also accepts two decimal integer byte bounds:
   scalar-token bound (default 65536, minimum 1 byte). Decoded JSON member names
   also use this bound. Smaller bounds can refuse longer tokens or member names.
 
-Both bounds are checked before starting the child or creating a spool and have no
-maximum. They are wrapper options and are not passed to the native command.
+Both bounds are checked before starting the child or creating a spool. For both
+options, the largest accepted value is the platform's read-size limit,
+`sys.maxsize`; larger values are refused before the child starts. They are wrapper
+options and are not passed to the native command.
 
 - `--trials-out all` retains every terminal record in `trials`, as before. This
   mode now spools rows in the native child without retaining every trial record or the
@@ -353,7 +355,10 @@ maximum. They are wrapper options and are not passed to the native command.
   using the chunk size, with each extracted metadata field also capped by
   `--diagnostic-bytes`. Oversized failure args become `null` while the code and origin
   are retained when they fit the bound; oversized stderr is drained and its captured
-  prefix has `\n[native stderr truncated]` appended.
+  prefix has `\n[native stderr truncated]` appended. A very small `--diagnostic-bytes`
+  can make a failure's `code` or `origin` oversized, in which case the failure is
+  reported as `hpo_unclassified_error` and the stdout fallback is shortened to
+  the bound.
   The default native `--trials-out all` requires a writable directory for two anonymous
   files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files
   are unlinked at creation, but the spool holds the whole trial array on disk until the

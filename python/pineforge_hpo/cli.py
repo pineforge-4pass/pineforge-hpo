@@ -1584,11 +1584,14 @@ def _run_byte_bound(value: str | int, option: str, minimum: int) -> int:
         if not raw.isascii() or not raw.isdecimal():
             raise ValueError
         number = int(raw)
-        if number < minimum:
+        if number < minimum or number > sys.maxsize:
             raise ValueError
     except ValueError as error:
         raise _cli_error(
-            "hpo_cli_usage", {}, f"{option} must be an integer of at least {minimum}"
+            "hpo_cli_usage",
+            {},
+            f"{option} must be an integer of at least {minimum} "
+            f"and at most {sys.maxsize}",
         ) from error
     return number
 

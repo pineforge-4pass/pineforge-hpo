@@ -1144,9 +1144,14 @@ Wrapper reads and copies use the chunk size (`--result-chunk-bytes`, default 64 
 minimum 2 bytes), including stderr drains. Captured stderr, each extracted failure field,
 decoded JSON member names and JSON scalar tokens use `--diagnostic-bytes` (default 64 KiB,
 minimum 1 byte). Smaller diagnostic bounds can refuse longer tokens or member names.
-Both options take decimal integers with no maximum and are checked before starting the child
-or creating a wrapper spool. Oversized failure args become `null` while code and origin
-are retained when they fit; truncated stderr has `\n[native stderr truncated]` appended.
+Both options take decimal integers and are checked before starting the child or
+creating a wrapper spool. For both options, the largest accepted value is the platform's
+read-size limit, `sys.maxsize`; larger values are refused before the child starts.
+Oversized failure args become `null` while code and origin are retained when they fit;
+truncated stderr has `\n[native stderr truncated]` appended. A very small
+`--diagnostic-bytes` can make a failure's `code` or `origin` oversized, in which
+case the failure is reported as `hpo_unclassified_error` and the stdout fallback
+is shortened to the bound.
 Both wrapper spools are closed on success or failure; a selected directory is not retried
 elsewhere if creation fails. If `TMPDIR` is on tmpfs, both wrapper spools and the native spool
 live in RAM; their growth appears in system memory, not in process RSS.

@@ -521,8 +521,16 @@ class RunStreamingTests(unittest.TestCase):
 
     def test_invalid_byte_bounds_fail_before_native_or_spool_creation(self) -> None:
         for option, minimum, invalid_values in (
-            ("--result-chunk-bytes", 2, ("0", "-1", "1", "abc", "1.5", "")),
-            ("--diagnostic-bytes", 1, ("0", "-1", "abc", "1.5", "")),
+            (
+                "--result-chunk-bytes",
+                2,
+                ("0", "-1", "1", "abc", "1.5", "", str(sys.maxsize + 1)),
+            ),
+            (
+                "--diagnostic-bytes",
+                1,
+                ("0", "-1", "abc", "1.5", "", str(sys.maxsize + 1)),
+            ),
         ):
             for value in invalid_values:
                 with self.subTest(option=option, value=value):
@@ -549,12 +557,23 @@ class RunStreamingTests(unittest.TestCase):
                     self.assertEqual(
                         self.errors.getvalue(),
                         f"pineforge-hpo: {option} must be an integer "
-                        f"of at least {minimum}\n",
+                        f"of at least {minimum} and at most {sys.maxsize}\n",
                     )
                     native.assert_not_called()
                     self.prepare.assert_not_called()
                     self.assertEqual(self.files, [])
                     self._assert_clean()
+
+    def test_byte_bounds_accept_platform_read_size_limit(self) -> None:
+        for option, minimum in (
+            ("--result-chunk-bytes", 2),
+            ("--diagnostic-bytes", 1),
+        ):
+            with self.subTest(option=option):
+                self.assertEqual(
+                    cli._run_byte_bound(str(sys.maxsize), option, minimum),
+                    sys.maxsize,
+                )
 
     def test_warm_start_and_space_exhausted_print_stderr_before_raw_stdout(
         self,
