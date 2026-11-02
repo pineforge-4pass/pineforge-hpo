@@ -25,6 +25,7 @@ from pineforge_hpo.cli import (
     _native_command,
     _plugin_option_values,
     _resolve_engine_root,
+    _same_scalar,
     _validate_manifest_inputs,
     main,
 )
@@ -403,6 +404,217 @@ class CliTests(unittest.TestCase):
             r"search_space\.Mode\.choices\[0\] is not one of the Pine input options",
         ):
             _validate_manifest_inputs(study, [manifest], input_kinds_emitted=True)
+
+    def _validate_option_value(
+        self, value: object, manifest: dict[str, object], *, route: str
+    ) -> None:
+        name = manifest["title"]
+        if route == "fixed":
+            study = self._write_single_input_study("Length", [1])
+            study.strategy.fixed_inputs[name] = value
+            inputs = [{"title": "Length", "type": "int"}, manifest]
+        else:
+            study = self._write_single_input_study(name, [value])
+            inputs = [manifest]
+        _validate_manifest_inputs(study, inputs, input_kinds_emitted=True)
+
+    def test_float_integer_options_accept_fixed_default(self) -> None:
+        # RED on base for 1.0: float typing passes, but no int option has its type.
+        # GREEN on base for 1: float typing allows ints and the option matches exactly.
+        manifest = {
+            "title": "Probe value",
+            "type": "float",
+            "default": 1.0,
+            "options": [1, 2, 3],
+        }
+        for value in (manifest["default"], 1):
+            with self.subTest(value=value, value_type=type(value)):
+                self.assertIsNone(
+                    self._validate_option_value(value, manifest, route="fixed")
+                )
+
+    def test_float_integer_options_accept_integer_categorical_choices(self) -> None:
+        # GREEN on base: float inputs allow int choices, which match the int options.
+        manifest = {
+            "title": "Probe value",
+            "type": "float",
+            "default": 1.0,
+            "options": [1, 2, 3],
+        }
+        study = self._write_single_input_study("Probe value", [1, 2, 3])
+        self.assertIsNone(_validate_manifest_inputs(study, [manifest]))
+
+    def test_float_integer_options_accept_float_categorical_choices(self) -> None:
+        # RED on base: equal float choices fail the exact-type comparison with ints.
+        manifest = {
+            "title": "Probe value",
+            "type": "float",
+            "default": 1.0,
+            "options": [1, 2, 3],
+        }
+        study = self._write_single_input_study("Probe value", [1.0, 2.0, 3.0])
+        self.assertIsNone(_validate_manifest_inputs(study, [manifest]))
+
+    def test_float_fractional_options_accept_equal_value(self) -> None:
+        # GREEN on base: 1.5 has both the same float type and value as its option.
+        manifest = {
+            "title": "Probe value",
+            "type": "float",
+            "options": [1.5, 2.5],
+        }
+        for route in ("fixed", "categorical"):
+            with self.subTest(route=route):
+                self.assertIsNone(
+                    self._validate_option_value(1.5, manifest, route=route)
+                )
+
+    def test_float_integer_options_refuse_unequal_values(self) -> None:
+        # GREEN on base: none of these values equals an offered option.
+        manifest = {
+            "title": "Probe value",
+            "type": "float",
+            "options": [1, 2, 3],
+        }
+        for value in (4, 4.0, 1.5):
+            for route in ("fixed", "categorical"):
+                with self.subTest(value=value, value_type=type(value), route=route):
+                    with self.assertRaises(CliError) as caught:
+                        self._validate_option_value(value, manifest, route=route)
+                    self.assertEqual(caught.exception.code, "setting_rejected")
+                    self.assertEqual(
+                        caught.exception.failure_args,
+                        {
+                            "entrypoint": "strategy_set_input",
+                            "reason": "invalid_input_option",
+                            "input": "Probe value",
+                        },
+                    )
+
+    def test_integer_input_with_float_written_options_accepts_equal_value(self) -> None:
+        # Numeric options compare by value, so an int input whose options are written
+        # as floats accepts the equal int; the old exact-type rule refused it.
+        # TradingView itself refuses this form, so a real manifest never carries it;
+        # the row pins hpo's value-equality rule so it cannot change silently.
+        # The refusals for 3 and 1.0 are unchanged: membership and the integer type.
+        manifest = {
+            "title": "Probe value",
+            "type": "int",
+            "default": 1,
+            "options": [1.0, 2.0],
+        }
+        for route in ("fixed", "categorical"):
+            with self.subTest(value=1, value_type=int, route=route):
+                self.assertIsNone(self._validate_option_value(1, manifest, route=route))
+            for value, reason in (
+                (3, "invalid_input_option"),
+                (1.0, "expected_integer"),
+            ):
+                with self.subTest(value=value, value_type=type(value), route=route):
+                    with self.assertRaises(CliError) as caught:
+                        self._validate_option_value(value, manifest, route=route)
+                    self.assertEqual(caught.exception.code, "setting_rejected")
+                    self.assertEqual(
+                        caught.exception.failure_args,
+                        {
+                            "entrypoint": "strategy_set_input",
+                            "reason": reason,
+                            "input": "Probe value",
+                        },
+                    )
+
+    def test_integer_options_keep_integer_type_check(self) -> None:
+        # GREEN on base: the int-type check refuses 1.0 before option membership.
+        manifest = {
+            "title": "Probe value",
+            "type": "int",
+            "options": [1, 2, 3],
+        }
+        for route in ("fixed", "categorical"):
+            with self.subTest(route=route):
+                with self.assertRaises(CliError) as caught:
+                    self._validate_option_value(1.0, manifest, route=route)
+                self.assertEqual(caught.exception.code, "setting_rejected")
+                self.assertEqual(
+                    caught.exception.failure_args,
+                    {
+                        "entrypoint": "strategy_set_input",
+                        "reason": "expected_integer",
+                        "input": "Probe value",
+                    },
+                )
+
+    def test_option_membership_never_equates_booleans_and_numbers(self) -> None:
+        # GREEN on base: exact types distinguish True/1 in both directions.
+        # Each value passes input typing, so membership itself must refuse it.
+        for input_type, value, option in (
+            ("bool", True, 1),
+            ("int", 1, True),
+            ("float", 1.0, True),
+        ):
+            manifest = {
+                "title": "Probe value",
+                "type": input_type,
+                "options": [option],
+            }
+            for route in ("fixed", "categorical"):
+                with self.subTest(input_type=input_type, route=route):
+                    with self.assertRaises(CliError) as caught:
+                        self._validate_option_value(value, manifest, route=route)
+                    self.assertEqual(caught.exception.code, "setting_rejected")
+                    self.assertEqual(
+                        caught.exception.failure_args,
+                        {
+                            "entrypoint": "strategy_set_input",
+                            "reason": "invalid_input_option",
+                            "input": "Probe value",
+                        },
+                    )
+
+    def test_boolean_options_accept_boolean_values(self) -> None:
+        # GREEN on base: matching bool options retain exact type/value equality.
+        manifest = {
+            "title": "Probe value",
+            "type": "bool",
+            "options": [True, False],
+        }
+        for value in (True, False):
+            for route in ("fixed", "categorical"):
+                with self.subTest(value=value, route=route):
+                    self.assertIsNone(
+                        self._validate_option_value(value, manifest, route=route)
+                    )
+
+    def test_string_options_refuse_numeric_values(self) -> None:
+        # GREEN on base: the string-type check refuses numbers before membership.
+        manifest = {
+            "title": "Probe value",
+            "type": "string",
+            "options": ["1", "2"],
+        }
+        for route in ("fixed", "categorical"):
+            with self.subTest(route=route):
+                with self.assertRaises(CliError) as caught:
+                    self._validate_option_value(1, manifest, route=route)
+                self.assertEqual(caught.exception.code, "setting_rejected")
+                self.assertEqual(
+                    caught.exception.failure_args,
+                    {
+                        "entrypoint": "strategy_set_input",
+                        "reason": "unparseable_value",
+                        "input": "Probe value",
+                    },
+                )
+
+    def test_numeric_option_equality_requires_finite_values(self) -> None:
+        # RED on base for equal infinities: the old helper compares only type/value.
+        # GREEN on base for NaN and finite controls, including arbitrary-size ints.
+        for value in (float("inf"), float("-inf"), float("nan")):
+            with self.subTest(value=value):
+                self.assertFalse(_same_scalar(value, value))
+        for value in (0, -7, 2.5, 10**400):
+            with self.subTest(value=value):
+                self.assertTrue(_same_scalar(value, value))
+        self.assertFalse(_same_scalar(2**53 + 1, float(2**53)))
 
     def test_enum_ordinal_reaches_native_argv_unchanged(self) -> None:
         study = self._write_single_input_study("Side", [0, 1])

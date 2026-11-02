@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Compare numeric Pine input options by value so float inputs with integer-written options
+  accept equal float values, including their own defaults; boolean and string options retain
+  strict type matching.
 - Ignore unrequested empty input titles in artifact manifests while preserving validation of
   named inputs. Non-string and missing titles are still refused, as is an empty title the study
   names.

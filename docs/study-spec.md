@@ -1535,6 +1535,8 @@ binary plus independently encoded new-trial chunks for subsequent continuation.
 2. Source strategies are transpiled/compiled once per compatible artifact key.
 3. `transpile_full()` supplies input title, type, default, and any literal
    bounds/step/options retained in the artifact manifest.
+   Numeric options compare by value, so a float input whose options are written as
+   integers accepts an equal float value.
 4. `search_space` explicitly selects the tunable inputs.
 5. `fixed_inputs` are never sampled and cannot overlap a tunable input.
 6. Strategy overrides remain fixed in v1; optimizing override fields requires a
