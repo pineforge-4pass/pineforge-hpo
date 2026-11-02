@@ -738,6 +738,31 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
     target_compile_options(pineforge_hpo_test_symbol_bindings PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME pineforge_hpo_symbol_bindings COMMAND pineforge_hpo_test_symbol_bindings)
 
+    add_library(pineforge_hpo_fake_routing_strategy SHARED test_symbol_routing.cpp)
+    target_compile_definitions(pineforge_hpo_fake_routing_strategy PRIVATE
+        PINEFORGE_HPO_FAKE_ROUTING_PLUGIN=1)
+    target_include_directories(pineforge_hpo_fake_routing_strategy PRIVATE
+        "${PINEFORGE_ENGINE_SOURCE_INCLUDE}" "${PINEFORGE_ENGINE_BUILD_INCLUDE}")
+    target_link_libraries(pineforge_hpo_fake_routing_strategy PRIVATE Threads::Threads)
+    target_compile_options(pineforge_hpo_fake_routing_strategy PRIVATE -Wall -Wextra -Wpedantic)
+    set_target_properties(pineforge_hpo_fake_routing_strategy PROPERTIES PREFIX "")
+    add_executable(pineforge_hpo_test_symbol_routing test_symbol_routing.cpp
+        "${PROJECT_SOURCE_DIR}/src/cli/runner_seccomp.cpp")
+    target_compile_definitions(pineforge_hpo_test_symbol_routing PRIVATE
+        PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
+    target_include_directories(pineforge_hpo_test_symbol_routing PRIVATE
+        "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
+    target_link_libraries(pineforge_hpo_test_symbol_routing PRIVATE
+        PineForgeHPO::engine_adapter Threads::Threads ${CMAKE_DL_LIBS})
+    add_dependencies(pineforge_hpo_test_symbol_routing
+        ${PFH_RETURN_STATS_IDENTITY_TARGET} pineforge_hpo_fake_routing_strategy
+        pineforge_hpo_fake_strategy)
+    target_compile_options(pineforge_hpo_test_symbol_routing PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME pineforge_hpo_symbol_routing COMMAND pineforge_hpo_test_symbol_routing
+        $<TARGET_FILE:pineforge_hpo_fake_routing_strategy>
+        $<TARGET_FILE:pineforge_hpo_fake_strategy>
+        "${CMAKE_CURRENT_BINARY_DIR}/symbol-routing")
+
     add_executable(pineforge_hpo_symbol_feed_report symbol_feed_report.cpp)
     target_include_directories(pineforge_hpo_symbol_feed_report PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
     target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE
