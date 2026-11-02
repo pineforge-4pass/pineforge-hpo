@@ -43,7 +43,8 @@ std::string string(const Json& value, const std::string& name) {
 }
 
 template <typename Function>
-void rejected(Function&& function, const std::string& cause = {}) {
+void rejected(Function&& function, const std::string& cause) {
+    require(!cause.empty(), "warm refusal requires a non-empty incompatibility cause");
     try {
         function();
     } catch (const detail::WarmStartError& error) {
@@ -265,22 +266,36 @@ void json_contracts(const Path& directory, const Fixture& fixture, const Json& p
         require(history.size() == 2 && history.tried_count() == 2 && history.next_id == 20 &&
                     history.completed == 2 && history.feasible == 2,
                 "JSON continuation lost non-contiguous IDs or complete vectors");
-        rejected([&] { detail::load_warm_history(path, space, recorded); });
+        rejected([&] { detail::load_warm_history(path, space, recorded); },
+                 "bound parent requires a data context; binding cannot be dropped");
         for (const std::string label : {"symbol", "dataset_id", "data_context_sha256"}) {
             auto forged = parent;
             forged.members["trials"].items.front().members[label] = Json::string("forged");
             write(path, json_form(forged, form));
-            rejected([&] { detail::load_warm_history(path, space, recorded, &expected); });
+            if (label == "data_context_sha256") {
+                rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                         "missing or differing data_context_sha256");
+            } else {
+                rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                         "trial symbol or dataset_id contradicts its parameters and binding");
+            }
             forged.members["trials"].items.front().members.erase(label);
             write(path, json_form(forged, form));
-            rejected([&] { detail::load_warm_history(path, space, recorded, &expected); });
+            if (label == "data_context_sha256") {
+                rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                         "missing or differing data_context_sha256");
+            } else {
+                rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                         "trial symbol or dataset_id contradicts its parameters and binding");
+            }
         }
         auto swapped = parent;
         auto& first = swapped.members["trials"].items.front();
         first.members["symbol"] = Json::string("asset-b");
         first.members["dataset_id"] = Json::string("second");
         write(path, json_form(swapped, form));
-        rejected([&] { detail::load_warm_history(path, space, recorded, &expected); });
+        rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                 "trial symbol or dataset_id contradicts its parameters and binding");
 
         // Each variant is admitted from real declarations, including the unsampled tape.
         for (unsigned axis = 0; axis < 6; ++axis) {
@@ -305,10 +320,10 @@ void json_contracts(const Path& directory, const Fixture& fixture, const Json& p
             const detail::ContinuationDataContext other(catalogue->canonical_descriptor());
             write(path, json_form(parent, form));
             rejected([&] { detail::load_warm_history(path, space, recorded, &other); },
-                     "data_context_sha256");
+                     "missing or differing data_context_sha256");
             rejected([&] {
                 detail::load_warm_history(directory / "bound.bin", space, recorded, &other);
-            }, "data_context_sha256");
+            }, "missing or differing data_context_sha256");
         }
         auto relocated = fixture.declarations;
         for (auto& declaration : relocated) {
@@ -327,19 +342,35 @@ void json_contracts(const Path& directory, const Fixture& fixture, const Json& p
         auto stripped = parent;
         stripped.members.erase(name);
         write(path, detail::dump_json(stripped));
-        rejected([&] { detail::load_warm_history(path, space, recorded, &expected); });
+        if (name == "data_context_sha256") {
+            rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                     "missing or differing data_context_sha256");
+        } else if (name == "dataset_ids") {
+            rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                     "missing or differing dataset_ids");
+        } else {
+            rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                     "missing or differing data context descriptor");
+        }
     }
     for (const auto* ids : {"[\"first\"]", "[\"first\",\"first\"]", "[\"first\",\"unknown\"]"}) {
         auto incomplete = parent;
         incomplete.members["dataset_ids"] = detail::parse_json(ids);
         write(path, detail::dump_json(incomplete));
-        rejected([&] { detail::load_warm_history(path, space, recorded, &expected); });
+        if (std::string(ids) == "[\"first\",\"first\"]") {
+            rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                     "duplicate dataset_ids");
+        } else {
+            rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+                     "missing or differing dataset_ids");
+        }
     }
     auto contradictory = parent;
     contradictory.members["applied_runtime"].members["data_context"]
         .members["fixed_inputs"].members["Enabled"] = Json::boolean(false);
     write(path, detail::dump_json(contradictory));
-    rejected([&] { detail::load_warm_history(path, space, recorded, &expected); });
+    rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+             "missing or differing data context descriptor");
     auto ancestor = parent;
     ancestor.members["warm_start_trials"] = detail::array_json();
     ancestor.members["warm_start_trials"].items.push_back(ancestor.members["trials"].items.front());
@@ -353,7 +384,8 @@ void json_contracts(const Path& directory, const Fixture& fixture, const Json& p
     ancestor.members["warm_start_trials"].items.front().members["dataset_id"] =
         Json::string("second");
     write(path, detail::dump_json(ancestor));
-    rejected([&] { detail::load_warm_history(path, space, recorded, &expected); });
+    rejected([&] { detail::load_warm_history(path, space, recorded, &expected); },
+             "trial symbol or dataset_id contradicts its parameters and binding");
 }
 
 void mapping_and_role_changes(const Path& directory, const Fixture& fixture, const Json& parent,
@@ -375,7 +407,8 @@ void mapping_and_role_changes(const Path& directory, const Fixture& fixture, con
     const detail::ContinuationDataContext remapped_context(remapped->canonical_descriptor());
     require(detail::load_warm_history(path, space, recorded, &original_context).size() == 2,
             "valid mapping parent was refused");
-    rejected([&] { detail::load_warm_history(path, space, recorded, &remapped_context); });
+    rejected([&] { detail::load_warm_history(path, space, recorded, &remapped_context); },
+             "missing or differing data_context_sha256");
     const auto binary_path = directory / "mapping-parent.bin";
     const auto mapping_history = detail::load_warm_history(
         path, space, recorded, &original_context);
@@ -383,7 +416,7 @@ void mapping_and_role_changes(const Path& directory, const Fixture& fixture, con
         binary_path, space, recorded, mapping_history, 0, &original_context);
     rejected([&] {
         detail::load_warm_history(binary_path, space, recorded, &remapped_context);
-    });
+    }, "missing or differing data_context_sha256");
 
     auto request = fixture.bindings.front();
     request.input_title = "Reference";
@@ -415,14 +448,14 @@ void mapping_and_role_changes(const Path& directory, const Fixture& fixture, con
             "valid chart and request role parent was refused");
     rejected([&] {
         detail::load_warm_history(path, role_space, role_recorded, &exchanged_context);
-    });
+    }, "missing or differing data_context_sha256");
     const auto role_history = detail::load_warm_history(
         path, role_space, role_recorded, &roles_context);
     detail::encode_warm_history(
         binary_path, role_space, role_recorded, role_history, 0, &roles_context);
     rejected([&] {
         detail::load_warm_history(binary_path, role_space, role_recorded, &exchanged_context);
-    });
+    }, "missing or differing data_context_sha256");
 }
 
 // This is the previous reader's flag admission block, kept unchanged. It reads the
@@ -466,11 +499,13 @@ void binary_contracts(const Path& directory, const Fixture& fixture,
         decoded.items.push_back(binary.record(space, index));
     require(detail::dump_json(decoded) == read(directory / "decoded.json"),
             "binary decoded JSON bytes differ from independent expected rows");
-    rejected([&] { detail::load_warm_history(output, space, recorded); });
+    rejected([&] { detail::load_warm_history(output, space, recorded); },
+             "missing or differing data_context_sha256");
     rejected([&] {
         detail::load_warm_history(directory / "legacy.bin", space, recorded, &expected);
-    });
-    rejected([&] { detail::encode_warm_history(output, space, recorded, history, 0); });
+    }, "bound parent is missing data context identity");
+    rejected([&] { detail::encode_warm_history(output, space, recorded, history, 0); },
+             "bound parent requires a data context; binding cannot be dropped");
     detail::encode_warm_history(output, space, recorded, history, 1, &expected);
     const auto chunked = detail::load_warm_history(output, space, recorded, &expected);
     require(chunked.size() == 2 && chunked.next_id == 20, "concatenated bound blocks lost rows");
@@ -478,21 +513,33 @@ void binary_contracts(const Path& directory, const Fixture& fixture,
     other_descriptor.members["datasets"].members["second"].members["values_sha256"] =
         Json::string(std::string(64, 'b'));
     const detail::ContinuationDataContext other(detail::dump_json(other_descriptor));
-    rejected([&] { detail::load_warm_history(output, space, recorded, &other); });
+    rejected([&] { detail::load_warm_history(output, space, recorded, &other); },
+             "missing or differing data_context_sha256");
     const auto malformed = directory / "malformed.bin";
     const auto golden = read(directory / "bound.bin");
     for (const std::size_t offset : {10u, 12u, 16u, 88u, 92u}) {
         auto bytes = golden;
         bytes[offset] ^= static_cast<char>(128);
         write(malformed, bytes);
-        rejected([&] { detail::load_warm_history(malformed, space, recorded, &expected); });
+        if (offset == 10) {
+            rejected([&] { detail::load_warm_history(malformed, space, recorded, &expected); },
+                     "unsupported binary block flags");
+        } else if (offset == 12 || offset == 16) {
+            rejected([&] { detail::load_warm_history(malformed, space, recorded, &expected); },
+                     "truncated or invalid binary block length");
+        } else {
+            rejected([&] { detail::load_warm_history(malformed, space, recorded, &expected); },
+                     "missing or differing data_context_sha256");
+        }
     }
     for (std::size_t size = 88; size < 124; ++size) {
         write(malformed, golden.substr(0, size));
-        rejected([&] { detail::load_warm_history(malformed, space, recorded, &expected); });
+        rejected([&] { detail::load_warm_history(malformed, space, recorded, &expected); },
+                 "truncated or invalid binary block length");
     }
     write(malformed, golden + read(directory / "legacy.bin"));
-    rejected([&] { detail::load_warm_history(malformed, space, recorded, &expected); });
+    rejected([&] { detail::load_warm_history(malformed, space, recorded, &expected); },
+             "bound parent is missing data context identity");
     auto with_feeds = recorded;
     with_feeds.members["symbol_feeds"] = detail::parse_json(read(directory / "feeds.json"));
     require(detail::load_warm_history(
@@ -505,8 +552,9 @@ void binary_contracts(const Path& directory, const Fixture& fixture,
         .members["facts"].members["currency"] = Json::string("different");
     rejected([&] {
         detail::load_warm_history(directory / "dual.bin", space, with_feeds, &expected);
-    });
-    rejected([&] { detail::load_warm_history(directory / "dual.bin", space, recorded, &other); });
+    }, "symbol feeds differ from parent (facts or feed values)");
+    rejected([&] { detail::load_warm_history(directory / "dual.bin", space, recorded, &other); },
+             "missing or differing data_context_sha256");
 
     auto settings = fixture.settings;
     pfh::SymbolData reference;
@@ -533,7 +581,8 @@ void binary_contracts(const Path& directory, const Fixture& fixture,
                 reinterpret_cast<const unsigned char*>(bytes.data()) + 10) == 2 &&
                 detail::load_warm_history(output, space, feed_recorded, &feed_context).size() == 2,
             "verified full context did not replace the otherwise required feed block");
-    rejected([&] { detail::load_warm_history(output, space, feed_recorded, &expected); });
+    rejected([&] { detail::load_warm_history(output, space, feed_recorded, &expected); },
+             "missing or differing data_context_sha256");
 
     auto legacy_parent = detail::parse_json(read(directory / "parent.json"));
     legacy_parent.members.erase("applied_runtime");
@@ -657,7 +706,7 @@ void tpe_contracts(const Path& directory, const Fixture& fixture,
         rejected([&] {
             cli::restore_context_tpe_history(
                 sampler, *imported, prepared.space, other, 2, imported->sampler_state);
-        });
+        }, "missing or differing data_context_sha256");
         require(sampler.completed() == 0 && sampler.generated() == 0 &&
                     sampler.retained_observations() == 0 && sampler.sampler_state() == pristine,
                 "data mismatch trained or restored the real TPE sampler");
@@ -686,7 +735,8 @@ void tpe_contracts(const Path& directory, const Fixture& fixture,
     for (const auto& source : {path, binary_path, rebuild_path}) {
         options.warm_start = source;
         const auto before = observations.snapshot();
-        rejected([&] { run(study(changed_catalogue, plugin, options)); });
+        rejected([&] { run(study(changed_catalogue, plugin, options)); },
+                 "missing or differing data_context_sha256");
         const auto after = observations.snapshot();
         require(integer(before, "created") == integer(after, "created") &&
                     integer(before, "freed") == integer(after, "freed"),
@@ -695,7 +745,8 @@ void tpe_contracts(const Path& directory, const Fixture& fixture,
     // Internally supplied history also takes the guard; it cannot bypass file admission.
     options.warm_start.clear();
     options.warm_history = std::make_shared<const detail::WarmHistory>(history);
-    rejected([&] { run(study(changed_catalogue, plugin, options)); });
+    rejected([&] { run(study(changed_catalogue, plugin, options)); },
+             "missing or differing data_context_sha256");
     clean(observations);
 }
 

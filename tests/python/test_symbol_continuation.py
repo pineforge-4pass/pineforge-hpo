@@ -55,11 +55,15 @@ class SymbolContinuationTests(unittest.TestCase):
         self.parent = self.root / "parent.json"
         self.context = ContinuationDataContext(oracle.canonical(oracle.descriptor()))
 
-    def assert_rejected(self, function) -> None:
+    def assert_rejected(self, function, cause: str) -> None:
+        self.assertTrue(
+            cause, "warm refusal requires a non-empty incompatibility cause"
+        )
         with self.assertRaises(WarmStartError) as raised:
             function()
         self.assertEqual(raised.exception.code, "hpo_warm_start_rejected")
         self.assertEqual(raised.exception.failure_args, {})
+        self.assertIn(cause, str(raised.exception))
 
     def write_parent(self, form: str, document: dict) -> None:
         if form == "result":
@@ -117,7 +121,8 @@ class SymbolContinuationTests(unittest.TestCase):
                 self.assert_rejected(
                     lambda: load_warm_start(
                         self.study, self.parent, data_context=changed
-                    )
+                    ),
+                    "missing or differing data_context_sha256",
                 )
 
     def test_every_unsampled_context_axis_is_checked_in_all_json_forms(self) -> None:
@@ -148,7 +153,8 @@ class SymbolContinuationTests(unittest.TestCase):
                             data_context=ContinuationDataContext(
                                 oracle.canonical(value)
                             ),
-                        )
+                        ),
+                        "missing or differing data_context_sha256",
                     )
                     self.assert_rejected(
                         lambda: decode_warm_blocks(
@@ -157,7 +163,8 @@ class SymbolContinuationTests(unittest.TestCase):
                             data_context=ContinuationDataContext(
                                 oracle.canonical(value)
                             ),
-                        )
+                        ),
+                        "missing or differing data_context_sha256",
                     )
 
     def test_forged_labels_missing_identity_and_dropped_binding_refuse(self) -> None:
@@ -175,22 +182,50 @@ class SymbolContinuationTests(unittest.TestCase):
                     document["trials"][0][field] = value
                 self.write_parent(form, document)
                 with self.subTest(form=form, field=field, value=value):
-                    self.assert_rejected(
-                        lambda: load_warm_start(
-                            self.study, self.parent, data_context=self.context
+                    if field == "data_context_sha256":
+                        self.assert_rejected(
+                            lambda: load_warm_start(
+                                self.study, self.parent, data_context=self.context
+                            ),
+                            "missing or differing data_context_sha256",
                         )
-                    )
+                    else:
+                        self.assert_rejected(
+                            lambda: load_warm_start(
+                                self.study, self.parent, data_context=self.context
+                            ),
+                            "trial symbol or dataset_id contradicts its parameters and binding",
+                        )
             self.write_parent(form, oracle.result())
-            self.assert_rejected(lambda: load_warm_start(self.study, self.parent))
+            self.assert_rejected(
+                lambda: load_warm_start(self.study, self.parent),
+                "bound parent requires a data context; binding cannot be dropped",
+            )
         for field in ("data_context_sha256", "dataset_ids", "applied_runtime"):
             document = oracle.result()
             del document[field]
             self.write_parent("result", document)
-            self.assert_rejected(
-                lambda: load_warm_start(
-                    self.study, self.parent, data_context=self.context
+            if field == "data_context_sha256":
+                self.assert_rejected(
+                    lambda: load_warm_start(
+                        self.study, self.parent, data_context=self.context
+                    ),
+                    "missing or differing data_context_sha256",
                 )
-            )
+            elif field == "dataset_ids":
+                self.assert_rejected(
+                    lambda: load_warm_start(
+                        self.study, self.parent, data_context=self.context
+                    ),
+                    "missing or differing dataset_ids",
+                )
+            else:
+                self.assert_rejected(
+                    lambda: load_warm_start(
+                        self.study, self.parent, data_context=self.context
+                    ),
+                    "missing or differing data context descriptor",
+                )
         for ids in (["first"], ["first", "first"], ["first", "unknown"]):
             document = oracle.result()
             document["dataset_ids"] = ids
@@ -198,13 +233,15 @@ class SymbolContinuationTests(unittest.TestCase):
             self.assert_rejected(
                 lambda: load_warm_start(
                     self.study, self.parent, data_context=self.context
-                )
+                ),
+                "missing or differing dataset_ids",
             )
         document = oracle.result()
         document["applied_runtime"]["data_context"]["fixed_inputs"]["Enabled"] = False
         self.write_parent("result", document)
         self.assert_rejected(
-            lambda: load_warm_start(self.study, self.parent, data_context=self.context)
+            lambda: load_warm_start(self.study, self.parent, data_context=self.context),
+            "missing or differing data context descriptor",
         )
         document = oracle.result()
         for name in ("applied_runtime", "dataset_ids", "data_context_sha256"):
@@ -212,7 +249,10 @@ class SymbolContinuationTests(unittest.TestCase):
         for row in document["trials"]:
             del row["data_context_sha256"]
         self.write_parent("result", document)
-        self.assert_rejected(lambda: load_warm_start(self.study, self.parent))
+        self.assert_rejected(
+            lambda: load_warm_start(self.study, self.parent),
+            "bound parent requires a data context; binding cannot be dropped",
+        )
 
     def test_complete_ancestry_is_checked(self) -> None:
         document = oracle.result()
@@ -225,13 +265,15 @@ class SymbolContinuationTests(unittest.TestCase):
         document["warm_start_trials"][0]["dataset_id"] = "second"
         self.write_parent("result", document)
         self.assert_rejected(
-            lambda: load_warm_start(self.study, self.parent, data_context=self.context)
+            lambda: load_warm_start(self.study, self.parent, data_context=self.context),
+            "trial symbol or dataset_id contradicts its parameters and binding",
         )
 
     def test_dropped_binding_preflight_returns_exit_four_before_build(self) -> None:
         self.write_parent("result", oracle.result())
         with (
-            contextlib.redirect_stderr(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+            contextlib.redirect_stdout(io.StringIO()) as output,
             mock.patch("pineforge_hpo.cli.ArtifactBuilder") as builder,
         ):
             self.assertEqual(
@@ -241,6 +283,14 @@ class SymbolContinuationTests(unittest.TestCase):
                 4,
             )
             builder.assert_not_called()
+        self.assertIn(
+            "bound parent requires a data context; binding cannot be dropped",
+            errors.getvalue(),
+        )
+        failure = json.loads(output.getvalue())["failure"]
+        self.assertEqual(failure["code"], "hpo_warm_start_rejected")
+        self.assertEqual(failure["args"], {})
+        self.assertEqual(failure["exit_code"], 4)
 
     def test_bound_binary_writer_and_reader_match_independent_columns(self) -> None:
         rows = oracle.result()["trials"]
@@ -272,34 +322,57 @@ class SymbolContinuationTests(unittest.TestCase):
         value["datasets"]["second"]["values_sha256"] = "b" * 64
         other = ContinuationDataContext(oracle.canonical(value))
         self.assert_rejected(
-            lambda: decode_warm_blocks(self.study, oracle.binary(), data_context=other)
+            lambda: decode_warm_blocks(self.study, oracle.binary(), data_context=other),
+            "missing or differing data_context_sha256",
         )
-        self.assert_rejected(lambda: decode_warm_blocks(self.study, oracle.binary()))
+        self.assert_rejected(
+            lambda: decode_warm_blocks(self.study, oracle.binary()),
+            "missing or differing data_context_sha256",
+        )
         self.assert_rejected(
             lambda: decode_warm_blocks(
                 self.study, oracle.binary(bound=False), data_context=self.context
-            )
+            ),
+            "bound parent is missing data context identity",
         )
         for offset in (10, 12, 16, 88, 92):
             malformed = bytearray(oracle.binary())
             malformed[offset] ^= 0x80
-            self.assert_rejected(
-                lambda: decode_warm_blocks(
-                    self.study, malformed, data_context=self.context
+            if offset == 10:
+                self.assert_rejected(
+                    lambda: decode_warm_blocks(
+                        self.study, malformed, data_context=self.context
+                    ),
+                    "unsupported binary block magic, version or flags",
                 )
-            )
+            elif offset in (12, 16):
+                self.assert_rejected(
+                    lambda: decode_warm_blocks(
+                        self.study, malformed, data_context=self.context
+                    ),
+                    "truncated or invalid binary block length",
+                )
+            else:
+                self.assert_rejected(
+                    lambda: decode_warm_blocks(
+                        self.study, malformed, data_context=self.context
+                    ),
+                    "missing or differing data_context_sha256",
+                )
         for size in range(88, 124):
             self.assert_rejected(
                 lambda: decode_warm_blocks(
                     self.study, oracle.binary()[:size], data_context=self.context
-                )
+                ),
+                "truncated or invalid binary block length",
             )
         self.assert_rejected(
             lambda: decode_warm_blocks(
                 self.study,
                 oracle.binary() + oracle.binary(bound=False),
                 data_context=self.context,
-            )
+            ),
+            "bound parent is missing data context identity",
         )
         decoded = decode_warm_blocks(
             self.study,
@@ -341,7 +414,8 @@ class SymbolContinuationTests(unittest.TestCase):
                 encoded,
                 data_context=self.context,
                 symbol_feeds_record=feeds,
-            )
+            ),
+            "missing or differing data_context_sha256",
         )
 
     def test_binary_dual_extensions_both_match(self) -> None:
@@ -361,7 +435,8 @@ class SymbolContinuationTests(unittest.TestCase):
                 encoded,
                 data_context=self.context,
                 symbol_feeds_record=changed,
-            )
+            ),
+            "symbol feeds differ from parent (facts or feed values)",
         )
 
     def test_unbound_binary_bytes_remain_the_independent_legacy_format(self) -> None:
@@ -377,12 +452,14 @@ class SymbolContinuationTests(unittest.TestCase):
             encode_warm_block(self.study, rows), oracle.binary(bound=False)
         )
         self.assert_rejected(
-            lambda: encode_warm_block(self.study, oracle.result()["trials"])
+            lambda: encode_warm_block(self.study, oracle.result()["trials"]),
+            "bound parent requires a data context; binding cannot be dropped",
         )
         forged = copy.deepcopy(oracle.result()["trials"])
         forged[0]["symbol"] = "asset-b"
         self.assert_rejected(
-            lambda: encode_warm_block(self.study, forged, data_context=self.context)
+            lambda: encode_warm_block(self.study, forged, data_context=self.context),
+            "trial symbol or dataset_id contradicts its parameters and binding",
         )
 
 
