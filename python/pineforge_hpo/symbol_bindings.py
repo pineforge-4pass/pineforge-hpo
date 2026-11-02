@@ -79,7 +79,10 @@ def _timeframe(value: str, where: str) -> str:
     if value in ("D", "W", "M", "S"):
         value = "1" + value
     if re.fullmatch(r"[1-9][0-9]*[DWMS]?", value) is None:
-        _invalid("backtest", f"{where}: must be whole minutes or a positive D/W/M/S timeframe")
+        _invalid(
+            "backtest",
+            f"{where}: must be whole minutes or a positive D/W/M/S timeframe",
+        )
     return value
 
 
@@ -135,16 +138,22 @@ def validate_symbol_bindings(
     for declaration in datasets:
         normalized = _dataset(declaration)
         if normalized.id in declarations:
-            _invalid("input_symbol", f"datasets: duplicate dataset id {normalized.id!r}")
+            _invalid(
+                "input_symbol", f"datasets: duplicate dataset id {normalized.id!r}"
+            )
         declarations[normalized.id] = normalized
 
     references: set[str] = set()
     for dataset_id in referenced_dataset_ids:
         _text(dataset_id, "strategy.datasets", "input_symbol")
         if dataset_id in references:
-            _invalid("input_symbol", f"strategy.datasets: duplicates include {dataset_id!r}")
+            _invalid(
+                "input_symbol", f"strategy.datasets: duplicates include {dataset_id!r}"
+            )
         if dataset_id not in declarations:
-            _invalid("input_symbol", f"strategy.datasets: unknown dataset {dataset_id!r}")
+            _invalid(
+                "input_symbol", f"strategy.datasets: unknown dataset {dataset_id!r}"
+            )
         references.add(dataset_id)
 
     titles: set[str] = set()
@@ -159,7 +168,10 @@ def validate_symbol_bindings(
             _invalid("input_symbol", f"{where}.role: must be chart or request")
         parameter = search_space.get(binding.input_title)
         if parameter is None or parameter.kind != "categorical":
-            _invalid("input_symbol", f"{where}: requires an effective categorical search input")
+            _invalid(
+                "input_symbol",
+                f"{where}: requires an effective categorical search input",
+            )
         if not parameter.choices:
             _invalid("input_symbol", f"{where}.choices: domain must not be empty")
         choices: list[str] = []
@@ -167,11 +179,14 @@ def validate_symbol_bindings(
         for choice in parameter.choices:
             if not isinstance(choice, str):
                 _invalid(
-                    "input_symbol", f"{where}.choices: symbol choice {choice!r} is not a string"
+                    "input_symbol",
+                    f"{where}.choices: symbol choice {choice!r} is not a string",
                 )
             _text(choice, f"{where}.choices", "input_symbol")
             if choice in seen:
-                _invalid("input_symbol", f"{where}.choices: duplicate choice {choice!r}")
+                _invalid(
+                    "input_symbol", f"{where}.choices: duplicate choice {choice!r}"
+                )
             seen.add(choice)
             choices.append(choice)
 
@@ -193,7 +208,9 @@ def validate_symbol_bindings(
         for choice in choices:
             dataset_id = mapping[choice]
             if dataset_id in targets:
-                _invalid("input_symbol", f"{where}.datasets: duplicate target {dataset_id!r}")
+                _invalid(
+                    "input_symbol", f"{where}.datasets: duplicate target {dataset_id!r}"
+                )
             targets.add(dataset_id)
             if dataset_id not in declarations:
                 _invalid(
@@ -213,9 +230,11 @@ def validate_symbol_bindings(
                     f"symbol {declaration.symbol!r}",
                 )
             selected.append(declaration)
-        resolved.append(ResolvedSymbolBinding(
-            binding.input_title, binding.role, tuple(choices), tuple(selected)
-        ))
+        resolved.append(
+            ResolvedSymbolBinding(
+                binding.input_title, binding.role, tuple(choices), tuple(selected)
+            )
+        )
     if bindings and sum(binding.role == "chart" for binding in bindings) != 1:
         _invalid("input_symbol", "symbol_bindings: exactly one chart role is required")
     return tuple(resolved)
@@ -233,7 +252,9 @@ def validate_bound_policy(
     if not bindings:
         return
     if pruner != "none":
-        _invalid("pruner", f"execution.pruner {pruner!r}: undecided policy for bound data")
+        _invalid(
+            "pruner", f"execution.pruner {pruner!r}: undecided policy for bound data"
+        )
     currencies: dict[str, str] = {}
     for binding in bindings:
         for declaration in binding.datasets:
