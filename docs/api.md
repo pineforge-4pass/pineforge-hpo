@@ -334,13 +334,25 @@ also forwards. They are not new StudySpec fields. Existing callers retain
 
 - `--trials-out all` retains every terminal record in `trials`, as before. This
   mode now spools rows in the native child without retaining every trial record or the
-  full result document in memory. The Python `run` wrapper still holds the child's stdout
-  in memory. The default `--trials-out all` requires a writable directory for two anonymous
-  files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files are
-  unlinked at creation, but the spool holds the whole trial array on disk until the process
-  exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
+  full result document in memory. The Python `run` wrapper spools the child's stdout and
+  formats the augmented, sorted JSON without loading trial arrays into memory. It streams
+  the formatted result to stdout in 64 KiB chunks and atomically copies it to its own
+  `--output`, when requested. Stderr capture is capped at 64 KiB; failure lookup scans the
+  whole spool in chunks of at most 64 KiB, with each extracted metadata field also capped
+  at 64 KiB. Oversized failure args become `null` while the code and origin are retained;
+  oversized stderr is drained and its captured prefix is marked as truncated.
+  The default native `--trials-out all` requires a writable directory for two anonymous
+  files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files
+  are unlinked at creation, but the spool holds the whole trial array on disk until the
+  process exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
   filesystems, native `run` and the jailed Python `run` wrapper can use a writable
-  `--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it.
+  `--output` parent for the native spool; `--trials-out best-k` or `none` avoids opening it.
+  The wrapper adds two anonymous spools in non-empty `TMPDIR` (or `/tmp`): raw stdout and
+  the indented rendering published as the result. These require a writable directory even
+  with a writable `--output` parent or reduced trial retention. The formatted spool is
+  typically about 1.5 to 2 times the raw stdout size. These consume system RAM when `TMPDIR`
+  is on tmpfs. It closes both on success or failure. An explicitly selected non-empty `TMPDIR`
+  is not retried elsewhere if file creation fails.
 - `--trials-out best-k --best-k N` retains at most N feasible, finite-objective
   winners with status `ok` in `trials`; ties prefer the lower trial ID. Records are emitted in
   trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.
