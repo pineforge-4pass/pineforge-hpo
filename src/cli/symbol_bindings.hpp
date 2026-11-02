@@ -8,6 +8,7 @@
 #include "symbol_feeds.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -163,25 +164,26 @@ inline std::uint64_t context_double_bits(const double& value) {
     return bits;
 }
 
-inline void context_append_le(std::string& output, std::uint64_t bits) {
+inline void context_append_le(unsigned char*& output, std::uint64_t bits) {
     for (unsigned shift = 0; shift < 64; shift += 8)
-        output += static_cast<char>((bits >> shift) & 255);
+        *output++ = static_cast<unsigned char>((bits >> shift) & 255);
 }
 
 inline std::string chart_values_sha256(const Dataset& dataset) {
     constexpr char domain[] = "pineforge:hpo:chart-bars:le:v1";
-    std::string bytes(domain, sizeof(domain));  // Includes the terminating NUL.
-    if (dataset.size() > (bytes.max_size() - bytes.size()) / 48)
-        binding_dataset_error("chart value encoding exceeds address space");
-    bytes.reserve(bytes.size() + dataset.size() * 48);
+    Sha256 hasher;
+    hasher.update(domain, sizeof(domain));  // Includes the terminating NUL.
+    std::array<unsigned char, 48> bytes{};
     for (std::size_t index = 0; index < dataset.size(); ++index) {
         const auto& bar = dataset.data()[index];
+        auto* output = bytes.data();
         for (const auto member : {&pf_bar_t::open, &pf_bar_t::high, &pf_bar_t::low,
                                   &pf_bar_t::close, &pf_bar_t::volume})
-            context_append_le(bytes, context_double_bits(bar.*member));
-        context_append_le(bytes, static_cast<std::uint64_t>(bar.timestamp));
+            context_append_le(output, context_double_bits(bar.*member));
+        context_append_le(output, static_cast<std::uint64_t>(bar.timestamp));
+        hasher.update(bytes.data(), bytes.size());
     }
-    return sha256(bytes);
+    return hasher.hex_digest();
 }
 
 // Numbers use tagged string payloads, so text such as "int:1" cannot collide with an integer.
@@ -308,6 +310,8 @@ inline std::shared_ptr<const Dataset> load_bound_chart(const ChartDataDeclaratio
     return owner;
 }
 
+// Callers invoke this catalogue and Python's validate_symbol_bindings only when bindings exist.
+// An empty list is refused here (exactly one chart role); Python returns an empty tuple for it.
 class AdmittedDataCatalogue final {
 public:
     AdmittedDataCatalogue(const std::vector<ChartDataDeclaration>& declarations,
@@ -409,7 +413,8 @@ public:
             binding_error("artifact_metadata", "data context requires the verified plugin sha256");
         auto dataset_records = object_json();
         std::map<std::string, DataContextId> ids;
-        // Stable dataset IDs own tapes. Neither paths nor binding iteration order select owners.
+        // IDs and declared facts identify owners: shared paths still load separate tapes.
+        // Load all references, including binding targets; only validate other declarations.
         contexts_.reserve(references.size());
         for (const auto& id : references) {
             const auto& declaration = datasets.at(id);

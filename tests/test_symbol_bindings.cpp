@@ -1,11 +1,15 @@
+#include "sha256.hpp"
 #include "symbol_bindings.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <string>
+#include <string_view>
 #include <unistd.h>
 
 namespace pfh = pineforge::hpo;
@@ -16,6 +20,72 @@ namespace {
 void require(bool condition, const std::string& message) {
     if (!condition)
         throw std::runtime_error(message);
+}
+
+void sha256_public_vectors() {
+    // Fixed public SHA-256 known answers from FIPS 180-4 / NIST examples.
+    struct Vector {
+        std::string_view message;
+        const char* digest;
+    };
+    constexpr std::array<Vector, 3> vectors{{
+        {"", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+        {"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+        {"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+         "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"},
+    }};
+    for (const auto& vector : vectors) {
+        detail::Sha256 hasher;
+        hasher.update(vector.message.data(), vector.message.size());
+        require(hasher.hex_digest() == vector.digest,
+                "incremental SHA-256 differs from a public known answer");
+        require(hasher.hex_digest() == vector.digest, "repeated digest changed SHA-256 state");
+        require(detail::sha256(vector.message) == vector.digest,
+                "one-shot SHA-256 differs from a public known answer");
+    }
+
+    std::array<char, 977> chunk;
+    chunk.fill('a');
+    detail::Sha256 million;
+    for (std::size_t remaining = 1'000'000; remaining != 0;) {
+        const auto count = std::min(remaining, chunk.size());
+        million.update(chunk.data(), count);
+        remaining -= count;
+    }
+    require(million.hex_digest() ==
+                "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
+            "chunked million-byte SHA-256 differs from the public known answer");
+
+    detail::Sha256 continued;
+    continued.update("a", 1);
+    const auto prefix = continued.hex_digest();
+    require(prefix == continued.hex_digest(), "inspecting a digest changed SHA-256 state");
+    continued.update("bc", 2);
+    require(continued.hex_digest() == vectors[1].digest,
+            "SHA-256 could not continue after digest inspection");
+}
+
+void sha256_chunk_boundaries() {
+    for (const auto size : {0u, 1u, 55u, 56u, 63u, 64u, 65u, 119u, 120u, 127u, 128u,
+                            129u, 255u, 1024u}) {
+        std::string input(size, '\0');
+        for (std::size_t index = 0; index < input.size(); ++index)
+            input[index] = static_cast<char>((index * 37 + 11) & 255);
+        const auto expected = detail::sha256(input);
+        const std::array<std::size_t, 5> chunk_sizes{1, 63, 64, 65, input.size()};
+        for (const auto chunk_size : chunk_sizes) {
+            detail::Sha256 hasher;
+            hasher.update(nullptr, 0);
+            for (std::size_t offset = 0; offset < input.size();) {
+                const auto count = std::min(chunk_size, input.size() - offset);
+                hasher.update(input.data() + offset, count);
+                hasher.update(nullptr, 0);
+                offset += count;
+            }
+            require(hasher.hex_digest() == expected,
+                    "SHA-256 depends on update chunk boundaries");
+        }
+    }
 }
 
 template <typename Function>
@@ -425,6 +495,8 @@ int main() {
     const auto directory = std::filesystem::temp_directory_path() /
                            ("pfh-bindings-" + std::to_string(::getpid()));
     try {
+        sha256_public_vectors();
+        sha256_chunk_boundaries();
         std::filesystem::create_directories(directory);
         csv(directory / "first.csv", 1);
         csv(directory / "second.csv", 2);
