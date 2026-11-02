@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .error import HpoError
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import math
@@ -255,7 +255,140 @@ def _parameters(study: StudySpec, values: Any) -> dict[str, Any]:
     return normalized
 
 
-def load_warm_start(study: StudySpec, path: str | Path) -> WarmHistory:
+@dataclass(frozen=True)
+class ContinuationDataContext:
+    """Internal compatibility contract made from an already admitted descriptor."""
+
+    canonical_descriptor: str
+    data_context_sha256: str = field(init=False)
+    dataset_ids: tuple[str, ...] = field(init=False)
+    _descriptor: dict[str, Any] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        try:
+            descriptor = _loads(self.canonical_descriptor)
+            if (
+                descriptor["schema"] != "pineforge-hpo-data-context/v1"
+                or not isinstance(descriptor["datasets"], dict)
+                or not descriptor["datasets"]
+                or not isinstance(descriptor["bindings"], dict)
+            ):
+                raise ValueError("invalid admitted data context")
+            encoded = _dump(descriptor)
+            object.__setattr__(self, "canonical_descriptor", encoded)
+            object.__setattr__(self, "_descriptor", descriptor)
+            object.__setattr__(
+                self, "dataset_ids", tuple(sorted(descriptor["datasets"]))
+            )
+            object.__setattr__(
+                self,
+                "data_context_sha256",
+                hashlib.sha256(
+                    b"pineforge:hpo:data-context:v1\0" + encoded.encode()
+                ).hexdigest(),
+            )
+        except (ValueError, TypeError, KeyError) as error:
+            raise WarmStartError(f"warm-start incompatible: {error}") from error
+
+    def validate_owner(
+        self, owner: Any, *, required: bool = False, complete: bool = False
+    ) -> None:
+        if not isinstance(owner, dict):
+            raise ValueError("data context owner must be an object")
+        if required or "data_context_sha256" in owner:
+            if owner.get("data_context_sha256") != self.data_context_sha256:
+                raise ValueError("missing or differing data_context_sha256")
+        if complete or "dataset_ids" in owner:
+            identifiers = owner.get("dataset_ids")
+            if (
+                not isinstance(identifiers, list)
+                or any(not isinstance(value, str) for value in identifiers)
+                or tuple(sorted(identifiers)) != self.dataset_ids
+            ):
+                raise ValueError("missing or differing dataset_ids")
+        runtime = owner.get("applied_runtime", {})
+        if complete or "data_context" in runtime:
+            if _dump(runtime.get("data_context")) != self.canonical_descriptor:
+                raise ValueError("missing or differing data context descriptor")
+        if (
+            "data_context" in owner
+            and _dump(owner["data_context"]) != self.canonical_descriptor
+        ):
+            raise ValueError("differing data context descriptor")
+        if complete and owner.get("dataset_id") is not None:
+            raise ValueError("bound result cannot declare one global dataset_id")
+
+    def row_identity(self, parameters: Any) -> dict[str, str]:
+        charts = [
+            (title, binding)
+            for title, binding in self._descriptor["bindings"].items()
+            if binding["role"] == "chart"
+        ]
+        if len(charts) != 1:
+            raise ValueError("data context requires one chart binding")
+        title, binding = charts[0]
+        symbol = parameters[title]
+        if not isinstance(symbol, str) or symbol not in binding["choices"]:
+            raise ValueError("trial symbol is outside the admitted binding")
+        dataset_id = binding["datasets"][symbol]
+        if self._descriptor["datasets"][dataset_id]["symbol"] != symbol:
+            raise ValueError("trial binding contradicts dataset symbol")
+        return {
+            "symbol": symbol,
+            "dataset_id": dataset_id,
+            "data_context_sha256": self.data_context_sha256,
+        }
+
+    def validate_row(self, row: Any, parameters: Any) -> None:
+        self.validate_owner(row, required=True)
+        if any(
+            row.get(name) != value
+            for name, value in self.row_identity(parameters).items()
+        ):
+            raise ValueError(
+                "trial symbol or dataset_id contradicts its parameters and binding"
+            )
+
+
+def _has_data_context(owner: Any) -> bool:
+    if not isinstance(owner, dict):
+        return False
+    runtime = owner.get("applied_runtime")
+    return (
+        any(
+            name in owner
+            for name in ("data_context", "data_context_sha256", "dataset_ids")
+        )
+        or all(name in owner for name in ("parameters", "symbol", "dataset_id"))
+        or (isinstance(runtime, dict) and "data_context" in runtime)
+        or _has_data_context(owner.get("space"))
+    )
+
+
+def _validate_data_context(
+    owner: Any,
+    context: ContinuationDataContext | None,
+    *,
+    required: bool = False,
+    complete: bool = False,
+) -> None:
+    if context is None:
+        if _has_data_context(owner):
+            raise ValueError(
+                "bound parent requires a data context; binding cannot be dropped"
+            )
+    else:
+        context.validate_owner(owner, required=required, complete=complete)
+    if isinstance(owner, dict) and "space" in owner:
+        _validate_data_context(owner["space"], context)
+
+
+def load_warm_start(
+    study: StudySpec,
+    path: str | Path,
+    *,
+    data_context: ContinuationDataContext | None = None,
+) -> WarmHistory:
     """Auto-detect fd-3 JSONL, a complete result object, or its trials array."""
     try:
         source = Path(path).expanduser().resolve()
@@ -269,6 +402,9 @@ def load_warm_start(study: StudySpec, path: str | Path) -> WarmHistory:
             document = None
         parent_space = None
         if isinstance(document, dict) and "trials" in document:
+            _validate_data_context(
+                document, data_context, required=True, complete=data_context is not None
+            )
             if "tpe_sampler_state" in document:
                 checkpoint = document["tpe_sampler_state"]
                 _validate_sampler_checkpoint(checkpoint)
@@ -360,6 +496,9 @@ def load_warm_start(study: StudySpec, path: str | Path) -> WarmHistory:
             identifiers.add(identifier)
             next_id = max(next_id, identifier + 1)
             values = _parameters(study, trial["parameters"])
+            _validate_data_context(trial, data_context, required=True)
+            if data_context is not None:
+                data_context.validate_row(trial, values)
             tried.add(_dump({name: _scalar(value) for name, value in values.items()}))
             is_feasible = trial["feasible"]
             objective = trial["objective"]

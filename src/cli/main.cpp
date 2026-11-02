@@ -2705,6 +2705,71 @@ struct TrialContextPlan {
     const std::vector<std::size_t> bar_counts;
 };
 
+bool restore_context_tpe_history(
+    pfh::TpeSampler& sampler, const pfh::detail::WarmHistory& history,
+    const pfh::SearchSpace& space, const pfh::detail::ContinuationDataContext& context,
+    std::uint64_t replay_batch, const std::string& checkpoint) {
+    pfh::detail::validate_warm_history_context(history, space, &context);
+    return history.binary ? sampler.warm_start(history.binary, replay_batch, checkpoint)
+                          : sampler.warm_start(history.observations, replay_batch, checkpoint);
+}
+
+// Internal prepared studies can bypass prepare(), so admission belongs before even the
+// executor validation handles here. No public parser supplies a context selector.
+void admit_context_continuation(Options& options, const pfh::SearchSpace& space,
+                                 pfh::Pruner& pruner) {
+    if (!options.context_selector) {
+        if (options.warm_history && options.warm_history->data_context)
+            pfh::detail::validate_warm_history_context(*options.warm_history, space, nullptr);
+        return;
+    }
+    if (!options.warm_history && options.warm_start.empty())
+        return;
+    if (options.sampler != "grid" && options.sampler != "random" && options.sampler != "tpe")
+        throw pfh::detail::WarmStartError("sampler continuation is not supported for bound data");
+    const auto& catalogue = options.context_selector->catalogue();
+    const pfh::detail::ContinuationDataContext context(catalogue.canonical_descriptor());
+    if (!options.warm_history) {
+        auto recorded = pfh::detail::recorded_space(
+            space, options.objective,
+            options.direction == Direction::kMaximize ? "maximize" : "minimize",
+            options.constraints);
+        if (options.symbol_feeds_record)
+            recorded.members["symbol_feeds"] = *options.symbol_feeds_record;
+        auto history = std::make_shared<const pfh::detail::WarmHistory>(
+            pfh::detail::load_warm_history(options.warm_start, space, recorded, &context));
+        for (const auto& scores : history->rung_scores)
+            pruner.observe(scores);
+        options.warm_history = std::move(history);
+    }
+    const auto& history = *options.warm_history;
+    pfh::detail::validate_warm_history_context(history, space, &context);
+    std::optional<std::uint64_t> finite;
+    try {
+        finite = space.finite_cardinality();
+    } catch (const std::overflow_error&) {
+        if (options.sampler == "grid" ||
+            options.candidate_policy != pfh::CandidatePolicy::SamplerDefault)
+            throw;
+    }
+    if (finite && history.tried_count() == *finite)
+        throw pfh::detail::SpaceExhausted();
+    if (history.next_id == std::numeric_limits<std::uint64_t>::max() ||
+        options.max_trials > std::numeric_limits<std::uint64_t>::max() - history.next_id)
+        throw pfh::detail::WarmStartError("new trial budget would overflow trial IDs");
+    if (history.binary && options.pruner != pfh::PrunerKind::None)
+        throw pfh::detail::WarmStartError("binary history has no pruning rungs");
+    if (options.candidate_policy != pfh::CandidatePolicy::SamplerDefault) {
+        if (!finite)
+            throw pfh::detail::WarmStartError("finite candidate policy requires a finite space");
+        const auto remaining = *finite - history.tried_count();
+        if (options.max_trials > remaining ||
+            (options.candidate_policy == pfh::CandidatePolicy::Exhaustive &&
+             options.max_trials != remaining))
+            throw pfh::detail::WarmStartError("finite budget does not fit remaining space");
+    }
+}
+
 StudyResult run_study_contexts(
     const PreparedStudy& prepared, std::optional<pfh::DatasetView> single_view,
     std::shared_ptr<const ContextSelector> selector,
@@ -2714,6 +2779,7 @@ StudyResult run_study_contexts(
     const auto& space = prepared.space;
     const auto& finite_cardinality = prepared.finite_cardinality;
     auto pruner = prepared.pruner;
+    admit_context_continuation(options, space, pruner);
     const auto& objective = prepared.objective;
     const auto& constraints = prepared.constraints;
     std::vector<const pfh::MetricExpression*> expressions{&objective};
@@ -3049,9 +3115,16 @@ StudyResult run_study_contexts(
             try {
                 options.parent_numeric_build_identity =
                     pfh::detail::sampler_checkpoint_numeric_identity(state);
-                options.tpe_warm_restored = options.warm_history->binary
-                    ? sampler.warm_start(options.warm_history->binary, replay_batch, state)
-                    : sampler.warm_start(options.warm_history->observations, replay_batch, state);
+                if (options.context_selector) {
+                    const pfh::detail::ContinuationDataContext context(
+                        options.context_selector->catalogue().canonical_descriptor());
+                    options.tpe_warm_restored = restore_context_tpe_history(
+                        sampler, *options.warm_history, space, context, replay_batch, state);
+                } else {
+                    options.tpe_warm_restored = options.warm_history->binary
+                        ? sampler.warm_start(options.warm_history->binary, replay_batch, state)
+                        : sampler.warm_start(options.warm_history->observations, replay_batch, state);
+                }
             } catch (const std::exception& error) {
                 throw pfh::detail::WarmStartError(error.what());
             }

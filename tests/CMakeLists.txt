@@ -763,6 +763,23 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
         $<TARGET_FILE:pineforge_hpo_fake_strategy>
         "${CMAKE_CURRENT_BINARY_DIR}/symbol-routing")
 
+    add_executable(pineforge_hpo_test_symbol_continuation test_symbol_continuation.cpp
+        "${PROJECT_SOURCE_DIR}/src/cli/runner_seccomp.cpp")
+    target_compile_definitions(pineforge_hpo_test_symbol_continuation PRIVATE
+        PINEFORGE_HPO_VERSION="${PINEFORGE_HPO_VERSION}")
+    target_include_directories(pineforge_hpo_test_symbol_continuation PRIVATE
+        "${PFH_RETURN_STATS_IDENTITY_DIRECTORY}")
+    target_link_libraries(pineforge_hpo_test_symbol_continuation PRIVATE
+        PineForgeHPO::engine_adapter Threads::Threads ${CMAKE_DL_LIBS})
+    add_dependencies(pineforge_hpo_test_symbol_continuation
+        ${PFH_RETURN_STATS_IDENTITY_TARGET} pineforge_hpo_fake_routing_strategy)
+    target_compile_options(pineforge_hpo_test_symbol_continuation PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME pineforge_hpo_symbol_continuation COMMAND python3
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/symbol_continuation_oracle.py"
+        $<TARGET_FILE:pineforge_hpo_test_symbol_continuation>
+        $<TARGET_FILE:pineforge_hpo_fake_routing_strategy>
+        "${CMAKE_CURRENT_BINARY_DIR}/symbol-continuation")
+
     add_executable(pineforge_hpo_symbol_feed_report symbol_feed_report.cpp)
     target_include_directories(pineforge_hpo_symbol_feed_report PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
     target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE
