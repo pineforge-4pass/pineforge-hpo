@@ -1136,8 +1136,25 @@ The spool holds the whole trial array on disk until the process exits.
 On read-only root filesystems, native `run` and the jailed Python `run` wrapper can use a writable
 `--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it, and the Python
 `run` wrapper forwards `--trials-out`, `--best-k` and `--row-space`.
-If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
-not in the native process RSS.
+The wrapper adds two anonymous spools in non-empty `TMPDIR` (or `/tmp`): raw stdout and the
+indented rendering published as the result, formatted without loading trial arrays into Python
+memory. These require a writable directory even with a writable `--output` parent or reduced
+trial retention. The formatted spool is larger than the raw stdout.
+Wrapper reads and copies use the chunk size (`--result-chunk-bytes`, default 64 KiB,
+minimum 2 bytes), including stderr drains. Captured stderr, each extracted failure field,
+decoded JSON member names and JSON scalar tokens use `--diagnostic-bytes` (default 64 KiB,
+minimum 1 byte). Smaller diagnostic bounds can refuse longer tokens or member names.
+Both options take decimal integers and are checked before starting the child or
+creating a wrapper spool. For both options, the largest accepted value is the platform's
+read-size limit, `sys.maxsize`; larger values are refused before the child starts.
+Oversized failure args become `null` while code and origin are retained when they fit;
+truncated stderr has `\n[native stderr truncated]` appended. A very small
+`--diagnostic-bytes` can make a failure's `code` or `origin` oversized, in which
+case the failure is reported as `hpo_unclassified_error` and the stdout fallback
+is shortened to the bound.
+Both wrapper spools are closed on success or failure; a selected directory is not retried
+elsewhere if creation fails. If `TMPDIR` is on tmpfs, both wrapper spools and the native spool
+live in RAM; their growth appears in system memory, not in process RSS.
 The final `trials` array copies those rendered rows in trial-ID order
 without retaining every trial record or the full document in memory. This spool is independent
 of `--trials-file FILE` and `--progress-fd`, which retain their ordered NDJSON stream and
