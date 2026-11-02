@@ -731,6 +731,13 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
         $<TARGET_FILE:pineforge_hpo_fake_strategy>
         $<TARGET_FILE:pineforge_hpo_fake_strategy_no_metadata>)
 
+    add_executable(pineforge_hpo_test_symbol_bindings test_symbol_bindings.cpp)
+    target_include_directories(pineforge_hpo_test_symbol_bindings PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/cli")
+    target_link_libraries(pineforge_hpo_test_symbol_bindings PRIVATE PineForgeHPO::engine_adapter)
+    target_compile_options(pineforge_hpo_test_symbol_bindings PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME pineforge_hpo_symbol_bindings COMMAND pineforge_hpo_test_symbol_bindings)
+
     add_executable(pineforge_hpo_symbol_feed_report symbol_feed_report.cpp)
     target_include_directories(pineforge_hpo_symbol_feed_report PRIVATE "${PROJECT_SOURCE_DIR}/src/cli")
     target_link_libraries(pineforge_hpo_symbol_feed_report PRIVATE
