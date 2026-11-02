@@ -276,6 +276,12 @@ def _precompiled_artifact(
 
 
 def _same_scalar(left: object, right: object) -> bool:
+    if _is_number(left) and _is_number(right):
+        return (
+            (not isinstance(left, float) or math.isfinite(left))
+            and (not isinstance(right, float) or math.isfinite(right))
+            and left == right
+        )
     return type(left) is type(right) and left == right
 
 
