@@ -1067,9 +1067,10 @@ rolling-schedule section of [batching](batching.md).
 The native executable accepts additional flags without extending StudySpec v1:
 
 - `--syminfo FILE`: optional positive finite `mincontract` (since 0.3.1), `mintick`
-  and `pointvalue`, plus NUL-free string `timezone` and `session`, in flat JSON or
+  and `pointvalue`, optional integer `series_origin_ms` (for engines that have the
+  run option of that name), plus NUL-free string `timezone` and `session`, in flat JSON or
   `{"syminfo": {...}}`. Apply after inputs/overrides, in
-  mincontract/mintick/pointvalue/timezone/session order. `mincontract` is the
+  mincontract/series_origin_ms/mintick/pointvalue/timezone/session order. `mincontract` is the
   instrument lot-size grid (TradingView `syminfo.mincontract`): a number reaches
   the engine as the metadata keys `qty_step` (order quantities are floored to the
   grid) and `mincontract`; `null` or absent means no grid. In the object that is
@@ -1077,10 +1078,20 @@ The native executable accepts additional flags without extending StudySpec v1:
   outside the double range such as `1e999`) is an initialization error (exit 1,
   `syminfo.mincontract must be a positive finite number`); bare `NaN` and `Infinity`
   are not JSON and fail earlier (exit 1, `invalid JSON at byte N`, which does not name
-  the key). A plugin without `strategy_set_syminfo_metadata` never runs gridless: with
-  a `mincontract` each trial fails with a `trial_error` that names the key, and the run
-  exits 2 because no trial is feasible. Missing fields and empty strings keep engine
-  defaults; other catalog keys are ignored. Symbol and chart timezones are distinct.
+  the key). `series_origin_ms` is the epoch milliseconds of the first bar of the
+  TradingView reference series, enabling range-start EMA warm-up and starting
+  `request.security` at the first whole bucket at or after the origin. It must be a
+  finite JSON number that is an integer from 1 through 9007199254740991 and is applied
+  through `strategy_set_syminfo_metadata` as `series_origin_ms`, after the lot grid
+  (`qty_step`, then `mincontract`) and before `mintick`. Absent or `null` means no call
+  and unchanged runs; any other value fails initialization (exit 1, failure code
+  `hpo_study_spec_invalid`, arguments `{"reason":"study"}`, message
+  `syminfo.series_origin_ms must be a positive integer`). A plugin without
+  `strategy_set_syminfo_metadata` keeps working when neither metadata key is declared;
+  with `mincontract` or `series_origin_ms`, each trial fails with a `trial_error` naming
+  the key, and the run exits 2 because no trial is feasible.
+  Missing fields and empty strings keep engine defaults; other catalog keys are ignored.
+  Symbol and chart timezones are distinct.
 - `--progress-fd N`: inherited writable descriptor for one flushed terminal-trial
   JSON object per line. One writer prevents interleaving. Each object equals its
   final `trials[]` entry; drain pipes concurrently and do not assume completion

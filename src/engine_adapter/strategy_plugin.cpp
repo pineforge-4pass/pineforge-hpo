@@ -507,6 +507,12 @@ void StrategyPlugin::set_symbol_info(pf_strategy_t strategy, const SymbolInfo& i
                 "hpo_study_spec_invalid", {{"reason", "backtest"}},
                 "symbol numbers must be finite and positive");
     }
+    if (info.series_origin_ms && (*info.series_origin_ms < 1 ||
+                                 *info.series_origin_ms >= (std::int64_t{1} << 53))) {
+        throw TypedHpoError<std::invalid_argument>(
+            "hpo_study_spec_invalid", {{"reason", "study"}},
+            "syminfo.series_origin_ms must be a positive integer");
+    }
     reject_embedded_null(info.timezone, "symbol timezone");
     reject_embedded_null(info.session, "symbol session");
     if (info.mincontract && !strategy_set_syminfo_metadata_) {
@@ -514,6 +520,12 @@ void StrategyPlugin::set_symbol_info(pf_strategy_t strategy, const SymbolInfo& i
             "hpo_plugin_invalid", {{"reason", "setter_missing"}},
             "strategy plugin does not support requested symbol info: syminfo.mincontract "
             "needs strategy_set_syminfo_metadata (lot-size grid key qty_step)");
+    }
+    if (info.series_origin_ms && !strategy_set_syminfo_metadata_) {
+        throw TypedHpoError<std::runtime_error>(
+            "hpo_plugin_invalid", {{"reason", "setter_missing"}},
+            "strategy plugin does not support requested symbol info: syminfo.series_origin_ms "
+            "needs strategy_set_syminfo_metadata");
     }
     if ((info.mintick && !strategy_set_syminfo_mintick_) ||
         (info.pointvalue && !strategy_set_syminfo_pointvalue_) ||
@@ -526,6 +538,10 @@ void StrategyPlugin::set_symbol_info(pf_strategy_t strategy, const SymbolInfo& i
     if (info.mincontract) {
         strategy_set_syminfo_metadata_(strategy, "qty_step", *info.mincontract);
         strategy_set_syminfo_metadata_(strategy, "mincontract", *info.mincontract);
+    }
+    if (info.series_origin_ms) {
+        strategy_set_syminfo_metadata_(strategy, "series_origin_ms",
+                                      static_cast<double>(*info.series_origin_ms));
     }
     if (info.mintick)
         strategy_set_syminfo_mintick_(strategy, *info.mintick);

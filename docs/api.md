@@ -68,7 +68,7 @@ The following native `run` flags are not StudySpec fields or Python CLI pass-thr
 | Flag | Semantics |
 | --- | --- |
 | `--seccomp` | Opt-in Linux process/exec denylist, off by default. Sets no-new-privs and installs before plugin `dlopen`, covering static initializers and later workers. Denies exec, process creation, `ptrace`, `process_vm_readv` and `process_vm_writev`; threads, files and sockets remain allowed. Unsupported platforms or failed installation refuse with `hpo_seccomp_unavailable`. Other cross-process reads (for example `/proc/<pid>/mem`) remain the outer jail's responsibility, along with filesystem, network, IPC and resource limits; see [the jailed profile](jailed-profile.md). |
-| `--syminfo FILE` | Flat or wrapped instrument JSON. Optional positive finite `mintick`/`pointvalue` and NUL-free `timezone`/`session` strings are applied after inputs and overrides, in harness order. Empty strings keep defaults; unrelated catalog keys are ignored. |
+| `--syminfo FILE` | Flat or wrapped instrument JSON. Apply optional `mincontract`, `series_origin_ms`, positive finite `mintick`/`pointvalue`, and NUL-free `timezone`/`session` strings after inputs and overrides, in that order. Empty strings keep defaults; unrelated catalog keys are ignored. |
 | `--symbol-feeds FILE` | Release-harness JSON index for fixed other-symbol reads. CSV paths are relative to the index; values are validated/hashed once and installed into each fresh trial. Also accepted by `space-info` and `warm-encode`; overrides work.json's `symbol_feeds`. String-input search requires engine/codegen >= 1.1.0 metadata; `input.symbol` dimensions are refused (D7). |
 | `--progress-fd N` | An inherited writable descriptor receives one complete, flushed JSONL object per terminal trial, serialized by one writer in increasing trial-ID order. Objects use the unchanged terminal-trial schema regardless of final retention mode. Consumers must drain a pipe concurrently. |
 | `--max-wall-seconds S` | Positive finite study wall cap, measured from native initialization. Stops new worker claims and adaptive batches at S with `stop_reason: "deadline"`; `--wall-grace-seconds` bounds the drain after the wall cap. SIGTERM/SIGINT also stop new work; without a wall cap or per-trial timeout, a hung trial has no bound. |
@@ -87,9 +87,20 @@ and `mincontract`; `null` or absent means no grid and no call. In the object tha
 any other value (zero, negative, string, boolean, array, object, or a number outside the
 double range such as `1e999`) fails initialization with
 `syminfo.mincontract must be a positive finite number` (exit 1). A plugin without the
-optional `strategy_set_syminfo_metadata` export keeps working for every syminfo that has no
-`mincontract`; with one, each trial fails with a `trial_error` that names the key and the
-run exits 2 because no trial is feasible.
+optional `strategy_set_syminfo_metadata` export keeps working when neither `mincontract`
+nor `series_origin_ms` is declared; with either, each trial fails with a `trial_error` that
+names the key and the run exits 2 because no trial is feasible.
+
+Optional `series_origin_ms` declares the epoch milliseconds of the first bar of the
+TradingView reference series, enabling its range-start EMA warm-up and starting
+`request.security` at the first whole bucket at or after the origin in an engine that has
+the `series_origin_ms` run option; an engine without it ignores the key. It must be a
+finite JSON number that is an integer from 1 through 9007199254740991. The adapter applies
+it as the `series_origin_ms` metadata key through `strategy_set_syminfo_metadata`, after
+`qty_step` and `mincontract` and before `mintick`. Absent or `null` means no call and
+unchanged runs. Other values fail initialization (exit 1) with
+`syminfo.series_origin_ms must be a positive integer`, using failure code
+`hpo_study_spec_invalid` and arguments `{"reason":"study"}`.
 
 Each trial's `backtest` object additionally contains
 `magnifier_sample_ticks_total`, copied from the detached report or zero when
