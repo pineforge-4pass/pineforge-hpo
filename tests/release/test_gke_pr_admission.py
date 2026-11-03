@@ -20,6 +20,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 SMALL = "gke-8cpu-16gb-amd64"
 LARGE = "gke-16cpu-32gb-amd64"
+LARGE_DISK = "gke-16cpu-32gb-amd64-64gb"
 
 
 def read(path):
@@ -53,13 +54,13 @@ class MigrationRedTests(unittest.TestCase):
                 "workflow-lint": SMALL,
                 "light": SMALL,
                 "release-notification": SMALL,
-                "native": LARGE,
+                "native": LARGE_DISK,
                 "python": LARGE,
-                "memory-gate": LARGE,
+                "memory-gate": LARGE_DISK,
             },
             "benchmark-smoke-post.yml": {
                 "workflow-lint": SMALL,
-                "optuna": LARGE,
+                "optuna": LARGE_DISK,
             },
             "docs-pages.yml": {"build": SMALL},
         }.items():
@@ -232,7 +233,7 @@ class AdmissionTests(unittest.TestCase):
                 self.policy.ROOT = root
                 path = root / ".github/workflows/gke-pr.yml"
                 text = read(path).replace(
-                    "runs-on: gke-16cpu-32gb-amd64", "runs-on: ubuntu-24.04", 1
+                    "runs-on: gke-16cpu-32gb-amd64\n", "runs-on: ubuntu-24.04\n", 1
                 )
                 path.write_text(text, encoding="utf-8")
                 actual = self.policy.local_sources(root)

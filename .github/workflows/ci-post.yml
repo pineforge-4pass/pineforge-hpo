@@ -194,7 +194,7 @@ jobs:
   native:
     name: Native (${{ matrix.os }})
     needs: [authz]
-    runs-on: gke-16cpu-32gb-amd64
+    runs-on: gke-16cpu-32gb-amd64-64gb
     permissions: {contents: read}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
@@ -734,7 +734,7 @@ jobs:
   memory-gate:
     name: HPO memory growth gate
     needs: [authz]
-    runs-on: gke-16cpu-32gb-amd64
+    runs-on: gke-16cpu-32gb-amd64-64gb
     permissions: {contents: read}
     steps:
       - name: Check out the exact head and pinned submodules

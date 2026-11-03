@@ -30,7 +30,7 @@ class MemoryGateWiringTests(unittest.TestCase):
         self.assertNotIn("if", memory)
         self.assertNotIn("if", self.jobs["native"])
         self.assertNotIn("native", memory["needs"])
-        self.assertEqual(memory["runs-on"], "gke-16cpu-32gb-amd64")
+        self.assertEqual(memory["runs-on"], "gke-16cpu-32gb-amd64-64gb")
         self.assertNotIn("strategy", memory)
         self.assertNotIn("timeout-minutes", memory)
         self.assertNotIn("continue-on-error", memory)

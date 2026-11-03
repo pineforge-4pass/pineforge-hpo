@@ -190,7 +190,7 @@ jobs:
     name: Native (${{ matrix.os }})
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
-    runs-on: gke-16cpu-32gb-amd64
+    runs-on: gke-16cpu-32gb-amd64-64gb
     permissions: {contents: read}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
@@ -370,7 +370,7 @@ jobs:
     name: HPO memory growth gate
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
-    runs-on: gke-16cpu-32gb-amd64
+    runs-on: gke-16cpu-32gb-amd64-64gb
     permissions: {contents: read}
     steps:
       - name: Check out the exact head and pinned submodules
@@ -440,7 +440,7 @@ jobs:
     name: Native TPE vs Optuna
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
-    runs-on: gke-16cpu-32gb-amd64
+    runs-on: gke-16cpu-32gb-amd64-64gb
     permissions: {contents: read}
     env:
       PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'

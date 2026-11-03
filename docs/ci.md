@@ -78,7 +78,8 @@ guards.
 | Proof | Runner |
 | --- | --- |
 | workflow-lint, Light, release contract, API docs | `gke-8cpu-16gb-amd64` |
-| Native Linux, Python 3.11/3.14, memory gate, Optuna smoke | `gke-16cpu-32gb-amd64` |
+| Native Linux, memory gate, Optuna smoke | `gke-16cpu-32gb-amd64-64gb` |
+| Python 3.11/3.14 | `gke-16cpu-32gb-amd64` |
 | Admission and final build-gate judgment | hosted `ubuntu-24.04` |
 | Native macOS | hosted `macos-latest` |
 | Pages deployment and all of `release.yml` | hosted `ubuntu-24.04` |
@@ -138,7 +139,7 @@ PR authorization alone does not validate this migration.
 The `memory-gate` jobs in `.github/workflows/gke-pr.yml` and
 `.github/workflows/ci-post.yml` build the Release
 native CLI and existing `fake_strategy` fixture against the pinned engine
-headers on `gke-16cpu-32gb-amd64`, using the native job's Release configuration
+headers on `gke-16cpu-32gb-amd64-64gb`, using the native job's Release configuration
 and default build, and builds the pinned engine runtime. It invokes the stdlib-only
 `scripts/ci_memory_gate.py` directly. The trial axis uses a fixed two-bar CSV,
 random sampling, seed 17, one worker, batch size one and `--trials-out all`.

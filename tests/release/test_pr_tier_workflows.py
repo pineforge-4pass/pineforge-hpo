@@ -148,11 +148,11 @@ class PrTierWorkflowTests(unittest.TestCase):
         for job_id, runner in (
             ("release-notification", "gke-8cpu-16gb-amd64"),
             ("python", "gke-16cpu-32gb-amd64"),
-            ("memory-gate", "gke-16cpu-32gb-amd64"),
-            ("native", "gke-16cpu-32gb-amd64"),
+            ("memory-gate", "gke-16cpu-32gb-amd64-64gb"),
+            ("native", "gke-16cpu-32gb-amd64-64gb"),
         ):
             self.assertEqual(ci[job_id]["runs-on"], runner)
-        self.assertEqual(benchmark["optuna"]["runs-on"], "gke-16cpu-32gb-amd64")
+        self.assertEqual(benchmark["optuna"]["runs-on"], "gke-16cpu-32gb-amd64-64gb")
         self.assertEqual(ci["native"]["strategy"]["matrix"], {"os": ["ubuntu-latest"]})
         self.assertEqual(ci["native-macos"]["runs-on"], "macos-latest")
         self.assertEqual(
@@ -179,7 +179,9 @@ class PrTierWorkflowTests(unittest.TestCase):
         for route in routes:
             with self.subTest(route=route):
                 self.assertNotIn("${{", route)
-                self.assertRegex(route, r"^gke-(8cpu-16gb|16cpu-32gb)-amd64$")
+                self.assertRegex(
+                    route, r"^gke-(8cpu-16gb-amd64|16cpu-32gb-amd64(?:-64gb)?)$"
+                )
         self.assert_routing(self.workflows)
 
     def test_old_pool_routing_and_pool_fallback_are_rejected(self):

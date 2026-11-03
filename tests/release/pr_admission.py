@@ -32,6 +32,7 @@ from yaml.tokens import (
 ROOT = Path(__file__).resolve().parents[2]
 SMALL = "gke-8cpu-16gb-amd64"
 LARGE = "gke-16cpu-32gb-amd64"
+LARGE_DISK = "gke-16cpu-32gb-amd64-64gb"
 SHA = re.compile(r"[0-9a-f]{40}")
 BOTS = frozenset(("dependabot[bot]", "pineforge-app[bot]"))
 HEAVY_JOBS = frozenset(
@@ -54,10 +55,10 @@ GKE_JOBS = {
     "lint": SMALL,
     "light": SMALL,
     "release-notification": SMALL,
-    "native": LARGE,
+    "native": LARGE_DISK,
     "python": LARGE,
-    "memory-gate": LARGE,
-    "optuna": LARGE,
+    "memory-gate": LARGE_DISK,
+    "optuna": LARGE_DISK,
     "docs": SMALL,
 }
 
