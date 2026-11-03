@@ -20,8 +20,7 @@ execution is not implemented yet.
 The optional direct-PineScript bridge uses the separately distributed
 `pineforge-codegen` package from the `pineforge-codegen-oss` repository. The
 `transpile` extra admits codegen 1.1 and later, below 2; install the one whose version matches
-your PineForge engine (for example `pineforge-codegen==1.10.0` with engine v1.10.0,
-the pair targeted by the unreleased HPO 1.10.0 preparation).
+your PineForge engine (for example `pineforge-codegen==1.10.0` with engine v1.10.0).
 A precompiled PineForge strategy plugin can be optimized without installing that
 transpiler.
 

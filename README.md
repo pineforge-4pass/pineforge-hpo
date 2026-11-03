@@ -69,8 +69,7 @@ The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
 The gitlinks pin the releases this HPO revision targets: engine v1.10.0 (`59f98ba`,
-C ABI 5) and codegen v1.10.0 (`47f0e8a`). This HPO 1.10.0 preparation is unreleased;
-compatibility verification against this pair is pending. Linux CI gates the nine-trial example, real
+C ABI 5) and codegen v1.10.0 (`47f0e8a`). Linux CI gates the nine-trial example, real
 multi-symbol C-ABI equality and real-artifact D7 refusal; both native CI runners require
 the independently pinned serial golden rather than silently skipping it. From 1.0.0 on,
 codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may still compile,
@@ -84,9 +83,9 @@ reads the equity statistics by their engine 1.0 names, so it needs engine header
 (including the checked-settings API). Regenerate a precompiled plugin referenced from a
 StudySpec with codegen 1.10.0 and rebuild it against engine v1.10.0: plugins from engine
 v1.7.x or earlier (ABI 4 or lower) are
-refused with an ABI mismatch, while plugins from engine development builds between v1.9.0
-and v1.9.1 may also report ABI 5 and load without an error although they do not pair with the
-pinned releases.
+refused with an ABI mismatch. Plugins from engine v1.9.x releases or development builds
+before v1.10.0 may also report ABI 5 and load without an error although they do not pair
+with the pinned releases.
 C++ code that reads `ReportSnapshot::metrics.equity.sharpe_tv` or `sortino_tv` must use
 `sharpe_monthly` or `sortino_monthly`.
 

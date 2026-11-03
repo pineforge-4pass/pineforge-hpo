@@ -1,14 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 (2026-11-04)
 
-## 1.10.0 (Unreleased)
-
-- Prepare HPO 1.10.0 with engine v1.10.0 (C ABI 5) and codegen v1.10.0.
+- Pairs with engine v1.10.0 and codegen v1.10.0 (C ABI 5).
   The optional submodules pin `external/pineforge-engine` (`59f98ba`) and
   `external/pineforge-codegen-oss` (`47f0e8a`). The `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; use
-  `pineforge-codegen==1.10.0` with this engine. HPO compatibility and release verification
-  remain pending.
+  `pineforge-codegen==1.10.0` with this engine.
 - Compare numeric Pine input options by value so float inputs with integer-written options
   accept equal float values, including their own defaults; boolean and string options retain
   strict type matching.
