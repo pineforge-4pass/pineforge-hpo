@@ -1,13 +1,24 @@
 # Changelog
 
-## Unreleased
+## 1.10.0 (2026-11-04)
 
+- Pairs with engine v1.10.0 and codegen v1.10.0 (C ABI 5).
+  The optional submodules pin `external/pineforge-engine` (`59f98ba`) and
+  `external/pineforge-codegen-oss` (`47f0e8a`). The `transpile` extra keeps `pineforge-codegen>=1.1.0,<2`; use
+  `pineforge-codegen==1.10.0` with this engine.
 - Compare numeric Pine input options by value so float inputs with integer-written options
   accept equal float values, including their own defaults; boolean and string options retain
   strict type matching.
 - Ignore unrequested empty input titles in artifact manifests while preserving validation of
   named inputs. Non-string and missing titles are still refused, as is an empty title the study
   names.
+- Accept color input choices consistently in native optimizer input validation.
+- Add regression checks for workflow action-reference SHAs.
+- Add Linux return-statistics build identity checks.
+- Clarify arena and output requirements for jailed launches and ancestry and ownership checks
+  for the walk-forward loader.
+- Add groundwork for validating study data, routing each trial to its chart data, and checking
+  that resumed studies use a matching data context. The public study interface remains unchanged.
 
 ## 1.9.1 (2026-10-31)
 
