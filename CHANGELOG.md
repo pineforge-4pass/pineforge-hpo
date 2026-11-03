@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- Fix jailed Python `run` with an unusable inherited `TMPDIR` by placing both result spools
+  in the resolved `--output` parent. Unjailed runs still honor explicit non-empty `TMPDIR`,
+  and spool creation errors never retry another directory.
+- Stream native stdout through two anonymous files in the Python `run` wrapper, preserving
+  its augmented, sorted JSON bytes and atomic `--output` publication without loading trial
+  arrays into Python memory, including on native failures. The chunk size
+  (`--result-chunk-bytes`, default 64 KiB / 65536 bytes, minimum 2 bytes) controls spool
+  reads, stderr drains, stdout and `--output` copies. Stderr capture, each extracted failure
+  field, decoded JSON member names and JSON scalar tokens are capped by `--diagnostic-bytes`
+  (default 64 KiB / 65536 bytes, minimum 1 byte). Smaller diagnostic bounds can refuse
+  longer tokens or member names. Both options take decimal integers, checked before
+  starting the child or creating a spool; omitted options preserve existing behavior.
+  For both options, the largest accepted value is the platform's read-size limit,
+  `sys.maxsize`; larger values are refused before the child starts. Failure lookup
+  scans the whole spool; oversized args become `null` while code and origin are
+  retained when they fit, and truncated stderr has
+  `\n[native stderr truncated]` appended.
+  A very small `--diagnostic-bytes` can make a failure's `code` or `origin` oversized,
+  in which case the failure is reported as `hpo_unclassified_error` and the stdout
+  fallback is shortened to the bound. The wrapper needs a writable directory for raw stdout
+  and the indented result: the resolved `--output` parent in the jailed profile when supplied,
+  otherwise non-empty `TMPDIR` (or `/tmp`). It closes both on every exit and does not retry
+  another directory after selection. The formatted spool is larger than the raw stdout;
+  both consume system RAM on tmpfs.
+  Native stdout that cannot be decoded after exit 0 or 2 now reports `hpo_plugin_invalid`
+  (`{"reason": "validation"}`) instead of `hpo_unclassified_error`.
+
 ## 1.10.0 (2026-11-04)
 
 - Pairs with engine v1.10.0 and codegen v1.10.0 (C ABI 5).
