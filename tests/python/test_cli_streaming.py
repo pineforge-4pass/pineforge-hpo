@@ -1015,9 +1015,7 @@ class RunStreamingTests(unittest.TestCase):
             ).encode("utf-8")
             self.assertEqual(self.output.getvalue().encode("utf-8"), expected_bytes)
             self.assertEqual(destination.read_bytes(), expected_bytes)
-            self.assertEqual(
-                self.spool_directories, [destination.parent.resolve()] * 2
-            )
+            self.assertEqual(self.spool_directories, [destination.parent.resolve()] * 2)
             self.assertEqual(
                 [spool.directory for spool in self.files],
                 [destination.parent.resolve()] * 2,
