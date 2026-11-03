@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from native_run_mock import native_completion
+
 from pineforge_hpo.artifact import StrategyArtifact
 from pineforge_hpo import __version__
 from pineforge_hpo.cli import (
@@ -993,6 +995,37 @@ class CliTests(unittest.TestCase):
             strategy_params={},
         )
 
+    def _precompiled_run_artifact(self) -> dict[str, object]:
+        plugin = self.root / "strategy.dylib"
+        plugin.write_bytes(b"plugin")
+        manifest = self.root / "manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "artifact_key": "a" * 64,
+                    "request_key": "b" * 64,
+                    "plugin_sha256": hashlib.sha256(b"plugin").hexdigest(),
+                    "inputs": list(self._artifact().inputs),
+                }
+            ),
+            encoding="utf-8",
+        )
+        document = json.loads(self.study_path.read_text(encoding="utf-8"))
+        strategy = document["strategies"][0]
+        strategy.pop("source")
+        strategy["artifact"] = plugin.name
+        self.study_path.write_text(json.dumps(document), encoding="utf-8")
+        return {
+            "artifact_key": "a" * 64,
+            "request_key": "b" * 64,
+            "plugin": str(plugin.resolve()),
+            "generated_cpp": None,
+            "manifest": str(manifest.resolve()),
+            "provenance": None,
+            "cache_hit": True,
+        }
+
     def test_native_command_maps_study_contract(self) -> None:
         study = load_study_spec(self.study_path, require_files=True)
         command = _native_command(
@@ -1212,7 +1245,7 @@ class CliTests(unittest.TestCase):
             "exhaustive",
         )
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_forwards_patience_and_keeps_off_argv(
         self, builder_type: mock.Mock, run: mock.Mock
@@ -1235,8 +1268,10 @@ class CliTests(unittest.TestCase):
                         "drained_through_trial_id": 0,
                         "reference_scope": "part",
                     }
-                run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=json.dumps(result), stderr=""
+                run.side_effect = native_completion(
+                    subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout=json.dumps(result), stderr=""
+                    )
                 )
                 arguments = [
                     "run",
@@ -1281,14 +1316,322 @@ class CliTests(unittest.TestCase):
                 self.assertIn("expected an unsigned 64-bit integer", stderr.getvalue())
                 self.assertNotIn("unrecognized arguments", stderr.getvalue())
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
+    def test_streamed_run_forwards_retention_and_patience_together(
+        self, run: mock.Mock
+    ) -> None:
+        artifact = self._precompiled_run_artifact()
+        for code in (0, 2):
+            for mode in ("full", "hash", "none"):
+                with self.subTest(code=code, mode=mode):
+                    native_result = {
+                        "ok": code == 0,
+                        "trials": [
+                            {
+                                "trial_id": 0,
+                                "status": "ok" if code == 0 else "trial_error",
+                                "note": "é🚀" + "x" * (70 * 1024),
+                            }
+                        ],
+                    }
+                    if code == 2:
+                        native_result["failure"] = {
+                            "origin": "engine",
+                            "code": "engine_rejected",
+                            "args": {"input": "Length"},
+                            "exit_code": 2,
+                        }
+                    run.reset_mock()
+                    run.side_effect = native_completion(
+                        subprocess.CompletedProcess(
+                            [],
+                            code,
+                            stdout=json.dumps(native_result, ensure_ascii=False),
+                            stderr="",
+                        )
+                    )
+                    stdout = io.StringIO()
+                    with contextlib.redirect_stdout(stdout):
+                        returned = main(
+                            [
+                                "run",
+                                str(self.study_path),
+                                "--native",
+                                str(self.native),
+                                "--row-space",
+                                mode,
+                                "--best-k",
+                                "+0007",
+                                "--no-improvement-trials",
+                                "9",
+                                "--trials-out",
+                                "best-k",
+                            ]
+                        )
+                    self.assertEqual(returned, code)
+                    run.assert_called_once()
+                    command = run.call_args.args[0]
+                    self.assertEqual(command[0], str(self.native.resolve()))
+                    tail = [
+                        "--trials-out",
+                        "best-k",
+                        "--row-space",
+                        mode,
+                        "--best-k",
+                        "+0007",
+                        "--no-improvement-trials",
+                        "9",
+                    ]
+                    self.assertEqual(command[-len(tail) :], tail)
+                    for option in tail[::2]:
+                        self.assertEqual(command.count(option), 1)
+                    expected = {
+                        **native_result,
+                        "study": str(self.study_path.resolve()),
+                        "strategy_id": "test",
+                        "dataset_id": "bars",
+                        "artifact": artifact,
+                    }
+                    self.assertEqual(
+                        stdout.getvalue(),
+                        json.dumps(expected, indent=2, sort_keys=True, allow_nan=False)
+                        + "\n",
+                    )
+
+    @mock.patch("pineforge_hpo.cli._run_native")
+    def test_streamed_run_keeps_jailed_output_and_inherited_descriptors(
+        self, run: mock.Mock
+    ) -> None:
+        artifact = self._precompiled_run_artifact()
+        native_result = {
+            "ok": True,
+            "trials": [{"trial_id": 0, "note": "é🚀" + "x" * (70 * 1024)}],
+            "artifact": "replaced",
+        }
+        expected = {
+            **native_result,
+            "study": str(self.study_path.resolve()),
+            "strategy_id": "test",
+            "dataset_id": "bars",
+            "artifact": artifact,
+        }
+        expected_bytes = (
+            json.dumps(expected, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        ).encode("utf-8")
+        for jailed in (False, True):
+            for progress_fd in (None, 9):
+                for publish in (False, True):
+                    with self.subTest(
+                        jailed=jailed, progress_fd=progress_fd, output=publish
+                    ):
+                        run.reset_mock()
+                        run.side_effect = native_completion(
+                            subprocess.CompletedProcess(
+                                [],
+                                0,
+                                stdout=json.dumps(native_result, ensure_ascii=False),
+                                stderr="",
+                            )
+                        )
+                        destination = self.root / "result.json"
+                        arguments = [
+                            "run",
+                            str(self.study_path),
+                            "--native",
+                            str(self.native),
+                        ]
+                        if progress_fd is not None:
+                            arguments.extend(("--progress-fd", str(progress_fd)))
+                        if publish:
+                            output_path = self.root / "unused" / ".." / destination.name
+                            arguments.extend(("--output", str(output_path)))
+                        stdout = io.StringIO()
+                        with (
+                            mock.patch.dict(os.environ),
+                            contextlib.redirect_stdout(stdout),
+                        ):
+                            os.environ.pop("PF_SCRATCH_ARENA_FD", None)
+                            if jailed:
+                                os.environ["PF_SCRATCH_ARENA_FD"] = "5"
+                            self.assertEqual(main(arguments), 0)
+                        run.assert_called_once()
+                        command, spool, inherited_fds = run.call_args.args
+                        self.assertTrue(spool.closed)
+                        expected_fds = (progress_fd,) if progress_fd is not None else ()
+                        if jailed:
+                            expected_fds += (5,)
+                        self.assertEqual(inherited_fds, expected_fds)
+                        if progress_fd is not None:
+                            self.assertEqual(command.count("--progress-fd"), 1)
+                            self.assertEqual(
+                                command[command.index("--progress-fd") + 1],
+                                str(progress_fd),
+                            )
+                        else:
+                            self.assertNotIn("--progress-fd", command)
+                        if jailed and publish:
+                            self.assertEqual(command.count("--output"), 1)
+                            self.assertEqual(
+                                command[command.index("--output") + 1],
+                                str(destination.resolve()),
+                            )
+                        else:
+                            self.assertNotIn("--output", command)
+                        self.assertEqual(
+                            stdout.getvalue().encode("utf-8"), expected_bytes
+                        )
+                        if publish:
+                            self.assertEqual(destination.read_bytes(), expected_bytes)
+                            destination.unlink()
+                        else:
+                            self.assertFalse(destination.exists())
+
+    @mock.patch("pineforge_hpo.cli._run_native")
+    def test_jailed_progress_descriptor_conflict_fails_before_native(
+        self, run: mock.Mock
+    ) -> None:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"PF_SCRATCH_ARENA_FD": "5"}),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            returned = main(["run", str(self.study_path), "--progress-fd", "5"])
+        self.assertEqual(returned, 1)
+        self.assertEqual(
+            json.loads(stdout.getvalue())["failure"],
+            {
+                "origin": "hpo",
+                "code": "hpo_cli_usage",
+                "args": {},
+                "exit_code": 1,
+            },
+        )
+        self.assertIn("conflicts with", stderr.getvalue())
+        run.assert_not_called()
+
+    @mock.patch("pineforge_hpo.cli._run_native")
+    def test_streamed_run_preserves_symbol_feed_selection(self, run: mock.Mock) -> None:
+        inline = {"symbols": {"TEST:OTHER": {"feeds": {"1": "other.csv"}}}}
+        for source in (None, "feeds/index.json", inline):
+            for override in (
+                None,
+                self.root / "unused" / ".." / "selected-feeds.json",
+            ):
+                with self.subTest(source=source, override=override):
+                    self._write_study(symbol_feeds=source)
+                    self._precompiled_run_artifact()
+                    run.reset_mock()
+                    run.side_effect = native_completion(
+                        subprocess.CompletedProcess(
+                            [], 0, stdout='{"ok":true,"trials":[]}', stderr=""
+                        )
+                    )
+                    arguments = [
+                        "run",
+                        str(self.study_path),
+                        "--native",
+                        str(self.native),
+                    ]
+                    if override is not None:
+                        arguments.extend(("--symbol-feeds", str(override)))
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(main(arguments), 0)
+                    run.assert_called_once()
+                    command = run.call_args.args[0]
+                    if override is not None or isinstance(source, str):
+                        selected = (
+                            override if override is not None else self.root / source
+                        )
+                        self.assertEqual(command.count("--symbol-feeds"), 1)
+                        self.assertEqual(
+                            command[command.index("--symbol-feeds") + 1],
+                            str(selected.resolve()),
+                        )
+                        self.assertNotIn("--symbol-feeds-spec", command)
+                    elif source is not None:
+                        self.assertEqual(command.count("--symbol-feeds-spec"), 1)
+                        self.assertEqual(
+                            command[command.index("--symbol-feeds-spec") + 1],
+                            str(self.study_path.resolve()),
+                        )
+                        self.assertNotIn("--symbol-feeds", command)
+                    else:
+                        self.assertNotIn("--symbol-feeds", command)
+                        self.assertNotIn("--symbol-feeds-spec", command)
+
+    @mock.patch("pineforge_hpo.cli._run_native")
+    def test_streamed_run_keeps_exhaustive_continuation(self, run: mock.Mock) -> None:
+        from pineforge_hpo.continuation import recorded_space
+
+        self._write_study(
+            sampler={
+                "kind": "grid",
+                "seed": 7,
+                "trials": 5,
+                "candidate_policy": "exhaustive",
+            }
+        )
+        self._precompiled_run_artifact()
+        study = load_study_spec(self.study_path, continuation=True)
+        parent = self.root / "parent.jsonl"
+        parent_row = {
+            "trial_id": 7,
+            "status": "ok",
+            "feasible": True,
+            "objective": 1.0,
+            "parameters": {"Length": 2, "Threshold": 0.5},
+            "space": recorded_space(study),
+        }
+        parent.write_text(json.dumps(parent_row) + "\n", encoding="utf-8")
+        native_result = {
+            "ok": True,
+            "warm_start_trials": [parent_row],
+            "trials": [{"trial_id": 8}],
+        }
+        run.side_effect = native_completion(
+            subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps(native_result), stderr=""
+            )
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                main(
+                    [
+                        "run",
+                        str(self.study_path),
+                        "--native",
+                        str(self.native),
+                        "--warm-start",
+                        str(parent),
+                    ]
+                ),
+                0,
+            )
+        run.assert_called_once()
+        command = run.call_args.args[0]
+        for option, value in (
+            ("--warm-start", str(parent.resolve())),
+            ("--max-trials", "5"),
+            ("--candidate-policy", "exhaustive"),
+        ):
+            self.assertEqual(command.count(option), 1)
+            self.assertEqual(command[command.index(option) + 1], value)
+        self.assertEqual(
+            json.loads(stdout.getvalue())["warm_start_trials"], [parent_row]
+        )
+
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_forwards_trial_retention_only_when_given(
         self, builder_type: mock.Mock, run: mock.Mock
     ) -> None:
         builder_type.return_value.build.return_value = self._artifact()
-        run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout='{"ok": true, "trials": []}', stderr=""
+        run.side_effect = native_completion(
+            subprocess.CompletedProcess(
+                args=[], returncode=0, stdout='{"ok": true, "trials": []}', stderr=""
+            )
         )
         arguments = [
             "run",
@@ -1332,14 +1675,16 @@ class CliTests(unittest.TestCase):
                     else:
                         self.assertNotIn(option, command)
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_forwards_row_space_only_when_given(
         self, builder_type: mock.Mock, run: mock.Mock
     ) -> None:
         builder_type.return_value.build.return_value = self._artifact()
-        run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout='{"ok": true, "trials": []}', stderr=""
+        run.side_effect = native_completion(
+            subprocess.CompletedProcess(
+                args=[], returncode=0, stdout='{"ok": true, "trials": []}', stderr=""
+            )
         )
         arguments = [
             "run",
@@ -1363,7 +1708,7 @@ class CliTests(unittest.TestCase):
                     run.call_args.args[0], [*default_command, "--row-space", mode]
                 )
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     def test_row_space_parser_rejects_invalid_values_with_typed_error(
         self, run: mock.Mock
     ) -> None:
@@ -1391,7 +1736,7 @@ class CliTests(unittest.TestCase):
                 )
                 run.assert_not_called()
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_preserves_compact_row_space_result(
         self, builder_type: mock.Mock, run: mock.Mock
@@ -1419,8 +1764,10 @@ class CliTests(unittest.TestCase):
                     "trials": [row],
                     "summary": {"best_k": [row]},
                 }
-                run.return_value = subprocess.CompletedProcess(
-                    args=[], returncode=0, stdout=json.dumps(result), stderr=""
+                run.side_effect = native_completion(
+                    subprocess.CompletedProcess(
+                        args=[], returncode=0, stdout=json.dumps(result), stderr=""
+                    )
                 )
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -1447,7 +1794,7 @@ class CliTests(unittest.TestCase):
                     self.assertNotIn("space_hash", emitted["trials"][0])
                     self.assertNotIn("space_hash_version", emitted["trials"][0])
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     def test_trial_retention_parser_rejects_invalid_values(
         self, run: mock.Mock
     ) -> None:
@@ -1482,7 +1829,7 @@ class CliTests(unittest.TestCase):
                 self.assertNotIn("unrecognized arguments", stderr.getvalue())
                 run.assert_not_called()
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_preserves_native_best_k_result(
         self, builder_type: mock.Mock, run: mock.Mock
@@ -1502,8 +1849,10 @@ class CliTests(unittest.TestCase):
             "best_value": 3.5,
             "summary": {"counts_by_status": {"ok": 3}, "best_k": trials},
         }
-        run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
+        run.side_effect = native_completion(
+            subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=json.dumps(native_result), stderr=""
+            )
         )
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -1536,25 +1885,27 @@ class CliTests(unittest.TestCase):
         self.assertEqual(document["dataset_id"], "bars")
         self.assertEqual(document["artifact"]["artifact_key"], artifact.artifact_key)
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_run_builds_once_and_emits_augmented_result(
         self, builder_type: mock.Mock, run: mock.Mock
     ) -> None:
         builder_type.return_value.build.return_value = self._artifact()
-        run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "ok": True,
-                    "artifact_key": "a" * 64,
-                    "best_trial_id": 0,
-                    "best_value": 1.5,
-                    "trials": [],
-                }
-            ),
-            stderr="",
+        run.side_effect = native_completion(
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "ok": True,
+                        "artifact_key": "a" * 64,
+                        "best_trial_id": 0,
+                        "best_value": 1.5,
+                        "trials": [],
+                    }
+                ),
+                stderr="",
+            )
         )
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
@@ -1576,7 +1927,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(document["artifact"]["artifact_key"], "a" * 64)
         self.assertFalse(document["artifact"]["cache_hit"])
 
-    @mock.patch("pineforge_hpo.cli.subprocess.run")
+    @mock.patch("pineforge_hpo.cli._run_native")
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_public_prepare_run_does_not_launch_native(
         self, builder_type: mock.Mock, run: mock.Mock
@@ -1584,7 +1935,11 @@ class CliTests(unittest.TestCase):
         import pineforge_hpo
 
         builder_type.return_value.build.return_value = self._artifact()
-        with mock.patch.dict(os.environ, {"PINEFORGE_HPO_NATIVE": str(self.native)}):
+        with (
+            mock.patch.dict(os.environ, {"PINEFORGE_HPO_NATIVE": str(self.native)}),
+            mock.patch("pineforge_hpo.cli.subprocess.run") as run_process,
+            mock.patch("pineforge_hpo.cli.subprocess.Popen") as start_process,
+        ):
             command, artifact = pineforge_hpo.prepare_run(
                 self.study_path, self.root, self.root / "cache"
             )
@@ -1598,6 +1953,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(artifact["artifact_key"], "a" * 64)
         builder_type.return_value.build.assert_called_once()
         run.assert_not_called()
+        run_process.assert_not_called()
+        start_process.assert_not_called()
 
     @mock.patch("pineforge_hpo.cli.ArtifactBuilder")
     def test_prepare_exhaustive_continuation_uses_remaining_budget(
@@ -1847,7 +2204,9 @@ class CliTests(unittest.TestCase):
             args=[], returncode=1, stdout="", stderr="bad plugin"
         )
         stderr = io.StringIO()
-        with mock.patch("pineforge_hpo.cli.subprocess.run", return_value=completed):
+        with mock.patch(
+            "pineforge_hpo.cli._run_native", side_effect=native_completion(completed)
+        ):
             with contextlib.redirect_stderr(stderr):
                 exit_code = main(
                     ["run", str(self.study_path), "--native", str(self.native)]
