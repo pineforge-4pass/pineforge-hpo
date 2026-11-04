@@ -193,8 +193,8 @@ trigger disk fallback.
 
 ## HPO scratch that is not covered
 
-An ordinary study defaults to retaining all trials and **still opens two
-unlinked spool files**. Supply `--output` in a real writable directory. In the
+The native runner defaults to retaining all trials and **opens two unlinked
+spool files**. Supply `--output` in a real writable directory. In the
 jailed Python path this existing output option is also passed to native so
 its spool can use that parent directory. A memory-backed writable scratch
 filesystem is sufficient for the spool and result. Without a writable output
@@ -207,13 +207,30 @@ HPO scratch can publish its bounded result on stdout without `--output` or
 `--trials-file`; explicitly requested result or trial files still need writable
 destinations.
 
+The Python wrapper also uses two seekable spools for raw stdout and the formatted
+result, including with reduced trial retention. With an explicit jailed `--output`,
+both files use its resolved parent directory. Without `--output`, the jailed wrapper
+uses Linux `memfd_create(MFD_CLOEXEC)` for each spool. This branch requires no writable
+directory or usable `TMPDIR`, performs no temporary-directory selection or creation,
+and has no filesystem fallback. An unavailable backend or failed allocation or
+wrapping reports `hpo_output_io_failed`. Unjailed runs still use non-empty `TMPDIR`,
+or `/tmp` when it is unset or empty. Allocation failures in a jailed output parent
+or an unjailed non-empty `TMPDIR` remain I/O errors without fallback.
+
+The wrapper closes both spools on success or failure. Their anonymous memory backing
+holds the complete raw and formatted results and can grow as O(output bytes). The
+64 KiB default read/copy chunk bounds individual buffers, not total spool storage
+or system RAM. These spools are separate from the native scratch arena and have no
+fixed total storage cap. Directory-based spools also consume system RAM on tmpfs.
+
 Finite-space coverage above cardinality 100,000,000, and finite warm-history
 coverage using the file-backed ordinal index, can also require `std::tmpfile`.
 This fix does not remove either HPO storage path, make array reports bounded,
 or establish a study with no writable filesystem or `RLIMIT_FSIZE=0`.
 
-The Linux real-plugin gate uses a writable output directory and a `TMPDIR`
-that does not exist. Engine file fallback therefore refuses instead of
-quietly writing there. It compares three trials with the same live unjailed
-study and reads native arena high-water diagnostics after a real trial.
+The Linux real-plugin gate covers explicit output in a writable directory and
+stdout-only `best-k`, with a `TMPDIR` that does not exist. Engine file fallback
+therefore refuses instead of quietly writing there. It compares three trials
+with the same live unjailed study and reads native arena high-water diagnostics
+after a real trial.
 A directory scan would not prove absence of the unlinked HPO spool files.

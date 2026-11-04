@@ -1136,11 +1136,37 @@ The spool holds the whole trial array on disk until the process exits.
 On read-only root filesystems, native `run` and the jailed Python `run` wrapper can use a writable
 `--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it, and the Python
 `run` wrapper forwards `--trials-out`, `--best-k` and `--row-space`.
-If `TMPDIR` is on tmpfs, the spool lives in RAM and its growth appears in system memory,
-not in the native process RSS.
+The wrapper adds two anonymous spools: raw stdout and the indented rendering published as the
+result, formatted without loading trial arrays into Python objects. In the jailed profile
+(`PF_SCRATCH_ARENA_FD` is set), an explicit `--output` selects its resolved parent for both
+wrapper spools, even if inherited `TMPDIR` is unusable. Jailed runs without `--output` use
+two Linux `memfd_create(MFD_CLOEXEC)` spools without selecting or creating any directory,
+independently of `TMPDIR`. An unavailable backend or failed allocation or wrapping reports
+`hpo_output_io_failed` without filesystem fallback. Unjailed runs still use non-empty `TMPDIR`,
+or `/tmp` when it is unset or empty, including runs with `--output`. Allocation failures in
+a jailed output parent or an unjailed non-empty `TMPDIR` remain I/O errors without fallback.
+Directory-based spools require a writable directory even with reduced trial retention.
+The formatted spool is larger than the raw stdout.
+Wrapper reads and copies use the chunk size (`--result-chunk-bytes`, default 64 KiB,
+minimum 2 bytes), including stderr drains. Captured stderr, each extracted failure field,
+decoded JSON member names and JSON scalar tokens use `--diagnostic-bytes` (default 64 KiB,
+minimum 1 byte). Smaller diagnostic bounds can refuse longer tokens or member names.
+Both options take decimal integers and are checked before starting the child or
+creating a wrapper spool. For both options, the largest accepted value is the platform's
+read-size limit, `sys.maxsize`; larger values are refused before the child starts.
+Oversized failure args become `null` while code and origin are retained when they fit;
+truncated stderr has `\n[native stderr truncated]` appended. A very small
+`--diagnostic-bytes` can make a failure's `code` or `origin` oversized, in which
+case the failure is reported as `hpo_unclassified_error` and the stdout fallback
+is shortened to the bound.
+Both wrapper spools are closed on success or failure, with no retry in another directory
+or backend. Anonymous memory backing holds the complete raw and formatted results and can
+grow as O(output bytes). The chunk and diagnostic bounds do not cap total spool storage or
+system RAM. Directory-based spools also consume system RAM on tmpfs; process RSS alone does
+not measure their backing storage.
 The final `trials` array copies those rendered rows in trial-ID order
-without retaining every trial record or the full document in memory. This spool is independent
-of `--trials-file FILE` and `--progress-fd`, which retain their ordered NDJSON stream and
+without retaining every trial record or the full document as Python objects. This spool is
+independent of `--trials-file FILE` and `--progress-fd`, which retain their ordered NDJSON stream and
 backpressure only when requested; `--trials-file` may still be a pipe. Spool creation, writing,
 finalization or reading failures report `hpo_output_io_failed`; an incomplete spool is refused
 instead of being published as a complete trial array. `best-k` and `none` continue to retain

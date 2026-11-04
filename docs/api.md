@@ -332,15 +332,55 @@ These controls are native `run` flags that the Python `pineforge-hpo run` comman
 also forwards. They are not new StudySpec fields. Existing callers retain
 `--trials-out all` by default.
 
+The Python `run` wrapper also accepts two decimal integer byte bounds:
+
+- `--result-chunk-bytes N` sets the chunk size for result-spool reads, stderr drains,
+  stdout copies and `--output` copies (default 65536, minimum 2 bytes).
+- `--diagnostic-bytes N` sets the captured stderr, extracted failure-field and JSON
+  scalar-token bound (default 65536, minimum 1 byte). Decoded JSON member names
+  also use this bound. Smaller bounds can refuse longer tokens or member names.
+
+Both bounds are checked before starting the child or creating a spool. For both
+options, the largest accepted value is the platform's read-size limit,
+`sys.maxsize`; larger values are refused before the child starts. They are wrapper
+options and are not passed to the native command.
+
 - `--trials-out all` retains every terminal record in `trials`, as before. This
   mode now spools rows in the native child without retaining every trial record or the
-  full result document in memory. The Python `run` wrapper still holds the child's stdout
-  in memory. The default `--trials-out all` requires a writable directory for two anonymous
-  files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files are
-  unlinked at creation, but the spool holds the whole trial array on disk until the process
-  exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
+  full result document in memory. The Python `run` wrapper spools the child's stdout and
+  formats the augmented, sorted JSON without loading trial arrays into Python objects. It streams
+  the formatted result to stdout using the chunk size (`--result-chunk-bytes`, default
+  64 KiB) and atomically copies it to its own `--output`, when requested. Stderr capture
+  is capped by `--diagnostic-bytes` (default 64 KiB); failure lookup scans the whole spool
+  using the chunk size, with each extracted metadata field also capped by
+  `--diagnostic-bytes`. Oversized failure args become `null` while the code and origin
+  are retained when they fit the bound; oversized stderr is drained and its captured
+  prefix has `\n[native stderr truncated]` appended. A very small `--diagnostic-bytes`
+  can make a failure's `code` or `origin` oversized, in which case the failure is
+  reported as `hpo_unclassified_error` and the stdout fallback is shortened to
+  the bound.
+  The default native `--trials-out all` requires a writable directory for two anonymous
+  files (`--output`'s parent if writable, else non-empty `TMPDIR`, else `/tmp`). Both files
+  are unlinked at creation, but the spool holds the whole trial array on disk until the
+  process exits. A chosen directory is not retried elsewhere if creation fails. On read-only root
   filesystems, native `run` and the jailed Python `run` wrapper can use a writable
-  `--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it.
+  `--output` parent for the native spool; `--trials-out best-k` or `none` avoids opening it.
+  The wrapper adds two anonymous spools: raw stdout and the indented rendering published
+  as the result. In the jailed profile (`PF_SCRATCH_ARENA_FD` is set), an explicit `--output`
+  selects its resolved parent for both wrapper spools, even if inherited `TMPDIR` is unusable.
+  Jailed runs without `--output` use two Linux `memfd_create(MFD_CLOEXEC)` spools without
+  selecting or creating any directory, independently of `TMPDIR`. If this backend is
+  unavailable or allocation or wrapping fails, the wrapper reports `hpo_output_io_failed`
+  without filesystem fallback.
+  Unjailed runs still use non-empty `TMPDIR`, or `/tmp` when it is unset or empty, including
+  runs with `--output`. Allocation failures in a jailed output parent or an unjailed
+  non-empty `TMPDIR` remain I/O errors without fallback.
+  Directory-based spools require a writable directory even with reduced trial retention.
+  The formatted spool is larger than the raw stdout. Anonymous memory backing holds the
+  complete raw and formatted results and can grow as O(output bytes); the 64 KiB read/copy
+  chunk size does not cap total spool storage or system RAM. Directory-based spools also
+  consume system RAM on tmpfs. The wrapper closes both on success or failure and does not
+  retry another directory or backend after failure.
 - `--trials-out best-k --best-k N` retains at most N feasible, finite-objective
   winners with status `ok` in `trials`; ties prefer the lower trial ID. Records are emitted in
   trial-ID order, not objective order. N defaults to 10 and must be 1–1,000,000.
