@@ -34,8 +34,8 @@
   Native stdout that cannot be decoded after exit 0 or 2 now reports `hpo_plugin_invalid`
   (`{"reason": "validation"}`) instead of `hpo_unclassified_error`.
 - Late stdout publication failures preserve the bytes already written, report the error
-  on stderr, exit 1, and append no second JSON document; unexpected late exceptions
-  include their traceback on stderr.
+  on stderr, exit 1, and append no second JSON document. Every late stdout publication
+  failure includes its traceback on stderr, not only unexpected exceptions.
 
 ## 1.10.0 (2026-11-04)
 

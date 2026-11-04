@@ -48,7 +48,7 @@ Check names are job names in `.github/workflows/` (design: `docs/ci.md`). On pul
 | `Build API reference` | yes | `docs-pages.yml`, path-filtered | zero-warning Doxygen; `Deploy GitHub Pages` follows on main |
 | `build-gate` | **REQUIRED** | `ci-post.yml`; `benchmark-check` in `benchmark-smoke-post.yml` | aggregate of every job in its own workflow |
 
-- Docs-only PRs (root README/CONTRIBUTING/CHANGELOG/SECURITY/LICENSE, or `docs/**` .md/.rst/.txt; `docs_only()` in `tests/release/pr_admission.py`) skip every PR job except `admit`, `workflow-lint`, `Light`, `Build API reference`; `build-gate` expects those skips.
+- Docs-only PRs (root README/CONTRIBUTING/CHANGELOG/SECURITY/LICENSE/AGENTS.md/CLAUDE.md, or `docs/**` .md/.rst/.txt; `docs_only()` in `tests/release/pr_admission.py`) skip every PR job except `admit`, `workflow-lint`, `Light`, `Build API reference`; `build-gate` expects those skips.
 - Only on push to main, `Native` also runs all ctest (adapter + CLI) and the cross-vendor portable-math proof, and on Linux the Quick Start study, the symbol-feed/D7 equality gate and the v0.8.0 and v0.9.0 baseline contract gates. PR CI never runs the engine-adapter or native-CLI ctest tests: for changes under `src/cli` or `src/engine_adapter` run `ctest --test-dir build -R <name>` on the full build.
 - Release: `release.yml` on `release: published`: `package` (tag equals `v` + `VERSION`, catalog stamp, `python -m build`, asset upload), then `Notify release hub`; dispatch with a tag replays only the notification. No tag-push trigger. Schedule: no workflow has one.
 

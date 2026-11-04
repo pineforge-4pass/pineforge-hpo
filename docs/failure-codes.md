@@ -85,7 +85,8 @@ and exhausted unique space retain exits 4 and 5. Python argparse retains exit 2.
 
 If stdout publication has started and a later write fails, the CLI preserves the
 bytes already written, reports the error on stderr, exits 1, and appends no second
-JSON document. An unexpected late exception also includes its traceback on stderr.
+JSON document. Every late stdout publication failure includes its traceback on stderr,
+not only unexpected exceptions.
 This single-document rule keeps a partial publication from becoming two
 concatenated documents.
 

@@ -952,6 +952,7 @@ class AdmissionTests(unittest.TestCase):
             [".github/workflows/ci.yml"],
             ["docs/CMakeLists.txt"],
             ["LICENSE.txt"],
+            ["sub/CLAUDE.md"],
         ):
             self.assertFalse(self.policy.docs_only(paths), paths)
         self.assertTrue(self.policy.docs_only(["docs/a.md", "README.md"]))
