@@ -75,7 +75,9 @@ def _median_trial_peaks(
                 or isinstance(count, bool)
                 or count != expected_count
             ):
-                raise ValueError(f"repetition {repeat} requires ordered counts {COUNTS}")
+                raise ValueError(
+                    f"repetition {repeat} requires ordered counts {COUNTS}"
+                )
             if not isinstance(peak, int) or isinstance(peak, bool) or peak <= 0:
                 raise ValueError(f"invalid child peak RSS in repetition {repeat}")
     return [

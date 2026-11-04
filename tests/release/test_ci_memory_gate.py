@@ -114,7 +114,9 @@ class MemoryGateLogicTests(unittest.TestCase):
                     [256, 32],
                 )
                 if edge is not None:
-                    self.assertEqual(result["trial_slopes"][edge - 1]["verdict"], "FAIL")
+                    self.assertEqual(
+                        result["trial_slopes"][edge - 1]["verdict"], "FAIL"
+                    )
 
     def test_medians_reject_missing_duplicate_unordered_or_malformed_repetitions(self):
         valid = self.repetitions([(count, BASE) for count in GATE.COUNTS])
@@ -836,9 +838,7 @@ class MemoryGateProcessTests(unittest.TestCase):
                 self.assertEqual(measure.call_count, 15)
                 verdict = json.loads(output.getvalue())
                 run = next(parent.iterdir())
-                self.assertEqual(
-                    self.read_json(run / "RUN.COMPLETE"), verdict
-                )
+                self.assertEqual(self.read_json(run / "RUN.COMPLETE"), verdict)
                 self.assertEqual(
                     verdict["verdict"], "PASS" if expected == 0 else "FAIL"
                 )
@@ -1016,7 +1016,9 @@ class MemoryGateProcessTests(unittest.TestCase):
         self.assertNotIn("bar_slopes", verdict)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
-    def test_failed_missing_or_malformed_repetition_stops_without_retry_or_judgment(self):
+    def test_failed_missing_or_malformed_repetition_stops_without_retry_or_judgment(
+        self,
+    ):
         args = self.gate_inputs()
         for failed_at in (1, 2, 3, 4, 8, 15):
             for kind, error in (
