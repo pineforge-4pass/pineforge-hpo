@@ -6,6 +6,7 @@ from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import resource
 import signal
@@ -916,7 +917,12 @@ class MemoryGateProcessTests(unittest.TestCase):
                     )
                     self.assertTrue(call.args[0].is_dir())
                     self.assertEqual(
-                        call.args[1:4], (args.native, args.plugin, args.ohlcv)
+                        call.args[1:4],
+                        (
+                            Path(os.path.realpath(sys.executable)),
+                            Path(os.path.realpath(self.directory / "fixture.so")),
+                            Path(os.path.realpath(self.directory / "bars.csv")),
+                        ),
                     )
                     self.assertEqual(call.kwargs, {})
                 if expected == 0:
