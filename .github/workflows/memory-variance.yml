@@ -1,0 +1,455 @@
+name: Memory gate variance
+
+# Isolated diagnostic collection, not a release job. It runs only on a push to the
+# literal branch named below: no pull request, schedule, manual dispatch, wildcard
+# ref or input can start it. One build is made once, then ten independent samples
+# each run the unchanged scripts/ci_memory_gate.py once through the observer in
+# scripts/gate_variance. A sample whose gate is red stays red, and so does the
+# aggregate: that is data to be read afterwards, never a pass. Nothing here
+# retries, masks, times out or skips a job.
+
+on:
+  push:
+    branches:
+      - ar/cr793-variance
+
+permissions: {}
+
+jobs:
+  authz:
+    name: authz
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Only our own pull requests and our own events run CI
+        env:
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WR_ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
+          GH_TOKEN: ${{ github.token }}   # read-only use: one permission lookup for workflow_run
+          # Bot logins whose same-repository pull requests count as ours: dependabot[bot]
+          # and the org's own GitHub App bot logins by name (space-separated), nothing else.
+          ALLOWED_BOTS: "dependabot[bot] pineforge-app[bot]"
+        run: |
+          set -eu
+          fail() { echo "::error title=authz::$1"; echo "authz: REFUSED: $1" >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+          case "$EVENT" in
+            push|workflow_dispatch|schedule|merge_group|release|workflow_call|repository_dispatch)
+              # Only someone with write access to this repository (or our App's token) can cause these
+              # events; none of them runs pull-request code.
+              ;;
+            workflow_run)
+              # bind identity to the triggering run and its re-runner.
+              # These two App bots are fixed canon policy; ALLOWED_BOTS is PR-only.
+              [ -n "${WR_HEAD_REPO:-}" ] || fail "workflow_run head repository is missing"
+              [ -n "${WR_ACTOR:-}" ] || fail "workflow_run triggering actor is missing"
+              [ "$WR_HEAD_REPO" = "$REPO" ] || fail "workflow_run head repository does not match this repository"
+              case "$WR_ACTOR" in
+                "pineforge-app[bot]"|"pineforge-ci-dispatcher[bot]") ;;
+                *"[bot]") fail "workflow_run bot is not on the canon allowlist" ;;
+                *)
+                  perm=$(gh api "repos/$REPO/collaborators/$WR_ACTOR/permission" --jq .permission 2>/dev/null) || fail "workflow_run permission lookup failed"
+                  case "$perm" in admin|maintain|write) ;; *) fail "workflow_run triggering actor does not have write permission" ;; esac ;;
+              esac ;;
+            pull_request)
+              [ "$HEAD_REPO" = "$REPO" ] || fail "pull request from another repository (${HEAD_REPO:-unknown})"
+              [ "$HEAD_IS_FORK" = "false" ] || fail "pull request from a fork"
+              case "$ASSOCIATION" in
+                OWNER|MEMBER|COLLABORATOR) ;;
+                *)
+                  case " $ALLOWED_BOTS " in
+                    *" $PR_AUTHOR "*) ;;
+                    *)
+                      # A member whose org membership is private shows as CONTRIBUTOR: ask GitHub for the
+                      # author's permission on this repository; anything but admin/maintain/write (or a
+                      # failed call) refuses.
+                      perm=$(gh api "repos/$REPO/collaborators/$PR_AUTHOR/permission" --jq .permission 2>/dev/null || echo none)
+                      case "$perm" in admin|maintain|write) ;; *) fail "author ${PR_AUTHOR:-unknown} (${ASSOCIATION:-NONE}) has permission '$perm', not write, and is not an allowlisted bot" ;; esac ;;
+                  esac ;;
+              esac ;;
+            *) fail "event $EVENT does not run CI (pull_request_target and other events are not allowed)" ;;
+          esac
+          echo "authz: allowed ($EVENT${PR_AUTHOR:+ by $PR_AUTHOR})" >> "$GITHUB_STEP_SUMMARY"
+
+  workflow-lint:
+    name: workflow-lint
+    needs: [authz]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: "Check out the exact head with full history"
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: "${{ github.event.pull_request.head.sha || github.sha }}"
+          fetch-depth: 0
+          persist-credentials: false
+      - name: "Lint all workflow definitions with pinned actionlint v1.7.12"
+        if: "${{ needs.authz.result == 'success' }}"
+        shell: "bash"
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)
+              archive=actionlint_1.7.12_linux_amd64.tar.gz
+              sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 ;;
+            aarch64|arm64)
+              archive=actionlint_1.7.12_linux_arm64.tar.gz
+              sha256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 ;;
+            *)
+              echo "::error::workflow-lint requires a supported Linux architecture"
+              exit 1 ;;
+          esac
+          lint_dir=$(mktemp -d "$RUNNER_TEMP/workflow-lint.XXXXXXXX")
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors --speed-limit 1024 --speed-time 60 \
+            --output "$lint_dir/$archive" "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+          if ! printf '%s  %s\n' "$sha256" "$lint_dir/$archive" | sha256sum --check --strict --status; then
+            echo "::error::actionlint archive checksum did not match the published pin"
+            exit 1
+          fi
+          tar -xzf "$lint_dir/$archive" -C "$lint_dir" actionlint
+          "$lint_dir/actionlint" -version
+          printf '%s\n' '{"self-hosted-runner":{"labels":["gke-2cpu-4gb-amd64","gke-2cpu-4gb-arm64","gke-4cpu-8gb-amd64","gke-4cpu-8gb-arm64","gke-8cpu-16gb-amd64","gke-8cpu-16gb-arm64","gke-16cpu-32gb-amd64","gke-16cpu-32gb-arm64","gke-32cpu-64gb-amd64","gke-32cpu-64gb-arm64","gkp-2cpu-4gb-amd64","gkp-2cpu-4gb-arm64","gkp-4cpu-8gb-amd64","gkp-4cpu-8gb-arm64","gkp-8cpu-16gb-amd64","gkp-8cpu-16gb-arm64","gkp-16cpu-32gb-amd64","gkp-16cpu-32gb-arm64","gkp-32cpu-64gb-amd64","gkp-32cpu-64gb-arm64","gke-2cpu-4gb-amd64-64gb","gke-2cpu-4gb-arm64-64gb","gke-4cpu-8gb-amd64-64gb","gke-4cpu-8gb-arm64-64gb","gke-8cpu-16gb-amd64-64gb","gke-8cpu-16gb-arm64-64gb","gke-16cpu-32gb-amd64-64gb","gke-16cpu-32gb-arm64-64gb","gke-32cpu-64gb-amd64-64gb","gke-32cpu-64gb-arm64-64gb","gkp-2cpu-4gb-amd64-64gb","gkp-2cpu-4gb-arm64-64gb","gkp-4cpu-8gb-amd64-64gb","gkp-4cpu-8gb-arm64-64gb","gkp-8cpu-16gb-amd64-64gb","gkp-8cpu-16gb-arm64-64gb","gkp-16cpu-32gb-amd64-64gb","gkp-16cpu-32gb-arm64-64gb","gkp-32cpu-64gb-amd64-64gb","gkp-32cpu-64gb-arm64-64gb","gke-16cpu-32gb-amd64-128gb","gke-16cpu-32gb-amd64-256gb","gke-16cpu-32gb-arm64-128gb","gke-32cpu-64gb-amd64-256gb","gkp-16cpu-32gb-amd64-128gb"]}}' > "$lint_dir/actionlint.yaml"
+          git ls-files -z -- .github/workflows > "$lint_dir/workflows"
+          workflows=()
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              *.yml|*.yaml) workflows+=("$path") ;;
+            esac
+          done < "$lint_dir/workflows"
+          if [[ -n "${path-}" ]]; then
+            echo "::error::unterminated Git workflow path"
+            exit 1
+          fi
+          if [[ "${#workflows[@]}" -eq 0 ]]; then
+            echo "::error::no workflow YAML files were found"
+            exit 1
+          fi
+          "$lint_dir/actionlint" -config-file "$lint_dir/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
+
+  controls:
+    name: Variance instrument controls
+    needs: [authz]
+    runs-on: gke-2cpu-4gb-amd64
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact head and pinned submodules
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Set up Python
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+
+      - name: Install GNU time
+        if: "${{ needs.authz.result == 'success' }}"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y time
+
+      # The controls are failfast and drive real child processes (a crash and several
+      # exit codes) plus the unchanged gate with a native stand-in that kills itself.
+      # Their fixtures are synthetic and labelled; none of it is memory evidence. The
+      # step fails on a nonzero exit, on any count other than the 17 controls in the
+      # committed test file, and on any ending other than a plain OK (a skip is no pass).
+      # It runs under LC_ALL=C, so the log text it greps and the GNU time and git text the
+      # controls compare never depend on the runner's language.
+      - name: Run the instrument controls
+        if: "${{ needs.authz.result == 'success' }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          report=build/controls-report
+          mkdir -p "$report"
+          rc=0
+          python3 -I scripts/gate_variance/test_variance_observer.py \
+            --checkout "$GITHUB_WORKSPACE" \
+            --work build/variance-controls -v \
+            > "$report/controls.log" 2>&1 || rc=$?
+          printf '%s\n' "$rc" > "$report/controls.exit"
+          cat "$report/controls.log"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the instrument controls exited $rc"
+            exit 1
+          fi
+          if ! grep -Eq '^Ran 17 tests in [0-9.]+s$' "$report/controls.log"; then
+            echo "::error::the instrument controls did not run exactly 17 tests"
+            exit 1
+          fi
+          if ! grep -Fxq 'OK' "$report/controls.log"; then
+            echo "::error::the instrument controls did not end with a plain OK"
+            exit 1
+          fi
+
+      - name: Retain the controls record, passed or failed
+        if: "${{ always() && needs.authz.result == 'success' }}"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: memory-gate-variance-controls
+          path: build/controls-report
+          if-no-files-found: error
+
+  carrier:
+    name: Variance build carrier (one build)
+    needs: [authz, controls]
+    runs-on: gke-16cpu-32gb-amd64-64gb
+    permissions:
+      contents: read
+    outputs:
+      native_sha256: ${{ steps.stage.outputs.native_sha256 }}
+      plugin_sha256: ${{ steps.stage.outputs.plugin_sha256 }}
+      manifest_sha256: ${{ steps.stage.outputs.manifest_sha256 }}
+      carrier_sha256: ${{ steps.stage.outputs.carrier_sha256 }}
+      workspace: ${{ steps.stage.outputs.workspace }}
+    steps:
+      - name: Check out the exact head and pinned submodules
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Set up Python
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+
+      - name: Install native dependencies
+        if: "${{ needs.authz.result == 'success' }}"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build time
+
+      - name: Configure PineForge Engine headers
+        if: "${{ needs.authz.result == 'success' }}"
+        run: >-
+          cmake -S external/pineforge-engine -B external/pineforge-engine/build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPINEFORGE_BUILD_TESTS=OFF
+          -DPINEFORGE_BUILD_TUTORIAL=OFF
+          -DPINEFORGE_BUILD_CORPUS_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
+          -DPINEFORGE_BUILD_SPEED_BENCH=OFF
+
+      - name: Configure PineForge HPO
+        if: "${{ needs.authz.result == 'success' }}"
+        run: |
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON \
+            -DPINEFORGE_HPO_BUILD_TESTS=ON \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
+            -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
+            -DPINEFORGE_HPO_REQUIRE_MPFR=ON "${prefix_args[@]}"
+
+      - name: Build
+        if: "${{ needs.authz.result == 'success' }}"
+        run: cmake --build build -j4
+
+      - name: Build PineForge Engine runtime
+        if: "${{ needs.authz.result == 'success' }}"
+        run: cmake --build external/pineforge-engine/build --target pineforge -j4
+
+      # The one build is verified, then archived as a tar (an artifact upload alone would
+      # drop the executable bits). The digests below are computed from the built files, not
+      # written by hand. Every sample refuses to run unless it matches all of them. The
+      # staging step runs under LC_ALL=C, so the git and digest text it compares never
+      # depends on the runner's language.
+      - name: Verify the single build and stage the carrier
+        id: stage
+        if: "${{ needs.authz.result == 'success' }}"
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ] || fail "the checked-out commit is not the pushed commit"
+          for built in build/bin/pineforge-hpo-native build/lib/fake_strategy.so build/lib/manifest.json; do
+            [ -f "$built" ] && [ -s "$built" ] || fail "missing or empty build output: $built"
+          done
+          [ -x build/bin/pineforge-hpo-native ] || fail "the native CLI is not executable"
+          mkdir carrier-out
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            -cf carrier-out/carrier.tar build external/pineforge-engine/build
+          printf '%s\n' "$GITHUB_WORKSPACE" > carrier-out/WORKSPACE.txt
+          sha256sum build/bin/pineforge-hpo-native build/lib/fake_strategy.so build/lib/manifest.json > carrier-out/BINARIES.sha256
+          (cd carrier-out && sha256sum carrier.tar WORKSPACE.txt > CARRIER.sha256)
+          native=$(sha256sum build/bin/pineforge-hpo-native | cut -d' ' -f1)
+          plugin=$(sha256sum build/lib/fake_strategy.so | cut -d' ' -f1)
+          manifest=$(sha256sum build/lib/manifest.json | cut -d' ' -f1)
+          carrier=$(sha256sum carrier-out/carrier.tar | cut -d' ' -f1)
+          for value in "$native" "$plugin" "$manifest" "$carrier"; do
+            [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "a computed digest is not a SHA256 hex digest"
+          done
+          echo "native_sha256=$native"
+          echo "plugin_sha256=$plugin"
+          echo "manifest_sha256=$manifest"
+          echo "carrier_sha256=$carrier"
+          echo "workspace=$GITHUB_WORKSPACE"
+          {
+            echo "native_sha256=$native"
+            echo "plugin_sha256=$plugin"
+            echo "manifest_sha256=$manifest"
+            echo "carrier_sha256=$carrier"
+            echo "workspace=$GITHUB_WORKSPACE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Retain the one carrier for the ten samples
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: memory-gate-variance-carrier
+          path: carrier-out
+          if-no-files-found: error
+
+  samples:
+    name: Variance sample ${{ matrix.repeat }}
+    needs: [authz, controls, carrier]
+    runs-on: gke-16cpu-32gb-amd64-64gb
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        repeat: [r01, r02, r03, r04, r05, r06, r07, r08, r09, r10]
+    steps:
+      - name: Check out the exact head and pinned submodules
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Set up Python
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+
+      # Same package set as the build job so the native's runtime libraries match.
+      # Nothing is configured or built in this job.
+      - name: Install native dependencies
+        if: "${{ needs.authz.result == 'success' }}"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libeigen3-dev libmpfr-dev ninja-build time
+
+      - name: Fetch the one build carrier
+        if: "${{ needs.authz.result == 'success' }}"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: memory-gate-variance-carrier
+          path: carrier-in
+
+      # This step runs under LC_ALL=C, so the digest and path text it compares never
+      # depends on the runner's language.
+      - name: Verify the carrier, then unpack it without rebuilding
+        if: "${{ needs.authz.result == 'success' }}"
+        shell: bash
+        env:
+          CARRIER_SHA256: ${{ needs.carrier.outputs.carrier_sha256 }}
+          NATIVE_SHA256: ${{ needs.carrier.outputs.native_sha256 }}
+          PLUGIN_SHA256: ${{ needs.carrier.outputs.plugin_sha256 }}
+          MANIFEST_SHA256: ${{ needs.carrier.outputs.manifest_sha256 }}
+          EXPECTED_WORKSPACE: ${{ needs.carrier.outputs.workspace }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          fail() { echo "::error::$1"; exit 1; }
+          for name in CARRIER_SHA256 NATIVE_SHA256 PLUGIN_SHA256 MANIFEST_SHA256; do
+            value="${!name}"
+            [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "$name from the carrier job is not a SHA256 hex digest"
+          done
+          [ -n "$EXPECTED_WORKSPACE" ] || fail "the carrier job exported no workspace path"
+          [ "$GITHUB_WORKSPACE" = "$EXPECTED_WORKSPACE" ] || fail "this workspace differs from the carrier job's; build trees can embed absolute paths"
+          [ "$(cat carrier-in/WORKSPACE.txt)" = "$GITHUB_WORKSPACE" ] || fail "the carrier record names a different workspace"
+          (cd carrier-in && sha256sum --check --strict CARRIER.sha256)
+          [ "$(sha256sum carrier-in/carrier.tar | cut -d' ' -f1)" = "$CARRIER_SHA256" ] || fail "carrier.tar differs from the carrier job's digest"
+          tar -xf carrier-in/carrier.tar -C "$GITHUB_WORKSPACE"
+          sha256sum --check --strict carrier-in/BINARIES.sha256
+          [ "$(sha256sum build/bin/pineforge-hpo-native | cut -d' ' -f1)" = "$NATIVE_SHA256" ] || fail "the native CLI differs from the carrier job's digest"
+          [ "$(sha256sum build/lib/fake_strategy.so | cut -d' ' -f1)" = "$PLUGIN_SHA256" ] || fail "the plugin differs from the carrier job's digest"
+          [ "$(sha256sum build/lib/manifest.json | cut -d' ' -f1)" = "$MANIFEST_SHA256" ] || fail "the plugin manifest differs from the carrier job's digest"
+          [ -x build/bin/pineforge-hpo-native ] || fail "the unpacked native CLI is not executable"
+
+      # One unchanged gate run per task, through the observer. The step's exit code is the
+      # observer's own: 0 for a valid sample whose gate passed, 1 for a valid sample whose
+      # gate went red, 3 or the gate's own nonzero exit for an invalid sample. It is never
+      # masked, so a red sample keeps its job red. The step runs under LC_ALL=C, so the
+      # observer and the gate it starts see English tool text whatever the runner's language.
+      - name: Observe one unchanged gate run
+        if: "${{ needs.authz.result == 'success' }}"
+        shell: bash
+        env:
+          REPEAT: ${{ matrix.repeat }}
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          printf '%s\n' 'timestamp,open,high,low,close,volume' \
+            '1700000000000,100,102,99,101,10' \
+            '1700000060000,100,102,99,101,10' > build/memory-gate-bars.csv
+          python3 -I scripts/gate_variance/observe_variance.py sample \
+            --repeat-id "$REPEAT" \
+            --sample-root "build/memory-gate-variance/$REPEAT" \
+            --source-root "$GITHUB_WORKSPACE" \
+            --expected-head "$EXPECTED_HEAD" \
+            --runner-label gke-16cpu-32gb-amd64-64gb \
+            --gate scripts/ci_memory_gate.py \
+            --native build/bin/pineforge-hpo-native \
+            --plugin build/lib/fake_strategy.so \
+            --ohlcv build/memory-gate-bars.csv
+
+      - name: Retain this sample, red or green
+        if: "${{ always() && needs.authz.result == 'success' }}"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: memory-gate-variance-${{ matrix.repeat }}
+          path: build/memory-gate-variance/${{ matrix.repeat }}
+          if-no-files-found: error
+
+  variance-ok:
+    needs: [authz, workflow-lint, controls, carrier, samples]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: "Refuse an unauthorised run before anything else"
+        if: "${{ needs.authz.result != 'success' }}"
+        run: |
+          echo "::error::authz did not pass; nothing of this run's code is checked out or run"
+          exit 1
+      - name: Every needed job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          [ "$(echo "$RESULTS" | tr -d '[] \n"' | tr ',' '\n' | grep -vc '^success$')" = "0" ] || { echo "::error::a needed job did not succeed"; exit 1; }
