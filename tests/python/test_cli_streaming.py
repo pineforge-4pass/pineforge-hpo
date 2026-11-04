@@ -954,11 +954,82 @@ class RunStreamingTests(unittest.TestCase):
                 self.assertTrue(output.prefix)
                 self.assertEqual(output.getvalue(), output.prefix)
                 self.assertEqual(output.writes, 2)
-                self.assertEqual(
-                    errors.getvalue(),
-                    native_stderr + "pineforge-hpo: consumer closed stdout\n",
+                diagnostics = errors.getvalue()
+                traceback_marker = "Traceback (most recent call last):"
+                error_marker = "BrokenPipeError: consumer closed stdout"
+                self.assertTrue(
+                    diagnostics.startswith(
+                        native_stderr + "pineforge-hpo: consumer closed stdout\n"
+                    )
+                )
+                self.assertIn(traceback_marker, diagnostics)
+                self.assertIn(error_marker, diagnostics)
+                self.assertLess(
+                    diagnostics.index("pineforge-hpo: consumer closed stdout"),
+                    diagnostics.index(traceback_marker),
                 )
                 self._assert_clean()
+
+    def test_main_does_not_append_failure_json_after_binary_stdout_publication(
+        self,
+    ) -> None:
+        class BinaryPrefixThenBrokenOutput:
+            def __init__(self) -> None:
+                self.buffer = self
+                self.writes = 0
+                self.prefix = b""
+                self.published = bytearray()
+
+            def flush(self) -> None:
+                return None
+
+            def write(self, value: bytes) -> int:
+                self.writes += 1
+                if self.writes == 1:
+                    self.prefix = value
+                    self.published.extend(value)
+                    return len(value)
+                raise BrokenPipeError("consumer closed stdout")
+
+        output = BinaryPrefixThenBrokenOutput()
+        errors = io.StringIO()
+        self.prepare.return_value = (
+            _native_command("--payload", '{"ok":true}'),
+            self.artifact,
+        )
+        with (
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(errors),
+        ):
+            returned = cli.main(
+                [
+                    "run",
+                    str(self.study.spec_path),
+                    "--result-chunk-bytes",
+                    "2",
+                ]
+            )
+
+        self.assertIs(output.buffer, output)
+        self.assertEqual(returned, 1)
+        self.assertTrue(output.prefix)
+        published = bytes(output.published)
+        self.assertEqual(published, output.prefix)
+        self.assertNotIn(b'"failure"', published)
+        self.assertEqual(output.writes, 2)
+        diagnostics = errors.getvalue()
+        traceback_marker = "Traceback (most recent call last):"
+        error_marker = "BrokenPipeError: consumer closed stdout"
+        self.assertTrue(
+            diagnostics.startswith("pineforge-hpo: consumer closed stdout\n")
+        )
+        self.assertIn(traceback_marker, diagnostics)
+        self.assertIn(error_marker, diagnostics)
+        self.assertLess(
+            diagnostics.index("pineforge-hpo: consumer closed stdout"),
+            diagnostics.index(traceback_marker),
+        )
+        self._assert_clean()
 
     def test_main_prints_one_failure_when_result_seek_fails_before_publication(
         self,
