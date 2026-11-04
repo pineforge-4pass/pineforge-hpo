@@ -1,4 +1,4 @@
-"""Exercise the gate's judgments and accounting without building or invoking HPO."""
+"""Instrument-only gate tests; mocked measurements are not real native GREEN."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import resource
 import signal
@@ -32,7 +33,11 @@ def gnu_time_skip_reason():
         return "GNU /usr/bin/time is absent; install the time package"
     try:
         result = GATE.subprocess.run(
-            [str(launcher), "--version"], capture_output=True, text=True, check=False
+            [str(launcher), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**GATE.os.environ, "LC_ALL": "C"},
         )
     except OSError:
         return "GNU /usr/bin/time cannot be executed"
@@ -45,6 +50,130 @@ GNU_TIME_SKIP_REASON = gnu_time_skip_reason()
 
 
 class MemoryGateLogicTests(unittest.TestCase):
+    def repetitions(self, samples):
+        return [(repeat, list(samples)) for repeat in range(1, 6)]
+
+    def test_exact_five_integer_medians_retain_rank_and_outlier_sensitivity(self):
+        self.assertEqual(GATE.REPEATS_PER_POINT, 5)
+        columns = [
+            [BASE - 1, BASE, BASE + 3, BASE + 5, BASE * 9],
+            [BASE * 8, BASE + 8, BASE + 6, BASE + 4, 1],
+            [BASE + 9, 1, BASE * 7, BASE + 10, BASE + 11],
+        ]
+        repeats = [
+            (
+                repeat,
+                [
+                    (count, column[repeat - 1])
+                    for count, column in zip(GATE.COUNTS, columns)
+                ],
+            )
+            for repeat in range(1, 6)
+        ]
+        original = [(repeat, list(samples)) for repeat, samples in repeats]
+        medians = GATE._median_trial_peaks(repeats)
+        self.assertEqual(
+            medians, [(10, BASE + 3), (1_000, BASE + 6), (100_000, BASE + 10)]
+        )
+        self.assertTrue(all(type(peak) is int for _, peak in medians))
+        self.assertEqual(repeats, original)
+        # Changing a high outlier cannot select a lower peak or change the median.
+        repeats[4][1][0] = (10, BASE * 99)
+        self.assertEqual(GATE._median_trial_peaks(repeats), medians)
+        # Changing the middle order statistic must affect the corresponding point.
+        repeats[2][1][0] = (10, BASE + 4)
+        self.assertEqual(
+            GATE._median_trial_peaks(repeats),
+            [(10, BASE + 4), (1_000, BASE + 6), (100_000, BASE + 10)],
+        )
+
+    def test_medians_preserve_both_exact_limits_and_one_byte_failures(self):
+        exact = [
+            (10, BASE),
+            (1_000, BASE + 990 * 256),
+            (100_000, BASE + 990 * 256 + 99_000 * 32),
+        ]
+        for edge in (None, 1, 2):
+            samples = [
+                (count, peak + (1 if edge is not None and index >= edge else 0))
+                for index, (count, peak) in enumerate(exact)
+            ]
+            repeats = [
+                (repeat, [(count, peak + offset) for count, peak in samples])
+                for repeat, offset in enumerate(
+                    (900_000, -900_000, 0, -400_000, 400_000), 1
+                )
+            ]
+            with self.subTest(edge=edge):
+                medians = GATE._median_trial_peaks(repeats)
+                self.assertEqual(medians, samples)
+                result = GATE.judge_trial_growth(medians)
+                self.assertEqual(result["exit_code"], 0 if edge is None else 1)
+                self.assertEqual(
+                    [item["limit_bytes_per_trial"] for item in result["trial_slopes"]],
+                    [256, 32],
+                )
+                if edge is not None:
+                    self.assertEqual(
+                        result["trial_slopes"][edge - 1]["verdict"], "FAIL"
+                    )
+
+    def test_medians_reject_missing_duplicate_unordered_or_malformed_repetitions(self):
+        valid = self.repetitions([(count, BASE) for count in GATE.COUNTS])
+        invalid = [
+            None,
+            [],
+            valid[:4],
+            valid + [(6, valid[0][1])],
+            list(reversed(valid)),
+            [valid[0], valid[0], *valid[2:]],
+            [None, *valid[1:]],
+            [(1,), *valid[1:]],
+            [(1, valid[0][1], "extra"), *valid[1:]],
+        ]
+        for repeat in (0, 2, True, 1.0, "1", None):
+            invalid.append([(repeat, valid[0][1]), *valid[1:]])
+        for samples in (
+            None,
+            [],
+            valid[0][1][:2],
+            valid[0][1] + [(100_000, BASE)],
+            list(reversed(valid[0][1])),
+            [(10, BASE), (1_000, BASE), (1_000, BASE)],
+            [None, (1_000, BASE), (100_000, BASE)],
+            [(10,), (1_000, BASE), (100_000, BASE)],
+            [(10, BASE, "extra"), (1_000, BASE), (100_000, BASE)],
+        ):
+            invalid.append([(1, samples), *valid[1:]])
+        for repeats in invalid:
+            with self.subTest(repeats=repeats), self.assertRaises(ValueError):
+                GATE._median_trial_peaks(repeats)
+
+    def test_medians_reject_invalid_count_and_peak_types_in_every_position(self):
+        for repeat_index in range(5):
+            for point, count in enumerate(GATE.COUNTS):
+                for field, values in (
+                    (0, (True, float(count), str(count), 0, -1, None)),
+                    (1, (True, False, float(BASE), float("nan"), 0, -1, None, "12")),
+                ):
+                    for value in values:
+                        repeats = self.repetitions(
+                            [(count, BASE) for count in GATE.COUNTS]
+                        )
+                        sample = [count, BASE]
+                        sample[field] = value
+                        repeats[repeat_index][1][point] = tuple(sample)
+                        with (
+                            self.subTest(
+                                repeat=repeat_index + 1,
+                                point=point,
+                                field=field,
+                                value=value,
+                            ),
+                            self.assertRaises(ValueError),
+                        ):
+                            GATE._median_trial_peaks(repeats)
+
     def test_flat_series_passes(self):
         verdict = GATE.judge_trial_growth([(count, BASE) for count in GATE.COUNTS])
         self.assertEqual(verdict["verdict"], "PASS")
@@ -121,6 +250,9 @@ class MemoryGateLogicTests(unittest.TestCase):
                 Path("native"), Path("fixture.so"), Path("bars.csv"), trials
             )
             for flag, value in (
+                ("--strategy", "fixture.so"),
+                ("--ohlcv", "bars.csv"),
+                ("--objective", "metrics.all.net_profit"),
                 ("--max-trials", str(trials)),
                 ("--sampler", "random"),
                 ("--seed", "17"),
@@ -128,8 +260,15 @@ class MemoryGateLogicTests(unittest.TestCase):
                 ("--batch-size", "1"),
                 ("--schedule", "batches"),
                 ("--trials-out", "all"),
+                ("--pruner", "none"),
+                ("--input-tf", "1"),
+                ("--script-tf", "5"),
+                ("--bar-magnifier", "true"),
+                ("--magnifier-samples", "6"),
+                ("--magnifier-distribution", "triangle"),
             ):
                 self.assertEqual(command[command.index(flag) + 1], value)
+            self.assertEqual(command[:2], ["native", "run"])
             self.assertEqual(
                 command[-5:], ["--real-dim", "Length", "1", "100", "continuous"]
             )
@@ -252,6 +391,8 @@ class MemoryGateProcessTests(unittest.TestCase):
         self.assertEqual(popen.call_args.args[0], row["command"])
         self.assertEqual(popen.call_args.kwargs["cwd"], self.directory)
         self.assertEqual(popen.call_args.kwargs["env"]["TMPDIR"], str(self.directory))
+        self.assertEqual(popen.call_args.kwargs["env"]["LC_ALL"], "C")
+        self.assertIsNot(popen.call_args.kwargs["env"], GATE.os.environ)
         self.assertEqual(
             popen.call_args.kwargs["stdout"].name, str(self.path(f"{label}.stdout"))
         )
@@ -294,6 +435,11 @@ class MemoryGateProcessTests(unittest.TestCase):
         self.assertEqual(row["exit_code"], 128 + signal.SIGKILL)
         (marker,) = GATE.list_paths("mock signal marker read", [Path(row["exit_file"])])
         self.assertEqual(int(marker.read_text()), row["exit_code"])
+
+    def test_parsed_child_locale_uses_a_fresh_copy_without_mutating_the_caller(self):
+        with mock.patch.dict(GATE.os.environ, {"LC_ALL": "caller-locale"}):
+            self.timed_child()
+            self.assertEqual(GATE.os.environ["LC_ALL"], "caller-locale")
 
     def test_normal_nonzero_exit_and_diagnostic_preserve_child_status(self):
         output = b"Command exited with non-zero status 7\n12345\n"
@@ -386,7 +532,7 @@ class MemoryGateProcessTests(unittest.TestCase):
             ],
             [],
         )
-        self.assertNotEqual(row["exit_code"], 0)
+        self.assertEqual(row["exit_code"], 128 + signal.SIGKILL)
         self.assertIn(
             f"Command terminated by signal {signal.SIGKILL}",
             row["gnu_time_output"].splitlines()[:-1],
@@ -421,6 +567,13 @@ class MemoryGateProcessTests(unittest.TestCase):
 
     def test_complete_native_output_is_observed_row_by_row(self):
         self.assertEqual(GATE.validate_output(self.output_fixture(), 10), 10)
+
+    def test_empty_or_constant_document_cannot_replace_complete_native_output(self):
+        for index, text in enumerate(("", "{}\n", '{"ok": true}\n')):
+            path = self.path(f"invalid-native-{index}.stdout")
+            path.write_text(text, encoding="utf-8")
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                GATE.validate_output(path, 10)
 
     def test_infeasible_trial_is_refused(self):
         rows = [
@@ -491,9 +644,9 @@ class MemoryGateProcessTests(unittest.TestCase):
             self.assertEqual(result["verdict"], "PASS")
             self.assertEqual(result["peak_rss_bytes"], peak)
 
-    def test_nonpositive_peaks_are_refused_on_both_axes(self):
+    def test_invalid_peak_types_and_nonpositive_peaks_are_refused_on_both_axes(self):
         stdout = self.output_fixture()
-        for peak in (0, -1):
+        for peak in (0, -1, True, False, float(BASE), float("nan"), None, "12"):
             for bars_axis in (False, True):
                 row = self.measurement_row(stdout, peak=peak)
                 with (
@@ -653,7 +806,7 @@ class MemoryGateProcessTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
     def test_main_verdict_records_resolution_and_trial_peak_sources(self):
         args = self.gate_inputs()
-        sources = ["gnu_time_wait4"] * 3
+        sources = ["gnu_time_wait4"] * 15
         statement = (
             "peak is the child's maximum resident set size from GNU time "
             "(wait4 ru_maxrss of the native child reaped by a ~1 MiB launcher): "
@@ -666,8 +819,12 @@ class MemoryGateProcessTests(unittest.TestCase):
                 arguments = self.arguments(parent)
                 arguments[1] = str(args.native)
                 rows = [
-                    {"peak_rss_bytes": BASE + growth * count, "peak_source": source}
-                    for count, source in zip(GATE.COUNTS, sources)
+                    {
+                        "peak_rss_bytes": BASE + growth * count,
+                        "peak_source": "gnu_time_wait4",
+                    }
+                    for _repeat in range(5)
+                    for count in GATE.COUNTS
                 ]
                 output = io.StringIO()
                 with (
@@ -678,11 +835,10 @@ class MemoryGateProcessTests(unittest.TestCase):
                     redirect_stdout(output),
                 ):
                     self.assertEqual(GATE.main(arguments), expected)
-                self.assertEqual(measure.call_count, 3)
+                self.assertEqual(measure.call_count, 15)
                 verdict = json.loads(output.getvalue())
-                self.assertEqual(
-                    self.read_json(next(parent.iterdir()) / "RUN.COMPLETE"), verdict
-                )
+                run = next(parent.iterdir())
+                self.assertEqual(self.read_json(run / "RUN.COMPLETE"), verdict)
                 self.assertEqual(
                     verdict["verdict"], "PASS" if expected == 0 else "FAIL"
                 )
@@ -690,6 +846,35 @@ class MemoryGateProcessTests(unittest.TestCase):
                 self.assertNotIn("ru_maxrss_margin_bytes", verdict)
                 self.assertEqual(verdict["peak_sources"], sources)
                 self.assertEqual(verdict["measurement_resolution"], statement)
+                self.assertEqual(verdict["measurement_method"], "median-of-five")
+                self.assertEqual(verdict["repeats_per_point"], 5)
+                self.assertEqual(verdict["measurements"], 15)
+                self.assertEqual(verdict["median_points"], 3)
+                self.assertEqual(
+                    verdict["trial_medians"],
+                    [
+                        {"trials": count, "peak_rss_bytes": BASE + growth * count}
+                        for count in GATE.COUNTS
+                    ],
+                )
+                self.assertEqual(
+                    verdict["trial_repeats"],
+                    [
+                        {
+                            "repeat": repeat,
+                            "artifact_directory": str(run / f"repeat{repeat:02d}"),
+                            "samples": [
+                                {
+                                    "trials": count,
+                                    "peak_rss_bytes": BASE + growth * count,
+                                    "artifact_label": f"repeat{repeat:02d}/trials-{count}",
+                                }
+                                for count in GATE.COUNTS
+                            ],
+                        }
+                        for repeat in range(1, 6)
+                    ],
+                )
                 if expected != 0:
                     self.assertIn(statement, verdict["reason"])
 
@@ -721,13 +906,27 @@ class MemoryGateProcessTests(unittest.TestCase):
                 ):
                     verdict = GATE.run_gate(args, directory)
                 self.assertEqual(verdict["exit_code"], expected)
-                self.assertEqual(verdict["peak_sources"], ["gnu_time_wait4"] * 3)
+                self.assertEqual(verdict["peak_sources"], ["gnu_time_wait4"] * 15)
                 self.assertEqual(
-                    [call.args[4] for call in measure.call_args_list[:3]],
-                    [10, 1_000, 100_000],
+                    [call.args[4:6] for call in measure.call_args_list[:15]],
+                    [(10, 2), (1_000, 2), (100_000, 2)] * 5,
                 )
+                for index, call in enumerate(measure.call_args_list[:15]):
+                    self.assertEqual(
+                        call.args[0], directory / f"repeat{index // 3 + 1:02d}"
+                    )
+                    self.assertTrue(call.args[0].is_dir())
+                    self.assertEqual(
+                        call.args[1:4],
+                        (
+                            Path(os.path.realpath(sys.executable)),
+                            Path(os.path.realpath(self.directory / "fixture.so")),
+                            Path(os.path.realpath(self.directory / "bars.csv")),
+                        ),
+                    )
+                    self.assertEqual(call.kwargs, {})
                 if expected == 0:
-                    self.assertEqual(measure.call_count, 6)
+                    self.assertEqual(measure.call_count, 18)
                     self.assertTrue(
                         all(not edge["gated"] for edge in verdict["bar_slopes"])
                     )
@@ -737,13 +936,148 @@ class MemoryGateProcessTests(unittest.TestCase):
                             for edge in verdict["bar_slopes"]
                         )
                     )
-                    bar_calls = measure.call_args_list[3:]
+                    bar_calls = measure.call_args_list[15:]
                     for call, count in zip(bar_calls, GATE.BAR_COUNTS):
+                        self.assertEqual(call.args[0], directory)
                         self.assertEqual(call.args[4:6], (10, count))
                         self.assertEqual(call.kwargs, {"bars_axis": True})
                 else:
-                    self.assertEqual(measure.call_count, 3)
+                    self.assertEqual(measure.call_count, 15)
                     self.assertNotIn("bar_slopes", verdict)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
+    def test_all_raw_repeats_are_retained_and_judge_receives_only_point_medians(self):
+        args = self.gate_inputs()
+        args.bars_axis = False
+        offsets = [
+            (0, 300_000, 300_000),
+            (1_000_000, 1_300_000, 1_300_000),
+            (2_000_000, 2_300_000, 2_300_000),
+            (3_000_000, 0, 0),
+            (3_000_000, 0, 0),
+        ]
+        repeats = [
+            [(count, BASE + offset) for count, offset in zip(GATE.COUNTS, peaks)]
+            for peaks in offsets
+        ]
+        # Three individual FAIL verdicts must not become a majority vote.
+        self.assertEqual(
+            [GATE.judge_trial_growth(samples)["verdict"] for samples in repeats],
+            ["FAIL", "FAIL", "FAIL", "PASS", "PASS"],
+        )
+        rows = [
+            {"peak_rss_bytes": peak, "peak_source": "gnu_time_wait4"}
+            for samples in repeats
+            for _, peak in samples
+        ]
+        with (
+            mock.patch.object(GATE, "run_child", return_value=self.crash_control_row()),
+            mock.patch.object(GATE, "measure", side_effect=rows) as measure,
+            mock.patch.object(
+                GATE, "judge_trial_growth", wraps=GATE.judge_trial_growth
+            ) as judge,
+        ):
+            verdict = GATE.run_gate(args, self.directory)
+        judge.assert_called_once_with(
+            [(10, BASE + 2_000_000), (1_000, BASE + 300_000), (100_000, BASE + 300_000)]
+        )
+        self.assertEqual(measure.call_count, 15)
+        self.assertEqual(verdict["verdict"], "PASS")
+        self.assertEqual(verdict["measurements"], 15)
+        self.assertEqual(verdict["median_points"], 3)
+        self.assertEqual(
+            [
+                [
+                    (sample["trials"], sample["peak_rss_bytes"])
+                    for sample in item["samples"]
+                ]
+                for item in verdict["trial_repeats"]
+            ],
+            repeats,
+        )
+        labels = [
+            sample["artifact_label"]
+            for item in verdict["trial_repeats"]
+            for sample in item["samples"]
+        ]
+        self.assertEqual(
+            labels,
+            [
+                f"repeat{repeat:02d}/trials-{count}"
+                for repeat in range(1, 6)
+                for count in (10, 1_000, 100_000)
+            ],
+        )
+        self.assertEqual(len(set(labels)), 15)
+        self.assertEqual(
+            {call.args[0] for call in measure.call_args_list},
+            {self.directory / f"repeat{repeat:02d}" for repeat in range(1, 6)},
+        )
+        self.assertNotIn("bar_slopes", verdict)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
+    def test_failed_missing_or_malformed_repetition_stops_without_retry_or_judgment(
+        self,
+    ):
+        args = self.gate_inputs()
+        for failed_at in (1, 2, 3, 4, 8, 15):
+            for kind, error in (
+                ("failed", ValueError("native child exited 7")),
+                ("missing", OSError("missing repetition artifact")),
+                (
+                    "malformed",
+                    ValueError("native result has an incomplete trials array"),
+                ),
+            ):
+                with self.subTest(failed_at=failed_at, kind=kind):
+                    parent = self.path(f"{kind}-at-{failed_at}")
+                    arguments = self.arguments(parent) + ["--bars-axis"]
+                    arguments[1] = str(args.native)
+                    rows = [
+                        {"peak_rss_bytes": BASE, "peak_source": "gnu_time_wait4"}
+                        for _ in range(failed_at - 1)
+                    ]
+                    with (
+                        mock.patch.object(
+                            GATE, "run_child", return_value=self.crash_control_row()
+                        ),
+                        mock.patch.object(
+                            GATE, "measure", side_effect=[*rows, error]
+                        ) as measure,
+                        mock.patch.object(GATE, "_median_trial_peaks") as median,
+                        mock.patch.object(GATE, "judge_trial_growth") as judge,
+                        redirect_stdout(io.StringIO()),
+                    ):
+                        self.assertEqual(GATE.main(arguments), 2)
+                    self.assertEqual(measure.call_count, failed_at)
+                    self.assertTrue(
+                        all(not call.kwargs for call in measure.call_args_list)
+                    )
+                    median.assert_not_called()
+                    judge.assert_not_called()
+                    run = next(parent.iterdir())
+                    complete = self.read_json(run / "RUN.COMPLETE")
+                    self.assertEqual(complete["verdict"], "ERROR")
+                    self.assertEqual(complete["exit_code"], 2)
+                    self.assertIn(str(error), complete["reason"])
+                    (marker,) = GATE.list_paths(
+                        "failed repeat gate marker", [run / "gate.exit"]
+                    )
+                    self.assertEqual(int(marker.read_text()), 2)
+                    self.assertNotIn("bar_slopes", complete)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
+    def test_repeat_directory_must_be_fresh_before_launching_its_children(self):
+        args = self.gate_inputs()
+        existing = self.path("repeat01")
+        existing.mkdir()
+        with (
+            mock.patch.object(GATE, "run_child", return_value=self.crash_control_row()),
+            mock.patch.object(GATE, "measure") as measure,
+            self.assertRaises(FileExistsError),
+        ):
+            GATE.run_gate(args, self.directory)
+        measure.assert_not_called()
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux CI owns the RSS gate")
     def test_failed_crash_control_stops_before_any_measurement(self):

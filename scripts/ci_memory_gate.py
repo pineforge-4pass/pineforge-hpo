@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Gate native child RSS growth, retaining every workload and judgment on disk.
 
+Measure each trial count with five fresh native children in five ordered repeats.
+Judge the integer median peak at each count only after all fifteen measurements
+are valid; retain every individual peak and its workload artifacts.
+
 Run on Linux CI with a Release native CLI, tests' fake_strategy plugin (and its
 adjacent manifest.json), a two-bar CSV and an explicit artifact directory.
 Exit 0: both trial slopes pass; 1: growth or unexpected gate error;
@@ -22,6 +26,7 @@ import tempfile
 
 COUNTS = (10, 1_000, 100_000)
 SLOPE_LIMITS = (256, 32)  # Bytes/trial; identical to streamed-trial acceptance.
+REPEATS_PER_POINT = 5
 BAR_COUNTS = (2, 1_000, 100_000)
 GNU_TIME = "/usr/bin/time"
 MAX_TIME_OUTPUT_BYTES = 4096
@@ -38,6 +43,52 @@ MEASUREMENT_RESOLUTION = (
 )
 MAX_METADATA_BYTES = 1024 * 1024
 CSV_HEADER = ["timestamp", "open", "high", "low", "close", "volume"]
+
+
+def _median_trial_peaks(
+    repetitions: list[tuple[int, list[tuple[int, int]]]],
+) -> list[tuple[int, int]]:
+    """Require all five ordered triads before selecting each integer median."""
+    if (
+        not isinstance(repetitions, (list, tuple))
+        or len(repetitions) != REPEATS_PER_POINT
+    ):
+        raise ValueError("exactly five ordered trial repetitions are required")
+    for expected_repeat, repetition in enumerate(repetitions, 1):
+        if not isinstance(repetition, (list, tuple)) or len(repetition) != 2:
+            raise ValueError(f"invalid trial repetition {expected_repeat}")
+        repeat, samples = repetition
+        if (
+            not isinstance(repeat, int)
+            or isinstance(repeat, bool)
+            or repeat != expected_repeat
+        ):
+            raise ValueError("trial repetitions must be ordered exactly 1 through 5")
+        if not isinstance(samples, (list, tuple)) or len(samples) != len(COUNTS):
+            raise ValueError(f"repetition {repeat} requires all three trial counts")
+        for expected_count, sample in zip(COUNTS, samples):
+            if not isinstance(sample, (list, tuple)) or len(sample) != 2:
+                raise ValueError(f"invalid trial sample in repetition {repeat}")
+            count, peak = sample
+            if (
+                not isinstance(count, int)
+                or isinstance(count, bool)
+                or count != expected_count
+            ):
+                raise ValueError(
+                    f"repetition {repeat} requires ordered counts {COUNTS}"
+                )
+            if not isinstance(peak, int) or isinstance(peak, bool) or peak <= 0:
+                raise ValueError(f"invalid child peak RSS in repetition {repeat}")
+    return [
+        (
+            count,
+            sorted(samples[index][1] for _, samples in repetitions)[
+                REPEATS_PER_POINT // 2
+            ],
+        )
+        for index, count in enumerate(COUNTS)
+    ]
 
 
 def judge_trial_growth(samples: list[tuple[int, int]]) -> dict:
@@ -158,7 +209,7 @@ def run_child(
     native_command = command
     command = [GNU_TIME, "-f", "%M", "-o", str(time_file), "--", *native_command]
     print("COMMAND " + json.dumps(command), file=sys.stderr, flush=True)
-    environment = {**os.environ, "TMPDIR": str(directory)}
+    environment = {**os.environ, "TMPDIR": str(directory), "LC_ALL": "C"}
     with stdout.open("wb") as output, stderr.open("wb") as errors:
         child = subprocess.Popen(
             command, stdout=output, stderr=errors, cwd=directory, env=environment
@@ -365,8 +416,11 @@ def measure(
             with errors.open("rb") as source:
                 diagnostic = source.read(2_000).decode("utf-8", errors="replace")
             raise ValueError(f"native child exited {row['exit_code']}: {diagnostic}")
-        if row["peak_rss_bytes"] <= 0:
-            raise ValueError("unmeasurable GNU time peak RSS: peak must be positive")
+        peak = row["peak_rss_bytes"]
+        if not isinstance(peak, int) or isinstance(peak, bool) or peak <= 0:
+            raise ValueError(
+                "unmeasurable GNU time peak RSS: peak must be a positive integer"
+            )
         row["trial_rows"] = validate_output(Path(row["stdout"]), trials)
         row["verdict"] = "PASS"
     except (OSError, ValueError, TypeError, AttributeError, OverflowError) as error:
@@ -432,14 +486,47 @@ def run_gate(args: argparse.Namespace, directory: Path) -> dict:
     )
     write_json(Path(crash["result_file"]), crash)
 
-    samples = []
+    repetitions = []
+    trial_repeats = []
     peak_sources = []
-    for trials in COUNTS:
-        row = measure(directory, native, plugin, bars, trials, 2)
-        samples.append((trials, row["peak_rss_bytes"]))
-        peak_sources.append(row["peak_source"])
-    verdict = judge_trial_growth(samples)
+    for repeat in range(1, REPEATS_PER_POINT + 1):
+        repeat_label = f"repeat{repeat:02d}"
+        (repeat_directory,) = list_paths(
+            "trial repeat directory", [directory / repeat_label]
+        )
+        repeat_directory.mkdir()
+        samples = []
+        raw_samples = []
+        for trials in COUNTS:
+            row = measure(repeat_directory, native, plugin, bars, trials, 2)
+            samples.append((trials, row["peak_rss_bytes"]))
+            peak_sources.append(row["peak_source"])
+            raw_samples.append(
+                {
+                    "trials": trials,
+                    "peak_rss_bytes": row["peak_rss_bytes"],
+                    "artifact_label": f"{repeat_label}/trials-{trials}",
+                }
+            )
+        repetitions.append((repeat, samples))
+        trial_repeats.append(
+            {
+                "repeat": repeat,
+                "artifact_directory": str(repeat_directory),
+                "samples": raw_samples,
+            }
+        )
+    medians = _median_trial_peaks(repetitions)
+    verdict = judge_trial_growth(medians)
     verdict.update(
+        measurement_method="median-of-five",
+        repeats_per_point=REPEATS_PER_POINT,
+        measurements=sum(len(samples) for _, samples in repetitions),
+        median_points=len(medians),
+        trial_repeats=trial_repeats,
+        trial_medians=[
+            {"trials": count, "peak_rss_bytes": peak} for count, peak in medians
+        ],
         peak_sources=peak_sources,
         measurement_resolution=MEASUREMENT_RESOLUTION,
     )
