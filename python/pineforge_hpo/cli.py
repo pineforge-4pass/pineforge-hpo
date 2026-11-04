@@ -2018,6 +2018,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     publication_state = _PublicationState()
     try:
         return int(args.handler(args, publication_state=publication_state))
+    # These four typed publication checks are defensive: _run currently raises
+    # typed failures before publication; late I/O is reported by the generic
+    # handler below.
     except WarmStartError as error:
         if _report_late_publication_error(error, publication_state):
             return 1
@@ -2047,9 +2050,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"pineforge-hpo: {error}", file=sys.stderr)
         print(json.dumps(failure_document(error, 1), separators=(",", ":")))
     except Exception as error:
-        if _report_late_publication_error(error, publication_state):
-            return 1
         import traceback
+
+        if _report_late_publication_error(error, publication_state):
+            traceback.print_exc()
+            return 1
 
         traceback.print_exc()
         print(json.dumps(failure_document(error, 1), separators=(",", ":")))

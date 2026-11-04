@@ -83,6 +83,13 @@ field continues to describe whether a feasible best trial exists; inspect `failu
 and the process exit code to detect a publication failure. Warm-start rejection
 and exhausted unique space retain exits 4 and 5. Python argparse retains exit 2.
 
+If stdout publication has started and a later write fails, the CLI preserves the
+bytes already written, reports the error on stderr, exits 1, and appends no second
+JSON document. Every late stdout publication failure includes its traceback on stderr,
+not only unexpected exceptions.
+This single-document rule keeps a partial publication from becoming two
+concatenated documents.
+
 Public Python exception types preserve their standard exception families, messages,
 and call signatures. They additionally inherit the catchable exception base
 `pineforge_hpo.HpoError` and expose `.code`, `.origin`, and `.failure_args`. The latter

@@ -765,6 +765,8 @@ def docs_only(paths):
         "CHANGELOG.md",
         "CODE_OF_CONDUCT.md",
         "SECURITY.md",
+        "AGENTS.md",
+        "CLAUDE.md",
         "LICENSE",
         "LICENSE.md",
     }

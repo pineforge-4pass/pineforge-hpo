@@ -27,7 +27,6 @@ cmake -S . -B build \
   -DPINEFORGE_ENGINE_ROOT="$PWD/external/pineforge-engine" \
   -DPINEFORGE_HPO_BUILD_EXAMPLES=ON
 cmake --build build -j4
-ctest --test-dir build --output-on-failure
 ```
 
 For Python orchestration work:
@@ -36,7 +35,6 @@ For Python orchestration work:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
-python -m unittest discover -s tests/python -v
 ```
 
 Tests of the optional PineScript bridge also need
@@ -59,7 +57,7 @@ setup and smoke commands are maintained separately in
 ## Architecture boundaries
 
 Any change to TPE numerical arithmetic or RNG consumption must bump
-`kTpeAlgorithmRevision` in `src/core/tpe_sampler.cpp`. Revalidate the numerical
+`kTpeAlgorithmRevision` in `src/core/tpe_algorithm.hpp`. Revalidate the numerical
 identity keyed serial goldens and checkpoint compatibility after such a change.
 
 - HPO is a consumer of strategy plugins and the public PineForge C ABI; it is
@@ -79,7 +77,10 @@ boundary.
 
 - Use C++17, four-space indentation, and the repository `.clang-format` file.
 - Seed stochastic tests explicitly; do not use wall-clock or system entropy.
-- Add a regression test for every fixed defect.
+- Run the checks that touch the changed code and record the targeted commands in
+  the pull request.
+- Add a test only when no existing test covers the target; each test must cover
+  one specific target.
 - Keep benchmark results separate from correctness assertions. A benchmark
   change must state its hypothesis, problem definition, budgets, seeds,
   environment metadata, and comparison rule.
@@ -88,17 +89,9 @@ boundary.
   `benchmarks/optuna/evidence/` when it is tied to a reviewed published result
   and includes its metadata sidecar plus verified hashes.
 
-Before opening a pull request, run:
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -DPINEFORGE_ENGINE_ROOT="$PWD/external/pineforge-engine"
-cmake --build build -j4
-ctest --test-dir build --output-on-failure
-python -m unittest discover -s tests/python -v
-ruff check python tests/python benchmarks
-ruff format --check python tests/python benchmarks
-```
+Before opening a pull request, run the checks that touch the changed code and
+record the targeted commands and results. The final CI workflows run the
+repository's normal build and test suite.
 
 Pull requests should explain the user-visible behavior, compatibility impact,
 verification performed, and any benchmark claims. By contributing, you agree
