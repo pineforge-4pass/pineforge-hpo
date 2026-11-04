@@ -960,6 +960,48 @@ class RunStreamingTests(unittest.TestCase):
                 )
                 self._assert_clean()
 
+    def test_main_prints_one_failure_when_result_seek_fails_before_publication(
+        self,
+    ) -> None:
+        copy_run_stdout = cli._copy_run_stdout
+
+        class SeekFails:
+            def __init__(self, source) -> None:
+                self.source = source
+
+            def seek(self, *args, **kwargs) -> int:
+                raise OSError("injected result spool seek failure")
+
+            def __getattr__(self, name):
+                return getattr(self.source, name)
+
+        def copy_with_failing_seek(source, **kwargs) -> None:
+            # The real publication boundary still runs; only its input cannot seek.
+            copy_run_stdout(SeekFails(source), **kwargs)
+
+        def complete(command, stdout, inherited_fds, *, chunk_bytes, diagnostic_bytes):
+            stdout.write(b'{"ok":true}')
+            return subprocess.CompletedProcess(command, 0, stderr="")
+
+        self.prepare.return_value = (["native"], self.artifact)
+        with (
+            mock.patch.object(cli, "_run_native", side_effect=complete),
+            mock.patch.object(
+                cli, "_copy_run_stdout", side_effect=copy_with_failing_seek
+            ),
+            contextlib.redirect_stdout(self.output),
+            contextlib.redirect_stderr(self.errors),
+        ):
+            returned = cli.main(["run", str(self.study.spec_path)])
+
+        self.assertEqual(returned, 1)
+        # json.loads rejects an empty stdout and any published prefix ("Extra data"),
+        # so this proves stdout holds exactly one document.
+        failure = json.loads(self.output.getvalue())["failure"]
+        self.assertEqual(failure["code"], "hpo_unclassified_error")
+        self.assertIn("injected result spool seek failure", self.errors.getvalue())
+        self._assert_clean()
+
     def test_formatted_spool_creation_and_write_errors_close_native_stdout(
         self,
     ) -> None:
