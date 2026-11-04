@@ -884,6 +884,82 @@ class RunStreamingTests(unittest.TestCase):
             self._run(_native_command())
         self._assert_clean()
 
+    def test_main_does_not_append_failure_json_after_stdout_publication(self) -> None:
+        class PrefixThenBrokenOutput(io.StringIO):
+            def __init__(self) -> None:
+                super().__init__()
+                self.writes = 0
+                self.prefix = ""
+
+            def write(self, value: str) -> int:
+                if self.writes == 0:
+                    self.prefix = value
+                    self.writes += 1
+                    return super().write(value)
+                if self.writes == 1:
+                    self.writes += 1
+                    raise BrokenPipeError("consumer closed stdout")
+                self.writes += 1
+                return super().write(value)
+
+        cases = (
+            ("rendered", b'{"ok":true}', 0, ""),
+            (
+                "warm-start",
+                b'{"failure":{"code":"native_refusal"},"note":"raw"}\n',
+                4,
+                "native diagnostic\n",
+            ),
+            (
+                "space-exhausted",
+                b'{"failure":{"code":"native_refusal"},"note":"raw"}\n',
+                5,
+                "native diagnostic\n",
+            ),
+        )
+        for name, payload, returncode, native_stderr in cases:
+            with self.subTest(name=name):
+                output = PrefixThenBrokenOutput()
+                errors = io.StringIO()
+                self.prepare.return_value = (["native"], self.artifact)
+
+                def complete(
+                    command,
+                    stdout,
+                    inherited_fds,
+                    *,
+                    chunk_bytes,
+                    diagnostic_bytes,
+                ):
+                    stdout.write(payload)
+                    return subprocess.CompletedProcess(
+                        command, returncode, stderr=native_stderr
+                    )
+
+                with (
+                    mock.patch.object(cli, "_run_native", side_effect=complete),
+                    contextlib.redirect_stdout(output),
+                    contextlib.redirect_stderr(errors),
+                ):
+                    returned = cli.main(
+                        [
+                            "run",
+                            str(self.study.spec_path),
+                            "--result-chunk-bytes",
+                            "2",
+                        ]
+                    )
+
+                self.assertEqual(returned, 1)
+                self.assertTrue(output.prefix)
+                self.assertEqual(output.getvalue(), output.prefix)
+                self.assertEqual(output.writes, 2)
+                self.assertEqual(
+                    errors.getvalue(),
+                    native_stderr + "pineforge-hpo: consumer closed stdout\n",
+                )
+                self._assert_clean()
+
     def test_formatted_spool_creation_and_write_errors_close_native_stdout(
         self,
     ) -> None:
