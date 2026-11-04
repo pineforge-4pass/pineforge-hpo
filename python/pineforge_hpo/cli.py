@@ -51,6 +51,11 @@ def _cli_error(code: str, args: dict[str, Any], message: str) -> CliError:
     return CliError(message).with_failure(code, args)
 
 
+class _PublicationState:
+    def __init__(self) -> None:
+        self.started = False
+
+
 def _setting_error(
     entrypoint: str, reason: str, message: str, input_title: str | None = None
 ) -> CliError:
@@ -1056,7 +1061,11 @@ def _builder(args: argparse.Namespace, engine_root: Path) -> ArtifactBuilder:
     )
 
 
-def _compile(args: argparse.Namespace) -> int:
+def _compile(
+    args: argparse.Namespace,
+    *,
+    publication_state: _PublicationState | None = None,
+) -> int:
     source_path = Path(args.source).expanduser().resolve()
     try:
         source = source_path.read_text(encoding="utf-8")
@@ -1489,9 +1498,20 @@ def _stdout_diagnostic(source: BinaryIO, *, diagnostic_bytes: int) -> str:
     return decoder.decode(raw).strip()
 
 
-def _copy_run_stdout(source: BinaryIO, *, chunk_bytes: int) -> None:
+def _copy_run_stdout(
+    source: BinaryIO,
+    *,
+    chunk_bytes: int,
+    publication_state: _PublicationState | None = None,
+) -> None:
+    # A source that cannot be positioned has published nothing, so that failure
+    # must still reach main()'s single failure document.
     source.seek(0)
     binary = getattr(sys.stdout, "buffer", None)
+    # Publication starts here, directly before the first stdout-side flush/write
+    # attempt of either the binary or the text path below.
+    if publication_state is not None:
+        publication_state.started = True
     if binary is not None:
         sys.stdout.flush()
         while chunk := source.read(chunk_bytes):
@@ -1624,7 +1644,11 @@ def _run_spool(directory: str | None, reserved_fds: tuple[int, ...]) -> BinaryIO
     return spool
 
 
-def _run(args: argparse.Namespace) -> int:
+def _run(
+    args: argparse.Namespace,
+    *,
+    publication_state: _PublicationState | None = None,
+) -> int:
     # A chunk of 1 retains the entire buffer through the [-0:] slice in peek().
     chunk_bytes = _run_byte_bound(args.result_chunk_bytes, "--result-chunk-bytes", 2)
     # Every diagnostic read needs a positive size; no retention slice uses this bound.
@@ -1700,7 +1724,11 @@ def _run(args: argparse.Namespace) -> int:
             if any(
                 chunk.strip() for chunk in iter(lambda: stdout.read(chunk_bytes), b"")
             ):
-                _copy_run_stdout(stdout, chunk_bytes=chunk_bytes)
+                _copy_run_stdout(
+                    stdout,
+                    chunk_bytes=chunk_bytes,
+                    publication_state=publication_state,
+                )
             return completed.returncode
         if completed.returncode not in {0, 2}:
             raise _native_run_error(
@@ -1766,7 +1794,11 @@ def _run(args: argparse.Namespace) -> int:
                 raise _cli_error("hpo_output_io_failed", {}, str(error)) from error
             if args.output:
                 _write_run_output(Path(args.output), rendered, chunk_bytes=chunk_bytes)
-            _copy_run_stdout(rendered, chunk_bytes=chunk_bytes)
+            _copy_run_stdout(
+                rendered,
+                chunk_bytes=chunk_bytes,
+                publication_state=publication_state,
+            )
             return completed.returncode
         finally:
             rendered.close()
@@ -1774,7 +1806,11 @@ def _run(args: argparse.Namespace) -> int:
         stdout.close()
 
 
-def _space_info(args: argparse.Namespace) -> int:
+def _space_info(
+    args: argparse.Namespace,
+    *,
+    publication_state: _PublicationState | None = None,
+) -> int:
     study = load_study_spec(args.spec, continuation=True)
     print(
         json.dumps(
@@ -1786,7 +1822,11 @@ def _space_info(args: argparse.Namespace) -> int:
     return 0
 
 
-def _warm_encode(args: argparse.Namespace) -> int:
+def _warm_encode(
+    args: argparse.Namespace,
+    *,
+    publication_state: _PublicationState | None = None,
+) -> int:
     command = [
         str(_resolve_native(args.native)),
         "warm-encode",
@@ -1964,17 +2004,31 @@ def _format_artifact_error(error: ArtifactBuildError) -> str:
     return detail
 
 
+def _report_late_publication_error(
+    error: BaseException, publication_state: _PublicationState
+) -> bool:
+    if not publication_state.started:
+        return False
+    print(f"pineforge-hpo: {error}", file=sys.stderr)
+    return True
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    publication_state = _PublicationState()
     try:
-        return int(args.handler(args))
+        return int(args.handler(args, publication_state=publication_state))
     except WarmStartError as error:
+        if _report_late_publication_error(error, publication_state):
+            return 1
         print(f"pineforge-hpo: {error}", file=sys.stderr)
         print(
             json.dumps(failure_document(error, WARM_START_EXIT), separators=(",", ":"))
         )
         return WARM_START_EXIT
     except SpaceExhaustedError as error:
+        if _report_late_publication_error(error, publication_state):
+            return 1
         print(f"pineforge-hpo: {error}", file=sys.stderr)
         print(
             json.dumps(
@@ -1983,12 +2037,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return SPACE_EXHAUSTED_EXIT
     except ArtifactBuildError as error:
+        if _report_late_publication_error(error, publication_state):
+            return 1
         print(f"pineforge-hpo: {_format_artifact_error(error)}", file=sys.stderr)
         print(json.dumps(failure_document(error, 1), separators=(",", ":")))
     except (CliError, StudySpecError) as error:
+        if _report_late_publication_error(error, publication_state):
+            return 1
         print(f"pineforge-hpo: {error}", file=sys.stderr)
         print(json.dumps(failure_document(error, 1), separators=(",", ":")))
     except Exception as error:
+        if _report_late_publication_error(error, publication_state):
+            return 1
         import traceback
 
         traceback.print_exc()
