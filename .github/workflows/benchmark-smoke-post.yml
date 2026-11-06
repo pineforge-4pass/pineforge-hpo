@@ -16,6 +16,7 @@ jobs:
   authz:
     name: authz
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {}
     steps:
       - name: Only our own pull requests and our own events run CI
@@ -76,7 +77,8 @@ jobs:
   workflow-lint:
     name: workflow-lint
     needs: [authz]
-    runs-on: gke-8cpu-16gb-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -133,10 +135,9 @@ jobs:
   optuna:
     name: Native TPE vs Optuna
     needs: [authz]
-    runs-on: gke-16cpu-32gb-amd64-64gb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
-    env:
-      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
 
     steps:
       - name: Check out PineForge HPO
@@ -187,6 +188,7 @@ jobs:
     needs: [authz, workflow-lint, optuna]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

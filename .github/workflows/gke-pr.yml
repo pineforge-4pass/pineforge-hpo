@@ -16,6 +16,7 @@ concurrency:
 jobs:
   admit:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
     outputs:
       allowed: ${{ steps.admit.outputs.allowed }}
@@ -69,7 +70,8 @@ jobs:
     name: workflow-lint
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' }}
-    runs-on: gke-8cpu-16gb-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -134,7 +136,8 @@ jobs:
     name: Light
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' }}
-    runs-on: gke-8cpu-16gb-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
     steps:
       - name: Check out PineForge HPO
@@ -158,10 +161,9 @@ jobs:
     name: Release notification contract
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
-    runs-on: gke-8cpu-16gb-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
-    env:
-      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
     steps:
       - name: Check out PineForge HPO
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -190,10 +192,9 @@ jobs:
     name: Native (${{ matrix.os }})
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
-    runs-on: gke-16cpu-32gb-amd64-64gb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
-    env:
-      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
     strategy:
       fail-fast: false
       matrix:
@@ -257,9 +258,8 @@ jobs:
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
     runs-on: macos-latest
+    timeout-minutes: 15
     permissions: {contents: read}
-    env:
-      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
     strategy:
       fail-fast: false
       matrix:
@@ -322,10 +322,9 @@ jobs:
     name: Python ${{ matrix.python }}
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
-    runs-on: gke-16cpu-32gb-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
-    env:
-      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
     strategy:
       fail-fast: false
       matrix:
@@ -370,7 +369,8 @@ jobs:
     name: HPO memory growth gate
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
-    runs-on: gke-16cpu-32gb-amd64-64gb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
     steps:
       - name: Check out the exact head and pinned submodules
@@ -440,10 +440,9 @@ jobs:
     name: Native TPE vs Optuna
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' && needs.admit.outputs.docs_only != 'true' }}
-    runs-on: gke-16cpu-32gb-amd64-64gb
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
-    env:
-      PF_CI_LABELS: '["self-hosted","pf-ci","pf-ci-x64"]'
 
     steps:
       - name: Check out PineForge HPO
@@ -494,7 +493,8 @@ jobs:
     name: Build API reference
     needs: [admit]
     if: ${{ needs.admit.outputs.allowed == 'true' }}
-    runs-on: gke-8cpu-16gb-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
     steps:
       - name: Check out repository
@@ -524,6 +524,7 @@ jobs:
     needs: [admit, lint, light, release-notification, native, native-macos, python, memory-gate, optuna, docs]
     if: always()
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
     steps:
       - name: Refuse unsuccessful admission

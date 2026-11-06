@@ -28,6 +28,7 @@ jobs:
   authz:
     name: authz
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {}
     steps:
       - name: Only our own pull requests and our own events run CI
@@ -88,7 +89,8 @@ jobs:
   build:
     name: Build API reference
     needs: [authz]
-    runs-on: gke-8cpu-16gb-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {contents: read}
     steps:
       - name: Check out repository
@@ -130,6 +132,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0

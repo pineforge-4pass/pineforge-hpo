@@ -17,6 +17,7 @@ jobs:
   authz:
     name: authz
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions: {}
     steps:
       - name: Only our own pull requests and our own events run CI
