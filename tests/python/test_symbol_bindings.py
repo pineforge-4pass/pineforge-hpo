@@ -6,7 +6,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pineforge_hpo.cli import CliError, _validate_manifest_inputs
+from pineforge_hpo.cli import (
+    CliError,
+    _validate_manifest_inputs,
+    _validate_symbol_option_list,
+)
 from pineforge_hpo.study_spec import ParameterSpec, StudySpecError, load_study_spec
 from pineforge_hpo.symbol_bindings import (
     DatasetDeclaration,
@@ -405,6 +409,46 @@ class SymbolBindingsTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, "hpo_study_spec_invalid")
             self.assertEqual(raised.exception.failure_args, {"reason": "study"})
 
+    def test_public_symbol_options_preserve_manifest_order(self) -> None:
+        options = _validate_symbol_option_list(
+            self.domain,
+            {"type": "string", "kind": "symbol", "options": ["asset-a", "asset-b"]},
+            where="search_space.Market",
+        )
+        self.assertEqual(options, ("asset-a", "asset-b"))
+
+    def test_public_symbol_options_refuse_empty_and_duplicate_lists(self) -> None:
+        for options in ([], ["asset-a", "asset-a"]):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(CliError, "input.symbol.*refused.*D7"):
+                    _validate_symbol_option_list(
+                        self.domain,
+                        {"type": "string", "kind": "symbol", "options": options},
+                        where="search_space.Market",
+                    )
+
+    def test_public_symbol_options_refuse_order_and_choice_mutants(self) -> None:
+        with self.assertRaisesRegex(CliError, "declaration order"):
+            _validate_symbol_option_list(
+                self.domain,
+                {
+                    "type": "string",
+                    "kind": "symbol",
+                    "options": ["asset-b", "asset-a"],
+                },
+                where="search_space.Market",
+            )
+        with self.assertRaisesRegex(CliError, "search choices contain duplicates"):
+            _validate_symbol_option_list(
+                replace(self.domain, choices=("asset-a", "asset-a")),
+                {
+                    "type": "string",
+                    "kind": "symbol",
+                    "options": ["asset-a", "asset-b"],
+                },
+                where="search_space.Market",
+            )
+
     def test_public_manifest_gate_still_refuses_searched_symbol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "study.json"
@@ -413,6 +457,11 @@ class SymbolBindingsTests(unittest.TestCase):
             for definition in (
                 {"type": "string", "kind": "symbol"},
                 {"type": "symbol"},
+                {
+                    "type": "string",
+                    "kind": "symbol",
+                    "options": ["asset-a", "asset-b"],
+                },
             ):
                 with self.subTest(definition=definition):
                     with self.assertRaisesRegex(

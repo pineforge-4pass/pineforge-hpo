@@ -47,6 +47,40 @@ int main(int argc, char** argv) {
                 "row reservation changed CSV records");
         require(capacity_feed.bars.capacity() == 3 && capacity_feed.close_ms.capacity() == 3,
                 "feed vectors retained growth capacity instead of one exact copy");
+        detail::RequestFeedLimits bounded_limits;
+        bounded_limits.max_symbols = 1;
+        bounded_limits.max_feeds = 1;
+        bounded_limits.max_bars_per_feed = 3;
+        const auto bounded_symbols = detail::load_symbol_feeds(index, bounded_limits);
+        require(detail::dump_json(detail::symbol_feeds_record(*symbols)) ==
+                    detail::dump_json(detail::symbol_feeds_record(bounded_symbols)),
+                "an explicit request-feed policy changed feed identity");
+        const auto require_limit_refusal = [&](detail::RequestFeedLimits limits,
+                                               const std::string& fragment) {
+            bool limited = false;
+            try {
+                detail::load_symbol_feeds(index, limits);
+            } catch (const std::invalid_argument& error) {
+                limited = std::string(error.what()).find(fragment) != std::string::npos;
+            }
+            require(limited, "request-feed limit was not enforced: " + fragment);
+        };
+        auto symbol_limit = bounded_limits;
+        symbol_limit.max_symbols = 0;
+        require_limit_refusal(symbol_limit, "more than 0 symbols");
+        auto feed_limit = bounded_limits;
+        feed_limit.max_feeds = 0;
+        require_limit_refusal(feed_limit, "more than 0 feeds");
+        auto bar_limit = bounded_limits;
+        bar_limit.max_bars_per_feed = 1;
+        bool bar_limited = false;
+        try {
+            detail::load_symbol_feed(capacity_csv, "E", "1", bar_limit);
+        } catch (const std::invalid_argument& error) {
+            bar_limited = std::string(error.what()).find("bar-count limit of 1") !=
+                          std::string::npos;
+        }
+        require(bar_limited, "per-feed request bar limit was not enforced");
         const auto fifo = directory / "feed.fifo";
         require(::mkfifo(fifo.c_str(), 0600) == 0, "cannot create streaming feed fixture");
         auto writer = std::async(std::launch::async, [&] {

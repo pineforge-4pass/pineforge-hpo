@@ -468,6 +468,26 @@ void tape(const Path& path, int price, int count, bool binary, const std::string
     }
 }
 
+void append_little_endian(std::string& bytes, std::uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8)
+        bytes.push_back(static_cast<char>((value >> shift) & 255));
+}
+
+std::string chart_values_oracle(int price, int count) {
+    constexpr char domain[] = "pineforge:hpo:chart-bars:le:v1";
+    std::string bytes(domain, sizeof(domain));
+    for (int index = 0; index < count; ++index) {
+        const double value = price + index;
+        for (const double field : {value, value, value, value, 1.0}) {
+            std::uint64_t bits = 0;
+            std::memcpy(&bits, &field, sizeof(bits));
+            append_little_endian(bytes, bits);
+        }
+        append_little_endian(bytes, static_cast<std::uint64_t>(index) * 60'000);
+    }
+    return detail::sha256(bytes);
+}
+
 struct Fixture {
     std::shared_ptr<const detail::AdmittedDataCatalogue> catalogue;
     std::map<std::string, unsigned> loads;
@@ -624,10 +644,70 @@ Run run(const cli::PreparedStudy& prepared) {
 void identity(const Json& row, const Fixture& fixture) {
     const auto market = string(detail::field(row, "parameters"), "Market");
     const auto& expected = fixture.context(market);
+    const auto expected_values = market == fixture.a.symbol
+        ? chart_values_oracle(10, 3) : chart_values_oracle(100, 5);
     require(string(row, "symbol") == market && string(row, "dataset_id") == expected.identity.id &&
+                string(row, "values_sha256") == expected_values &&
                 string(row, "data_context_sha256") == fixture.catalogue->data_context_sha256(),
             "row identity disagrees with its candidate and admitted owner");
     require(!row.find("quote_currency"), "unverified money unit was emitted");
+}
+
+void values_sha256_mutant_oracles(
+    const Fixture& fixture, const std::shared_ptr<const pfh::StrategyPlugin>& plugin) {
+    const auto result = run(study(fixture, plugin));
+    const auto& rows = detail::field(result.document, "trials").items;
+    require(rows.size() == 4, "values hash mutant fixture lost a terminal row");
+    const auto first_hash = chart_values_oracle(10, 3);
+    const auto last_hash = chart_values_oracle(100, 5);
+    require(first_hash != last_hash, "physical chart oracle does not distinguish tapes");
+
+    const auto must_refuse = [&](const char* mutant, Json row) {
+        try {
+            identity(row, fixture);
+        } catch (const std::exception&) {
+            return;
+        }
+        throw std::runtime_error(std::string("values_sha256 mutant passed: ") + mutant);
+    };
+
+    // Each mutation names a distinct way to sever the row from its selected physical tape.
+    auto first_symbol = rows.front();
+    first_symbol.members["values_sha256"] = Json::string(last_hash);
+    must_refuse("first-symbol", std::move(first_symbol));
+
+    auto last_symbol = rows.back();
+    last_symbol.members["values_sha256"] = Json::string(first_hash);
+    must_refuse("last-symbol", std::move(last_symbol));
+
+    auto ordinal_shift = rows.front();
+    ordinal_shift.members["values_sha256"] = Json::string(last_hash);
+    must_refuse("ordinal-shift", std::move(ordinal_shift));
+
+    auto swapped_pair = rows.back();
+    swapped_pair.members["values_sha256"] = Json::string(first_hash);
+    must_refuse("swapped-pair", std::move(swapped_pair));
+
+    auto shared_cursor = rows[1];
+    shared_cursor.members["values_sha256"] = Json::string(first_hash);
+    must_refuse("shared-cursor", std::move(shared_cursor));
+
+    auto row_label_only = rows.front();
+    row_label_only.members["symbol"] = Json::string(fixture.b.symbol);
+    must_refuse("row-label-only", std::move(row_label_only));
+
+    auto study_hash = rows.front();
+    study_hash.members["values_sha256"] =
+        Json::string(fixture.catalogue->data_context_sha256());
+    must_refuse("study-wide-hash", std::move(study_hash));
+
+    auto wrong_symbol = rows.front();
+    wrong_symbol.members["values_sha256"] = Json::string(last_hash);
+    must_refuse("wrong-symbol-hash", std::move(wrong_symbol));
+
+    auto wrong_window = rows.front();
+    wrong_window.members["values_sha256"] = Json::string(chart_values_oracle(10, 2));
+    must_refuse("wrong-window-hash", std::move(wrong_window));
 }
 
 void clean(const Observations& observations) {
@@ -1551,9 +1631,11 @@ void unbound_bytes(const Path& directory, const Path& existing_plugin) {
                 "unbound document bytes differ from the source-derived golden");
         require(read(options.trials_file) == row + "\n" && read(progress_path) == row + "\n",
                 "unbound streamed bytes differ from the source-derived golden");
+        // unbound-row-hash: an ordinary study must not gain a fabricated tape identity.
         require(bytes.find("data_context") == std::string::npos &&
-                    bytes.find("dataset_id") == std::string::npos,
-                "unbound output gained a context field");
+                    bytes.find("dataset_id") == std::string::npos &&
+                    bytes.find("values_sha256") == std::string::npos,
+                "unbound-row-hash mutant added a context field");
     }
 }
 
@@ -1602,6 +1684,7 @@ int main(int argc, char** argv) {
         require(integer(observations.snapshot(), "admissions") == 1,
                 "native plugin admission was not counted exactly once");
         Fixture fixture(directory / "charts");
+        values_sha256_mutant_oracles(fixture, plugin);
         selector_refusals(fixture, plugin);
         routes_and_admission(fixture, plugin, observations);
         failure_isolation(fixture, plugin, observations);
