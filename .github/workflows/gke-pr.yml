@@ -180,6 +180,34 @@ jobs:
       - name: Install release-check dependencies
         run: python -m pip install PyYAML==6.0.3 ruff==0.15.20
 
+      # tests/release/pr_admission.py lint_sources() runs the real actionlint. The hosted
+      # image does not ship it and tools do not carry over from the workflow-lint job, so
+      # this job installs the same pinned, checksum-verified release itself.
+      - name: Install pinned actionlint v1.7.12 for the admission tests
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            x86_64)
+              archive=actionlint_1.7.12_linux_amd64.tar.gz
+              sha256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 ;;
+            aarch64|arm64)
+              archive=actionlint_1.7.12_linux_arm64.tar.gz
+              sha256=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 ;;
+            *)
+              echo "::error::release-notification requires a supported Linux architecture"
+              exit 1 ;;
+          esac
+          tools_dir=$(mktemp -d "$RUNNER_TEMP/release-actionlint.XXXXXXXX")
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors \
+            --output "$tools_dir/$archive" "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+          if ! printf '%s  %s\n' "$sha256" "$tools_dir/$archive" | sha256sum --check --strict --status; then
+            echo "::error::actionlint archive checksum did not match the published pin"
+            exit 1
+          fi
+          tar -xzf "$tools_dir/$archive" -C "$tools_dir" actionlint
+          "$tools_dir/actionlint" -version
+          echo "$tools_dir" >> "$GITHUB_PATH"
+
       - name: Producer notification and replay contract tests
         run: python -m unittest discover -s tests/release -v
 

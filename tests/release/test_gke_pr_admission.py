@@ -285,9 +285,7 @@ class AdmissionTests(unittest.TestCase):
         bad = dict(self.sources)
         bad[name] = bad[name].replace("ubuntu-24.04", INVALID_GKE, 1)
         bad[".github/actionlint.yaml"] = (
-            "self-hosted-runner:\n"
-            "  labels:\n"
-            f"    - {INVALID_GKE}\n"
+            f"self-hosted-runner:\n  labels:\n    - {INVALID_GKE}\n"
         )
         with self.assertRaises(subprocess.CalledProcessError):
             self.policy.lint_sources(
@@ -500,7 +498,9 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(target_workflows, {".github/workflows/gke-pr.yml"})
         self.policy.check_sources(self.sources, self.sources)
 
-    def test_pull_request_event_family_cannot_name_self_hosted_routing_even_in_main(self):
+    def test_pull_request_event_family_cannot_name_self_hosted_routing_even_in_main(
+        self,
+    ):
         name = ".github/workflows/ci.yml"
         original = yaml.load(self.sources[name], Loader=yaml.BaseLoader)
         for event in ("pull_request_review", "pull_request_review_comment"):
@@ -532,8 +532,9 @@ class AdmissionTests(unittest.TestCase):
                 **self.sources,
                 name: yaml.safe_dump(bad, sort_keys=False, width=1000),
             }
-            with self.subTest(workflow=name), self.assertRaisesRegex(
-                ValueError, "credential capability"
+            with (
+                self.subTest(workflow=name),
+                self.assertRaisesRegex(ValueError, "credential capability"),
             ):
                 self.policy.check_sources(sources, sources)
 

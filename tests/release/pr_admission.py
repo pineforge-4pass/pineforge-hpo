@@ -555,8 +555,7 @@ def check_sources(sources, trusted):
             check_workflow_timeouts(name, data)
             jobs = data.get("jobs", {})
             pull_request_workflow = any(
-                event.startswith("pull_request")
-                for event in data.get("on", {})
+                event.startswith("pull_request") for event in data.get("on", {})
             )
             if any(
                 event.startswith("pull_request") and event != "pull_request_target"

@@ -66,6 +66,40 @@ AGGREGATE_STEP_NAME = "Every needed job succeeded"
 RELEASE_PIN_LIGHT_COMMAND = (
     "python3 -m unittest tests.python.test_release_pins.RepositoryReleasePinTests -v"
 )
+RELEASE_JOB = "release-notification"
+ACTIONLINT_STEP_NAME = "Install pinned actionlint v1.7.12 for the admission tests"
+READER_TESTS_STEP_NAME = "Producer notification and replay contract tests"
+ACTIONLINT_RELEASE_URL = (
+    "https://github.com/rhysd/actionlint/releases/download/v1.7.12/$archive"
+)
+ACTIONLINT_PINS = (
+    (
+        "actionlint_1.7.12_linux_amd64.tar.gz",
+        "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
+    ),
+    (
+        "actionlint_1.7.12_linux_arm64.tar.gz",
+        "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6",
+    ),
+)
+# Installer commands in the order they must run: fetch, verify, extract, execute,
+# publish on PATH. Each prefix must match exactly one command of the step.
+ACTIONLINT_INSTALL_ORDER = (
+    "curl ",
+    "if ! printf",
+    "tar -xzf",
+    '"$tools_dir/actionlint" -version',
+    'echo "$tools_dir" >> "$GITHUB_PATH"',
+)
+ACTIONLINT_FALLBACKS = (
+    "sudo",
+    "apt-get",
+    "pip install",
+    "brew",
+    "latest",
+    "|| true",
+    "--insecure",
+)
 
 
 def compact(text):
@@ -439,6 +473,87 @@ class PrTierWorkflowTests(unittest.TestCase):
                 self.assertEqual(actual["run"], job_step(jobs[job_id], name)["run"])
             for name in ("Check failure catalog diff", "Run public C++ API example"):
                 self.assertEqual(job_step(native, name), job_step(jobs[job_id], name))
+
+    def assert_release_actionlint_installer(self, job):
+        names = [step["name"] for step in job["steps"]]
+        self.assertIn(ACTIONLINT_STEP_NAME, names)
+        self.assertIn(READER_TESTS_STEP_NAME, names)
+        install = names.index(ACTIONLINT_STEP_NAME)
+        self.assertLess(install, names.index(READER_TESTS_STEP_NAME))
+        step = job["steps"][install]
+        # It always runs as written: no guard, shell, environment or error tolerance.
+        self.assertEqual(set(step), {"name", "run"})
+        run = step["run"]
+        lines = commands(run)
+        self.assertEqual(lines[0], "set -euo pipefail")
+        self.assertEqual(lines[1], 'case "$(uname -m)" in')
+        for archive, digest in ACTIONLINT_PINS:
+            self.assertIn("archive=" + archive, lines)
+            pin = lines.index("archive=" + archive)
+            self.assertEqual(lines[pin + 1], f"sha256={digest} ;;")
+        self.assertIn("*)", lines)
+        refusal = lines.index("*)")
+        self.assertEqual(lines[refusal + 2], "exit 1 ;;")
+        self.assertEqual(lines[refusal + 3], "esac")
+        self.assertIn('mktemp -d "$RUNNER_TEMP/', run)
+        order = []
+        for prefix in ACTIONLINT_INSTALL_ORDER:
+            matches = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+            self.assertEqual(len(matches), 1, prefix)
+            order.append(matches[0])
+        self.assertEqual(order, sorted(order))
+        fetch, verify = order[0], order[1]
+        for expected in ("--fail", "--proto '=https'", ACTIONLINT_RELEASE_URL):
+            self.assertIn(expected, lines[fetch])
+        self.assertIn("sha256sum --check --strict --status", lines[verify])
+        self.assertEqual(lines[verify + 2], "exit 1")
+        self.assertEqual(lines[verify + 3], "fi")
+        for fallback in ACTIONLINT_FALLBACKS:
+            self.assertNotIn(fallback, run)
+
+    def test_release_notification_installs_pinned_actionlint_first(self):
+        # tests/release runs the real actionlint through pr_admission.lint_sources;
+        # the hosted image has none and tools do not survive from another job.
+        # The existing admitted-copy comparison keeps both jobs' steps identical.
+        post_merge = self.workflows["ci-post.yml"]["jobs"][RELEASE_JOB]
+        admitted = self.admitted["jobs"][RELEASE_JOB]
+        for name, job in (("post-merge", post_merge), ("admitted", admitted)):
+            with self.subTest(copy=name):
+                self.assert_release_actionlint_installer(job)
+
+    def test_release_actionlint_installer_rejects_every_weakened_form(self):
+        post_merge = self.workflows["ci-post.yml"]["jobs"][RELEASE_JOB]
+        self.assert_release_actionlint_installer(post_merge)
+        install = job_step(post_merge, ACTIONLINT_STEP_NAME)
+        removed = copy.deepcopy(post_merge)
+        removed["steps"].remove(install)
+        moved = copy.deepcopy(removed)
+        moved["steps"].append(install)
+        conditional = copy.deepcopy(post_merge)
+        job_step(conditional, ACTIONLINT_STEP_NAME)["if"] = "always()"
+        weakened = {
+            "installer removed": removed,
+            "installer after the reader tests": moved,
+            "installer made conditional": conditional,
+        }
+        digest = ACTIONLINT_PINS[0][1]
+        for label, old, new in (
+            ("digest altered", digest, digest[::-1]),
+            ("unchecked download", "sha256sum --check", "cat"),
+            ("architecture not refused", "exit 1 ;;", ": ;;"),
+            ("fallback installer", " -version", " -version; sudo true"),
+            ("outside runner temp", '"$RUNNER_TEMP/', '"/usr/local/'),
+            ("not on the path", '"$GITHUB_PATH"', '"$GITHUB_ENV"'),
+        ):
+            mutated = copy.deepcopy(post_merge)
+            step = job_step(mutated, ACTIONLINT_STEP_NAME)
+            self.assertIn(old, step["run"])
+            step["run"] = step["run"].replace(old, new, 1)
+            weakened[label] = mutated
+        for label, mutated in weakened.items():
+            with self.subTest(weakened=label):
+                with self.assertRaises(AssertionError):
+                    self.assert_release_actionlint_installer(mutated)
 
     def authz_environment(self, **overrides):
         environment = {
