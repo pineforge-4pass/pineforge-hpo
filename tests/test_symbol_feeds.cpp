@@ -1,11 +1,14 @@
 #include "symbol_feeds.hpp"
 #include <pineforge/hpo/trial_executor.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
 
 namespace pfh = pineforge::hpo;
 namespace detail = pineforge::hpo::detail;
@@ -25,6 +28,84 @@ int main(int argc, char** argv) {
         std::ofstream(csv) << "timestamp,open,high,low,close,volume\n"
                              "1700000000000,10,11,9,10,\n"
                              "1700000060000,20,21,19,20,NaN\n";
+        const auto empty_feed = directory / "empty.csv";
+        std::ofstream(empty_feed) << "timestamp,open,high,low,close\n";
+        constexpr std::size_t expected_max_symbols = 256;
+        constexpr std::size_t expected_max_feeds = 256;
+        constexpr std::size_t expected_max_bars_per_feed =
+            static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+        const detail::RequestFeedLimits default_limits;
+        require(default_limits.max_symbols == expected_max_symbols &&
+                    default_limits.max_feeds == expected_max_feeds &&
+                    default_limits.max_bars_per_feed == expected_max_bars_per_feed,
+                "RequestFeedLimits defaults changed");
+        const auto make_object = [] {
+            detail::Json object;
+            object.kind = detail::Json::Kind::Object;
+            return object;
+        };
+        const auto make_symbol_index = [&](std::size_t count) {
+            auto document = make_object();
+            auto symbols = make_object();
+            for (std::size_t index = 0; index < count; ++index)
+                symbols.members.emplace("S" + std::to_string(index), make_object());
+            document.members.emplace("symbols", std::move(symbols));
+            return document;
+        };
+        const auto accepted_symbols =
+            detail::load_symbol_feeds(make_symbol_index(expected_max_symbols), directory,
+                                      default_limits);
+        require(accepted_symbols.size() == expected_max_symbols,
+                "256 empty symbols were not accepted");
+        const auto require_index_limit_refusal =
+            [&](detail::Json document, const std::string& expected, const std::string& message) {
+                bool refused = false;
+                try {
+                    detail::load_symbol_feeds(document, directory, default_limits);
+                } catch (const pfh::TypedHpoError<std::invalid_argument>& error) {
+                    refused = error.code() == "hpo_study_spec_invalid" &&
+                              std::string(error.what()) == expected;
+                }
+                require(refused, message);
+            };
+        require_index_limit_refusal(make_symbol_index(expected_max_symbols + 1),
+                                    "--symbol-feeds: more than 256 symbols",
+                                    "257 empty symbols did not receive the typed refusal");
+        auto raised_symbol_limits = default_limits;
+        raised_symbol_limits.max_symbols = expected_max_symbols + 1;
+        require(detail::load_symbol_feeds(make_symbol_index(expected_max_symbols + 1), directory,
+                                           raised_symbol_limits)
+                        .size() == expected_max_symbols + 1,
+                "raised symbol limit did not accept 257 empty symbols");
+        const auto make_feed_index = [&](std::size_t count) {
+            auto document = make_object();
+            auto symbols = make_object();
+            auto symbol = make_object();
+            auto feeds = make_object();
+            for (std::size_t index = 1; index <= count; ++index)
+                feeds.members.emplace(std::to_string(index), detail::Json::string("empty.csv"));
+            symbol.members.emplace("feeds", std::move(feeds));
+            symbols.members.emplace("E", std::move(symbol));
+            document.members.emplace("symbols", std::move(symbols));
+            return document;
+        };
+        const auto accepted_feeds =
+            detail::load_symbol_feeds(make_feed_index(expected_max_feeds), directory,
+                                      default_limits);
+        require(accepted_feeds.size() == 1 &&
+                    accepted_feeds.front().feeds.size() == expected_max_feeds,
+                "256 feeds were not accepted");
+        require_index_limit_refusal(make_feed_index(expected_max_feeds + 1),
+                                    "--symbol-feeds: more than 256 feeds (E)",
+                                    "257 feeds did not receive the typed refusal");
+        auto raised_feed_limits = default_limits;
+        raised_feed_limits.max_feeds = expected_max_feeds + 1;
+        const auto raised_feeds =
+            detail::load_symbol_feeds(make_feed_index(expected_max_feeds + 1), directory,
+                                      raised_feed_limits);
+        require(raised_feeds.size() == 1 &&
+                    raised_feeds.front().feeds.size() == expected_max_feeds + 1,
+                "raised feed limit did not accept 257 feeds");
         const auto index = directory / "index.json";
         const std::string document = R"({"symbols":{"BINANCE:ETHUSDT":{
             "syminfo":{"tickerid":"BINANCE:ETHUSDT","type":"crypto","mintick":0.01},
@@ -42,11 +123,52 @@ int main(int argc, char** argv) {
                                       "\r\n"
                                       "1700000060000,20,21,19,20,c\r\n"
                                       "1700000120000,30,31,29,30,d";
-        const auto capacity_feed = detail::load_symbol_feed(capacity_csv, "E", "1");
-        require(capacity_feed.bars.size() == 3 && capacity_feed.close_ms.size() == 3,
-                "row reservation changed CSV records");
-        require(capacity_feed.bars.capacity() == 3 && capacity_feed.close_ms.capacity() == 3,
+        detail::RequestFeedLimits capacity_limits;
+        capacity_limits.max_bars_per_feed = 2;
+        const auto capacity_feed = detail::load_symbol_feed(csv, "E", "1", capacity_limits);
+        require(capacity_feed.bars.size() == 2 && capacity_feed.close_ms.size() == 2 &&
+                    capacity_feed.bars.capacity() == 2 && capacity_feed.close_ms.capacity() == 2,
+                "two-row feed did not meet the exact bar boundary");
+        bool bar_limited = false;
+        try {
+            detail::load_symbol_feed(capacity_csv, "E", "1", capacity_limits);
+        } catch (const pfh::TypedHpoError<std::invalid_argument>& error) {
+            bar_limited =
+                error.code() == "hpo_study_spec_invalid" &&
+                std::string(error.what()) ==
+                    "--symbol-feeds: feed E@1 (" + capacity_csv.string() +
+                        "): exceeds request-feed bar-count limit of 2";
+        }
+        require(bar_limited, "three-row feed did not receive the exact bar-limit refusal");
+        const auto capacity_csv_feed = detail::load_symbol_feed(capacity_csv, "E", "1");
+        require(capacity_csv_feed.bars.size() == 3 && capacity_csv_feed.close_ms.size() == 3 &&
+                    capacity_csv_feed.bars.capacity() == 3 &&
+                    capacity_csv_feed.close_ms.capacity() == 3,
                 "feed vectors retained growth capacity instead of one exact copy");
+        detail::RequestFeedLimits bounded_limits;
+        bounded_limits.max_symbols = 1;
+        bounded_limits.max_feeds = 1;
+        bounded_limits.max_bars_per_feed = 3;
+        const auto bounded_symbols = detail::load_symbol_feeds(index, bounded_limits);
+        require(detail::dump_json(detail::symbol_feeds_record(*symbols)) ==
+                    detail::dump_json(detail::symbol_feeds_record(bounded_symbols)),
+                "an explicit request-feed policy changed feed identity");
+        const auto require_limit_refusal = [&](detail::RequestFeedLimits limits,
+                                               const std::string& fragment) {
+            bool limited = false;
+            try {
+                detail::load_symbol_feeds(index, limits);
+            } catch (const std::invalid_argument& error) {
+                limited = std::string(error.what()).find(fragment) != std::string::npos;
+            }
+            require(limited, "request-feed limit was not enforced: " + fragment);
+        };
+        auto symbol_limit = bounded_limits;
+        symbol_limit.max_symbols = 0;
+        require_limit_refusal(symbol_limit, "more than 0 symbols");
+        auto feed_limit = bounded_limits;
+        feed_limit.max_feeds = 0;
+        require_limit_refusal(feed_limit, "more than 0 feeds");
         const auto fifo = directory / "feed.fifo";
         require(::mkfifo(fifo.c_str(), 0600) == 0, "cannot create streaming feed fixture");
         auto writer = std::async(std::launch::async, [&] {
@@ -56,9 +178,9 @@ int main(int argc, char** argv) {
         });
         const auto streaming_feed = detail::load_symbol_feed(fifo, "E", "1");
         writer.get();
-        require(streaming_feed.source_values_sha256 == capacity_feed.source_values_sha256 &&
-                    streaming_feed.close_ms == capacity_feed.close_ms &&
-                    streaming_feed.bars.size() == capacity_feed.bars.size(),
+        require(streaming_feed.source_values_sha256 == capacity_csv_feed.source_values_sha256 &&
+                    streaming_feed.close_ms == capacity_csv_feed.close_ms &&
+                    streaming_feed.bars.size() == capacity_csv_feed.bars.size(),
                 "streaming feed values or fingerprint changed");
         require(streaming_feed.bars.capacity() == 3 && streaming_feed.close_ms.capacity() == 3,
                 "streaming feed vectors did not retain exact capacity");

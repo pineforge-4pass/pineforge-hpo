@@ -8,6 +8,7 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <cstddef>
 #include <cmath>
 #include <ctime>
 #include <cstring>
@@ -23,6 +24,17 @@ namespace pineforge::hpo::detail {
 inline constexpr std::int64_t symbol_stamp_max = 9007199254740991LL;
 inline constexpr std::size_t symbol_csv_field_max = 131072;
 inline constexpr const char* symbol_feed_canonicalization = "pf-symbol-feed-barc-close-le-v1";
+
+/// HPO-side admission ceilings for fixed request feeds.
+///
+/// The defaults preserve the public loader contract. Callers that own a narrower execution
+/// budget pass an explicit policy; the policy is not serialized into the feed identity.
+struct RequestFeedLimits final {
+    std::size_t max_symbols = 256;
+    std::size_t max_feeds = 256;
+    std::size_t max_bars_per_feed =
+        static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+};
 
 [[noreturn]] inline void symbol_feed_error(const std::string& message) {
     throw TypedHpoError<std::invalid_argument>(
@@ -271,7 +283,8 @@ inline void symbol_hash_integer(std::string& bytes, std::uint64_t value) {
 }
 
 inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
-                                  const std::string& symbol, const std::string& timeframe) {
+                                  const std::string& symbol, const std::string& timeframe,
+                                  RequestFeedLimits limits = {}) {
     const auto where = "feed " + symbol + "@" + timeframe + " (" + path.string() + ")";
     std::ifstream input(path, std::ios::binary);
     if (!input)
@@ -361,8 +374,9 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
         symbol_hash_integer(hashed, static_cast<std::uint64_t>(close));
         rows.emplace_back(bar, close);
         previous_at = at;
-        if (rows.size() > static_cast<std::size_t>(INT32_MAX))
-            symbol_feed_error(where + ": exceeds the C ABI bar-count limit");
+        if (rows.size() > limits.max_bars_per_feed)
+            symbol_feed_error(where + ": exceeds request-feed bar-count limit of " +
+                              std::to_string(limits.max_bars_per_feed));
     }
     if (input.bad())
         symbol_feed_error(where + ": cannot read CSV");
@@ -377,12 +391,13 @@ inline SymbolFeed load_symbol_feed(const std::filesystem::path& path,
     return feed;
 }
 
-inline SymbolFeeds load_symbol_feeds(const Json& document, const std::filesystem::path& directory) {
+inline SymbolFeeds load_symbol_feeds(const Json& document, const std::filesystem::path& directory,
+                                     RequestFeedLimits limits = {}) {
     const auto* symbols = document.kind == Json::Kind::Object ? document.find("symbols") : nullptr;
     if (!symbols || symbols->kind != Json::Kind::Object)
         symbol_feed_error("the index must be {\"symbols\": {...}}");
-    if (symbols->members.size() > 256)
-        symbol_feed_error("more than 256 symbols");
+    if (symbols->members.size() > limits.max_symbols)
+        symbol_feed_error("more than " + std::to_string(limits.max_symbols) + " symbols");
     SymbolFeeds result;
     std::size_t total = 0;
     for (const auto& item : symbols->members) {
@@ -430,8 +445,9 @@ inline SymbolFeeds load_symbol_feeds(const Json& document, const std::filesystem
             if (feeds->kind != Json::Kind::Object)
                 symbol_feed_error(symbol.symbol + ": feeds must be an object");
             total += feeds->members.size();
-            if (total > 256)
-                symbol_feed_error("more than 256 feeds (" + symbol.symbol + ")");
+            if (total > limits.max_feeds)
+                symbol_feed_error("more than " + std::to_string(limits.max_feeds) +
+                                  " feeds (" + symbol.symbol + ")");
             std::map<std::string, std::filesystem::path> named;
             for (const auto& feed : feeds->members) {
                 const auto timeframe = symbol_timeframe(feed.first,
@@ -445,7 +461,8 @@ inline SymbolFeeds load_symbol_feeds(const Json& document, const std::filesystem
                 named.emplace(timeframe, directory / feed.second.value);
             }
             for (const auto& feed : named) {
-                symbol.feeds.push_back(load_symbol_feed(feed.second, symbol.symbol, feed.first));
+                symbol.feeds.push_back(
+                    load_symbol_feed(feed.second, symbol.symbol, feed.first, limits));
             }
         }
         result.push_back(std::move(symbol));
@@ -453,7 +470,8 @@ inline SymbolFeeds load_symbol_feeds(const Json& document, const std::filesystem
     return result;
 }
 
-inline SymbolFeeds load_symbol_feeds(const std::filesystem::path& path) {
+inline SymbolFeeds load_symbol_feeds(const std::filesystem::path& path,
+                                     RequestFeedLimits limits = {}) {
     std::ifstream input(path, std::ios::binary);
     if (!input)
         symbol_feed_error(path.string() + ": " + std::strerror(errno));
@@ -465,7 +483,7 @@ inline SymbolFeeds load_symbol_feeds(const std::filesystem::path& path) {
     } catch (const std::exception& error) {
         symbol_feed_error(path.string() + " is not JSON: " + error.what());
     }
-    return load_symbol_feeds(document, path.parent_path());
+    return load_symbol_feeds(document, path.parent_path(), limits);
 }
 
 inline Json symbol_feeds_record(const SymbolFeeds& symbols) {
@@ -501,26 +519,29 @@ inline Json symbol_feeds_record(const SymbolFeeds& symbols) {
 }
 
 inline SymbolFeeds symbol_feeds_from_spec(const Json& document,
-                                         const std::filesystem::path& spec) {
+                                         const std::filesystem::path& spec,
+                                         RequestFeedLimits limits = {}) {
     if (const auto* source = document.find("symbol_feeds"); source &&
         source->kind != Json::Kind::Null) {
         return source->kind == Json::Kind::String ?
-            load_symbol_feeds(spec.parent_path() / source->value) :
-            load_symbol_feeds(*source, spec.parent_path());
+            load_symbol_feeds(spec.parent_path() / source->value, limits) :
+            load_symbol_feeds(*source, spec.parent_path(), limits);
     }
     return {};
 }
 
-inline SymbolFeeds load_symbol_feeds_spec(const std::filesystem::path& spec) {
-    return symbol_feeds_from_spec(parse_json(read_document(spec), 256 * 1024 * 1024), spec);
+inline SymbolFeeds load_symbol_feeds_spec(const std::filesystem::path& spec,
+                                          RequestFeedLimits limits = {}) {
+    return symbol_feeds_from_spec(parse_json(read_document(spec), 256 * 1024 * 1024), spec, limits);
 }
 
 inline Json space_with_symbol_feeds(const std::filesystem::path& spec,
-                                   const std::filesystem::path& override_index = {}) {
+                                   const std::filesystem::path& override_index = {},
+                                   RequestFeedLimits limits = {}) {
     const auto document = parse_json(read_document(spec), 256 * 1024 * 1024);
     auto recorded = space_from_spec(document);
-    const auto symbols = override_index.empty() ? symbol_feeds_from_spec(document, spec) :
-                                                 load_symbol_feeds(override_index);
+    const auto symbols = override_index.empty() ? symbol_feeds_from_spec(document, spec, limits) :
+                                                 load_symbol_feeds(override_index, limits);
     if (!symbols.empty())
         recorded.members["symbol_feeds"] = symbol_feeds_record(symbols);
     return recorded;

@@ -160,6 +160,9 @@ strategy receives identical immutable facts/bars/closes before running. Index/CS
 errors use `--symbol-feeds:` and identify the symbol/timeframe before terminal trial output.
 Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted).
 `input.symbol` dimensions remain refused (D7); fixed symbol inputs are supported.
+When a future manifest supplies symbol options, the HPO-side preflight contract
+requires a non-empty list of unique strings and preserves its declaration order.
+This validation does not admit symbol search while D7 is in force.
 Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.10.0).
 `input.source` and `input.enum` search dimensions are supported and cannot be symbols.
 String dimensions require the manifest-level `"input_kind_schema": 1` marker. HPO's builder
@@ -195,6 +198,14 @@ as five binary64 OHLCV values and two int64 open/close times (`<5dqq`). Paths do
 identity. Warm continuation refuses changed/added/removed feeds/facts before any new trial.
 `space_hash` remains parameters/objective-only; feed identity is separate. No feeds add no
 feed-specific fields; TPE's numeric-identity provenance is independent of symbol feeds.
+
+The internal selected-chart routing seam carries two identities on a bound trial
+row: `data_context_sha256` is the study-wide canonical catalogue digest, while
+`values_sha256` is the SHA-256 of that row's selected chart tape. The latter uses
+the chart-bars domain and little-endian binary64 OHLCV plus int64 open-time bytes;
+it is never substituted with the study digest or with a request-feed hash. This
+internal seam remains behind the D7 refusal until the public instrument registry
+and engine C ABI inputs are reviewed.
 
 ## Strategy
 

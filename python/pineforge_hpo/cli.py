@@ -316,6 +316,77 @@ def _value_matches_input_type(value: object, input_type: str) -> bool:
     return False
 
 
+def _validate_symbol_option_list(
+    parameter: ParameterSpec,
+    manifest: Mapping[str, Any],
+    *,
+    where: str,
+) -> tuple[str, ...] | None:
+    """Validate an input.symbol option list without lifting the D7 admission refusal.
+
+    Older manifests do not carry an option list, so they keep the existing D7
+    diagnostic.
+    When the list is present, validate its physical declaration order and the selected
+    categorical domain before the refusal. This keeps the future public seam fail-closed
+    without inventing a symbol registry.
+    """
+
+    if "options" not in manifest:
+        return None
+    options = manifest.get("options")
+    prefix = f"{where}: HPO over input.symbol is refused (D7)"
+    if not isinstance(options, list) or not options:
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"{prefix}: options must be a non-empty array",
+        )
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for index, option in enumerate(options):
+        if not isinstance(option, str) or not option:
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
+                f"{prefix}: options[{index}] must be non-empty text",
+            )
+        if option in seen:
+            raise _cli_error(
+                "hpo_study_spec_invalid",
+                {"reason": "artifact_metadata"},
+                f"{prefix}: duplicate option {option!r}",
+            )
+        seen.add(option)
+        normalized.append(option)
+    if parameter.kind != "categorical":
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"{prefix}: search_space must be categorical",
+        )
+    choices = parameter.choices
+    if any(not isinstance(choice, str) or not choice for choice in choices):
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"{prefix}: search choices must be non-empty text",
+        )
+    if len(set(choices)) != len(choices):
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"{prefix}: search choices contain duplicates",
+        )
+    if tuple(choices) != tuple(normalized):
+        raise _cli_error(
+            "hpo_study_spec_invalid",
+            {"reason": "artifact_metadata"},
+            f"{prefix}: search choices must match manifest options in "
+            "declaration order",
+        )
+    return tuple(normalized)
+
+
 def _validate_value_against_manifest(
     value: object,
     manifest: Mapping[str, Any],
@@ -697,6 +768,9 @@ def _validate_manifest_inputs(
                 f"codegen version {codegen_version or 'unknown'}",
             )
         if manifest.get("kind") == "symbol" or manifest.get("type") == "symbol":
+            _validate_symbol_option_list(
+                parameter, manifest, where=f"search_space.{name}"
+            )
             raise _cli_error(
                 "hpo_study_spec_invalid",
                 {"reason": "artifact_metadata"},

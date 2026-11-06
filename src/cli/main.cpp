@@ -125,6 +125,7 @@ struct TrialContextIdentity {
     pfh::detail::DataContextId id;
     std::string symbol;
     std::string dataset_id;
+    std::string values_sha256;
     std::string data_context_sha256;
 };
 
@@ -922,7 +923,8 @@ TrialRecord make_trial_record(const pfh::Candidate& candidate, const Options& op
         const auto& catalogue = options.context_selector->catalogue();
         const auto& context = catalogue.context(id);
         data_context = TrialContextIdentity{
-            id, context.identity.symbol, context.identity.id, catalogue.data_context_sha256()};
+            id, context.identity.symbol, context.identity.id, context.values_sha256,
+            catalogue.data_context_sha256()};
     }
     TrialRecord record;
     record.row_space = options.row_space;
@@ -1073,6 +1075,7 @@ std::string render_trial(const TrialRecord& trial) {
     if (trial.data_context) {
         out << ", \"symbol\": \"" << json_escape(trial.data_context->symbol)
             << "\", \"dataset_id\": \"" << json_escape(trial.data_context->dataset_id)
+            << "\", \"values_sha256\": \"" << trial.data_context->values_sha256
             << "\", \"data_context_sha256\": \"" << trial.data_context->data_context_sha256
             << '"';
     }
