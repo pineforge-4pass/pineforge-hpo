@@ -14,6 +14,10 @@ import unittest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+HOSTED_X86 = "ubuntu-24.04"
+HOSTED_ARM = "ubuntu-24.04-arm"
+MACOS_LATEST = "macos-latest"
+INVALID_GKE = "gke-99cpu-99gb-amd64"
 POOL = ["self-hosted", "pf-ci", "pf-ci-x64"]
 POOL_ROUTE = """${{ github.event_name != 'pull_request' &&
     github.event_name != 'pull_request_target' &&
@@ -145,27 +149,32 @@ class PrTierWorkflowTests(unittest.TestCase):
     def assert_routing(self, workflows):
         ci = workflows["ci-post.yml"]["jobs"]
         benchmark = workflows["benchmark-smoke-post.yml"]["jobs"]
-        for job_id, runner in (
-            ("release-notification", "gke-8cpu-16gb-amd64"),
-            ("python", "gke-16cpu-32gb-amd64"),
-            ("memory-gate", "gke-16cpu-32gb-amd64-64gb"),
-            ("native", "gke-16cpu-32gb-amd64-64gb"),
+        for job_id, runner, timeout in (
+            ("release-notification", HOSTED_X86, 15),
+            ("python", HOSTED_X86, 15),
+            ("memory-gate", HOSTED_X86, 15),
+            ("native", HOSTED_X86, 52),
         ):
             self.assertEqual(ci[job_id]["runs-on"], runner)
-        self.assertEqual(benchmark["optuna"]["runs-on"], "gke-16cpu-32gb-amd64-64gb")
+            self.assertEqual(ci[job_id]["timeout-minutes"], str(timeout))
+        self.assertEqual(benchmark["optuna"]["runs-on"], HOSTED_X86)
+        self.assertEqual(benchmark["optuna"]["timeout-minutes"], "15")
         self.assertEqual(ci["native"]["strategy"]["matrix"], {"os": ["ubuntu-latest"]})
-        self.assertEqual(ci["native-macos"]["runs-on"], "macos-latest")
+        self.assertEqual(ci["native-macos"]["runs-on"], MACOS_LATEST)
+        self.assertEqual(ci["native-macos"]["timeout-minutes"], "35")
         self.assertEqual(
-            ci["native-macos"]["strategy"]["matrix"], {"os": ["macos-latest"]}
+            ci["native-macos"]["strategy"]["matrix"], {"os": [MACOS_LATEST]}
         )
         for jobs, aggregate in ((ci, "build-gate"), (benchmark, "benchmark-check")):
             for job_id in ("authz", aggregate):
-                self.assertEqual(jobs[job_id]["runs-on"], "ubuntu-24.04")
+                self.assertEqual(jobs[job_id]["runs-on"], HOSTED_X86)
+                self.assertEqual(jobs[job_id]["timeout-minutes"], "15")
             self.assertNotIn("changes", jobs)
-            self.assertEqual(jobs["workflow-lint"]["runs-on"], "gke-8cpu-16gb-amd64")
+            self.assertEqual(jobs["workflow-lint"]["runs-on"], HOSTED_X86)
+            self.assertEqual(jobs["workflow-lint"]["timeout-minutes"], "15")
 
     def test_no_route_is_a_conditional_expression(self):
-        # Every pod allocation uses a scalar label. Authorization happens before
+        # Every hosted allocation uses a scalar label. Authorization happens before
         # allocation; a conditional route cannot substitute another runner.
         ci = self.workflows["ci-post.yml"]["jobs"]
         benchmark = self.workflows["benchmark-smoke-post.yml"]["jobs"]
@@ -179,9 +188,7 @@ class PrTierWorkflowTests(unittest.TestCase):
         for route in routes:
             with self.subTest(route=route):
                 self.assertNotIn("${{", route)
-                self.assertRegex(
-                    route, r"^gke-(8cpu-16gb-amd64|16cpu-32gb-amd64(?:-64gb)?)$"
-                )
+                self.assertIn(route, (HOSTED_X86, HOSTED_ARM))
         self.assert_routing(self.workflows)
 
     def test_old_pool_routing_and_pool_fallback_are_rejected(self):
@@ -189,6 +196,7 @@ class PrTierWorkflowTests(unittest.TestCase):
             OLD_ROUTE,
             POOL_ROUTE,
             POOL_ROUTE.replace("'ubuntu-24.04'", f"fromJSON('{json.dumps(POOL)}')"),
+            INVALID_GKE,
         ):
             for job_id in ("release-notification", "python", "memory-gate"):
                 with self.subTest(job=job_id, route=bad_route):
@@ -220,7 +228,7 @@ class PrTierWorkflowTests(unittest.TestCase):
                 self.assertNotIn("paths", trigger)
                 self.assertNotIn("paths-ignore", trigger)
                 self.assertEqual(workflow["jobs"]["authz"]["name"], "authz")
-                self.assertEqual(workflow["jobs"]["authz"]["runs-on"], "ubuntu-24.04")
+                self.assertEqual(workflow["jobs"]["authz"]["runs-on"], HOSTED_X86)
                 self.assertEqual(workflow["jobs"]["authz"]["permissions"], {})
                 self.assertEqual(
                     workflow["jobs"]["authz"],
@@ -297,7 +305,8 @@ class PrTierWorkflowTests(unittest.TestCase):
         light = self.admitted["jobs"]["light"]
         self.assertEqual(light["needs"], ["admit"])
         self.assertEqual(light["if"], "${{ needs.admit.outputs.allowed == 'true' }}")
-        self.assertEqual(light["runs-on"], "gke-8cpu-16gb-amd64")
+        self.assertEqual(light["runs-on"], HOSTED_X86)
+        self.assertEqual(light["timeout-minutes"], "15")
         self.assertNotIn("if", jobs["light"])
         for step in light["steps"]:
             self.assertEqual(step["if"], "${{ needs.admit.result == 'success' }}")

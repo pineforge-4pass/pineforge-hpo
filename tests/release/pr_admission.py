@@ -30,9 +30,10 @@ from yaml.tokens import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-SMALL = "gke-8cpu-16gb-amd64"
-LARGE = "gke-16cpu-32gb-amd64"
-LARGE_DISK = "gke-16cpu-32gb-amd64-64gb"
+HOSTED_X86 = "ubuntu-24.04"
+HOSTED_ARM = "ubuntu-24.04-arm"
+MACOS_LATEST = "macos-latest"
+DEFAULT_TIMEOUT_MINUTES = 15
 SHA = re.compile(r"[0-9a-f]{40}")
 BOTS = frozenset(("dependabot[bot]", "pineforge-app[bot]"))
 HEAVY_JOBS = frozenset(
@@ -51,16 +52,29 @@ RESULT_JOBS = HEAVY_JOBS | {
     "light",
     "docs",
 }
-GKE_JOBS = {
-    "lint": SMALL,
-    "light": SMALL,
-    "release-notification": SMALL,
-    "native": LARGE_DISK,
-    "python": LARGE,
-    "memory-gate": LARGE_DISK,
-    "optuna": LARGE_DISK,
-    "docs": SMALL,
+HOSTED_LINUX_JOBS = {
+    "lint": HOSTED_X86,
+    "light": HOSTED_X86,
+    "release-notification": HOSTED_X86,
+    "native": HOSTED_X86,
+    "python": HOSTED_X86,
+    "memory-gate": HOSTED_X86,
+    "optuna": HOSTED_X86,
+    "docs": HOSTED_X86,
 }
+TIMEOUT_OVERRIDES = {
+    ".github/workflows/ci-post.yml": {
+        "native": 52,
+        "native-macos": 35,
+    },
+}
+
+
+def is_hosted_runner(value):
+    return isinstance(value, str) and (
+        value in (HOSTED_X86, HOSTED_ARM)
+        or re.fullmatch(r"macos-[A-Za-z0-9.-]+", value) is not None
+    )
 
 
 class IdentityRefusal(ValueError):
@@ -351,6 +365,24 @@ def check_pr_capabilities(data):
             raise ValueError("continue-on-error weakens the result envelope")
 
 
+def check_workflow_timeouts(name, data):
+    jobs = data.get("jobs")
+    if not isinstance(jobs, dict):
+        raise ValueError("timeout envelope differs")
+    timeouts = [value for key, value in walk(data) if key == "timeout-minutes"]
+    if len(timeouts) != len(jobs):
+        raise ValueError("timeout envelope differs")
+    overrides = TIMEOUT_OVERRIDES.get(name, {})
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict):
+            raise ValueError("timeout envelope differs")
+        expected = str(overrides.get(job_id, DEFAULT_TIMEOUT_MINUTES))
+        if job.get("timeout-minutes") != expected:
+            raise ValueError("timeout envelope differs")
+        if sum(key == "timeout-minutes" for key, _ in walk(job)) != 1:
+            raise ValueError("timeout envelope differs")
+
+
 def check_admission_contract(data):
     """Validate safety independently of the mutable main workflow envelope."""
     trigger = {
@@ -378,12 +410,13 @@ def check_admission_contract(data):
     }:
         raise ValueError("admission run binding envelope differs")
     runners = {
-        **GKE_JOBS,
-        "admit": "ubuntu-24.04",
-        "native-macos": "macos-latest",
-        "result": "ubuntu-24.04",
+        **HOSTED_LINUX_JOBS,
+        "admit": HOSTED_X86,
+        "native-macos": MACOS_LATEST,
+        "result": HOSTED_X86,
     }
     jobs = data.get("jobs", {})
+    check_workflow_timeouts(".github/workflows/gke-pr.yml", data)
     if [
         name
         for name, job in jobs.items()
@@ -404,7 +437,7 @@ def check_admission_contract(data):
             )
             if job.get("needs") != ["admit"] or job.get("if") != condition:
                 raise ValueError("admission proof envelope differs")
-        elif name in GKE_JOBS:
+        elif name in HOSTED_LINUX_JOBS:
             if (
                 job.get("needs") != ["admit"]
                 or job.get("if") != "${{ needs.admit.outputs.allowed == 'true' }}"
@@ -517,6 +550,25 @@ def check_sources(sources, trusted):
         raise ValueError("admission workflow is missing")
     check_admission_contract(parsed[".github/workflows/gke-pr.yml"])
     for name, data in parsed.items():
+        pull_request_workflow = False
+        if name.startswith(".github/workflows/"):
+            check_workflow_timeouts(name, data)
+            jobs = data.get("jobs", {})
+            pull_request_workflow = any(
+                event.startswith("pull_request")
+                for event in data.get("on", {})
+            )
+            if any(
+                event.startswith("pull_request") and event != "pull_request_target"
+                for event in data.get("on", {})
+            ) and any(
+                not is_hosted_runner(job.get("runs-on"))
+                for job in jobs.values()
+                if isinstance(job, dict)
+            ):
+                raise ValueError(
+                    "pull_request workflows must not name self-hosted routing"
+                )
         for key, value in walk(data):
             if (
                 key == "uses"
@@ -530,8 +582,8 @@ def check_sources(sources, trusted):
                 raise ValueError("runs-on must be a bare literal scalar")
             if key == "runs-on" and not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
                 raise ValueError("runs-on must be a bare literal scalar")
-            if key in ("timeout-minutes",):
-                raise ValueError("time limits are refused")
+            if key == "runs-on" and not is_hosted_runner(value):
+                raise ValueError("hosted runner envelope differs")
         if name == ".github/actionlint.yaml":
             if data != baseline[name]:
                 raise ValueError("runner label envelope differs from main")
@@ -546,13 +598,6 @@ def check_sources(sources, trusted):
             ".github/workflows/benchmark-smoke-post.yml",
         ):
             check_post_merge_contract(data)
-        if any(
-            event.startswith("pull_request") and event != "pull_request_target"
-            for event in data.get("on", {})
-        ) and any(
-            str(job.get("runs-on", "")).startswith("gke-") for job in jobs.values()
-        ):
-            raise ValueError("pull_request workflows must not name GKE routing")
         original = baseline[name]
         if {key: value for key, value in data.items() if key != "jobs"} != {
             key: value for key, value in original.items() if key != "jobs"
@@ -563,7 +608,7 @@ def check_sources(sources, trusted):
         admission = name.endswith("/gke-pr.yml")
         for job_id, job in jobs.items():
             old = original["jobs"][job_id]
-            if admission or str(job.get("runs-on", "")).startswith("gke-"):
+            if admission or pull_request_workflow:
                 check_pr_capabilities({"env": data.get("env", {}), "job": job})
             # Freeze guards, runners, permissions, dependencies, matrix and outputs.
             # Work commands remain editable by admitted members. Hosted boundary

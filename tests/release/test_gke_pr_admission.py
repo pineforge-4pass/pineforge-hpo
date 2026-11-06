@@ -18,9 +18,10 @@ from unittest import mock
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-SMALL = "gke-8cpu-16gb-amd64"
-LARGE = "gke-16cpu-32gb-amd64"
-LARGE_DISK = "gke-16cpu-32gb-amd64-64gb"
+HOSTED_X86 = "ubuntu-24.04"
+HOSTED_ARM = "ubuntu-24.04-arm"
+INVALID_GKE = "gke-99cpu-99gb-amd64"
+INVALID_SELF_HOSTED = "self-hosted"
 
 
 def read(path):
@@ -46,23 +47,23 @@ def workflow(name):
 
 
 class MigrationRedTests(unittest.TestCase):
-    """These inputs exist on main: failure is a routing/cache assertion."""
+    """These inputs exist on main: failure is a hosted-runner/cache assertion."""
 
-    def test_existing_linux_proofs_use_exact_bare_pod_labels(self):
+    def test_existing_linux_proofs_use_exact_hosted_labels(self):
         for name, jobs in {
             "ci-post.yml": {
-                "workflow-lint": SMALL,
-                "light": SMALL,
-                "release-notification": SMALL,
-                "native": LARGE_DISK,
-                "python": LARGE,
-                "memory-gate": LARGE_DISK,
+                "workflow-lint": HOSTED_X86,
+                "light": HOSTED_X86,
+                "release-notification": HOSTED_X86,
+                "native": HOSTED_X86,
+                "python": HOSTED_X86,
+                "memory-gate": HOSTED_X86,
             },
             "benchmark-smoke-post.yml": {
-                "workflow-lint": SMALL,
-                "optuna": LARGE_DISK,
+                "workflow-lint": HOSTED_X86,
+                "optuna": HOSTED_X86,
             },
-            "docs-pages.yml": {"build": SMALL},
+            "docs-pages.yml": {"build": HOSTED_X86},
         }.items():
             actual = workflow(name)["jobs"]
             for job, runner in jobs.items():
@@ -89,7 +90,7 @@ class MigrationRedTests(unittest.TestCase):
                         step.get("uses", "").casefold().startswith("actions/cache")
                     )
 
-    def test_legacy_pr_events_cannot_allocate_a_pod(self):
+    def test_legacy_pr_events_cannot_allocate_a_hosted_runner(self):
         for name, post in (
             ("ci.yml", "ci-post.yml"),
             ("benchmark-smoke.yml", "benchmark-smoke-post.yml"),
@@ -99,7 +100,7 @@ class MigrationRedTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertEqual(set(pr["on"]), {"pull_request", "workflow_dispatch"})
                 self.assertEqual(set(pr["jobs"]), {"authz"})
-                self.assertEqual(pr["jobs"]["authz"]["runs-on"], "ubuntu-24.04")
+                self.assertEqual(pr["jobs"]["authz"]["runs-on"], HOSTED_X86)
                 self.assertEqual(pr["jobs"]["authz"], trusted["jobs"]["authz"])
                 self.assertEqual(set(trusted["on"]), {"push", "workflow_dispatch"})
                 self.assertEqual(trusted["on"]["push"], {"branches": ["main"]})
@@ -111,7 +112,7 @@ class MigrationRedTests(unittest.TestCase):
         self.assertEqual(set(pages["on"]), {"push", "workflow_dispatch"})
         self.assertEqual(pages["on"]["push"]["branches"], ["main"])
         self.assertNotIn("if", pages["jobs"]["build"])
-        self.assertEqual(pages["jobs"]["deploy"]["runs-on"], "ubuntu-24.04")
+        self.assertEqual(pages["jobs"]["deploy"]["runs-on"], HOSTED_X86)
 
 
 class AdmissionTests(unittest.TestCase):
@@ -233,7 +234,7 @@ class AdmissionTests(unittest.TestCase):
                 self.policy.ROOT = root
                 path = root / ".github/workflows/gke-pr.yml"
                 text = read(path).replace(
-                    "runs-on: gke-16cpu-32gb-amd64\n", "runs-on: ubuntu-24.04\n", 1
+                    f"runs-on: {HOSTED_X86}\n", f"runs-on: {HOSTED_ARM}\n", 1
                 )
                 path.write_text(text, encoding="utf-8")
                 actual = self.policy.local_sources(root)
@@ -282,8 +283,12 @@ class AdmissionTests(unittest.TestCase):
                 )
         # A head-written configuration cannot add a runner label.
         bad = dict(self.sources)
-        bad[name] = bad[name].replace("gke-16cpu-32gb-amd64", "gke-99cpu-99gb-amd64")
-        bad[".github/actionlint.yaml"] += "    - gke-99cpu-99gb-amd64\n"
+        bad[name] = bad[name].replace("ubuntu-24.04", INVALID_GKE, 1)
+        bad[".github/actionlint.yaml"] = (
+            "self-hosted-runner:\n"
+            "  labels:\n"
+            f"    - {INVALID_GKE}\n"
+        )
         with self.assertRaises(subprocess.CalledProcessError):
             self.policy.lint_sources(
                 bad, self.sources, Path(tempfile.mkdtemp(dir=parent))
@@ -367,6 +372,7 @@ class AdmissionTests(unittest.TestCase):
             ("admit", "steps", [{"run": "echo allowed=true"}], "envelope"),
             ("result", "if", "success()", "envelope"),
             ("memory-gate", "runs-on", {"group": "gke-runners"}, "runs-on"),
+            ("memory-gate", "timeout-minutes", "14", "timeout"),
             ("memory-gate", "environment", "production", "credential"),
             ("memory-gate", "permissions", {"id-token": "write"}, "credential"),
             ("memory-gate", "continue-on-error", "true", "envelope"),
@@ -456,7 +462,7 @@ class AdmissionTests(unittest.TestCase):
             ):
                 self.policy.check_sources(sources, sources)
 
-    def test_pull_request_workflows_cannot_name_gke_routing_even_in_main(self):
+    def test_pull_request_workflows_cannot_name_self_hosted_routing_even_in_main(self):
         for name, text in self.sources.items():
             if not name.startswith(".github/workflows/"):
                 continue
@@ -469,19 +475,19 @@ class AdmissionTests(unittest.TestCase):
                 continue
             for job_id, job in data["jobs"].items():
                 with self.subTest(workflow=name, job=job_id):
-                    self.assertFalse(str(job.get("runs-on", "")).startswith("gke-"))
+                    self.assertTrue(self.policy.is_hosted_runner(job.get("runs-on")))
             # Freeze the same unsafe document as its own baseline: an envelope
             # comparison alone cannot establish the trigger/routing boundary.
             bad = copy.deepcopy(data)
             job_id = next(iter(bad["jobs"]))
-            bad["jobs"][job_id]["runs-on"] = SMALL
+            bad["jobs"][job_id]["runs-on"] = INVALID_SELF_HOSTED
             sources = {
                 **self.sources,
                 name: yaml.safe_dump(bad, sort_keys=False, width=1000),
             }
             with (
                 self.subTest(workflow=name),
-                self.assertRaisesRegex(ValueError, "pull_request.*GKE"),
+                self.assertRaisesRegex(ValueError, "pull_request.*self-hosted"),
             ):
                 self.policy.check_sources(sources, sources)
         target_workflows = {
@@ -494,20 +500,40 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(target_workflows, {".github/workflows/gke-pr.yml"})
         self.policy.check_sources(self.sources, self.sources)
 
-    def test_pull_request_event_family_cannot_name_gke_routing_even_in_main(self):
+    def test_pull_request_event_family_cannot_name_self_hosted_routing_even_in_main(self):
         name = ".github/workflows/ci.yml"
         original = yaml.load(self.sources[name], Loader=yaml.BaseLoader)
         for event in ("pull_request_review", "pull_request_review_comment"):
             bad = copy.deepcopy(original)
             bad["on"] = {event: ""}
-            bad["jobs"]["authz"]["runs-on"] = SMALL
+            bad["jobs"]["authz"]["runs-on"] = INVALID_GKE
             sources = {
                 **self.sources,
                 name: yaml.safe_dump(bad, sort_keys=False, width=1000),
             }
             with (
                 self.subTest(event=event),
-                self.assertRaisesRegex(ValueError, "pull_request.*GKE"),
+                self.assertRaisesRegex(ValueError, "pull_request.*self-hosted"),
+            ):
+                self.policy.check_sources(sources, sources)
+
+    def test_pull_request_workflows_keep_capability_refusals_on_hosted_runners(self):
+        for name, text in self.sources.items():
+            if not name.startswith(".github/workflows/"):
+                continue
+            data = yaml.load(text, Loader=yaml.BaseLoader)
+            if not any(
+                event.startswith("pull_request") for event in data.get("on", {})
+            ):
+                continue
+            bad = copy.deepcopy(data)
+            bad["jobs"][next(iter(bad["jobs"]))]["environment"] = "release"
+            sources = {
+                **self.sources,
+                name: yaml.safe_dump(bad, sort_keys=False, width=1000),
+            }
+            with self.subTest(workflow=name), self.assertRaisesRegex(
+                ValueError, "credential capability"
             ):
                 self.policy.check_sources(sources, sources)
 
@@ -553,9 +579,9 @@ class AdmissionTests(unittest.TestCase):
             ):
                 bad = copy.deepcopy(original)
                 bad["on"][event] = ""
-                # Isolate the event boundary from the separate GKE routing rule.
+                # Isolate the event boundary from the separate hosted-runner rule.
                 for job in bad["jobs"].values():
-                    job["runs-on"] = "ubuntu-24.04"
+                    job["runs-on"] = HOSTED_X86
                 sources = {
                     **self.sources,
                     name: yaml.safe_dump(bad, sort_keys=False, width=1000),

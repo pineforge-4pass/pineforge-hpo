@@ -1,4 +1,4 @@
-"""Keep test, configure and CI waits free of time limits below the CI platform bound."""
+"""Keep test, configure and CI waits above the repository timeout floor."""
 
 from pathlib import Path
 import re
@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CMAKE_LIMIT = re.compile(r"\b" + "TIME" + "OUT" + r"\s+[0-9]")
 WORKFLOW_LIMIT = re.compile("timeout" + r"-minutes\s*:\s*([0-9]+)\b")
 PYTHON_LIMIT = re.compile(r"\b" + "time" + "out" + r"\s*=\s*[0-9]")
+MIN_WORKFLOW_TIMEOUT = 15
 
 # Any future exception must name a file and explain the ordering event still needed.
 # Exceptions are printed by the repository check so they remain visible in its output.
@@ -24,8 +25,10 @@ def scan_limits(name: str, text: str) -> list[str]:
                 findings.append(f"{name}:{number}: CMake time limit")
         elif name.startswith(".github/workflows/") and name.endswith(".yml"):
             match = WORKFLOW_LIMIT.search(line)
-            if match and int(match.group(1)) < 360:
-                findings.append(f"{name}:{number}: CI job bound below 360 minutes")
+            if match and int(match.group(1)) < MIN_WORKFLOW_TIMEOUT:
+                findings.append(
+                    f"{name}:{number}: CI job bound below {MIN_WORKFLOW_TIMEOUT} minutes"
+                )
         elif name.startswith("tests/") and name.endswith(".py"):
             if PYTHON_LIMIT.search(line):
                 findings.append(f"{name}:{number}: Python wait time limit")
@@ -67,7 +70,7 @@ class NoTimeLimitsTest(unittest.TestCase):
                 f"execute_process(COMMAND cc --version {cmake_keyword} 30)",
             ),
             ("CMakeLists.txt", f"execute_process(COMMAND cc {cmake_keyword} 5)"),
-            (".github/workflows/control.yml", f"  {workflow_key}: 359"),
+            (".github/workflows/control.yml", f"  {workflow_key}: 14"),
             ("tests/control.py", f"subprocess.run(command, {python_keyword}=5)"),
             ("tests/control.py", f"    {python_keyword} = 5,"),
         )
@@ -83,7 +86,9 @@ class NoTimeLimitsTest(unittest.TestCase):
             ),
             ("cmake/probe.cmake", "execute_process(COMMAND cc --version)"),
             ("CMakeLists.txt", "project(example)"),
-            (".github/workflows/control.yml", f"  {workflow_key}: 360"),
+            (".github/workflows/control.yml", f"  {workflow_key}: 15"),
+            (".github/workflows/control.yml", f"  {workflow_key}: 35"),
+            (".github/workflows/control.yml", f"  {workflow_key}: 52"),
             (".github/workflows/control.yml", f"  {workflow_key}: 720"),
             ("tests/control.py", "child.communicate()\nreader.join()"),
             ("tests/control.py", 'command = ["--trial-timeout-seconds", "0.2"]'),

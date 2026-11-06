@@ -412,8 +412,12 @@ class WorkflowWiringTests(unittest.TestCase):
         )
         jobs = self.workflow["jobs"]
         self.assertEqual(jobs["package"]["if"], "github.event_name == 'release'")
+        self.assertEqual(jobs["package"]["runs-on"], "ubuntu-24.04")
+        self.assertEqual(jobs["package"]["timeout-minutes"], "15")
         job = jobs["notify-hub"]
         self.assertEqual(job["needs"], "package")
+        self.assertEqual(job["runs-on"], "ubuntu-24.04")
+        self.assertEqual(job["timeout-minutes"], "15")
         expression = " ".join(
             job["if"].strip().removeprefix("${{").removesuffix("}}").split()
         )

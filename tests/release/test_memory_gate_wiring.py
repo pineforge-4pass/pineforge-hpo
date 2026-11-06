@@ -1,4 +1,4 @@
-"""Pin the admitted pod workload and the post-merge aggregate's judgments."""
+"""Pin the admitted hosted workload and the post-merge aggregate's judgments."""
 
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ class MemoryGateWiringTests(unittest.TestCase):
         self.assertNotIn("if", memory)
         self.assertNotIn("if", self.jobs["native"])
         self.assertNotIn("native", memory["needs"])
-        self.assertEqual(memory["runs-on"], "gke-16cpu-32gb-amd64-64gb")
+        self.assertEqual(memory["runs-on"], "ubuntu-24.04")
+        self.assertEqual(memory["timeout-minutes"], "15")
         self.assertNotIn("strategy", memory)
-        self.assertNotIn("timeout-minutes", memory)
         self.assertNotIn("continue-on-error", memory)
         for step in memory["steps"]:
             self.assertNotIn("timeout-minutes", step)
