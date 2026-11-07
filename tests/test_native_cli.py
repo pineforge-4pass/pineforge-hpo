@@ -6,7 +6,9 @@ from __future__ import annotations
 import csv as csv_module
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import struct
 import sys
@@ -202,6 +204,490 @@ def test_binary_chart(native: Path, plugin: Path, csv: Path) -> None:
     print("binary native CLI: 3-trial byte identity, chart sensitivity, CSV feeds, 6 refusals")
 
 
+def test_recorded_space_bound(native: Path, plugin: Path, csv: Path) -> None:
+    def dimensions(count: int) -> list[str]:
+        return [
+            argument
+            for index in range(count)
+            for argument in ("--real-dim", f"x{index}", "-5", "5", "continuous")
+        ]
+
+    def recorded_space_bytes(stdout: str) -> int:
+        marker = '"space": '
+        start = stdout.index(marker) + len(marker)
+        _, end = json.JSONDecoder().raw_decode(stdout, start)
+        return len(stdout[start:end].encode("utf-8"))
+
+    measured = invoke(
+        native,
+        plugin,
+        csv,
+        *dimensions(64),
+        "--trials-out",
+        "none",
+        max_trials=1,
+        sampler="random",
+    )
+    require(measured.returncode == 0, f"large-space control failed: {measured.stderr}")
+    measured_json = json.loads(measured.stdout)
+    space_bytes = recorded_space_bytes(measured.stdout)
+    require(space_bytes > 1, "recorded-space control was unexpectedly empty")
+    require(
+        measured_json["trials_requested"] == measured_json["trials_completed"] == 1,
+        "recorded-space control did not execute its requested row",
+    )
+
+    exact = invoke(
+        native,
+        plugin,
+        csv,
+        *dimensions(64),
+        "--max-recorded-space-bytes",
+        str(space_bytes),
+        "--trials-out",
+        "none",
+        max_trials=1,
+        sampler="random",
+    )
+    require(exact.returncode == 0, "recorded-space bound rejected an exact fit")
+    require(exact.stdout == measured.stdout, "recorded-space bound changed result bytes")
+    metadata = invoke(
+        native, plugin, csv, *dimensions(64),
+        "--max-recorded-space-bytes", str(space_bytes),
+        "--artifact-key", "unrecorded metadata" * 1000,
+        max_trials=1, sampler="random",
+    )
+    require(metadata.returncode == 0, "recorded-space bound counted unrelated input bytes")
+
+    output = csv.parent / "refusal-output.json"
+    output.write_bytes(b"keep this result")
+    refused = invoke(
+        native,
+        plugin,
+        csv,
+        *dimensions(64),
+        "--max-recorded-space-bytes",
+        str(space_bytes - 1),
+        "--output",
+        str(output),
+        max_trials=1,
+        sampler="random",
+    )
+    require(refused.returncode == 1, "recorded-space overflow did not fail")
+    refusal = json.loads(refused.stdout)
+    require(
+        refusal["failure"]
+        == {
+            "origin": "hpo",
+            "code": "hpo_recorded_space_too_large",
+            "args": {"actual_bytes": space_bytes, "max_bytes": space_bytes - 1},
+            "exit_code": 1,
+        },
+        "recorded-space overflow was not typed from the emitted space",
+    )
+    require(output.read_bytes() == b"keep this result", "refusal touched --output")
+    require("trials" not in refusal, "recorded-space refusal published a result")
+
+    unlimited = invoke(
+        native,
+        plugin,
+        csv,
+        *dimensions(200),
+        "--max-recorded-space-bytes",
+        "unlimited",
+        "--trials-out",
+        "none",
+        max_trials=1,
+        sampler="random",
+    )
+    require(unlimited.returncode == 0, "explicit unlimited recorded-space bound failed")
+    unlimited_result = json.loads(unlimited.stdout)
+    require(
+        unlimited_result["trials_requested"] == unlimited_result["trials_completed"] == 1,
+        "explicit unlimited run ignored its requested trial budget",
+    )
+    require(
+        set(unlimited_result["space"]["parameters"])
+        == {"Length"} | {f"x{index}" for index in range(200)},
+        "large-space control did not record every supplied dimension",
+    )
+    for value in (None, "0"):
+        extra = () if value is None else ("--max-recorded-space-bytes", value)
+        automatic = invoke(
+            native, plugin, csv, *dimensions(200), *extra, "--trials-out", "none",
+            max_trials=1, sampler="random",
+        )
+        require(
+            automatic.returncode == 0,
+            f"automatic bound {value} rejected a larger space: {automatic.stderr}",
+        )
+        require(
+            automatic.stdout == unlimited.stdout,
+            "automatic and unlimited large-space bytes differ",
+        )
+
+    # Feed metadata is added after recorded_space(). It belongs to the emitted byte count,
+    # even when compact row metadata or final retention suppresses individual row spaces.
+    feeds = csv.parent / "bound-feeds.json"
+    feeds.write_text(
+        json.dumps({"symbols": {"TEST:BOUND": {"feeds": {"1": str(csv)}}}}),
+        encoding="utf-8",
+    )
+    feed_flags = ("--symbol-feeds", str(feeds), "--script-tf", "1")
+    feed_control = invoke(native, plugin, csv, *feed_flags)
+    require(feed_control.returncode == 0, "bound feed control failed")
+    feed_bytes = recorded_space_bytes(feed_control.stdout)
+    require(
+        "symbol_feeds" in json.loads(feed_control.stdout)["space"],
+        "feed control did not record feed metadata",
+    )
+    rows = csv.parent / "bound-trials.jsonl"
+    rows.write_bytes(b"keep these rows")
+    for mode, retention in (("full", "all"), ("hash", "best-k"), ("none", "none")):
+        missing_output = csv.parent / f"refused-{mode}.json"
+        refused = invoke(
+            native, plugin, csv, *feed_flags,
+            "--max-recorded-space-bytes", str(feed_bytes - 1),
+            "--row-space", mode, "--trials-out", retention,
+            "--trials-file", str(rows), "--output", str(missing_output),
+        )
+        require(refused.returncode == 1, "compact output bypassed the space byte bound")
+        require(
+            json.loads(refused.stdout)["failure"]["args"]
+            == {"actual_bytes": feed_bytes, "max_bytes": feed_bytes - 1},
+            "recorded-space count omitted emitted feed metadata",
+        )
+        require(
+            not missing_output.exists() and rows.read_bytes() == b"keep these rows",
+            "bound refusal opened an output or trial destination",
+        )
+
+    # Vary symbol/dimension names, domains, escaped choices and feed facts. Measure the
+    # raw emitted descriptor: these inputs have no fixed per-symbol or per-dimension size.
+    with csv.open(newline="", encoding="utf-8") as source:
+        close_sum = sum(float(row["close"]) for row in csv_module.DictReader(source))
+    feed_trials = 3
+    for symbol_count in (46, 200):
+        symbols = {
+            f'TEST:BOUND{index}{"資" * (index % 7)}"\\': {
+                "feeds": {"1": str(csv)},
+                "syminfo": {
+                    "currency": f'CUR{index}資"\\',
+                    "mintick": (index + 1) / 1000,
+                },
+            }
+            for index in range(symbol_count)
+        }
+        many_feeds = csv.parent / f"bound-many-feeds-{symbol_count}.json"
+        many_feeds.write_text(json.dumps({"symbols": symbols}), encoding="utf-8")
+        real_name = f'scale_{symbol_count}_"資\\'
+        category_name = "Payload"
+        choice = f'choice_{symbol_count}_"資\\\n'
+        constraint = "metrics.all.net_profit > 0"
+        many_flags = (
+            "--symbol-feeds", str(many_feeds), "--script-tf", "1",
+            "--real-dim", real_name, str(-symbol_count), str(symbol_count), str(symbol_count),
+            "--categorical-choice", category_name, choice,
+            "--constraint", constraint,
+        )
+        many_default = invoke(
+            native, plugin, csv, *many_flags, max_trials=feed_trials, length_high=16,
+        )
+        require(
+            many_default.returncode == 0,
+            f"default rejected {symbol_count} symbol feeds: {many_default.stderr}",
+        )
+        many_result = json.loads(many_default.stdout)
+        many_bytes = recorded_space_bytes(many_default.stdout)
+        require(
+            many_result["trials_requested"] == many_result["trials_completed"] == feed_trials
+            and len(many_result["trials"]) == feed_trials
+            and all(row["status"] == "ok" for row in many_result["trials"]),
+            "default feed run did not execute its requested trials",
+        )
+        recorded_symbols = many_result["space"]["symbol_feeds"]["symbols"]
+        require(
+            set(recorded_symbols) == set(symbols),
+            "default feed run did not record every supplied symbol",
+        )
+        require(
+            all(
+                recorded_symbols[name]["facts"] == definition["syminfo"]
+                and set(recorded_symbols[name]["feeds"]) == set(definition["feeds"])
+                for name, definition in symbols.items()
+            ),
+            "default feed run changed the supplied feed facts or timeframes",
+        )
+        parameters = many_result["space"]["parameters"]
+        require(
+            set(parameters) == {"Length", real_name, category_name}
+            and parameters[real_name]
+            == {
+                "kind": "real", "low": -symbol_count, "high": symbol_count,
+                "step": symbol_count, "log": False,
+            }
+            and parameters[category_name] == {"kind": "categorical", "choices": [choice]}
+            and many_result["space"]["objective"]["constraints"] == [constraint]
+            and all(
+                row["parameters"][category_name] == choice for row in many_result["trials"]
+            ),
+            "feed control changed the supplied dimensions, escaped choices or constraints",
+        )
+        require(many_bytes > feed_bytes, "recorded space ignored the additional symbol feeds")
+        require(
+            many_result["trials"][0]["objective"]
+            - json.loads(feed_control.stdout)["trials"][0]["objective"]
+            == (len(symbols) - 1) * close_sum,
+            "default feed run did not compute from all supplied CSV feeds",
+        )
+        for value in ("0", "unlimited", str(many_bytes)):
+            accepted = invoke(
+                native, plugin, csv, *many_flags, "--max-recorded-space-bytes", value,
+                max_trials=feed_trials, length_high=16,
+            )
+            require(
+                accepted.returncode == 0,
+                f"bound {value} rejected {symbol_count} symbol feeds: {accepted.stderr}",
+            )
+            require(
+                accepted.stdout == many_default.stdout,
+                "automatic, unlimited and exact-fit symbol-feed bytes differ",
+            )
+        many_refused = invoke(
+            native, plugin, csv, *many_flags, "--max-recorded-space-bytes", str(many_bytes - 1),
+            "--output", str(output), "--trials-file", str(rows),
+            max_trials=feed_trials, length_high=16,
+        )
+        require(many_refused.returncode == 1, "explicit bound admitted oversized feed metadata")
+        require(
+            json.loads(many_refused.stdout)["failure"]
+            == {
+                "origin": "hpo",
+                "code": "hpo_recorded_space_too_large",
+                "args": {"actual_bytes": many_bytes, "max_bytes": many_bytes - 1},
+                "exit_code": 1,
+            },
+            "explicit feed bound lost the typed refusal or actual emitted byte count",
+        )
+        require(
+            output.read_bytes() == b"keep this result" and rows.read_bytes() == b"keep these rows",
+            "explicit feed bound touched an output or trial file",
+        )
+
+    # Two parameters and many long choices exercise text bytes without any symbol feeds.
+    # Automatic admissions are controls; the input-derived operator bound tests refusal.
+    choices = [f'choice_{index}_' + '資"\\\n' * (160 + index) for index in range(24)]
+    text_flags = tuple(
+        argument
+        for choice in choices
+        for argument in ("--categorical-choice", "Payload", choice)
+    )
+    text_trials = len(choices)
+    text_default = invoke(native, plugin, csv, *text_flags, max_trials=text_trials)
+    require(
+        text_default.returncode == 0,
+        f"default rejected the text-heavy study: {text_default.stderr}",
+    )
+    text_result = json.loads(text_default.stdout)
+    text_bytes = recorded_space_bytes(text_default.stdout)
+    require(
+        set(text_result["space"]["parameters"]) == {"Length", "Payload"}
+        and text_result["space"]["parameters"]["Payload"]
+        == {"kind": "categorical", "choices": choices}
+        and "symbol_feeds" not in text_result["space"],
+        "text-heavy control did not record the supplied categorical choices",
+    )
+    require(
+        text_result["trials_requested"] == text_result["trials_completed"] == text_trials
+        and len(text_result["trials"]) == text_trials
+        and all(row["status"] == "ok" for row in text_result["trials"])
+        and {row["parameters"]["Payload"] for row in text_result["trials"]} == set(choices),
+        "text-heavy control did not execute its requested categorical trials",
+    )
+    for value in ("0", "unlimited", str(text_bytes)):
+        accepted = invoke(
+            native, plugin, csv, *text_flags, "--max-recorded-space-bytes", value,
+            max_trials=text_trials,
+        )
+        require(
+            accepted.returncode == 0,
+            f"bound {value} rejected the text-heavy study: {accepted.stderr}",
+        )
+        require(
+            accepted.stdout == text_default.stdout,
+            "automatic, unlimited and exact-fit text-heavy bytes differ",
+        )
+    text_output_mtime = output.stat().st_mtime_ns
+    text_refused = invoke(
+        native, plugin, csv, *text_flags, "--max-recorded-space-bytes", str(text_bytes - 1),
+        "--output", str(output), "--trials-file", str(rows),
+        max_trials=text_trials,
+    )
+    require(text_refused.returncode == 1, "explicit bound admitted oversized categorical text")
+    require(
+        json.loads(text_refused.stdout)["failure"]
+        == {
+            "origin": "hpo",
+            "code": "hpo_recorded_space_too_large",
+            "args": {"actual_bytes": text_bytes, "max_bytes": text_bytes - 1},
+            "exit_code": 1,
+        },
+        "text-heavy bound lost the typed refusal or raw emitted byte count",
+    )
+    require(
+        output.read_bytes() == b"keep this result"
+        and output.stat().st_mtime_ns == text_output_mtime
+        and rows.read_bytes() == b"keep these rows",
+        "explicit text-heavy bound touched an output or trial file",
+    )
+
+    for value in ("-1", "+1", "1.5", " 1", "1 ", "1e3", "١", "", str(1 << 64)):
+        invalid = invoke(native, plugin, csv, "--max-recorded-space-bytes", value)
+        require(invalid.returncode == 1, f"invalid recorded-space bound accepted: {value!r}")
+        require(
+            json.loads(invalid.stdout)["failure"]["code"] == "hpo_cli_usage",
+            "invalid recorded-space bound was not a typed usage failure",
+        )
+
+
+def test_recorded_space_bound_wrapper(native: Path, plugin: Path, csv: Path) -> None:
+    # Run the real wrapper and native runner. The fixture's input changes both the emitted
+    # space and parameter rows; no replacement process or constant completion hides forwarding.
+    fixture = csv.parent / "bound-wrapper"
+    fixture.mkdir()
+    copied_plugin = fixture / plugin.name
+    shutil.copyfile(plugin, copied_plugin)
+    payload = '資"\\\n' * 1200
+    (fixture / "manifest.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "input_kind_schema": 1,
+            "artifact_key": "a" * 64,
+            "plugin_sha256": hashlib.sha256(copied_plugin.read_bytes()).hexdigest(),
+            "inputs": [
+                {"title": "Length", "type": "int"},
+                {"title": "Payload", "type": "string", "kind": "string"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    spec = fixture / "study.json"
+    spec.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "mode": "single_strategy",
+            "strategies": [{
+                "id": "fixture", "artifact": str(copied_plugin), "datasets": ["bars"],
+                "search_space": {
+                    "Length": {"kind": "integer", "low": 14, "high": 16, "step": 1},
+                    "Payload": {"kind": "categorical", "choices": [payload]},
+                },
+            }],
+            "datasets": [{
+                "id": "bars", "ohlcv": str(csv), "input_tf": "1", "script_tf": "5",
+                "chart_timezone": "Asia/Taipei",
+            }],
+            "objective": {
+                "kind": "expression", "direction": "maximize",
+                "expression": "metrics.all.net_profit",
+            },
+            "sampler": {"kind": "grid", "seed": 0, "trials": 3},
+            "execution": {"workers": 1, "isolation": "threads"},
+        }),
+        encoding="utf-8",
+    )
+    control = invoke(
+        native, copied_plugin, csv, "--categorical-choice", "Payload", payload,
+        "--max-recorded-space-bytes", "unlimited",
+        max_trials=3, length_high=16,
+    )
+    require(control.returncode == 0, f"escaped-space control failed: {control.stderr}")
+    start = control.stdout.index('"space": ') + len('"space": ')
+    _, end = json.JSONDecoder().raw_decode(control.stdout, start)
+    space_bytes = len(control.stdout[start:end].encode("utf-8"))
+    require(
+        space_bytes > len(payload.encode("utf-8")),
+        "wrapper control did not record the escaped payload bytes",
+    )
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "python"),
+    }
+    # StudySpec has no magnifier flags. This exec-only adapter adds the existing fixture's
+    # required backtest settings, forwarding every wrapper argument to the real native runner.
+    runner = fixture / "native-with-fixture-settings"
+    runner.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        f"os.execv({str(native)!r}, [{str(native)!r}, *sys.argv[1:], "
+        "'--bar-magnifier', 'true', '--magnifier-samples', '6', "
+        "'--magnifier-distribution', 'triangle'])\n",
+        encoding="utf-8",
+    )
+    runner.chmod(0o755)
+    command = [
+        sys.executable, "-m", "pineforge_hpo.cli", "run", str(spec),
+        "--native", str(runner), "--result-chunk-bytes", "7", "--diagnostic-bytes", "256",
+    ]
+    output = fixture / "result.json"
+    output.write_bytes(b"keep this result")
+    before = output.stat()
+    refused = subprocess.run(
+        [*command, "--max-recorded-space-bytes", str(space_bytes - 1), "--output", str(output)],
+        capture_output=True, text=True, env=environment, check=False,
+    )
+    require(refused.returncode == 1, "wrapper lost the recorded-space refusal")
+    require(
+        json.loads(refused.stdout) == {
+            "schema_version": 1, "ok": False,
+            "failure": {
+                "origin": "hpo", "code": "hpo_recorded_space_too_large",
+                "args": {
+                    "actual_bytes": space_bytes,
+                    "max_bytes": space_bytes - 1,
+                },
+                "exit_code": 1,
+            },
+        },
+        f"wrapper did not preserve recorded-space failure metadata: "
+        f"{refused.stdout} {refused.stderr}",
+    )
+    require(
+        output.read_bytes() == b"keep this result"
+        and output.stat().st_mtime_ns == before.st_mtime_ns,
+        "wrapper refusal touched --output",
+    )
+    for value in (None, "0", str(space_bytes), "unlimited", str((1 << 64) - 1)):
+        extra = [] if value is None else ["--max-recorded-space-bytes", value]
+        accepted = subprocess.run(
+            [*command, *extra],
+            capture_output=True, text=True, env=environment, check=False,
+        )
+        require(
+            accepted.returncode == 0,
+            f"wrapper bound {value} failed ({accepted.returncode}): "
+            f"{accepted.stderr} {accepted.stdout[:1200]}",
+        )
+        result = json.loads(accepted.stdout)
+        require(
+            result["trials_requested"] == result["trials_completed"] == len(result["trials"]) == 3,
+            "wrapper result lost requested or completed rows",
+        )
+        require(
+            [row["parameters"]["Length"] for row in result["trials"]] == [14, 15, 16]
+            and all(row["parameters"]["Payload"] == payload for row in result["trials"]),
+            "wrapper control ignored its study inputs",
+        )
+        require(
+            len({row["objective"] for row in result["trials"]}) == 3,
+            "wrapper control did not compute from the changed Length input",
+        )
+        require(
+            result["space"] == json.loads(control.stdout)["space"],
+            "wrapper bound changed the recorded space",
+        )
+
+
 def main() -> int:
     native = Path(sys.argv[1]).resolve()
     plugin = Path(sys.argv[2]).resolve()
@@ -215,6 +701,8 @@ def main() -> int:
         )
 
         test_binary_chart(native, plugin, csv)
+        test_recorded_space_bound(native, plugin, csv)
+        test_recorded_space_bound_wrapper(native, plugin, csv)
 
         unknown = invoke(
             native,

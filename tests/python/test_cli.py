@@ -1709,6 +1709,93 @@ class CliTests(unittest.TestCase):
                 )
 
     @mock.patch("pineforge_hpo.cli._run_native")
+    def test_run_forwards_recorded_space_bound_only_when_given(
+        self, run: mock.Mock
+    ) -> None:
+        self._precompiled_run_artifact()
+        # Inspect the real command construction at the process boundary. Successful native
+        # execution is covered by the native CLI's real wrapper control.
+        run.side_effect = OSError("forwarding control")
+        arguments = ["run", str(self.study_path), "--native", str(self.native)]
+        default_command: list[str] = []
+        for value in (None, "0", "0000", "1", "0007", str((1 << 64) - 1), "unlimited"):
+            with self.subTest(value=value):
+                run.reset_mock()
+                extra = [] if value is None else ["--max-recorded-space-bytes", value]
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    contextlib.redirect_stdout(stdout),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    self.assertEqual(main([*arguments, *extra]), 1)
+                run.assert_called_once()
+                command = run.call_args.args[0]
+                self.assertEqual(
+                    json.loads(stdout.getvalue())["failure"]["code"],
+                    "hpo_toolchain_unavailable",
+                )
+                self.assertIn("forwarding control", stderr.getvalue())
+                if value is None:
+                    self.assertNotIn("--max-recorded-space-bytes", command)
+                    default_command = list(command)
+                else:
+                    forwarded = value if value == "unlimited" else str(int(value))
+                    self.assertEqual(
+                        command,
+                        [*default_command, "--max-recorded-space-bytes", forwarded],
+                    )
+                    self.assertEqual(command.count("--max-recorded-space-bytes"), 1)
+
+    @mock.patch("pineforge_hpo.cli._run_native")
+    @mock.patch("pineforge_hpo.cli.prepare_run")
+    @mock.patch("pineforge_hpo.cli._run_spool")
+    def test_recorded_space_bound_parser_rejects_bad_values(
+        self, spool: mock.Mock, prepare: mock.Mock, run: mock.Mock
+    ) -> None:
+        for value in (
+            "-1",
+            "1.5",
+            "UNLIMITED",
+            "",
+            "+1",
+            " 1",
+            "1 ",
+            "1e3",
+            "١",
+            str(1 << 64),
+        ):
+            with self.subTest(value=value):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (
+                    contextlib.redirect_stdout(stdout),
+                    contextlib.redirect_stderr(stderr),
+                ):
+                    self.assertEqual(
+                        main(
+                            [
+                                "run",
+                                str(self.study_path),
+                                "--max-recorded-space-bytes",
+                                value,
+                            ]
+                        ),
+                        1,
+                    )
+                self.assertEqual(
+                    json.loads(stdout.getvalue())["failure"],
+                    {
+                        "origin": "hpo",
+                        "code": "hpo_cli_usage",
+                        "args": {},
+                        "exit_code": 1,
+                    },
+                )
+                self.assertIn("--max-recorded-space-bytes", stderr.getvalue())
+                run.assert_not_called()
+                prepare.assert_not_called()
+                spool.assert_not_called()
+
+    @mock.patch("pineforge_hpo.cli._run_native")
     def test_row_space_parser_rejects_invalid_values_with_typed_error(
         self, run: mock.Mock
     ) -> None:

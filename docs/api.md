@@ -245,6 +245,22 @@ row before importing them alone. Complete `trials_out=all` results remain valid
 continuation parents in every row-space mode. Unknown mode values use the existing
 typed `hpo_cli_usage` refusal (native exit 1; Python argument parsing exit 2).
 
+Both `run` commands accept `--max-recorded-space-bytes N|unlimited`. Omission and
+`0` select an automatic inclusive bound of `min(UINT64_MAX, 2 * B)`, with
+multiplication saturated at the uint64 maximum. `B` is the exact UTF-8 byte length
+of the complete emitted `space` JSON descriptor, already constructed and serialized
+during admission before the comparison and before trials. It includes dimensions
+and their names/domains/choices, objective/constraints and symbol-feed metadata,
+including escaped strings, facts, timeframes, bar counts, timestamps and hashes.
+Positive uint64 `N` sets an operator bound;
+explicit `unlimited` bypasses the byte cap. The automatic bound never refuses
+the descriptor it sizes. Only an operator-set positive bound can cause the
+byte-size refusal, reporting `hpo_recorded_space_too_large` with integer
+`actual_bytes` and `max_bytes` arguments and exit 1 before trials or output
+destinations are opened. The bound applies independently of `--row-space` and
+`--trials-out`. This comparison does not protect allocations used to construct
+or serialize the descriptor. It is a CLI output control, not a StudySpec field.
+
 The hash covers parameter names, typed domains, bounds/steps,
 ordered choices, log flags, objective expression, direction and sorted constraints.
 Its exact portable canonical form is specified in [StudySpec](study-spec.md).

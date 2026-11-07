@@ -95,6 +95,11 @@ struct Options {
     std::string parent_numeric_build_identity;
     std::string trials_out = "all";
     RowSpace row_space = RowSpace::kFull;
+    // Inclusive byte bound: omitted/zero uses min(UINT64_MAX, 2*B); nullopt is unlimited.
+    // B counts UTF-8 bytes of the complete descriptor already constructed and serialized.
+    // The automatic bound never refuses that descriptor; only an operator-set positive bound can.
+    // This check does not protect allocations used to construct or serialize the descriptor.
+    std::optional<std::uint64_t> max_recorded_space_bytes = 0;
     std::uint64_t best_k = 10;
     std::filesystem::path syminfo;
     std::filesystem::path symbol_feeds_path;

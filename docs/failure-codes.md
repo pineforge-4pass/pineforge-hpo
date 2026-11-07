@@ -73,6 +73,24 @@ process failure, while preserving existing exit codes and stderr diagnostics:
 {"schema_version":1,"ok":false,"failure":{"origin":"hpo","code":"hpo_plugin_invalid","args":{"reason":"load"},"exit_code":1}}
 ```
 
+The native and Python `run` commands accept `--max-recorded-space-bytes N|unlimited`.
+Omission and `0` select an automatic inclusive bound of `min(UINT64_MAX, 2 * B)`,
+where `B` is the exact UTF-8 byte length of the complete emitted `space` JSON
+descriptor, already constructed and serialized during admission before the
+comparison and before trials. It includes dimensions, objective/constraints,
+escaped strings and symbol-feed metadata. Positive unsigned 64-bit `N` sets an
+operator bound; explicit `unlimited` bypasses the byte cap.
+Malformed values produce `hpo_cli_usage` with exit 1. The wrapper forwards an
+explicit value and leaves default selection to native when omitted.
+
+The automatic bound never refuses the descriptor it sizes. Only an operator-set
+positive bound can cause the byte-size refusal, producing `hpo_recorded_space_too_large`
+with integer `actual_bytes` and `max_bytes` arguments and exit 1, before any trial or
+output destination is opened. Existing output files are preserved.
+The bound applies with every `--row-space` and `--trials-out` mode. This comparison
+does not protect allocations used to construct or serialize the descriptor.
+Total result size has separate costs.
+
 Trial failures still appear in ordinary study results. Exit 2 still denotes no
 feasible best trial; ordinary watchdog timeout results still use exit 3 and include
 the timeout terminal record. A progress-I/O failure still publishes completed trials

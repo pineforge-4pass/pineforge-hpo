@@ -331,6 +331,10 @@ void print_help() {
               << "  --scheduler-stats FILE      nondeterministic timing sidecar\n"
               << "  --trials-out all|best-k|none final trial retention; default: all\n"
               << "  --row-space full|hash|none  row space metadata; default: full\n"
+              << "  --max-recorded-space-bytes N|unlimited  emitted space JSON byte limit;\n"
+              << "                              default/0: automatic min(UINT64_MAX, 2*B), where\n"
+              << "                              B is the full pre-trial descriptor's UTF-8 bytes;\n"
+              << "                              positive N: hard cap; unlimited: bypass byte cap\n"
               << "  --pbo-blocks S              full-window bar-return blocks; even S >= 2\n"
 #ifdef PINEFORGE_HPO_PROOF_CURVES
               << "  --proof-curves FILE         original full-window equity bits (proof only)\n"
@@ -505,6 +509,16 @@ Options parse_options(int argc, char** argv) {
                 out.row_space = RowSpace::kNone;
             else
                 usage_error("--row-space must be full, hash, or none");
+        } else if (option == "--max-recorded-space-bytes") {
+            const auto value = require_value(argc, argv, i, option);
+            if (value == "unlimited") {
+                out.max_recorded_space_bytes.reset();
+            } else {
+                if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+                    usage_error(option +
+                                " requires 0 (automatic), a positive uint64, or unlimited");
+                out.max_recorded_space_bytes = parse_u64(value, option);
+            }
         } else if (option == "--pbo-blocks") {
             out.pbo_blocks = parse_pbo_blocks(i + 1 < argc ? argv[++i] : "");
 #ifdef PINEFORGE_HPO_PROOF_CURVES
@@ -2599,6 +2613,22 @@ PreparedStudy prepare(Options options) {
     if (options.symbol_feeds_record)
         recorded.members["symbol_feeds"] = *options.symbol_feeds_record;
     options.space_json = std::make_shared<const std::string>(pfh::detail::dump_json(recorded));
+    // Count the exact UTF-8/escaped JSON inserted into the result and full trial rows,
+    // including symbol feeds. Refuse during admission, before any trial or output is opened.
+    const auto recorded_bytes = static_cast<std::uint64_t>(options.space_json->size());
+    if (options.max_recorded_space_bytes && *options.max_recorded_space_bytes == 0) {
+        constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+        options.max_recorded_space_bytes =
+            recorded_bytes > maximum / 2 ? maximum : recorded_bytes * 2;
+    }
+    if (options.max_recorded_space_bytes && recorded_bytes > *options.max_recorded_space_bytes)
+        throw pfh::TypedHpoError<std::invalid_argument>(
+            "hpo_recorded_space_too_large",
+            {{"actual_bytes", recorded_bytes}, {"max_bytes", *options.max_recorded_space_bytes}},
+            "recorded space is " + std::to_string(recorded_bytes) + " bytes, exceeding " +
+                "--max-recorded-space-bytes " +
+                std::to_string(*options.max_recorded_space_bytes) +
+                "; raise the bound or select unlimited");
     options.space_hash = pfh::detail::space_hash(recorded);
     if (options.sampler == "sobol") {
         // Everything that can be refused without a plugin, a dataset or a trial is refused here:
