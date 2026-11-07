@@ -383,6 +383,17 @@ class FailureCodeTests(unittest.TestCase):
                 "hpo_toolchain_unavailable",
                 {"reason": "transpile_internal"},
             ),
+            (
+                ArtifactBuildError(
+                    "generated_cpp_hash",
+                    "original",
+                    actual_sha256="a" * 64,
+                    expected_sha256="b" * 64,
+                ),
+                RuntimeError,
+                "hpo_generated_cpp_hash_mismatch",
+                {},
+            ),
             (WarmStartError("original"), ValueError, "hpo_warm_start_rejected", {}),
             (SpaceExhaustedError("original"), ValueError, "hpo_space_exhausted", {}),
             (

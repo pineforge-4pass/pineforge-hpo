@@ -19,6 +19,35 @@
       ],
       "since": "0.10.0"
     },
+    "hpo_generated_cpp_hash_mismatch": {
+      "class": "request",
+      "retryable": false,
+      "args": {},
+      "templates": [
+        "The checked generated C++ SHA-256 does not match the expected digest."
+      ],
+      "since": "1.11.0"
+    },
+    "hpo_generated_cpp_invalid": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "reason": {
+          "kind": "string",
+          "values": [
+            "bytes",
+            "diagnostics",
+            "expected_sha256",
+            "metadata",
+            "utf8"
+          ]
+        }
+      },
+      "templates": [
+        "The checked generated C++ input is invalid ({reason})."
+      ],
+      "since": "1.11.0"
+    },
     "hpo_input_file_invalid": {
       "class": "request",
       "retryable": false,
@@ -366,6 +395,52 @@
         "The parent history cannot seed this study."
       ],
       "since": "0.10.0"
+    },
+    "hpo_wrapper_bypass_refused": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "route": {
+          "kind": "string",
+          "values": [
+            "artifact_cache",
+            "precompiled_artifact",
+            "request_cache",
+            "request_cache_locked"
+          ]
+        }
+      },
+      "templates": [
+        "Wrapper-launched preparation cannot bypass required work via {route}."
+      ],
+      "since": "1.11.0"
+    },
+    "hpo_wrapper_codegen_unsupported": {
+      "class": "environment",
+      "retryable": false,
+      "args": {
+        "policy": {
+          "kind": "string",
+          "values": [
+            "installed_version_and_source_hash"
+          ]
+        },
+        "reason": {
+          "kind": "string",
+          "values": [
+            "below_floor",
+            "prerelease",
+            "source_unverifiable",
+            "unavailable",
+            "version_invalid",
+            "version_unknown"
+          ]
+        }
+      },
+      "templates": [
+        "Wrapper codegen does not meet {policy} ({reason})."
+      ],
+      "since": "1.11.0"
     }
   }
 }

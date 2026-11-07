@@ -19,7 +19,13 @@ import tempfile
 from typing import Any, BinaryIO, Iterator, Mapping, Sequence
 
 from . import __version__
-from .artifact import ArtifactBuildError, ArtifactBuilder, StrategyArtifact
+from .artifact import (
+    ArtifactBuildError,
+    ArtifactBuilder,
+    StrategyArtifact,
+    _require_wrapper_codegen_identity,
+    _wrapper_bypass_error,
+)
 from .continuation import (
     SPACE_EXHAUSTED_EXIT,
     WARM_START_EXIT,
@@ -1167,8 +1173,17 @@ def prepare_run(
     eigen_include: str | Path | None = None,
     warm_start: str | Path | None = None,
     symbol_feeds: str | Path | None = None,
+    wrapper_launched: bool = False,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Validate/build once and return native argv and artifact JSON without launching."""
+    """Validate/build once and return native argv and artifact JSON without launching.
+
+    Wrapper launches require the codegen floor and source compilation; prebuilt
+    plugins and early builder cache returns are refused only in that mode.
+    """
+    if type(wrapper_launched) is not bool:
+        raise CliError("wrapper_launched must be a bool")
+    if wrapper_launched:
+        _require_wrapper_codegen_identity()
     if warm_start is not None:
         preflight = load_study_spec(study_path, continuation=True)
         if preflight.sampler.kind == "dlib_global":
@@ -1232,6 +1247,7 @@ def prepare_run(
             cache_dir=cache_dir,
             compiler=compiler,
             eigen_include=eigen_include,
+            wrapper_launched=wrapper_launched,
         ).build(source, filename=str(source_path))
         codegen_version, input_kinds_emitted = _artifact_input_metadata(
             built.manifest_path
@@ -1250,6 +1266,8 @@ def prepare_run(
         artifact = _artifact_json(built)
     else:
         assert study.strategy.artifact is not None
+        if wrapper_launched:
+            raise _wrapper_bypass_error("precompiled_artifact")
         artifact, inputs = _precompiled_artifact(study.strategy.artifact)
         codegen_version, input_kinds_emitted = _artifact_input_metadata(
             Path(artifact["manifest"])

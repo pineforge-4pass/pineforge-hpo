@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -20,8 +22,11 @@ from pineforge_codegen.errors import (  # noqa: E402
 )
 from pineforge_hpo.transpile import (  # noqa: E402
     TranspileFailure,
+    CodegenIdentity,
+    codegen_identity,
     codegen_supports_request_inventory,
     transpile_source,
+    wrapper_codegen_refusal,
 )
 
 
@@ -126,6 +131,100 @@ class TranspileBridgeTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.diagnostics[0].phase, "INTERNAL")
         self.assertIn("RuntimeError: boom", result.diagnostics[0].message)
+
+
+class WrapperCodegenPolicyTests(unittest.TestCase):
+    """Version/source policy units, not release-to-Git attestation."""
+
+    def identity(self, version):
+        return CodegenIdentity(version, "c" * 64, str(Path(__file__).resolve()))
+
+    def test_stable_floor_orders_numeric_components_and_rejects_unknown_versions(self):
+        for version in (
+            "1.10.0",
+            "v1.10.0",
+            "1.11.0",
+            "1.100.0",
+            "2.0.0",
+            "1.10.0+build.7",
+        ):
+            with self.subTest(version=version):
+                self.assertIsNone(wrapper_codegen_refusal(self.identity(version)))
+        for version in ("0.99.99", "1.1.0", "1.9.99", "1.9.99rc1"):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    wrapper_codegen_refusal(self.identity(version)), "below_floor"
+                )
+        for version in (
+            "1.10.0rc1",
+            "1.10.0-rc.1",
+            "1.10.0.dev1",
+            "1.11.0a1",
+            "2.0.0-beta.2",
+        ):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    wrapper_codegen_refusal(self.identity(version)), "prerelease"
+                )
+        for version in ("", "unknown", None):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    wrapper_codegen_refusal(self.identity(version)), "version_unknown"
+                )
+        for version in ("1.10", "1.10.0.1", "1.10.0junk", "01.10.0", " 1.10.0", "main"):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    wrapper_codegen_refusal(self.identity(version)), "version_invalid"
+                )
+
+    def test_unmeasured_source_identity_refuses_even_with_supported_version(self):
+        for identity in (
+            CodegenIdentity("1.10.0", "", "/package/__init__.py"),
+            CodegenIdentity("1.10.0", "g" * 64, "/package/__init__.py"),
+            CodegenIdentity("1.10.0", "c" * 64, "relative/__init__.py"),
+            CodegenIdentity("1.10.0", "c" * 64, ""),
+        ):
+            with self.subTest(identity=identity):
+                self.assertEqual(
+                    wrapper_codegen_refusal(identity), "source_unverifiable"
+                )
+
+    def test_identity_measures_loaded_package_bytes_and_retains_their_hash(self):
+        # A temporary package and version metadata isolate source hashing, not Git ancestry.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            module = root / "__init__.py"
+            module.write_bytes(b"# package\n")
+            implementation = root / "impl.py"
+            implementation.write_bytes(b"# original implementation\n")
+            package = SimpleNamespace(__file__=str(module))
+            with (
+                patch("pineforge_hpo.transpile.pineforge_codegen", package),
+                patch(
+                    "pineforge_hpo.transpile.metadata.version", return_value="1.10.0"
+                ),
+                patch(
+                    "pineforge_hpo.transpile._load_codegen",
+                    return_value=(None, Exception),
+                ),
+            ):
+                first = codegen_identity()
+                expected = hashlib.sha256(
+                    b"__init__.py\0"
+                    + module.read_bytes()
+                    + b"\0"
+                    + b"impl.py\0"
+                    + implementation.read_bytes()
+                    + b"\0"
+                ).hexdigest()
+                self.assertEqual(first.implementation_sha256, expected)
+                self.assertEqual(first.module_path, str(module.resolve()))
+                self.assertEqual(first.version, "1.10.0")
+                implementation.write_bytes(b"# changed implementation\n")
+                second = codegen_identity()
+                self.assertNotEqual(
+                    first.implementation_sha256, second.implementation_sha256
+                )
 
 
 class RequestInventoryProducerTests(unittest.TestCase):

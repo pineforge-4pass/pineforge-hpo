@@ -56,6 +56,53 @@ The `pineforge_hpo` package provides the control-plane API:
   used by the CLI, without starting a native child. Optional keyword-only
   `native`, `compiler`, and `eigen_include` select existing CLI overrides.
 
+### Checked C++ and wrapper preparation
+
+`ArtifactBuilder.build_cpp(generated_cpp, *, expected_sha256, inputs,
+input_kind_schema, strategy_params, request_feed_inventory, diagnostics=(),
+filename="<input>")` accepts raw C++ `bytes` and the metadata from the checked
+emission. Pass the checker's independent expected SHA-256 as exactly 64 hex digits
+(either case). HPO hashes the raw input before resolving or invoking a compiler,
+taking a cache lock, or publishing any artifact. A mismatch raises
+`ArtifactBuildError` with code `hpo_generated_cpp_hash_mismatch`, diagnostic text
+and `.actual_sha256` / `.expected_sha256` attributes. Malformed digests, non-byte
+inputs and invalid UTF-8 are refused separately.
+
+The existing compiler/publisher receives a strict UTF-8 decode of those bytes and
+writes its exact UTF-8 encoding to `generated.cpp`; it preserves newlines and uses
+no replacement decoding. Manifest and provenance both record the verified
+`generated_cpp_sha256`. The request identity records `source_kind: "checked_cpp"`;
+its `source_sha256` refers to the supplied C++ bytes. It also includes a digest of
+the supplied emission metadata. This entry compiles on every call, including a
+repeated request, and never invokes the Pine transpiler. It retains the existing
+compiler flags, engine identity, plugin validation and publication lock.
+
+Supply the real `TranspileResult.inputs`, `input_kind_schema`, `strategy_params`,
+`request_feed_inventory` and diagnostics from the checked emission. Input-kind
+schema must be `1` or `None`, consistent with codegen's version. A producer-capable
+codegen requires its inventory, whose source hash must match the checked bytes;
+the existing binder validates it and binds the compiled plugin hash. HPO does not
+infer inputs or manufacture an empty inventory. A caller must keep the checked
+emission, its metadata, its emitting installation and the checker's expected
+digest together; this API does not attest that association cryptographically.
+
+The explicit keyword `wrapper_launched=False` is available on `prepare_run`,
+`ArtifactBuilder` and `build_strategy_artifact`. Setting it to `True` checks the
+loaded `CodegenIdentity` before precompiled admission or compiler work. It requires a stable version at least `1.10.0`,
+comparing numeric version components, and a measured package-source SHA-256 with a readable module location. `v`/`V` prefixes
+and local labels such as `+build.7` are accepted when the stable numeric floor is met; post-release forms such as `1.10.0.post1`
+are refused as `version_invalid`. Unknown, malformed, older and prerelease identities are refused. The typed policy is
+`installed_version_and_source_hash`: package metadata and source hashes do not
+bind a release to a Git revision. This check makes no Git ancestry claim.
+
+In wrapper mode, `prepare_run` refuses `strategy.artifact` before loading its
+precompiled metadata. Pine `build` refuses both request-cache returns and the
+artifact-cache return before compilation. `build_cpp` always reaches the existing
+compiler after checking the digest and metadata. Reuse by the publisher after a
+real compile reports `cache_hit: false` for checked-C++ and wrapper builds. Retrying a wrapper Pine `build` with the same
+request cache is refused; callers can use a fresh cache directory or compile the checked emission again through `build_cpp`.
+Omitting the keyword preserves ordinary CLI precompiled admission and Pine cache behavior. No environment variable selects wrapper mode.
+
 The supported Python exports are defined by
 [`pineforge_hpo.__all__`](https://github.com/pineforge-4pass/pineforge-hpo/blob/main/python/pineforge_hpo/__init__.py).
 Names beginning with an underscore are implementation details and are omitted

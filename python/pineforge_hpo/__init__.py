@@ -49,15 +49,20 @@ def _distribution_version() -> str:
 __version__ = _distribution_version()
 
 
-def prepare_run(study_path, engine_root=None, cache_dir=None, **options):
+def prepare_run(
+    study_path, engine_root=None, cache_dir=None, *, wrapper_launched=False, **options
+):
     """Return native argv and artifact JSON; do not launch the native process.
 
     Optional keyword arguments are native, compiler, and eigen_include, matching
-    the existing CLI build/executable overrides.
+    the existing CLI build/executable overrides. Explicit wrapper_launched=True
+    requires the wrapper codegen policy and refuses prebuilt/cache bypasses.
     """
     from .cli import prepare_run as prepare
 
-    return prepare(study_path, engine_root, cache_dir, **options)
+    return prepare(
+        study_path, engine_root, cache_dir, wrapper_launched=wrapper_launched, **options
+    )
 
 
 __all__ = [
