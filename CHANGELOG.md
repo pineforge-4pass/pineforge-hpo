@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add `--max-recorded-space-bytes N|unlimited` to native and Python `run`. Omission
+  and `0` select an automatic inclusive bound of `min(UINT64_MAX, 2 * B)`, where
+  `B` is the exact UTF-8 byte length of the complete emitted `space` JSON descriptor
+  constructed and serialized before the comparison and before trials, including
+  dimensions, objective/constraints and symbol-feed metadata. Positive uint64 `N`
+  sets an operator bound; explicit `unlimited` bypasses the byte cap. The automatic
+  bound never refuses the descriptor it sizes. Only an operator-set positive bound
+  can cause the byte-size refusal, reporting
+  `hpo_recorded_space_too_large` with `actual_bytes` and `max_bytes` before trials
+  or output destinations are opened. This comparison does not protect allocations
+  used to construct or serialize the descriptor.
 - Use two Linux `memfd_create(MFD_CLOEXEC)` spools for jailed Python `run` without
   `--output`, requiring no writable directory or usable `TMPDIR`. An unavailable
   backend or failed allocation or wrapping reports `hpo_output_io_failed` without

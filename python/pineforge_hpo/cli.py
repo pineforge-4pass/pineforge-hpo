@@ -1727,6 +1727,18 @@ def _run(
     chunk_bytes = _run_byte_bound(args.result_chunk_bytes, "--result-chunk-bytes", 2)
     # Every diagnostic read needs a positive size; no retention slice uses this bound.
     diagnostic_bytes = _run_byte_bound(args.diagnostic_bytes, "--diagnostic-bytes", 1)
+    recorded_space_bytes = args.max_recorded_space_bytes
+    if recorded_space_bytes is not None and recorded_space_bytes != "unlimited":
+        try:
+            bound = _uint64_argument(recorded_space_bytes)
+        except (argparse.ArgumentTypeError, ValueError) as error:
+            raise _cli_error(
+                "hpo_cli_usage",
+                {},
+                "--max-recorded-space-bytes requires 0 (automatic), "
+                "a positive uint64, or unlimited",
+            ) from error
+        recorded_space_bytes = str(bound)
     jailed = "PF_SCRATCH_ARENA_FD" in os.environ
     if jailed and args.progress_fd == 5:
         raise _cli_error(
@@ -1755,6 +1767,8 @@ def _run(
         command.extend(("--trials-out", args.trials_out))
     if args.row_space is not None:
         command.extend(("--row-space", args.row_space))
+    if recorded_space_bytes is not None:
+        command.extend(("--max-recorded-space-bytes", recorded_space_bytes))
     if args.best_k is not None:
         command.extend(("--best-k", args.best_k))
     if args.no_improvement_trials:
@@ -2022,6 +2036,14 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         metavar="{full,hash,none}",
         help="row space metadata (native default: full)",
+    )
+    run_parser.add_argument(
+        "--max-recorded-space-bytes",
+        default=None,
+        metavar="N|unlimited",
+        help="native emitted space JSON byte limit: 0/default selects automatic "
+        "min(UINT64_MAX, 2*B), where B is the complete pre-trial descriptor's UTF-8 bytes; "
+        "positive uint64 sets a hard bound; unlimited bypasses the cap",
     )
     run_parser.add_argument(
         "--best-k",

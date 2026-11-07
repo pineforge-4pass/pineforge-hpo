@@ -96,6 +96,22 @@
       ],
       "since": "0.10.0"
     },
+    "hpo_recorded_space_too_large": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "actual_bytes": {
+          "kind": "integer"
+        },
+        "max_bytes": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "Recorded space is {actual_bytes} bytes, exceeding the configured {max_bytes} byte limit."
+      ],
+      "since": "1.11.0"
+    },
     "hpo_report_invalid": {
       "class": "internal",
       "retryable": false,

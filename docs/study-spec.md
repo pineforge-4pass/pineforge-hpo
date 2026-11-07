@@ -1157,7 +1157,8 @@ to the first trial ID of the run, so high continuation IDs and gaps are supporte
 The spool holds the whole trial array on disk until the process exits.
 On read-only root filesystems, native `run` and the jailed Python `run` wrapper can use a writable
 `--output` parent for the spool; `--trials-out best-k` or `none` avoids opening it, and the Python
-`run` wrapper forwards `--trials-out`, `--best-k` and `--row-space`.
+`run` wrapper forwards `--trials-out`, `--best-k`, `--row-space` and
+`--max-recorded-space-bytes`.
 The wrapper adds two anonymous spools: raw stdout and the indented rendering published as the
 result, formatted without loading trial arrays into Python objects. In the jailed profile
 (`PF_SCRATCH_ARENA_FD` is set), an explicit `--output` selects its resolved parent for both
@@ -1266,6 +1267,22 @@ row's declarative `space`, `space_hash_version` and `space_hash`. `hash` omits
 row `space` and keeps only `space_hash_version` and `space_hash` for space identity.
 `none` omits all three row fields. Every mode retains the full declarative space
 and its versioned hash at the result's top level.
+
+Both `run` commands also accept `--max-recorded-space-bytes N|unlimited` as a CLI
+output control, not a StudySpec field. Omission and `0` select an automatic
+inclusive bound of `min(UINT64_MAX, 2 * B)`. `B` is the exact UTF-8 byte length of
+the complete emitted `space` JSON descriptor, already constructed and serialized
+during admission before the comparison and before trials. It includes dimensions,
+objective/constraints, escaped strings and symbol-feed metadata.
+Positive uint64 `N` sets an operator bound; explicit
+`unlimited` bypasses the byte cap. The automatic bound never refuses the descriptor
+it sizes. Only an operator-set positive bound can cause the byte-size refusal,
+reporting `hpo_recorded_space_too_large` with integer `actual_bytes` and `max_bytes`
+arguments and exit 1 before trials or output destinations are opened.
+The bound applies independently of `--row-space` and `--trials-out`.
+This comparison does not protect allocations used to construct or serialize the descriptor.
+The Python wrapper forwards explicit values and leaves native's default in
+effect when the option is omitted.
 
 The mode applies to terminal rows in `trials`, `summary.best_k`, `--trials-file`
 and `--progress-fd`, and to ancestor rows in `warm_start_trials`. In `full` mode,
