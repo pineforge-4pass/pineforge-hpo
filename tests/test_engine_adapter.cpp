@@ -185,7 +185,7 @@ PF_API void strategy_set_chart_timezone(pf_strategy_t strategy, const char* time
 #endif
 
 #if !defined(PINEFORGE_HPO_FAKE_PLUGIN_NO_METADATA)
-// Lot-grid metadata comes after inputs/overrides and before mintick and the other setters.
+// Lot-grid and series-origin metadata follow inputs/overrides and precede mintick.
 PF_API void strategy_set_syminfo_metadata(pf_strategy_t strategy, const char* key, double value) {
     auto* state = fake(strategy);
     state->syminfo_order_error |= state->syminfo_stage != 0;
@@ -440,9 +440,11 @@ PF_API void run_backtest_full(pf_strategy_t strategy,
         (state->symbol_session == "24x7" ? 20.0 : 0.0);
     const auto qty_step = state->metadata.find("qty_step");
     const auto mincontract = state->metadata.find("mincontract");
+    const auto series_origin = state->metadata.find("series_origin_ms");
     const double metadata_bonus =
         (qty_step == state->metadata.end() ? 0.0 : qty_step->second * 1'000.0) +
-        (mincontract == state->metadata.end() ? 0.0 : mincontract->second * 10.0);
+        (mincontract == state->metadata.end() ? 0.0 : mincontract->second * 10.0) +
+        (series_origin == state->metadata.end() ? 0.0 : series_origin->second / 1'000'000'000'000.0);
     double feed_bonus = 0.0;
     for (const auto& feed : state->symbol_feeds) {
         for (const auto& bar : feed.second)
@@ -1374,7 +1376,7 @@ void test_missing_metadata_symbol(const std::filesystem::path& plugin_path) {
     auto plugin = std::make_shared<const StrategyPlugin>(plugin_path);
     FakeCounters counters(plugin_path);
 
-    // Without a mincontract the plugin keeps working with every other symbol field.
+    // With neither mincontract nor series_origin_ms, all existing symbol fields still work.
     pineforge::hpo::SymbolInfo info;
     info.mintick = 0.5;
     info.pointvalue = 2.0;
@@ -1383,9 +1385,10 @@ void test_missing_metadata_symbol(const std::filesystem::path& plugin_path) {
     TrialExecutor legacy(plugin, test_dataset(), lot_grid_configuration(info));
     const auto result = legacy.execute({{"Length", "14"}}, {{"initial_capital", "100000"}});
     require(result.succeeded(),
-            "plugin without metadata failed without a mincontract: " + result.error);
+            "plugin without metadata failed with no declared metadata: " + result.error);
     require_near(result.report.net_profit, 14.0 + 100.0 + 82.0,
                  "plugin without metadata returned the wrong result");
+    require(counters.metadata().empty(), "undeclared metadata reached a plugin without the setter");
 
     // With a mincontract it fails loudly instead of running without the grid.
     info.mincontract = 0.25;
@@ -1395,10 +1398,87 @@ void test_missing_metadata_symbol(const std::filesystem::path& plugin_path) {
                               "mincontract ran silently without a plugin lot-size setter");
     require_throws_containing([&] { (void)gridded.execute({{"Length", "14"}}); }, "mincontract",
                               "the missing-setter error does not name syminfo.mincontract");
+    // An origin alone requires the same optional symbol and the same typed failure shape.
+    info.mincontract.reset();
+    info.series_origin_ms = 1700000000000;
+    TrialExecutor with_origin(plugin, test_dataset(), lot_grid_configuration(info));
+    bool refused = false;
+    try {
+        (void)with_origin.execute({{"Length", "14"}});
+    } catch (const pineforge::hpo::HpoError& error) {
+        const auto reason = error.args().find("reason");
+        refused = error.code() == "hpo_plugin_invalid" &&
+                  error.origin() == pineforge::hpo::FailureOrigin::Hpo &&
+                  error.args().size() == 1 && reason != error.args().end() &&
+                  std::get<std::string>(reason->second.value()) == "setter_missing" &&
+                  std::string(error.what()).find("syminfo.series_origin_ms") != std::string::npos &&
+                  std::string(error.what()).find("strategy_set_syminfo_metadata") !=
+                      std::string::npos;
+    }
+    require(refused, "declared origin did not require the metadata setter with a typed error");
     require(counters.active_handles() == 0,
             "strategy handle leaked after missing-metadata failure");
     require(counters.lifetime_violations() == 0,
             "missing-metadata failure broke teardown ordering");
+}
+
+void test_series_origin_metadata(const std::filesystem::path& plugin_path) {
+    auto plugin = std::make_shared<const StrategyPlugin>(plugin_path);
+    FakeCounters counters(plugin_path);
+    pineforge::hpo::SymbolInfo info;
+    info.mincontract = 0.25;
+    info.series_origin_ms = 1700000000000;
+    info.mintick = 0.5;
+    info.pointvalue = 2.0;
+    info.timezone = "UTC";
+    info.session = "24x7";
+    counters.reset_metadata();
+    TrialExecutor declared(plugin, test_dataset(), lot_grid_configuration(info));
+    const auto result = declared.execute({{"Length", "14"}}, {{"initial_capital", "100000"}});
+    require(result.succeeded(), "series-origin trial failed: " + result.error);
+    // The fake rejects metadata after mintick or inputs/overrides after metadata.
+    require(counters.metadata() == std::vector<std::string>{
+                "qty_step=0.25", "mincontract=0.25", "series_origin_ms=1700000000000"},
+            "series origin did not follow the lot grid with its exact value");
+    require_near(result.report.net_profit, 450.2, "series-origin trial result is wrong");
+
+    info.series_origin_ms.reset();
+    counters.reset_metadata();
+    TrialExecutor undeclared(plugin, test_dataset(), lot_grid_configuration(info));
+    const auto plain = undeclared.execute({{"Length", "14"}}, {{"initial_capital", "100000"}});
+    require(plain.succeeded(), "undeclared-origin trial failed: " + plain.error);
+    require(counters.metadata() ==
+                std::vector<std::string>{"qty_step=0.25", "mincontract=0.25"},
+            "undeclared origin changed the existing metadata calls");
+    require_near(plain.report.net_profit, 448.5, "undeclared origin changed the existing result");
+
+    const std::array<std::pair<std::int64_t, std::string>, 3> origins{{
+        {1, "series_origin_ms=1"},
+        {1900000000000, "series_origin_ms=1900000000000"},
+        {9007199254740991, "series_origin_ms=9007199254740991"},
+    }};
+    for (const auto& origin : origins) {
+        pineforge::hpo::SymbolInfo only_origin;
+        only_origin.series_origin_ms = origin.first;
+        counters.reset_metadata();
+        TrialExecutor executor(plugin, test_dataset(), lot_grid_configuration(only_origin));
+        const auto trial = executor.execute({{"Length", "14"}});
+        require(trial.succeeded(), "positive origin was refused: " + trial.error);
+        require(counters.metadata() == std::vector<std::string>{origin.second},
+                "origin-only symbol info did not forward the literal epoch milliseconds");
+    }
+    const std::array<std::int64_t, 3> invalid_origins{{0, -1, 9007199254740992}};
+    for (const auto bad : invalid_origins) {
+        info.series_origin_ms = bad;
+        counters.reset_metadata();
+        TrialExecutor executor(plugin, test_dataset(), lot_grid_configuration(info));
+        require_throws_containing([&] { (void)executor.execute({{"Length", "14"}}); },
+                                  "syminfo.series_origin_ms must be a positive integer",
+                                  "invalid origin was accepted");
+        require(counters.metadata().empty(), "invalid origin reached the plugin");
+    }
+    require(counters.active_handles() == 0, "series-origin trials leaked a strategy handle");
+    require(counters.lifetime_violations() == 0, "series-origin trials broke teardown ordering");
 }
 
 void test_optional_failure_symbols(const std::filesystem::path& legacy_path,
@@ -1669,6 +1749,7 @@ int main(int argc, char** argv) {
         test_trades_snapshot(argv[4]);
         test_return_blocks_snapshot(argv[1]);
         test_lot_grid_metadata(argv[1]);
+        test_series_origin_metadata(argv[1]);
         test_missing_timezone_symbol(argv[2]);
         test_missing_metadata_symbol(argv[3]);
         test_optional_failure_symbols(argv[1], argv[4], argv[5]);

@@ -36,6 +36,11 @@
 - Late stdout publication failures preserve the bytes already written, report the error
   on stderr, exit 1, and append no second JSON document. Every late stdout publication
   failure includes its traceback on stderr, not only unexpected exceptions.
+- `--syminfo FILE` accepts optional `series_origin_ms`, the epoch milliseconds of the
+  first bar of the TradingView reference series, to enable its range-start warm-up
+  through engine metadata after the lot grid and before mintick; absent or `null`
+  leaves runs unchanged, and an engine without the run option ignores the key.
+  C++ users get the same through the new `SymbolInfo::series_origin_ms` member.
 
 ## 1.10.0 (2026-11-04)
 

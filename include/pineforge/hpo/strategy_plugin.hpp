@@ -53,6 +53,9 @@ struct SymbolInfo {
     std::string timezone;
     /// Trading session; empty means unchanged.
     std::string session;
+    /// Positive epoch milliseconds (below 2^53) of the first bar of the reference series.
+    /// Applied as the metadata key `series_origin_ms`; unset means nothing is applied.
+    std::optional<std::int64_t> series_origin_ms = std::nullopt;
 };
 
 /// @brief RAII wrapper around one compiled PineForge strategy plugin.
@@ -108,11 +111,12 @@ public:
     /// @throws std::runtime_error when the loaded plugin lacks timezone support.
     void set_chart_timezone(pf_strategy_t strategy, const std::string& timezone) const;
 
-    /// Applies the lot grid (metadata keys `qty_step`, then `mincontract`) first, then mintick,
-    /// pointvalue, exchange timezone, and session in their existing order.
+    /// Applies the lot grid (metadata keys `qty_step`, then `mincontract`) first, then the
+    /// metadata key `series_origin_ms`, mintick, pointvalue, exchange timezone, and session.
     /// @throws std::runtime_error when a requested optional setter is unavailable; a
-    ///         `mincontract` is never applied silently as no grid.
-    /// @throws std::invalid_argument for a null handle, non-positive numbers, or embedded NUL.
+    ///         declared `mincontract` or `series_origin_ms` is never silently omitted.
+    /// @throws std::invalid_argument for a null handle, non-positive numbers, an origin at or
+    ///         above 2^53, or embedded NUL.
     void set_symbol_info(pf_strategy_t strategy, const SymbolInfo& info) const;
 
     /// Installs fixed other-symbol facts and bars into a fresh strategy handle.

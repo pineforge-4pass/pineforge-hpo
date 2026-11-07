@@ -897,6 +897,50 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
                                                             {{"reason", "study"}}, message);
         return parsed;
     };
+    const auto series_origin = [&]() -> std::optional<std::int64_t> {
+        const auto* value = symbol.find("series_origin_ms");
+        if (!value || value->kind == pfh::detail::Json::Kind::Null)
+            return std::nullopt;
+        const auto invalid = [] {
+            return pfh::TypedHpoError<std::invalid_argument>(
+                "hpo_study_spec_invalid", {{"reason", "study"}},
+                "syminfo.series_origin_ms must be a positive integer");
+        };
+        if (value->kind != pfh::detail::Json::Kind::Number)
+            throw invalid();
+        double parsed = 0.0;
+        try {
+            parsed = value->real();
+        } catch (const std::exception&) {
+            throw invalid();
+        }
+        if (!std::isfinite(parsed) || parsed < 1.0 || parsed >= 9007199254740992.0 ||
+            std::floor(parsed) != parsed)
+            throw invalid();
+        // Check the decimal spelling too: binary64 rounding can hide a fractional tail.
+        const auto exponent_at = value->value.find_first_of("eE");
+        auto digits = value->value.substr(0, exponent_at);
+        std::int64_t scale = 0;
+        if (exponent_at != std::string::npos) {
+            try {
+                scale = std::stoll(value->value.substr(exponent_at + 1));
+            } catch (const std::exception&) {
+                throw invalid();
+            }
+        }
+        const auto point = digits.find('.');
+        if (point != std::string::npos) {
+            scale -= static_cast<std::int64_t>(digits.size() - point - 1);
+            digits.erase(point, 1);
+        }
+        while (scale < 0) {
+            if (digits.empty() || digits.back() != '0')
+                throw invalid();
+            digits.pop_back();
+            ++scale;
+        }
+        return static_cast<std::int64_t>(parsed);
+    };
     const auto text = [&](const char* name) -> std::string {
         const auto* value = symbol.find(name);
         if (!value)
@@ -911,6 +955,7 @@ pfh::SymbolInfo read_symbol_info(const std::filesystem::path& file) {
     info.mintick = number("mintick");
     info.pointvalue = number("pointvalue");
     info.mincontract = lot_grid();
+    info.series_origin_ms = series_origin();
     info.timezone = text("timezone");
     info.session = text("session");
     return info;

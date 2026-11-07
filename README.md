@@ -183,7 +183,7 @@ candidate ordering or scoring for runs that omit them:
 
 | Flag | Contract |
 | --- | --- |
-| `--syminfo FILE` | Apply the instrument lot grid (`mincontract`), then `mintick`, `pointvalue`, `timezone`, and `session`, after inputs and overrides, in that order. Accept a flat JSON object or `{"syminfo": {...}}`; omitted values keep engine defaults. |
+| `--syminfo FILE` | Apply the instrument lot grid (`mincontract`), then `series_origin_ms`, `mintick`, `pointvalue`, `timezone`, and `session`, after inputs and overrides, in that order. Accept a flat JSON object or `{"syminfo": {...}}`; omitted values keep engine defaults. |
 | `--progress-fd N` | Write and flush one JSONL object per terminal trial to an inherited writable descriptor. A single writer emits exactly the objects in the final `trials[]`, in trial-id order. Blocking and non-blocking descriptors are supported; drain pipes while the process runs. |
 | `--max-wall-seconds S` | Positive, finite study wall limit in seconds, including native initialization. Stop taking candidates cooperatively, including inside grid/random batches. |
 | `--record-metric PATH` | Repeatable additional report-metric path. Validate before execution and preserve the path spelling in each trial's `metrics`; unavailable values are JSON `null`. |
@@ -328,11 +328,23 @@ range such as `1e999` or `1e-400`) is an initialization error with the message
 `NaN` and `Infinity` are not JSON: the parser rejects them first (exit 1,
 `invalid JSON at byte N`, which does not name the key).
 
+Optional `series_origin_ms` is the epoch milliseconds of the first bar of the
+TradingView reference series. It enables range-start warm-up in an engine that has the
+`series_origin_ms` run option (an engine without it ignores the key): EMA-based series
+begin with `na` for the first length-minus-one bars and then use an SMA seed;
+`request.security` starts at the first whole bucket at or after that origin. Supply a
+finite JSON number that is an integer from 1 through 9007199254740991. It is applied
+through `strategy_set_syminfo_metadata` as `series_origin_ms`, after `qty_step` and
+`mincontract` and before `mintick`. Absent or `null` means no call and unchanged runs.
+Other values fail initialization (exit 1) with
+`syminfo.series_origin_ms must be a positive integer`.
+
 Applying the grid needs the plugin to export `strategy_set_syminfo_metadata`, which the
 pinned engine v1.10.0 does (declared in `pineforge.h`; the engine honours the
-`qty_step` key). A plugin without it keeps working for every syminfo that has no
-`mincontract`; with one, each trial fails with a `trial_error` that names the key and the
-run exits 2 because no trial is feasible, instead of running without the grid.
+`qty_step` key). A plugin without it keeps working when neither `mincontract` nor
+`series_origin_ms` is declared; with either, each trial fails with a `trial_error` that
+names the key and the run exits 2 because no trial is feasible, instead of running
+without the grid or the declared origin.
 
 SIGTERM and SIGINT produce cooperative `cancelled` stops; a wall limit produces
 `deadline`. In-flight trials may finish, but unstarted candidates are not reported.

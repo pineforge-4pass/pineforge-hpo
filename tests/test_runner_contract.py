@@ -231,6 +231,44 @@ def main() -> int:
                         "syminfo.mincontract must be a positive finite number" in completed.stderr,
                         f"invalid mincontract was not rejected visibly: {content}: "
                         f"{completed.stderr}")
+            # Literal fake scores: Length 14 + capital 100 + chart timezone 1000;
+            # an origin adds epoch milliseconds / 10^12. No other symbol setters are requested.
+            origins = (("{}", 1114.0, 1e-13),
+                       ('{"series_origin_ms": null}', 1114.0, 1e-13),
+                       ('{"series_origin_ms": 1700000000000}', 1115.7, 1e-9),
+                       ('{"series_origin_ms": 1900000000000}', 1115.9, 1e-9),
+                       ('{"series_origin_ms": 1}', 1114.000000000001, 1e-13),
+                       ('{"series_origin_ms": 9007199254740991}', 10121.199254740992, 1e-9),
+                       ('{"series_origin_ms": 1700000000000.0}', 1115.7, 1e-9),
+                       ('{"series_origin_ms": 1.7e12}', 1115.7, 1e-9),
+                       ('{"series_origin_ms": 17000000000000e-1}', 1115.7, 1e-9))
+            for wrapped in (False, True):
+                for content, expected, tolerance in origins:
+                    symbol_file.write_text('{"syminfo": ' + content + '}' if wrapped else content)
+                    completed = invoke(native, plugin, csv, "--syminfo", str(symbol_file))
+                    require(completed.returncode == 0,
+                            f"valid series origin failed: {content}: {completed.stderr}")
+                    trial = json.loads(completed.stdout)["trials"][0]
+                    require(trial["status"] == "ok" and
+                            abs(trial["net_profit"] - expected) < tolerance,
+                            f"series origin was not forwarded or omitted: {content}: {trial}")
+                for value in ("0", "-1", "1.5", '"1"', "true", "false", "[]", "{}",
+                              "1e999", "-1e999", "1e-400", "9007199254740992",
+                              "9007199254740993", "1700000000000.00001",
+                              "1.00000000000000001", "100000000000000001e-17"):
+                    content = '{"series_origin_ms": ' + value + '}'
+                    symbol_file.write_text('{"syminfo": ' + content + '}' if wrapped else content)
+                    completed = invoke(native, plugin, csv, "--syminfo", str(symbol_file))
+                    require(completed.returncode == 1,
+                            f"invalid series origin accepted: {content}: {completed.stderr}")
+                    failure = json.loads(completed.stdout)["failure"]
+                    require(failure["code"] == "hpo_study_spec_invalid" and
+                            failure["args"] == {"reason": "study"} and
+                            failure["origin"] == "hpo" and
+                            failure["exit_code"] == 1 and
+                            "syminfo.series_origin_ms must be a positive integer" in
+                            completed.stderr,
+                            f"invalid series origin lost its typed error: {content}: {failure}")
         elif case == "progress":
             with (directory / "progress.jsonl").open("w+") as progress:
                 child = process(native, plugin, csv, progress.fileno(),
