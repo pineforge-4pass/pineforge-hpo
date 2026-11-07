@@ -108,6 +108,40 @@ class CodegenIdentity:
         }
 
 
+def wrapper_codegen_refusal(identity: CodegenIdentity) -> str | None:
+    """Check the installed release floor and measured source identity.
+
+    This policy does not attest a Git revision: CodegenIdentity has no release
+    manifest binding its package-source hash to a commit.
+    """
+
+    version = identity.version
+    if not isinstance(version, str) or version in ("", "unknown"):
+        return "version_unknown"
+    match = re.fullmatch(
+        r"[vV]?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+        r"(?P<pre>-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*"
+        r"|(?:a|b|rc)[0-9]+|\.dev[0-9]+)?"
+        r"(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?",
+        version,
+    )
+    if match is None:
+        return "version_invalid"
+    if tuple(int(component) for component in match.groups()[:3]) < (1, 10, 0):
+        return "below_floor"
+    if match.group("pre") is not None:
+        return "prerelease"
+    if (
+        not isinstance(identity.implementation_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", identity.implementation_sha256) is None
+        or not isinstance(identity.module_path, str)
+        or not Path(identity.module_path).is_absolute()
+        or not Path(identity.module_path).is_file()
+    ):
+        return "source_unverifiable"
+    return None
+
+
 def _diagnostic_from_codegen(diagnostic: Any) -> TranspileDiagnostic:
     location = getattr(diagnostic, "location", None)
     level = getattr(diagnostic, "level", "error")

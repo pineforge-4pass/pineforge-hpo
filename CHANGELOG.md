@@ -13,6 +13,13 @@
   `hpo_recorded_space_too_large` with `actual_bytes` and `max_bytes` before trials
   or output destinations are opened. This comparison does not protect allocations
   used to construct or serialize the descriptor.
+- Add `ArtifactBuilder.build_cpp` for checked C++ bytes and their emission metadata,
+  verifying the expected SHA-256 before compiler resolution and preserving that
+  digest in manifest and provenance. Explicit `wrapper_launched=True` preparation
+  requires stable codegen >= 1.10.0 with measured source identity and refuses
+  precompiled plugins and early source-cache bypasses. The policy checks installed
+  version/source identity; it does not attest Git revisions. Ordinary CLI defaults
+  retain their existing precompiled and cache behavior.
 - Use two Linux `memfd_create(MFD_CLOEXEC)` spools for jailed Python `run` without
   `--output`, requiring no writable directory or usable `TMPDIR`. An unavailable
   backend or failed allocation or wrapping reports `hpo_output_io_failed` without

@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -23,12 +24,14 @@ from .error import HpoError
 
 from .transpile import (
     REQUEST_FEED_INVENTORY_SCHEMA,
+    CodegenIdentity,
     TranspileDiagnostic,
     TranspileFailure,
     codegen_identity,
     codegen_supports_request_inventory,
     legacy_input_kind_version,
     transpile_source,
+    wrapper_codegen_refusal,
 )
 from .window_plan import (
     WindowPlanError,
@@ -87,12 +90,16 @@ class ArtifactBuildError(HpoError, RuntimeError):
         stdout: str = "",
         stderr: str = "",
         diagnostics: Sequence[TranspileDiagnostic] = (),
+        actual_sha256: str | None = None,
+        expected_sha256: str | None = None,
     ) -> None:
         self.stage = stage
         self.command = tuple(command)
         self.stdout = stdout
         self.stderr = stderr
         self.diagnostics = tuple(diagnostics)
+        self.actual_sha256 = actual_sha256
+        self.expected_sha256 = expected_sha256
         super().__init__(message)
         code, args = {
             "configuration": ("hpo_toolchain_unavailable", {"reason": "configuration"}),
@@ -104,6 +111,7 @@ class ArtifactBuildError(HpoError, RuntimeError):
             ),
             "plugin_validation": ("hpo_plugin_invalid", {"reason": "validation"}),
             "cache": ("hpo_output_io_failed", {}),
+            "generated_cpp_hash": ("hpo_generated_cpp_hash_mismatch", {}),
         }.get(stage, ("hpo_unclassified_error", {}))
         self.with_failure(code, args)
         if stage == "transpile":
@@ -115,6 +123,45 @@ class ArtifactBuildError(HpoError, RuntimeError):
                 self.with_failure(
                     "hpo_toolchain_unavailable", {"reason": "transpile_internal"}
                 )
+
+
+def _require_wrapper_codegen_identity() -> CodegenIdentity:
+    """Read the loaded codegen identity before wrapper bypass or compiler work."""
+
+    try:
+        identity = codegen_identity()
+    except (ModuleNotFoundError, OSError, ValueError) as error:
+        raise ArtifactBuildError(
+            "configuration", f"wrapper codegen identity is unavailable: {error}"
+        ).with_failure(
+            "hpo_wrapper_codegen_unsupported",
+            {"policy": "installed_version_and_source_hash", "reason": "unavailable"},
+        ) from error
+    reason = wrapper_codegen_refusal(identity)
+    if reason is not None:
+        raise ArtifactBuildError(
+            "configuration",
+            "wrapper requires stable codegen >= 1.10.0 and a measured source identity; "
+            f"got {identity.to_dict()!r} ({reason}). "
+            "This policy does not attest a Git commit or release-to-source binding.",
+        ).with_failure(
+            "hpo_wrapper_codegen_unsupported",
+            {"policy": "installed_version_and_source_hash", "reason": reason},
+        )
+    return identity
+
+
+def _wrapper_bypass_error(route: str) -> ArtifactBuildError:
+    return ArtifactBuildError(
+        "configuration",
+        f"wrapper-launched preparation cannot skip required transpile/compile via {route}",
+    ).with_failure("hpo_wrapper_bypass_refused", {"route": route})
+
+
+def _checked_cpp_error(reason: str, message: str) -> ArtifactBuildError:
+    return ArtifactBuildError("configuration", message).with_failure(
+        "hpo_generated_cpp_invalid", {"reason": reason}
+    )
 
 
 @dataclass(frozen=True)
@@ -341,6 +388,8 @@ class ArtifactBuilder:
     default to 120 seconds; a lock that never frees is a deadlock to report.
     ``plugin_load="deferred"`` skips loading the compiled plugin during a build;
     call ``validate_built_plugin`` later in the process chosen by the caller.
+    ``wrapper_launched=True`` requires stable codegen >= 1.10.0 and refuses
+    source-build cache returns that skip transpilation or compilation.
     """
 
     def __init__(
@@ -354,6 +403,7 @@ class ArtifactBuilder:
         plugin_load: Literal["build", "deferred"] = "build",
         lock_timeout_seconds: float = 120.0,
         compile_timeout_seconds: float | None = None,
+        wrapper_launched: bool = False,
     ) -> None:
         self.engine_root = Path(engine_root).expanduser().resolve()
         self.cache_dir = (
@@ -371,10 +421,11 @@ class ArtifactBuilder:
         self.plugin_load = plugin_load
         self.lock_timeout_seconds = lock_timeout_seconds
         self.compile_timeout_seconds = compile_timeout_seconds
+        if type(wrapper_launched) is not bool:
+            raise ArtifactBuildError("configuration", "wrapper_launched must be a bool")
+        self.wrapper_launched = wrapper_launched
 
-    def build(self, pine_source: str, *, filename: str = "<input>") -> StrategyArtifact:
-        if not isinstance(pine_source, str):
-            raise TypeError("pine_source must be a string")
+    def _check_build_configuration(self) -> None:
         if self.lock_timeout_seconds <= 0 or (
             self.compile_timeout_seconds is not None
             and self.compile_timeout_seconds <= 0
@@ -385,11 +436,18 @@ class ArtifactBuilder:
                 "configuration", "plugin_load must be 'build' or 'deferred'"
             )
 
+    def build(self, pine_source: str, *, filename: str = "<input>") -> StrategyArtifact:
+        if not isinstance(pine_source, str):
+            raise TypeError("pine_source must be a string")
+        self._check_build_configuration()
+        checked_codegen = (
+            _require_wrapper_codegen_identity() if self.wrapper_launched else None
+        )
         engine = self._resolve_engine_layout()
         compiler = self._resolve_compiler_identity()
         eigen = self._resolve_eigen_identity(engine)
         try:
-            codegen = codegen_identity()
+            codegen = checked_codegen or codegen_identity()
         except ModuleNotFoundError as error:
             raise ArtifactBuildError(
                 "configuration",
@@ -397,39 +455,20 @@ class ArtifactBuilder:
                 "pineforge-hpo[transpile] or provide a precompiled artifact",
             ) from error
         output_extension, link_mode = self._platform_link_mode()
-        compile_spec = {
-            "flags": list(compiler.compile_flags),
-            "include_dirs": [
-                str(path) for path in (*engine.include_dirs, eigen.include_dir)
-            ],
-            "link_mode": link_mode,
-            "output_extension": output_extension,
-        }
-        request_identity = {
-            "input_metadata_revision": INPUT_METADATA_REVISION,
-            "request_feed_inventory": (
+        request_identity = self._request_identity(
+            source_sha256=hashlib.sha256(pine_source.encode("utf-8")).hexdigest(),
+            codegen=codegen,
+            engine=engine,
+            compiler=compiler,
+            eigen=eigen,
+            output_extension=output_extension,
+            link_mode=link_mode,
+            inventory_schema=(
                 REQUEST_FEED_INVENTORY_SCHEMA
                 if codegen_supports_request_inventory()
                 else None
             ),
-            "source_sha256": hashlib.sha256(pine_source.encode("utf-8")).hexdigest(),
-            "codegen": codegen.to_dict(),
-            "engine": engine.identity_dict(),
-            "compiler": compiler.to_dict(),
-            "eigen": eigen.to_dict(),
-            "platform": {
-                "system": platform.system(),
-                "release": platform.release(),
-                "machine": platform.machine(),
-                "sys_platform": sys.platform,
-                "python_implementation": platform.python_implementation(),
-                "python_version": platform.python_version(),
-            },
-            "compiler_environment": {
-                key: os.environ.get(key, "") for key in _COMPILER_ENV_KEYS
-            },
-            "compile": compile_spec,
-        }
+        )
         request_key = _json_sha256(request_identity)
 
         hit = self._lookup_request(
@@ -439,6 +478,8 @@ class ArtifactBuilder:
             allow_deferred=self.plugin_load == "deferred",
         )
         if hit is not None:
+            if self.wrapper_launched:
+                raise _wrapper_bypass_error("request_cache")
             return hit
 
         lock_path = self.cache_dir / "locks" / f"{request_key}.lock"
@@ -447,6 +488,8 @@ class ArtifactBuilder:
                 request_key, request_identity, output_extension, allow_deferred=True
             )
             if hit is not None:
+                if self.wrapper_launched:
+                    raise _wrapper_bypass_error("request_cache_locked")
                 if self.plugin_load == "build":
                     return self._validate_built_plugin_locked(hit)
                 return hit
@@ -487,6 +530,8 @@ class ArtifactBuilder:
                 allow_deferred=True,
             )
             if existing is not None:
+                if self.wrapper_launched:
+                    raise _wrapper_bypass_error("artifact_cache")
                 if self.plugin_load == "build":
                     existing = self._validate_built_plugin_locked(existing)
                 self._write_request_index(request_key, artifact_key)
@@ -511,6 +556,216 @@ class ArtifactBuilder:
             )
             self._write_request_index(request_key, artifact_key)
             return artifact
+
+    def build_cpp(
+        self,
+        generated_cpp: bytes,
+        *,
+        expected_sha256: str,
+        inputs: Sequence[Mapping[str, Any]],
+        input_kind_schema: int | None,
+        strategy_params: Mapping[str, Any],
+        request_feed_inventory: Mapping[str, Any] | None,
+        diagnostics: Sequence[TranspileDiagnostic] = (),
+        filename: str = "<input>",
+    ) -> StrategyArtifact:
+        """Compile checked UTF-8 C++ bytes with the caller's emission metadata.
+
+        Verify the raw bytes before resolving a compiler or publishing anything.
+        This entry never transpiles and never returns before a real compile.
+        Supply metadata from the checked emission; no inventory is inferred.
+        """
+
+        if not isinstance(generated_cpp, bytes):
+            raise _checked_cpp_error("bytes", "generated_cpp must be raw bytes")
+        if (
+            not isinstance(expected_sha256, str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256) is None
+        ):
+            raise _checked_cpp_error(
+                "expected_sha256", "expected_sha256 must contain exactly 64 hex digits"
+            )
+        actual_sha256 = hashlib.sha256(generated_cpp).hexdigest()
+        if actual_sha256 != expected_sha256.lower():
+            raise ArtifactBuildError(
+                "generated_cpp_hash",
+                "checked generated C++ SHA-256 mismatch: "
+                f"expected {expected_sha256}, actual {actual_sha256}",
+                actual_sha256=actual_sha256,
+                expected_sha256=expected_sha256,
+            )
+        try:
+            generated_text = generated_cpp.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise _checked_cpp_error(
+                "utf8", f"checked generated C++ is not strict UTF-8: {error}"
+            ) from error
+
+        self._check_build_configuration()
+        try:
+            codegen = (
+                _require_wrapper_codegen_identity()
+                if self.wrapper_launched
+                else codegen_identity()
+            )
+        except ModuleNotFoundError as error:
+            raise ArtifactBuildError(
+                "configuration",
+                "checked C++ requires its emitting codegen installation",
+            ) from error
+        if (
+            not isinstance(inputs, (list, tuple))
+            or any(not isinstance(item, Mapping) for item in inputs)
+            or not isinstance(strategy_params, Mapping)
+            or not (
+                input_kind_schema is None
+                or (type(input_kind_schema) is int and input_kind_schema == 1)
+            )
+            or not isinstance(filename, str)
+            or (
+                request_feed_inventory is not None
+                and (
+                    not isinstance(request_feed_inventory, Mapping)
+                    or request_feed_inventory.get("schema")
+                    != REQUEST_FEED_INVENTORY_SCHEMA
+                    or request_feed_inventory.get("source_sha256") != actual_sha256
+                )
+            )
+            or (request_feed_inventory is None and codegen_supports_request_inventory())
+        ):
+            raise _checked_cpp_error(
+                "metadata",
+                "checked emission requires its real inputs, input-kind schema, "
+                "strategy parameters and source-matching request-feed inventory "
+                "(when the loaded producer supports one)",
+            )
+        if not isinstance(diagnostics, (list, tuple)) or any(
+            not isinstance(item, TranspileDiagnostic) for item in diagnostics
+        ):
+            raise _checked_cpp_error(
+                "diagnostics", "checked diagnostics must be TranspileDiagnostic objects"
+            )
+        if any(item.severity == "error" for item in diagnostics):
+            raise ArtifactBuildError(
+                "transpile",
+                "checked emission has error diagnostics",
+                diagnostics=diagnostics,
+            )
+        if input_kind_schema == 1 and legacy_input_kind_version(codegen.version):
+            raise _checked_cpp_error(
+                "metadata", "input_kind_schema: 1 requires codegen >= 1.1.0"
+            )
+        # Freeze caller-owned metadata before deriving its identity or compiling.
+        try:
+            emission = copy.deepcopy(
+                {
+                    "inputs": [dict(item) for item in inputs],
+                    "input_kind_schema": input_kind_schema,
+                    "strategy_params": dict(strategy_params),
+                    "request_feed_inventory": (
+                        dict(request_feed_inventory)
+                        if request_feed_inventory is not None
+                        else None
+                    ),
+                    "diagnostics": [item.to_dict() for item in diagnostics],
+                    "source_name": filename,
+                }
+            )
+            emission_sha256 = _json_sha256(emission)
+        except (TypeError, ValueError) as error:
+            raise _checked_cpp_error(
+                "metadata",
+                f"checked emission metadata is not JSON-serializable: {error}",
+            ) from error
+        engine = self._resolve_engine_layout()
+        compiler = self._resolve_compiler_identity()
+        eigen = self._resolve_eigen_identity(engine)
+        output_extension, link_mode = self._platform_link_mode()
+        request_identity = self._request_identity(
+            source_sha256=actual_sha256,
+            codegen=codegen,
+            engine=engine,
+            compiler=compiler,
+            eigen=eigen,
+            output_extension=output_extension,
+            link_mode=link_mode,
+            inventory_schema=(
+                REQUEST_FEED_INVENTORY_SCHEMA
+                if request_feed_inventory is not None
+                else None
+            ),
+        )
+        request_identity["source_kind"] = "checked_cpp"
+        request_identity["emission_metadata_sha256"] = emission_sha256
+        request_key = _json_sha256(request_identity)
+        artifact_key = _json_sha256(
+            {
+                "request_identity": request_identity,
+                "generated_cpp_sha256": actual_sha256,
+            }
+        )
+        lock_path = self.cache_dir / "locks" / f"{request_key}.lock"
+        with _KeyLock(lock_path, self.lock_timeout_seconds):
+            artifact = self._compile_and_publish(
+                artifact_key=artifact_key,
+                request_key=request_key,
+                request_identity=request_identity,
+                output_extension=output_extension,
+                generated_cpp=generated_text,
+                generated_cpp_sha256=actual_sha256,
+                inputs=emission["inputs"],
+                input_kind_schema=input_kind_schema,
+                strategy_params=emission["strategy_params"],
+                diagnostics=diagnostics,
+                request_feed_inventory=emission["request_feed_inventory"],
+                source_name=filename,
+                compiler=compiler,
+                engine=engine,
+                eigen=eigen,
+            )
+            self._write_request_index(request_key, artifact_key)
+            return artifact
+
+    @staticmethod
+    def _request_identity(
+        *,
+        source_sha256: str,
+        codegen: CodegenIdentity,
+        engine: _EngineLayout,
+        compiler: _CompilerIdentity,
+        eigen: _EigenIdentity,
+        output_extension: str,
+        link_mode: str,
+        inventory_schema: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "input_metadata_revision": INPUT_METADATA_REVISION,
+            "request_feed_inventory": inventory_schema,
+            "source_sha256": source_sha256,
+            "codegen": codegen.to_dict(),
+            "engine": engine.identity_dict(),
+            "compiler": compiler.to_dict(),
+            "eigen": eigen.to_dict(),
+            "platform": {
+                "system": platform.system(),
+                "release": platform.release(),
+                "machine": platform.machine(),
+                "sys_platform": sys.platform,
+                "python_implementation": platform.python_implementation(),
+                "python_version": platform.python_version(),
+            },
+            "compiler_environment": {
+                key: os.environ.get(key, "") for key in _COMPILER_ENV_KEYS
+            },
+            "compile": {
+                "flags": list(compiler.compile_flags),
+                "include_dirs": [
+                    str(path) for path in (*engine.include_dirs, eigen.include_dir)
+                ],
+                "link_mode": link_mode,
+                "output_extension": output_extension,
+            },
+        }
 
     def validate_built_plugin(self, artifact: StrategyArtifact) -> StrategyArtifact:
         """Load and validate a pending source-cache plugin in the calling process.
@@ -1143,6 +1398,11 @@ class ArtifactBuilder:
             return None
         if provenance.get("request_identity") != request_identity:
             return None
+        if (
+            request_identity.get("source_kind") == "checked_cpp"
+            and provenance.get("generated_cpp_sha256") != generated_hash
+        ):
+            return None
         if provenance.get("plugin_validation") != plugin_validation:
             return None
         if manifest.get("input_kind_schema") != provenance.get("input_kind_schema"):
@@ -1329,7 +1589,10 @@ class ArtifactBuilder:
                     request_key=request_key,
                     request_identity=request_identity,
                     output_extension=output_extension,
-                    cache_hit=True,
+                    cache_hit=(
+                        not self.wrapper_launched
+                        and request_identity.get("source_kind") != "checked_cpp"
+                    ),
                     allow_deferred=True,
                 )
                 if cached is not None:
@@ -1466,6 +1729,7 @@ def build_strategy_artifact(
     compiler: str | os.PathLike[str] | None = None,
     eigen_include: str | os.PathLike[str] | None = None,
     plugin_load: Literal["build", "deferred"] = "build",
+    wrapper_launched: bool = False,
     filename: str = "<input>",
 ) -> StrategyArtifact:
     """Convenience entry point for a one-off CLI artifact build."""
@@ -1476,6 +1740,7 @@ def build_strategy_artifact(
         compiler=compiler,
         eigen_include=eigen_include,
         plugin_load=plugin_load,
+        wrapper_launched=wrapper_launched,
     )
     return builder.build(pine_source, filename=filename)
 

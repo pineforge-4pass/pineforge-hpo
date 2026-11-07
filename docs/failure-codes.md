@@ -232,6 +232,49 @@ text, never as extra catalog arguments. Binding failures during compilation use
 `hpo_toolchain_unavailable{reason:transpile_internal}` classification.
 Ordinary artifact loading and cache hits ignore inventory metadata.
 
+### Checked C++ and wrapper admission
+
+`ArtifactBuilder.build_cpp` and wrapper preparation use `ArtifactBuildError`
+(also `HpoError` and `RuntimeError`) with these non-retryable codes:
+
+| Code | Class | Arguments |
+| --- | --- | --- |
+| `hpo_generated_cpp_hash_mismatch` | `request` | `{}` |
+| `hpo_generated_cpp_invalid` | `request` | `reason`: `bytes`, `diagnostics`, `expected_sha256`, `metadata`, `utf8` |
+| `hpo_wrapper_bypass_refused` | `request` | `route`: `artifact_cache`, `precompiled_artifact`, `request_cache`, `request_cache_locked` |
+| `hpo_wrapper_codegen_unsupported` | `environment` | `policy`: `installed_version_and_source_hash`; `reason`: `below_floor`, `prerelease`, `source_unverifiable`, `unavailable`, `version_invalid`, `version_unknown` |
+
+Digest mismatch is checked on the raw bytes before any compiler probe, compile,
+cache lock or publication. The exception's `.actual_sha256` and `.expected_sha256`
+attributes and diagnostic text retain both digests. These dynamic values are not
+catalog arguments; catalog strings retain their closed vocabularies. Invalid
+UTF-8 never uses replacement decoding. `metadata` covers invalid emission shapes,
+contradictory input-kind schema, missing producer inventory and a supplied
+inventory whose source hash differs from the checked C++. The existing inventory
+binder still validates the full inventory and binds the plugin after compilation;
+its failures retain the existing inventory-stage classification above.
+
+Wrapper refusals require explicit `wrapper_launched=True`. `request_cache` and
+`request_cache_locked` name the two request-index hits; `artifact_cache` is the
+generated-artifact hit before compilation. Publisher reuse after an actual compile
+is allowed and reports `cache_hit: false` in this mode and for `build_cpp`.
+
+The codegen policy checks the loaded installation's stable numeric release floor
+`1.10.0`, its measured package-source hash and its module location before any
+bypass or compiler work. Every prerelease is refused, including prereleases of
+the floor. An unavailable installation or source measurement uses `unavailable`;
+an absent/malformed source identity uses `source_unverifiable`. The policy name
+deliberately states the available identity domain: it cannot establish a Git
+revision or a release-to-source binding from existing `CodegenIdentity` metadata.
+The installed version and measured source hash remain in artifact provenance.
+Ordinary CLI admission and compatibility policy retain their existing behavior.
+
+The real compiler/engine rows in `tests/python/test_checked_cpp.py` require
+`PFH_CHECKED_CPP_INTEGRATION=1`; normal Python CI skips those rows, so they cannot
+fail there. With that opt-in, missing compiler, engine archive, Eigen, codegen or
+native-runner inputs fail the relevant integration row. Run them on a full build
+when reviewing compiler custody or wrapper admission.
+
 ## Catalog and release diff
 
 The package contains `hpo_failure_codes.json` (schema
