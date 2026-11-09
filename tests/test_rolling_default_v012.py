@@ -9,10 +9,12 @@ version string that names the running release. (The sobol and candidates sampler
 v0.12.0, so they have no baseline.)
 
 The test needs two binaries, so it takes the baseline path as an argument. When the path is not a
-file the test reports itself skipped (exit status 77, which ctest shows as skipped); configure with
--DPINEFORGE_HPO_V012_NATIVE=<path> to run it.
+file, optional mode reports a skip (exit status 77); --require-baseline instead reports an error
+(exit status 1). Configure with -DPINEFORGE_HPO_V012_NATIVE=<path> to supply the baseline and
+-DPINEFORGE_HPO_REQUIRE_V012_BASELINE=ON to require it in CTest. Main/dispatch native CI supplies
+and requires the baseline; local builds default to optional mode.
 
-Usage: test_rolling_default_v012.py NATIVE BASELINE PLUGIN [unittest arguments]
+Usage: test_rolling_default_v012.py NATIVE BASELINE PLUGIN [--require-baseline] [unittest arguments]
 """
 
 from __future__ import annotations
@@ -29,8 +31,19 @@ import unittest
 NATIVE = Path(sys.argv.pop(1)).resolve()
 BASELINE_PATH = Path(sys.argv.pop(1))
 PLUGIN = Path(sys.argv.pop(1)).resolve()
+REQUIRE_BASELINE = "--require-baseline" in sys.argv[1:]
+if REQUIRE_BASELINE:
+    sys.argv.remove("--require-baseline")
 
 if not BASELINE_PATH.is_file():
+    if REQUIRE_BASELINE:
+        sys.stderr.write(
+            "ERROR: required v0.12.0 native binary was not provided "
+            f"or is not a regular file: {BASELINE_PATH} (configure with "
+            "-DPINEFORGE_HPO_V012_NATIVE=<path to a pineforge-hpo-native built from the "
+            "v0.12.0 tag>)\n"
+        )
+        sys.exit(1)
     sys.stderr.write(
         "SKIP: no v0.12.0 native binary was provided (configure with "
         "-DPINEFORGE_HPO_V012_NATIVE=<path to a pineforge-hpo-native built from the v0.12.0 tag>)\n"
