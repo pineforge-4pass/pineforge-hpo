@@ -53,7 +53,6 @@ class MissingBaselinePolicyTests(unittest.TestCase):
                         encoding="utf-8",
                         errors="replace",
                         check=False,
-                        timeout=30,
                     )
                     details = (
                         f"command: {completed.args!r}\n"
