@@ -79,13 +79,13 @@ same behavior. An enum input's categorical choice is accepted in either form a S
 may carry: the manifest tag (for example `Side.long`) or the member's ordinal, so a study
 written for either form runs against a codegen 1.4.0 or later artifact. The optional
 `transpile` extra requires `pineforge-codegen` >= 1.1.0 and < 2, so install the release
-that matches your engine (`pineforge-codegen==1.10.0` for the gitlinks). The native adapter
+that matches your engine (`pineforge-codegen==1.11.0` for the gitlinks). The native adapter
 reads the equity statistics by their engine 1.0 names, so it needs engine headers >= 1.1.0
 (including the checked-settings API). Regenerate a precompiled plugin referenced from a
-StudySpec with codegen 1.10.0 and rebuild it against engine v1.10.0: plugins from engine
+StudySpec with codegen 1.11.0 and rebuild it against engine v1.11.0: plugins from engine
 v1.7.x or earlier (ABI 4 or lower) are
-refused with an ABI mismatch. Plugins from engine v1.9.x releases or development builds
-before v1.10.0 may also report ABI 5 and load without an error although they do not pair
+refused with an ABI mismatch. Plugins from engine v1.10.x releases or development builds
+before v1.11.0 may also report ABI 5 and load without an error although they do not pair
 with the pinned releases.
 C++ code that reads `ReportSnapshot::metrics.equity.sharpe_tv` or `sortino_tv` must use
 `sharpe_monthly` or `sortino_monthly`.
@@ -201,7 +201,7 @@ For example, append these controls to a native `run` command:
 Numeric symbol values must be finite and positive; timezone/session values must
 be strings without embedded NULs. Empty strings and omitted fields are no-ops;
 other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
-The four setters mirror the pinned engine v1.10.0 release harness.
+The four setters mirror the pinned engine v1.11.0 release harness.
 
 ### Fixed other-symbol feeds (0.8.0)
 
@@ -238,7 +238,7 @@ sufficient history; there is no network fetching. Initialization validates/hashe
 then every fresh trial installs facts/bars/closes through the public C ABI with no file I/O.
 Index/CSV/setter refusal is exit 1 with `--symbol-feeds:`, before any terminal trial output.
 **`input.symbol` search dimensions are refused (D7)**; such inputs may be fixed only.
-This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.10.0).
+This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.11.0).
 Direct native artifact users must keep the adjacent codegen `manifest.json` when searching
 string-valued inputs. `input.source` and `input.enum` dimensions are supported; only a
 `type: "string"` input requires the manifest's explicit `"input_kind_schema": 1` marker.
@@ -341,7 +341,7 @@ Other values fail initialization (exit 1) with
 `syminfo.series_origin_ms must be a positive integer`.
 
 Applying the grid needs the plugin to export `strategy_set_syminfo_metadata`, which the
-pinned engine v1.10.0 does (declared in `pineforge.h`; the engine honours the
+pinned engine v1.11.0 does (declared in `pineforge.h`; the engine honours the
 `qty_step` key). A plugin without it keeps working when neither `mincontract` nor
 `series_origin_ms` is declared; with either, each trial fails with a `trial_error` that
 names the key and the run exits 2 because no trial is feasible, instead of running
