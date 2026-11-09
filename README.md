@@ -68,8 +68,9 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-The gitlinks pin the releases this HPO revision targets: engine v1.10.0 (`59f98ba`,
-C ABI 5) and codegen v1.10.0 (`47f0e8a`). Linux CI gates the nine-trial example, real
+The gitlinks pin the releases this HPO revision targets: engine v1.11.0
+(`a44723242ea34c8b2b00cb82f4a18e23a26280d5`, C ABI 5) and codegen v1.11.0
+(`702fac4e653219401b7a5d272d158fb9b89650a7`). Linux CI gates the nine-trial example, real
 multi-symbol C-ABI equality and real-artifact D7 refusal; both native CI runners require
 the independently pinned serial golden rather than silently skipping it. From 1.0.0 on,
 codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may still compile,
