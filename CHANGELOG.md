@@ -60,6 +60,17 @@
   leaves runs unchanged, and an engine without the run option ignores the key.
   C++ users get the same through the new `SymbolInfo::series_origin_ms` member.
 
+## 1.11.0 (2026-11-10)
+
+- Pairs with engine v1.11.0 and codegen v1.11.0 (C ABI 5).
+  The optional submodules pin
+  `external/pineforge-engine` (`a44723242ea34c8b2b00cb82f4a18e23a26280d5`) and
+  `external/pineforge-codegen-oss` (`702fac4e653219401b7a5d272d158fb9b89650a7`).
+
+### Known issue
+
+Building the native components from source on macOS fails against engine 1.11.0 (fdatasync unavailable on macOS). Linux is unaffected. Workaround on macOS: stay on hpo 1.10.0. Fixed in the next release.
+
 ## 1.10.0 (2026-11-04)
 
 - Pairs with engine v1.10.0 and codegen v1.10.0 (C ABI 5).
