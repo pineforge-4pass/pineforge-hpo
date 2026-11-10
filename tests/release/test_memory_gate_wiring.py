@@ -91,18 +91,31 @@ class MemoryGateWiringTests(unittest.TestCase):
         ):
             self.assertIn(flag, configure)
         self.assertIn("external/pineforge-engine", configure)
-        self.assertEqual(
-            "\n".join(
-                line
-                for line in configure.splitlines()
-                if not any(
-                    flag in line
-                    for flag in (
-                        "-DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON",
-                        "-DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON",
-                    )
+        shared_configure = "\n".join(
+            line
+            for line in configure.splitlines()
+            if not any(
+                flag in line
+                for flag in (
+                    "-DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON",
+                    "-DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON",
                 )
-            ),
+            )
+        )
+        # Keep the common build/memory workload pinned; only Native CTest's
+        # baseline path and required switch are explicit expected differences.
+        build_tests_anchor = "\n  -DPINEFORGE_HPO_BUILD_TESTS=ON \\\n"
+        self.assertEqual(shared_configure.count(build_tests_anchor), 1)
+        expected_native_configure = shared_configure.replace(
+            build_tests_anchor,
+            "\n"
+            '  -DPINEFORGE_HPO_V012_NATIVE="${{ github.workspace }}/build/'
+            'v012-baseline/bin/pineforge-hpo-native" \\\n'
+            "  -DPINEFORGE_HPO_REQUIRE_V012_BASELINE=ON \\" + build_tests_anchor,
+            1,
+        )
+        self.assertEqual(
+            expected_native_configure,
             native_steps["Configure PineForge HPO"]["run"].rstrip("\n"),
         )
         build = steps["Build"]["run"]

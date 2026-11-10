@@ -1051,21 +1051,34 @@ PF_API void run_backtest_full(pf_strategy_t strategy, pf_bar_t* bars, int bar_co
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
         # The default schedule must give the bytes of v0.12.0: a native binary built from the
         # v0.12.0 tag is compared with this build on the same studies. That needs a second build,
-        # so configure with -DPINEFORGE_HPO_V012_NATIVE=/path/to/pineforge-hpo-native. The test is
-        # always registered; without that path it reports itself skipped (exit status 77) instead
-        # of being absent from the test list.
+        # so configure with -DPINEFORGE_HPO_V012_NATIVE=/path/to/pineforge-hpo-native.
+        # Main/dispatch CI supplies it and sets PINEFORGE_HPO_REQUIRE_V012_BASELINE=ON.
+        # The test is always registered here; a missing baseline fails at runtime in required
+        # mode and reports a skip (exit status 77) only in optional mode.
         set(pfh_v012_native "${PINEFORGE_HPO_V012_NATIVE}")
         if(NOT pfh_v012_native)
             set(pfh_v012_native "not-provided")
+        endif()
+        set(pfh_v012_arguments "")
+        if(PINEFORGE_HPO_REQUIRE_V012_BASELINE)
+            list(APPEND pfh_v012_arguments --require-baseline)
         endif()
         add_test(NAME pineforge_hpo_rolling_default_v012
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_rolling_default_v012.py"
                 $<TARGET_FILE:pineforge-hpo-native>
                 "${pfh_v012_native}"
+                $<TARGET_FILE:pineforge_hpo_fake_strategy>
+                ${pfh_v012_arguments})
+        if(NOT PINEFORGE_HPO_REQUIRE_V012_BASELINE)
+            set_tests_properties(pineforge_hpo_rolling_default_v012 PROPERTIES
+                SKIP_RETURN_CODE 77)
+        endif()
+        add_test(NAME pineforge_hpo_v012_required_baseline
+            COMMAND "${Python3_EXECUTABLE}" -I
+                "${CMAKE_CURRENT_SOURCE_DIR}/test_v012_required_baseline.py"
+                $<TARGET_FILE:pineforge-hpo-native>
                 $<TARGET_FILE:pineforge_hpo_fake_strategy>)
-        set_tests_properties(pineforge_hpo_rolling_default_v012 PROPERTIES
-            SKIP_RETURN_CODE 77)
         add_test(NAME pineforge_hpo_no_improvement
             COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/test_no_improvement.py"
