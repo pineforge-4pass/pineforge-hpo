@@ -78,15 +78,51 @@ static_assert(pfh::return_stats_contract() == pfh::kReturnStatsContract,
 
 namespace pineforge::hpo::cli {
 
+// Explicit study destinations are created once without truncation, including when a path is
+// replaced between preflight and open. Ordinary CLI streams keep their existing open contract.
+class StudyOutputFile final {
+public:
+    explicit StudyOutputFile(const std::filesystem::path& path)
+        : descriptor_(::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666)) {
+        if (descriptor_ < 0)
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_output_io_failed", {}, "cannot create study output: " + path.string());
+    }
+
+    ~StudyOutputFile() { ::close(descriptor_); }
+    StudyOutputFile(const StudyOutputFile&) = delete;
+    StudyOutputFile& operator=(const StudyOutputFile&) = delete;
+
+    void write(const std::string& line) {
+        std::size_t written = 0;
+        while (written < line.size()) {
+            const auto count = ::write(descriptor_, line.data() + written, line.size() - written);
+            if (count < 0 && errno == EINTR)
+                continue;
+            if (count <= 0)
+                throw pfh::TypedHpoError<std::runtime_error>(
+                    "hpo_output_io_failed", {}, "failed writing study output");
+            written += static_cast<std::size_t>(count);
+        }
+    }
+
+private:
+    int descriptor_;
+};
+
 #ifdef PINEFORGE_HPO_PROOF_CURVES
 // Owns only the proof artifact. Each call receives the original full-window snapshot while
 // evaluate_candidate still holds it; no execution or reduction is performed by this writer.
 class ProofCurveWriter {
 public:
-    explicit ProofCurveWriter(const std::filesystem::path& path)
-        : output_(path, std::ios::binary | std::ios::trunc) {
-        if (!output_)
-            throw std::runtime_error("cannot open proof curves file: " + path.string());
+    explicit ProofCurveWriter(const std::filesystem::path& path, bool exclusive = false) {
+        if (exclusive) {
+            study_output_ = std::make_unique<StudyOutputFile>(path);
+        } else {
+            output_.open(path, std::ios::binary | std::ios::trunc);
+            if (!output_)
+                throw std::runtime_error("cannot open proof curves file: " + path.string());
+        }
     }
 
     void write(std::uint64_t trial_id, const std::vector<pf_equity_point_t>& curve) {
@@ -109,14 +145,19 @@ public:
         }
         line << "]}\n";
         std::lock_guard<std::mutex> lock(mutex_);
-        output_ << line.str();
-        output_.flush();
-        if (!output_)
-            throw std::runtime_error("cannot write original proof equity curve");
+        if (study_output_) {
+            study_output_->write(line.str());
+        } else {
+            output_ << line.str();
+            output_.flush();
+            if (!output_)
+                throw std::runtime_error("cannot write original proof equity curve");
+        }
     }
 
 private:
     std::ofstream output_;
+    std::unique_ptr<StudyOutputFile> study_output_;
     std::mutex mutex_;
 };
 #endif
@@ -1321,7 +1362,8 @@ public:
     RunState(const Options& options, Clock::time_point started, TrialArchive& archive,
              std::function<bool()> cancelled,
              TimeoutResult timeout_result,
-             std::function<void(const std::exception&)> timeout_failure)
+             std::function<void(const std::exception&)> timeout_failure,
+             bool exclusive_outputs = false)
         : options_(options), started_(started), archive_(archive),
           cancelled_(std::move(cancelled)), timeout_result_(std::move(timeout_result)),
           timeout_failure_(std::move(timeout_failure)),
@@ -1329,10 +1371,14 @@ public:
         if (options.warm_history)
             next_progress_id_ = options.warm_history->next_id;
         if (!options_.trials_file.empty()) {
-            trials_file_.open(options_.trials_file, std::ios::binary | std::ios::trunc);
-            if (!trials_file_)
-                throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
-                                                             "cannot open --trials-file");
+            if (exclusive_outputs) {
+                study_trials_file_ = std::make_unique<StudyOutputFile>(options_.trials_file);
+            } else {
+                trials_file_.open(options_.trials_file, std::ios::binary | std::ios::trunc);
+                if (!trials_file_)
+                    throw pfh::TypedHpoError<std::runtime_error>("hpo_output_io_failed", {},
+                                                                 "cannot open --trials-file");
+            }
         }
         if (options_.progress_fd >= 0) {
             struct stat descriptor {};
@@ -1524,11 +1570,16 @@ private:
             written += static_cast<std::size_t>(count);
         }
         if (has_trials_file_) {
-            trials_file_ << line;
-            trials_file_.flush();
-            if (!trials_file_)
-                throw pfh::TypedHpoError<std::runtime_error>(
-                    "hpo_output_io_failed", {}, "failed writing terminal trial to --trials-file");
+            if (study_trials_file_) {
+                study_trials_file_->write(line);
+            } else {
+                trials_file_ << line;
+                trials_file_.flush();
+                if (!trials_file_)
+                    throw pfh::TypedHpoError<std::runtime_error>(
+                        "hpo_output_io_failed", {},
+                        "failed writing terminal trial to --trials-file");
+            }
         }
     }
 
@@ -1644,6 +1695,7 @@ private:
     std::map<std::uint64_t, std::string> pending_;
     std::uint64_t next_progress_id_ = 0;
     std::ofstream trials_file_;
+    std::unique_ptr<StudyOutputFile> study_trials_file_;
     const bool has_trials_file_;
     int progress_flags_ = -1;
     long progress_atomic_limit_ = 0;
@@ -2481,6 +2533,66 @@ void refuse_mapped_output_aliases(const Options& options) {
             options, {options.ohlcv_bin, options.ohlcv_bin.string() + ".json"});
 }
 
+std::filesystem::path study_output_identity(const std::filesystem::path& path) {
+    if (path.native().find('\0') != std::string::npos)
+        usage_error("study output paths must not contain NUL");
+    std::error_code error;
+    const auto absolute = std::filesystem::absolute(path, error);
+    if (error)
+        throw pfh::TypedHpoError<std::runtime_error>(
+            "hpo_output_io_failed", {}, "cannot resolve study output: " + path.string());
+    const auto identity = std::filesystem::weakly_canonical(absolute, error);
+    if (error)
+        throw pfh::TypedHpoError<std::runtime_error>(
+            "hpo_output_io_failed", {}, "cannot resolve study output: " + path.string());
+    return identity;
+}
+
+// Preflight every explicit destination before creating either output. Requiring fresh files
+// protects all existing inputs (including indirect feed/plugin metadata) and earlier studies
+// without retaining a registry. Exclusive creation also protects the interval after this check.
+void validate_study_outputs(const StudyOutputs& outputs, const Options& admitted) {
+    const std::filesystem::path destinations[] = {
+        outputs.trials_file,
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+        outputs.proof_curves,
+#endif
+    };
+    const std::filesystem::path reserved[] = {
+        admitted.trials_file, admitted.output, admitted.scheduler_stats, admitted.strategy,
+        admitted.ohlcv, admitted.ohlcv_bin, admitted.warm_start, admitted.candidates,
+        admitted.syminfo, admitted.symbol_feeds_path, admitted.symbol_feeds_spec,
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+        admitted.proof_curves,
+#endif
+    };
+    std::vector<std::filesystem::path> identities;
+    for (const auto& destination : destinations) {
+        if (destination.empty())
+            continue;
+        const auto identity = study_output_identity(destination);
+        if (std::find(identities.begin(), identities.end(), identity) != identities.end())
+            usage_error("study trial/proof outputs must be distinct: " + destination.string());
+        for (const auto& path : reserved) {
+            if (!path.empty() &&
+                (same_dataset_file(path, destination) || study_output_identity(path) == identity))
+                usage_error("study output must not name an admitted path: " + destination.string());
+        }
+        struct stat status {};
+        if (::lstat(destination.c_str(), &status) == 0)
+            usage_error("study output must not overwrite an existing path: " + destination.string());
+        if (errno != ENOENT)
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_output_io_failed", {}, "cannot inspect study output: " + destination.string());
+        const auto parent = destination.parent_path().empty()
+            ? std::filesystem::path(".") : destination.parent_path();
+        if (::stat(parent.c_str(), &status) != 0 || !S_ISDIR(status.st_mode))
+            throw pfh::TypedHpoError<std::runtime_error>(
+                "hpo_output_io_failed", {}, "invalid study output directory: " + parent.string());
+        identities.push_back(identity);
+    }
+}
+
 ContextSelector::ContextSelector(
     std::shared_ptr<const pfh::detail::AdmittedDataCatalogue> catalogue,
     pfh::SearchSpace space, std::string input_title,
@@ -2851,9 +2963,17 @@ void admit_context_continuation(Options& options, const pfh::SearchSpace& space,
 StudyResult run_study_contexts(
     const PreparedStudy& prepared, std::optional<pfh::DatasetView> single_view,
     std::shared_ptr<const ContextSelector> selector,
-    const StudyCallbacks& callbacks, StudyClock::time_point started) {
+    const StudyCallbacks& callbacks, StudyClock::time_point started,
+    const std::optional<StudyOutputs>& outputs) {
     auto options = prepared.options;
     options.context_selector = std::move(selector);
+    if (outputs) {
+        options.trials_file = outputs->trials_file;
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+        options.proof_curve_writer.reset();
+        options.proof_curves = outputs->proof_curves;
+#endif
+    }
     const auto& space = prepared.space;
     const auto& finite_cardinality = prepared.finite_cardinality;
     auto pruner = prepared.pruner;
@@ -2871,6 +2991,17 @@ StudyResult run_study_contexts(
         throw pfh::TypedHpoError<std::invalid_argument>(
             "hpo_invariant", {},
             "wall or trial timeout requires outer publication and exit handlers");
+    if (outputs) {
+        refuse_mapped_output_aliases(options);
+        validate_study_outputs(*outputs, prepared.options);
+    }
+    const auto study_configuration = [&](pfh::BacktestConfiguration configuration) {
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+        if (outputs)
+            configuration.capture_equity_curve = !options.proof_curves.empty();
+#endif
+        return configuration;
+    };
     // All executors and their validation handles are prepared on the coordinator thread.
     // Workers only borrow const plans; no shared configuration changes between trials.
     std::vector<std::unique_ptr<const TrialContextPlan>> contexts;
@@ -2881,13 +3012,17 @@ StudyResult run_study_contexts(
         contexts.reserve(catalogue.contexts().size());
         for (const auto& context : catalogue.contexts()) {
             contexts.push_back(std::make_unique<const TrialContextPlan>(
-                prepared.plugin, context.view, options.context_selector->configuration(context.id),
-                pruner));
+                prepared.plugin, context.view,
+                study_configuration(options.context_selector->configuration(context.id)), pruner));
         }
     } else {
         contexts.push_back(std::make_unique<const TrialContextPlan>(
-            prepared.plugin, *single_view, prepared.configuration, pruner));
+            prepared.plugin, *single_view, study_configuration(prepared.configuration), pruner));
     }
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+    if (outputs && !options.proof_curves.empty())
+        options.proof_curve_writer = std::make_shared<ProofCurveWriter>(options.proof_curves, true);
+#endif
     const auto context_for = [&](const TrialRecord& record) -> const TrialContextPlan& {
         const auto id = record.data_context ? record.data_context->id.value : 0;
         return *contexts.at(static_cast<std::size_t>(id));
@@ -2934,7 +3069,7 @@ StudyResult run_study_contexts(
         if (auto* spool = archive.spool())
             spool->close();
         callbacks.timeout_exit(failure);
-    }, callbacks.timeout_failure);
+    }, callbacks.timeout_failure, outputs.has_value());
     const auto direction = options.direction == Direction::kMaximize
                                ? pfh::ObjectiveDirection::Maximize
                                : pfh::ObjectiveDirection::Minimize;
@@ -3317,17 +3452,18 @@ StudyResult run_study_contexts(
 }
 
 StudyResult run_study(const PreparedStudy& prepared, pfh::DatasetView view,
-                      const StudyCallbacks& callbacks, StudyClock::time_point started) {
-    return run_study_contexts(prepared, std::move(view), nullptr, callbacks, started);
+                      const StudyCallbacks& callbacks, StudyClock::time_point started,
+                      std::optional<StudyOutputs> outputs) {
+    return run_study_contexts(prepared, std::move(view), nullptr, callbacks, started, outputs);
 }
 
 StudyResult run_study(const PreparedStudy& prepared, const StudyCallbacks& callbacks,
-                      StudyClock::time_point started) {
+                      StudyClock::time_point started, std::optional<StudyOutputs> outputs) {
     if (!prepared.context_selector)
         throw pfh::TypedHpoError<std::invalid_argument>(
             "hpo_invariant", {}, "bound study requires an internally prepared context selector");
     return run_study_contexts(
-        prepared, std::nullopt, prepared.context_selector, callbacks, started);
+        prepared, std::nullopt, prepared.context_selector, callbacks, started, outputs);
 }
 
 void publish(const Options& options, const pfh::detail::ResultDocument& json,

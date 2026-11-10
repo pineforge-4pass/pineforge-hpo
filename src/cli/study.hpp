@@ -173,8 +173,8 @@ struct Options {
 
 // Admission is performed once. No sampler, archive, worker pool or spool lives here. The pruner
 // is the admitted initial history (including warm-start rungs), copied into each study.
-// The proof-curve writer and --trials-file destination are shared across sequential run_study
-// calls; they must become per-study before walk-forward.
+// Ordinary calls retain the admitted output defaults. Explicit StudyOutputs replace those
+// trial/proof destinations and never borrow the admitted proof writer.
 struct PreparedStudy {
     Options options;
     SearchSpace space;
@@ -232,18 +232,32 @@ struct StudyResult {
     int exit_code = 2;
 };
 
+// Internal per-invocation destinations, not CLI flags. Empty paths disable the corresponding
+// output, including an inherited default. Nonempty paths must be fresh, distinct files: explicit
+// studies never clobber an existing destination or an admitted input. Publication of the borrowed
+// result document remains the caller's synchronous responsibility.
+struct StudyOutputs {
+    std::filesystem::path trials_file;
+#ifdef PINEFORGE_HPO_PROOF_CURVES
+    std::filesystem::path proof_curves;
+#endif
+};
+
 PreparedStudy prepare(Options options);
 
 // Each invocation owns and destroys its sampler, pruner history, archive, spool, progress writer
-// and workers. The dataset/plugin in prepare are reused; a view may also retain another admitted
-// Dataset with the same execution configuration. No process-global latch is read or reset here.
+// and workers, plus any explicit trial/proof output resources through publication. The
+// dataset/plugin in prepare are reused; a view may also retain another admitted Dataset with the
+// same execution configuration. No process-global latch is read or reset here.
 StudyResult run_study(const PreparedStudy& prepared, DatasetView view,
                       const StudyCallbacks& callbacks = {},
-                      StudyClock::time_point started = StudyClock::now());
+                      StudyClock::time_point started = StudyClock::now(),
+                      std::optional<StudyOutputs> outputs = std::nullopt);
 
 // Internal bound entry point. The selector must already be prepared; the public run path
 // continues to use the single-view overload above.
 StudyResult run_study(const PreparedStudy& prepared, const StudyCallbacks& callbacks,
-                      StudyClock::time_point started = StudyClock::now());
+                      StudyClock::time_point started = StudyClock::now(),
+                      std::optional<StudyOutputs> outputs = std::nullopt);
 
 }  // namespace pineforge::hpo::cli
