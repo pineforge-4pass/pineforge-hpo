@@ -52,6 +52,8 @@ option(PINEFORGE_HPO_REQUIRE_RETURN_STATS_IDENTITY
     "Fail the identity tests when the return-statistics build identity is unbound" OFF)
 option(PINEFORGE_HPO_REQUIRE_SOBOL_IDENTITY
     "Fail the Sobol tests when the Sobol numeric build identity is unbound" OFF)
+option(PINEFORGE_HPO_REQUIRE_V012_BASELINE
+    "Fail the default-schedule comparison when the v0.12.0 native baseline is missing" OFF)
 if(PINEFORGE_HPO_ENABLE_SANITIZERS AND PINEFORGE_HPO_ENABLE_THREAD_SANITIZER)
     message(FATAL_ERROR "AddressSanitizer/UBSan and ThreadSanitizer need separate builds")
 endif()

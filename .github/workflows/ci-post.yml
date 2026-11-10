@@ -275,6 +275,26 @@ jobs:
           -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
           -DPINEFORGE_BUILD_SPEED_BENCH=OFF
 
+      - name: Build v0.12.0 native baseline
+        if: github.event_name != 'pull_request'
+        run: |
+          git worktree add --detach build/v012-baseline-source 4a3983986b58059d880103c580f7ebaab1bdc583
+          test "$(git -C build/v012-baseline-source rev-parse HEAD)" = 4a3983986b58059d880103c580f7ebaab1bdc583
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S build/v012-baseline-source -B build/v012-baseline -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_HPO_BUILD_TESTS=OFF \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=OFF \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON \
+            -DPINEFORGE_ENGINE_ROOT="${{ github.workspace }}/external/pineforge-engine" \
+            "${prefix_args[@]}"
+          cmake --build build/v012-baseline --target pineforge-hpo-native -j4
+          test -x build/v012-baseline/bin/pineforge-hpo-native
+
       - name: Configure PineForge HPO
         if: github.event_name != 'pull_request'
         run: |
@@ -285,6 +305,8 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine \
+            -DPINEFORGE_HPO_V012_NATIVE="${{ github.workspace }}/build/v012-baseline/bin/pineforge-hpo-native" \
+            -DPINEFORGE_HPO_REQUIRE_V012_BASELINE=ON \
             -DPINEFORGE_HPO_BUILD_TESTS=ON \
             -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
             -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
@@ -519,6 +541,26 @@ jobs:
           -DPINEFORGE_BUILD_BENCH_STRATEGIES=OFF
           -DPINEFORGE_BUILD_SPEED_BENCH=OFF
 
+      - name: Build v0.12.0 native baseline
+        if: github.event_name != 'pull_request'
+        run: |
+          git worktree add --detach build/v012-baseline-source 4a3983986b58059d880103c580f7ebaab1bdc583
+          test "$(git -C build/v012-baseline-source rev-parse HEAD)" = 4a3983986b58059d880103c580f7ebaab1bdc583
+          prefix_args=()
+          if [ "${{ runner.os }}" = macOS ]; then
+            prefix_args+=("-DCMAKE_PREFIX_PATH=$(brew --prefix)")
+          fi
+          cmake -S build/v012-baseline-source -B build/v012-baseline -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPINEFORGE_HPO_BUILD_TESTS=OFF \
+            -DPINEFORGE_HPO_BUILD_EXAMPLES=OFF \
+            -DPINEFORGE_HPO_BUILD_ENGINE_ADAPTER=ON \
+            -DPINEFORGE_HPO_BUILD_NATIVE_CLI=ON \
+            -DPINEFORGE_ENGINE_ROOT="${{ github.workspace }}/external/pineforge-engine" \
+            "${prefix_args[@]}"
+          cmake --build build/v012-baseline --target pineforge-hpo-native -j4
+          test -x build/v012-baseline/bin/pineforge-hpo-native
+
       - name: Configure PineForge HPO
         if: github.event_name != 'pull_request'
         run: |
@@ -529,6 +571,8 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPINEFORGE_ENGINE_ROOT=${{ github.workspace }}/external/pineforge-engine \
+            -DPINEFORGE_HPO_V012_NATIVE="${{ github.workspace }}/build/v012-baseline/bin/pineforge-hpo-native" \
+            -DPINEFORGE_HPO_REQUIRE_V012_BASELINE=ON \
             -DPINEFORGE_HPO_BUILD_TESTS=ON \
             -DPINEFORGE_HPO_BUILD_EXAMPLES=ON \
             -DPINEFORGE_HPO_REQUIRE_SERIAL_GOLDEN=ON \
