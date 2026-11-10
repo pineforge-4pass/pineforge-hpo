@@ -387,6 +387,222 @@ std::size_t fd_count(const Path& directory) {
     return count;
 }
 
+void check_output_trial(const detail::Json& trial, int index, int first, int last) {
+    const auto score = fixture_profit(first, last, index + 1);
+    require(detail::json_integer(detail::field(trial, "trial_id")) == index &&
+                detail::field(trial, "status").text() == "ok" &&
+                detail::field(trial, "feasible").value == "true" &&
+                detail::field(trial, "objective").real() == score &&
+                detail::field(trial, "net_profit").real() == score &&
+                detail::json_integer(detail::field(trial, "total_trades")) == index + 1 &&
+                detail::json_integer(detail::field(detail::field(trial, "backtest"),
+                                                   "input_bars_processed")) == last - first + 1,
+            "explicit output trial disagrees with the view's independent arithmetic");
+}
+
+void check_output_document(const std::string& bytes, int first, int last) {
+    const auto document = detail::parse_json(bytes);
+    const auto& trials = detail::field(document, "trials").items;
+    require(trials.size() == 9 &&
+                detail::json_integer(detail::field(document, "trials_completed")) == 9 &&
+                detail::json_integer(detail::field(document, "best_trial_id")) == 8 &&
+                detail::field(document, "best_value").real() == fixture_profit(first, last, 9),
+            "explicit callback document lost the study's trials or winner");
+    for (int index = 0; index < 9; ++index)
+        check_output_trial(trials[static_cast<std::size_t>(index)], index, first, last);
+}
+
+void check_output_trials(const Path& path, int first, int last) {
+    std::istringstream input(read_file(path));
+    std::string line;
+    int count = 0;
+    while (std::getline(input, line)) {
+        require(count < 9, "explicit trial stream has extra records");
+        check_output_trial(detail::parse_json(line), count++, first, last);
+    }
+    require(count == 9, "explicit trial stream lost records");
+}
+
+void check_output_proof(const Path& path, std::uint64_t trials) {
+    // The fake plugin's default original curve has equities 100000 and 100001 and times
+    // 1700000000000 + 60000*i, independently of the view. Pin their binary64 encodings.
+    const std::string bits[] = {"40f86a0000000000", "40f86a1000000000"};
+    std::istringstream input(read_file(path));
+    std::string line;
+    std::uint64_t count = 0;
+    while (std::getline(input, line)) {
+        const auto record = detail::parse_json(line);
+        require(detail::json_integer(detail::field(record, "trial_id")) ==
+                    static_cast<std::int64_t>(count),
+                "explicit proof trial ids were carried over or reordered");
+        const auto& curve = detail::field(record, "curve").items;
+        require(curve.size() == 2, "explicit proof lost the original full curve");
+        for (std::size_t index = 0; index < curve.size(); ++index) {
+            const auto& point = curve[index].items;
+            require(point.size() == 2 &&
+                        detail::json_integer(point[0]) ==
+                            1'700'000'000'000LL + static_cast<std::int64_t>(index) * 60'000 &&
+                        point[1].text() == bits[index],
+                    "explicit proof bytes disagree with the original fixture curve");
+        }
+        ++count;
+    }
+    require(count == trials, "explicit proof did not emit every real trial");
+}
+
+void child_output_scope(const Path& plugin, const Path& csv) {
+#if defined(__linux__)
+    const Path descriptors = "/proc/self/fd";
+#else
+    const Path descriptors = "/dev/fd";
+#endif
+    const auto root = csv.parent_path();
+    const auto inherited_trials = root / "inherited.trials.jsonl";
+    const auto inherited_proof = root / "inherited.proof.jsonl";
+    const auto csv_bytes = read_file(csv);
+    const auto plugin_bytes = read_file(plugin);
+    const auto manifest = plugin.parent_path() / "manifest.json";
+    const auto manifest_bytes = read_file(manifest);
+    files("explicit study inputs and inherited outputs",
+          {plugin, manifest, plugin.parent_path() / "provenance.json", csv,
+           inherited_trials, inherited_proof, descriptors, spool_directory()});
+    write_file(inherited_trials, "reserved ordinary trial destination\n");
+    auto options = study_options(plugin, csv);
+    options.trials_file = inherited_trials;
+    options.proof_curves = inherited_proof;
+    const auto prepared = cli::prepare(std::move(options));
+    const auto* inherited_writer = prepared.options.proof_curve_writer.get();
+    const auto baseline = fd_count(descriptors);
+    const auto targets = [&](const std::string& name) {
+        cli::StudyOutputs outputs;
+        outputs.trials_file = root / (name + ".trials.jsonl");
+        outputs.proof_curves = root / (name + ".proof.jsonl");
+        files("explicit destinations", {outputs.trials_file, outputs.proof_curves});
+        return outputs;
+    };
+    const auto unchanged = [&] {
+        require(fd_count(descriptors) == baseline, "explicit study retained output/spool fds");
+        require(prepared.options.trials_file == inherited_trials &&
+                    prepared.options.proof_curves == inherited_proof &&
+                    prepared.options.proof_curve_writer.get() == inherited_writer &&
+                    prepared.configuration.capture_equity_curve &&
+                    read_file(inherited_trials) == "reserved ordinary trial destination\n" &&
+                    read_file(inherited_proof).empty(),
+                "explicit study changed admitted defaults or used the inherited writer");
+        require(read_file(csv) == csv_bytes && read_file(plugin) == plugin_bytes &&
+                    read_file(manifest) == manifest_bytes,
+                "explicit output changed admitted dataset/plugin inputs");
+    };
+    const auto run = [&](const cli::StudyOutputs& outputs, int first, int last,
+                         const Path& result_path, bool fail_publication) {
+        int publications = 0;
+        cli::StudyCallbacks callbacks;
+        callbacks.publish = [&](const detail::ResultDocument& document,
+                                const cli::StudyStatistics&) {
+            ++publications;
+            std::ostringstream owned;
+            document.write(owned);  // Read the borrowed spool synchronously.
+            check_output_document(owned.str(), first, last);
+            write_file(result_path, owned.str());
+            if (fail_publication) {
+                cli::Options publication;
+                publication.output = root / "absent-output-directory" / "result.json";
+                files("actual failed publication", {publication.output});
+                cli::write_result_file(publication, document);
+            }
+        };
+        const auto result = cli::run_study(prepared,
+            pfh::DatasetView(prepared.dataset, static_cast<std::size_t>(first - 1),
+                             static_cast<std::size_t>(last - first + 1)),
+            callbacks, cli::StudyClock::now(), outputs);
+        require(publications == 1 && result.exit_code == 0 && result.trials_completed == 9 &&
+                    result.best_candidate &&
+                    std::get<std::int64_t>(result.best_candidate->values.at("Length")) == 9 &&
+                    result.best_value == fixture_profit(first, last, 9),
+                "explicit study did not return its real view's owned winner");
+    };
+    const auto a = targets("scope-a");
+    const auto a_result = root / "scope-a.json";
+    run(a, 1, 3, a_result, false);
+    check_output_trials(a.trials_file, 1, 3);
+    check_output_proof(a.proof_curves, 9);
+    const auto a_trials = read_file(a.trials_file);
+    const auto a_proof = read_file(a.proof_curves);
+    const auto a_bytes = read_file(a_result);
+    unchanged();
+
+    const auto expect_error = [&](const std::string& label, const std::string& code,
+                                  const auto& action) {
+        bool rejected = false;
+        try {
+            action();
+        } catch (const pfh::HpoError& error) {
+            require(error.code() == code, label + ": unexpected typed failure: " + error.code());
+            write_file(root / (label + ".error.json"),
+                "{\"code\":" + quoted(error.code()) + ",\"error\":" + quoted(error.what()) + "}\n");
+            rejected = true;
+        }
+        require(rejected, label + ": real operation did not refuse");
+        unchanged();
+        require(read_file(a.trials_file) == a_trials && read_file(a.proof_curves) == a_proof &&
+                    read_file(a_result) == a_bytes,
+                "later invocation changed the first study's output");
+    };
+    const auto refuse = [&](const std::string& label, cli::StudyOutputs outputs,
+                            const std::string& code) {
+        expect_error(label, code, [&] {
+            run(outputs, 5, 8, root / (label + ".unexpected.json"), false);
+        });
+    };
+    auto invalid = targets("alias");
+    invalid.proof_curves = invalid.trials_file;
+    refuse("alias", invalid, "hpo_cli_usage");
+    require(!std::filesystem::exists(invalid.trials_file), "alias refusal created an output");
+    invalid = targets("clobber-trials");
+    const auto uncreated_proof = invalid.proof_curves;
+    invalid.trials_file = a.trials_file;
+    refuse("clobber-trials", invalid, "hpo_cli_usage");
+    require(!std::filesystem::exists(uncreated_proof), "clobber refusal created proof output");
+    invalid = targets("clobber-proof");
+    invalid.proof_curves = a.proof_curves;
+    refuse("clobber-proof", invalid, "hpo_cli_usage");
+    require(!std::filesystem::exists(invalid.trials_file), "clobber refusal created trial output");
+    invalid = targets("dataset-alias");
+    invalid.proof_curves = csv;
+    refuse("dataset-alias", invalid, "hpo_cli_usage");
+    require(!std::filesystem::exists(invalid.trials_file), "input refusal created trial output");
+    invalid = targets("plugin-alias");
+    invalid.trials_file = plugin;
+    refuse("plugin-alias", invalid, "hpo_cli_usage");
+    require(!std::filesystem::exists(invalid.proof_curves), "plugin refusal created proof output");
+    invalid = targets("invalid-directory");
+    invalid.proof_curves = root / "absent-output-directory" / "proof.jsonl";
+    refuse("invalid-directory", invalid, "hpo_output_io_failed");
+    require(!std::filesystem::exists(invalid.trials_file), "invalid path created trial output");
+
+    const auto failed = targets("failed-publication");
+    expect_error("failed-publication", "hpo_output_io_failed", [&] {
+        run(failed, 5, 8, root / "failed-publication.json", true);
+    });
+    check_output_trials(failed.trials_file, 5, 8);
+    check_output_proof(failed.proof_curves, 9);
+    const auto b = targets("scope-b");
+    run(b, 5, 8, root / "scope-b.json", false);
+    check_output_trials(b.trials_file, 5, 8);
+    check_output_proof(b.proof_curves, 9);
+    require(read_file(b.trials_file) != a_trials, "different views produced identical trial rows");
+    require(read_file(a.trials_file) == a_trials && read_file(a.proof_curves) == a_proof &&
+                read_file(a_result) == a_bytes,
+            "second explicit study changed the first study's bytes");
+    cli::StudyOutputs disabled;
+    run(disabled, 1, 3, root / "scope-disabled.json", false);
+    unchanged();
+    std::cout << "{\"verdict\":\"PASS\",\"views\":[[1,3],[5,8]],\"trials_per_study\":9,"
+                 "\"best_values\":[" << fixture_profit(1, 3, 9) << ','
+              << fixture_profit(5, 8, 9)
+              << "],\"proof_records_per_study\":9,\"baseline_fds\":" << baseline << "}\n";
+}
+
 class CountingBuffer final : public std::streambuf {
 public:
     std::uint64_t bytes = 0;
@@ -429,32 +645,73 @@ void child_lifecycle(const Path& plugin, const Path& csv, int studies, const std
     callbacks.publish = [&](const detail::ResultDocument& document, const cli::StudyStatistics&) {
         document.write(discarded);  // Exercise sealing AND reading the real anonymous spool.
     };
+    int invocation = 0;
+    const auto outputs_for = [&](const std::string& suffix) {
+        cli::StudyOutputs outputs;
+        const auto stem = trials_file.string() + "." + suffix;
+        outputs.trials_file = stem + ".trials.jsonl";
+        outputs.proof_curves = stem + ".proof.jsonl";
+        files("lifecycle explicit outputs", {outputs.trials_file, outputs.proof_curves});
+        return outputs;
+    };
     const auto one_study = [&] {
+        // Keep ordinary-output coverage alongside fresh trial/proof ownership. Each iteration
+        // still executes exactly 1000 trials; four warmups exercise both paths before sampling.
+        const bool scoped = invocation % 2 == 0;
+        std::optional<cli::StudyOutputs> outputs;
+        if (scoped)
+            outputs = outputs_for(std::to_string(invocation));
+        ++invocation;
         const auto before = buffer.bytes;
-        const auto result = cli::run_study(prepared, pfh::DatasetView(prepared.dataset), callbacks);
+        const auto result = cli::run_study(prepared, pfh::DatasetView(prepared.dataset), callbacks,
+                                          cli::StudyClock::now(), outputs);
         require(result.exit_code == 0 && result.trials_completed == 1000 && result.best_candidate &&
                     result.best_value >= 101 && result.best_value <= 200,
                 "lifecycle iteration did not execute a complete real study");
         require(buffer.bytes - before > 1000 * 128,
                 "lifecycle iteration did not read its completed trial spool");
+        if (outputs)
+            check_output_proof(outputs->proof_curves, 1000);
+        require(!prepared.options.proof_curve_writer &&
+                    !prepared.configuration.capture_equity_curve &&
+                    prepared.options.trials_file == trials_file,
+                "lifecycle invocation changed admitted output/capture defaults");
+        return scoped;
     };
     for (int warmup = 0; warmup < 4; ++warmup)
         one_study();
     const auto baseline = fd_count(descriptors);
     {
+        const auto outputs = outputs_for("cancelled");
         auto stopped_callbacks = callbacks;
         stopped_callbacks.cancelled = [] { return true; };
+        bool stopped_published = false;
+        stopped_callbacks.publish = [&](const detail::ResultDocument& document,
+                                        const cli::StudyStatistics&) {
+            stopped_published = true;
+            std::ostringstream owned;
+            document.write(owned);
+            const auto stopped = detail::parse_json(owned.str());
+            require(detail::field(stopped, "stop_reason").text() == "cancelled" &&
+                        detail::json_integer(detail::field(stopped, "trials_completed")) == 0 &&
+                        detail::field(stopped, "trials").items.empty(),
+                    "cancelled invocation published stale trial state");
+        };
         const auto stopped = cli::run_study(
-            prepared, pfh::DatasetView(prepared.dataset), stopped_callbacks);
-        require(stopped.exit_code == 2 && stopped.trials_completed == 0 &&
-                    !stopped.best_candidate,
+            prepared, pfh::DatasetView(prepared.dataset), stopped_callbacks,
+            cli::StudyClock::now(), outputs);
+        require(stopped_published && stopped.exit_code == 2 && stopped.trials_completed == 0 &&
+                    !stopped.best_candidate && read_file(outputs.trials_file).empty() &&
+                    read_file(outputs.proof_curves).empty(),
                 "cancelled study unexpectedly selected a candidate");
     }
     require(fd_count(descriptors) == baseline, "cancelled study retained descriptors");
     std::vector<std::size_t> counts;
     std::vector<std::unique_ptr<char[]>> retained;
+    int explicit_studies = 0;
     for (int index = 0; index < studies; ++index) {
-        one_study();
+        if (one_study())
+            ++explicit_studies;
         if (control == "fd") {
             require(::dup(STDOUT_FILENO) >= 0, "cannot plant fd retention");
         } else if (control == "rss") {
@@ -469,6 +726,8 @@ void child_lifecycle(const Path& plugin, const Path& csv, int studies, const std
     }
     std::cout << "{\"verdict\":\"PASS\",\"studies\":" << studies
               << ",\"trials_per_study\":1000,\"spool_bytes_read\":" << buffer.bytes
+              << ",\"explicit_studies\":" << explicit_studies
+              << ",\"ordinary_studies\":" << studies - explicit_studies
               << ",\"baseline_fds\":" << baseline << ",\"fds\":[";
     for (std::size_t index = 0; index < counts.size(); ++index)
         std::cout << (index ? "," : "") << counts[index];
@@ -479,6 +738,9 @@ void check_lifecycle_document(const detail::Json& document, int studies) {
     require(detail::field(document, "verdict").text() == "PASS" &&
                 detail::json_integer(detail::field(document, "studies")) == studies &&
                 detail::json_integer(detail::field(document, "trials_per_study")) == 1000 &&
+                detail::json_integer(detail::field(document, "explicit_studies")) ==
+                    (studies + 1) / 2 &&
+                detail::json_integer(detail::field(document, "ordinary_studies")) == studies / 2 &&
                 detail::field(document, "spool_bytes_read").real() > 1000 * studies,
             "lifecycle child did not prove completed studies and spool reads");
     const auto baseline = detail::json_integer(detail::field(document, "baseline_fds"));
@@ -539,6 +801,16 @@ void suite(const Path& self, const Path& native, const Path& plugin, const Path&
     require(read_file(pin.output) == expected && read_file(output) == expected,
             "ordinary stdout/result file differ from the hand-derived wire pin");
     row_verdict(pin, "PASS", "all stdout/result bytes equal the independent nine-trial pin");
+
+    const auto scope = run_child(root, "output-scope",
+        {self.string(), "child-output-scope", plugin.string(), csv.string()},
+        {plugin, manifest, csv});
+    require(scope.code == 0 &&
+                detail::field(detail::parse_json(read_file(scope.output)), "verdict").text() ==
+                    "PASS",
+            "output-scope work result failed: " + read_file(scope.errors));
+    row_verdict(scope, "PASS",
+                "distinct view outputs, typed refusals and publication-failure teardown");
 
     // (b) Proves studies, not just executor calls, respect the offset, full-rung classification
     // and view-based pruner lengths. False pass: comparing two wrong subsets without arithmetic.
@@ -778,6 +1050,10 @@ int main(int argc, char** argv) {
             child_lifecycle(checked(argv[2]), checked(argv[3]), std::stoi(argv[4]), argv[5]);
             return 0;
         }
+        if (argc == 4 && std::string(argv[1]) == "child-output-scope") {
+            child_output_scope(checked(argv[2]), checked(argv[3]));
+            return 0;
+        }
         require(argc == 4, "usage: test_study_split NATIVE PLUGIN ARTIFACT_ROOT");
         const auto artifact_root = checked(argv[3]);
         files("artifact directory", {artifact_root});
@@ -788,7 +1064,8 @@ int main(int argc, char** argv) {
         require(std::filesystem::create_directory(root), "run directory already exists");
         suite(checked(argv[0]), checked(argv[1]), checked(argv[2]), root);
         write_file(root / "RUN.COMPLETE", "{\"verdict\":\"PASS\",\"tests\":["
-            "\"crash\",\"ordinary-bytes\",\"view-study\",\"selection\",\"lifecycle\"]}\n");
+            "\"crash\",\"ordinary-bytes\",\"output-scope\",\"view-study\","
+            "\"selection\",\"lifecycle\"]}\n");
         write_file(root / "suite.exit", "0\n");
         return 0;
     } catch (const std::exception& error) {
