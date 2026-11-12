@@ -1,12 +1,12 @@
 {
   "schema": "pineforge-hpo-failure-catalog-diff/v1",
   "from": {
-    "version": "1.10.0",
-    "tag": "v1.10.0",
-    "catalogSha256": "e79fc262d688651bac0347808d88f7f8d48488d4202611cad0667fb80f416f40"
+    "version": "1.11.0",
+    "tag": "v1.11.0",
+    "catalogSha256": "db143f09b7c4ee11b755fc943d9ebaf86f4cc217c85c5781f6fa8d48c6bcfc72"
   },
   "to": {
-    "version": "1.11.0",
+    "version": "1.12.0",
     "catalogSha256": "db143f09b7c4ee11b755fc943d9ebaf86f4cc217c85c5781f6fa8d48c6bcfc72"
   },
   "catalogSchema": {
@@ -14,119 +14,7 @@
     "after": "pineforge-hpo-failure-catalog/v1"
   },
   "metadataChanges": [],
-  "added": [
-    {
-      "code": "hpo_generated_cpp_hash_mismatch",
-      "collection": "codes",
-      "entry": {
-        "class": "request",
-        "retryable": false,
-        "args": {},
-        "templates": [
-          "The checked generated C++ SHA-256 does not match the expected digest."
-        ],
-        "since": "1.11.0"
-      }
-    },
-    {
-      "code": "hpo_generated_cpp_invalid",
-      "collection": "codes",
-      "entry": {
-        "class": "request",
-        "retryable": false,
-        "args": {
-          "reason": {
-            "kind": "string",
-            "values": [
-              "bytes",
-              "diagnostics",
-              "expected_sha256",
-              "metadata",
-              "utf8"
-            ]
-          }
-        },
-        "templates": [
-          "The checked generated C++ input is invalid ({reason})."
-        ],
-        "since": "1.11.0"
-      }
-    },
-    {
-      "code": "hpo_recorded_space_too_large",
-      "collection": "codes",
-      "entry": {
-        "class": "request",
-        "retryable": false,
-        "args": {
-          "actual_bytes": {
-            "kind": "integer"
-          },
-          "max_bytes": {
-            "kind": "integer"
-          }
-        },
-        "templates": [
-          "Recorded space is {actual_bytes} bytes, exceeding the configured {max_bytes} byte limit."
-        ],
-        "since": "1.11.0"
-      }
-    },
-    {
-      "code": "hpo_wrapper_bypass_refused",
-      "collection": "codes",
-      "entry": {
-        "class": "request",
-        "retryable": false,
-        "args": {
-          "route": {
-            "kind": "string",
-            "values": [
-              "artifact_cache",
-              "precompiled_artifact",
-              "request_cache",
-              "request_cache_locked"
-            ]
-          }
-        },
-        "templates": [
-          "Wrapper-launched preparation cannot bypass required work via {route}."
-        ],
-        "since": "1.11.0"
-      }
-    },
-    {
-      "code": "hpo_wrapper_codegen_unsupported",
-      "collection": "codes",
-      "entry": {
-        "class": "environment",
-        "retryable": false,
-        "args": {
-          "policy": {
-            "kind": "string",
-            "values": [
-              "installed_version_and_source_hash"
-            ]
-          },
-          "reason": {
-            "kind": "string",
-            "values": [
-              "below_floor",
-              "prerelease",
-              "source_unverifiable",
-              "unavailable",
-              "version_invalid",
-              "version_unknown"
-            ]
-          }
-        },
-        "templates": [
-          "Wrapper codegen does not meet {policy} ({reason})."
-        ],
-        "since": "1.11.0"
-      }
-    }
-  ],
+  "added": [],
   "changed": [],
   "removed": [],
   "deprecated": []

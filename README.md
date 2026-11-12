@@ -68,9 +68,9 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-The gitlinks pin the releases this HPO revision targets: engine v1.11.0
-(`a44723242ea34c8b2b00cb82f4a18e23a26280d5`, C ABI 5) and codegen v1.11.0
-(`702fac4e653219401b7a5d272d158fb9b89650a7`). Linux CI gates the nine-trial example, real
+The gitlinks pin the releases this HPO revision targets: engine v1.12.0
+(`6e27d0f29460e44270d1e497c09062fbdc8470bc`, C ABI 5) and codegen v1.12.0
+(`126e055f07b316a2b4a1a56451f98beaf52ac927`). Linux CI gates the nine-trial example, real
 multi-symbol C-ABI equality and real-artifact D7 refusal; both native CI runners require
 the independently pinned serial golden rather than silently skipping it. From 1.0.0 on,
 codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may still compile,
@@ -79,13 +79,13 @@ same behavior. An enum input's categorical choice is accepted in either form a S
 may carry: the manifest tag (for example `Side.long`) or the member's ordinal, so a study
 written for either form runs against a codegen 1.4.0 or later artifact. The optional
 `transpile` extra requires `pineforge-codegen` >= 1.1.0 and < 2, so install the release
-that matches your engine (`pineforge-codegen==1.11.0` for the gitlinks). The native adapter
+that matches your engine (`pineforge-codegen==1.12.0` for the gitlinks). The native adapter
 reads the equity statistics by their engine 1.0 names, so it needs engine headers >= 1.1.0
 (including the checked-settings API). Regenerate a precompiled plugin referenced from a
-StudySpec with codegen 1.11.0 and rebuild it against engine v1.11.0: plugins from engine
+StudySpec with codegen 1.12.0 and rebuild it against engine v1.12.0: plugins from engine
 v1.7.x or earlier (ABI 4 or lower) are
-refused with an ABI mismatch. Plugins from engine v1.10.x releases or development builds
-before v1.11.0 may also report ABI 5 and load without an error although they do not pair
+refused with an ABI mismatch. Plugins from engine v1.11.x releases or development builds
+before v1.12.0 may also report ABI 5 and load without an error although they do not pair
 with the pinned releases.
 C++ code that reads `ReportSnapshot::metrics.equity.sharpe_tv` or `sortino_tv` must use
 `sharpe_monthly` or `sortino_monthly`.
@@ -201,7 +201,7 @@ For example, append these controls to a native `run` command:
 Numeric symbol values must be finite and positive; timezone/session values must
 be strings without embedded NULs. Empty strings and omitted fields are no-ops;
 other catalog fields are ignored. Symbol timezone is distinct from chart timezone.
-The four setters mirror the pinned engine v1.11.0 release harness.
+The four setters mirror the pinned engine v1.12.0 release harness.
 
 ### Fixed other-symbol feeds (0.8.0)
 
@@ -238,7 +238,7 @@ sufficient history; there is no network fetching. Initialization validates/hashe
 then every fresh trial installs facts/bars/closes through the public C ABI with no file I/O.
 Index/CSV/setter refusal is exit 1 with `--symbol-feeds:`, before any terminal trial output.
 **`input.symbol` search dimensions are refused (D7)**; such inputs may be fixed only.
-This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.11.0).
+This requires engine/codegen **>= 1.1.0** (the optional submodules pin v1.12.0).
 Direct native artifact users must keep the adjacent codegen `manifest.json` when searching
 string-valued inputs. `input.source` and `input.enum` dimensions are supported; only a
 `type: "string"` input requires the manifest's explicit `"input_kind_schema": 1` marker.
@@ -341,7 +341,7 @@ Other values fail initialization (exit 1) with
 `syminfo.series_origin_ms must be a positive integer`.
 
 Applying the grid needs the plugin to export `strategy_set_syminfo_metadata`, which the
-pinned engine v1.11.0 does (declared in `pineforge.h`; the engine honours the
+pinned engine v1.12.0 does (declared in `pineforge.h`; the engine honours the
 `qty_step` key). A plugin without it keeps working when neither `mincontract` nor
 `series_origin_ms` is declared; with either, each trial fails with a `trial_error` that
 names the key and the run exits 2 because no trial is feasible, instead of running
