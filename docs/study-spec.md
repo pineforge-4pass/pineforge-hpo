@@ -163,7 +163,7 @@ Use chart-native bars (`input_tf == script_tf`, with bare unit aliases accepted)
 When a future manifest supplies symbol options, the HPO-side preflight contract
 requires a non-empty list of unique strings and preserves its declaration order.
 This validation does not admit symbol search while D7 is in force.
-Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.11.0).
+Engine/codegen >= 1.1.0 input-kind metadata is required (the optional pins are v1.12.0).
 `input.source` and `input.enum` search dimensions are supported and cannot be symbols.
 String dimensions require the manifest-level `"input_kind_schema": 1` marker. HPO's builder
 requires a valid modern codegen `requests` list and a separate cached one-line

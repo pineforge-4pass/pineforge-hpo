@@ -60,6 +60,13 @@
   leaves runs unchanged, and an engine without the run option ignores the key.
   C++ users get the same through the new `SymbolInfo::series_origin_ms` member.
 
+## 1.12.0 (2026-11-12)
+
+- Pairs with engine v1.12.0 and codegen v1.12.0 (C ABI 5).
+  The optional submodules pin
+  `external/pineforge-engine` (`6e27d0f29460e44270d1e497c09062fbdc8470bc`) and
+  `external/pineforge-codegen-oss` (`126e055f07b316a2b4a1a56451f98beaf52ac927`).
+
 ## 1.11.0 (2026-11-10)
 
 - Pairs with engine v1.11.0 and codegen v1.11.0 (C ABI 5).
