@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add progress-accounting components and reserved failure codes; not yet wired into the binary.
+
 - Add `--max-recorded-space-bytes N|unlimited` to native and Python `run`. Omission
   and `0` select an automatic inclusive bound of `min(UINT64_MAX, 2 * B)`, where
   `B` is the exact UTF-8 byte length of the complete emitted `space` JSON descriptor

@@ -1,20 +1,233 @@
 {
   "schema": "pineforge-hpo-failure-catalog-diff/v1",
   "from": {
-    "version": "1.11.0",
-    "tag": "v1.11.0",
+    "version": "1.12.0",
+    "tag": "v1.12.0",
     "catalogSha256": "db143f09b7c4ee11b755fc943d9ebaf86f4cc217c85c5781f6fa8d48c6bcfc72"
   },
   "to": {
-    "version": "1.12.0",
-    "catalogSha256": "db143f09b7c4ee11b755fc943d9ebaf86f4cc217c85c5781f6fa8d48c6bcfc72"
+    "version": null,
+    "unreleased": true,
+    "catalogSha256": "c667dc3627cef99bfdbaf3782beb07adfd110b2bbd2f175223a878fda313a7f3"
   },
   "catalogSchema": {
     "before": "pineforge-hpo-failure-catalog/v1",
     "after": "pineforge-hpo-failure-catalog/v1"
   },
   "metadataChanges": [],
-  "added": [],
+  "added": [
+    {
+      "code": "hpo_fd6_below_floor",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 trial ID is below the projector floor (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_counter_overflow",
+      "collection": "codes",
+      "entry": {
+        "class": "resource",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "FD6 counter arithmetic would overflow"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_duplicate_issue",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 trial ID was issued more than once (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_duplicate_skip",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 trial ID was skipped more than once (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_duplicate_terminal",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 trial ID received a second terminal record (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_finalized",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 projector is finalized (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_flush_finalized",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "FD6 projector is finalized"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_internal",
+      "collection": "codes",
+      "entry": {
+        "class": "internal",
+        "retryable": false,
+        "args": {},
+        "templates": [
+          "FD6 terminal row was already pending",
+          "FD6 terminal ID was already recorded"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_pending_after_skip",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 pending record arrived after a skipped trial (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_pending_after_terminal",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 pending record arrived after a terminal record (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_skip_after_terminal",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 trial was skipped after a terminal record (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_unissued_trial",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 producer record names an unissued trial ID (trial_id={trial_id})",
+          "FD6 skipped record names an unissued trial ID (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    },
+    {
+      "code": "hpo_fd6_unknown_status",
+      "collection": "codes",
+      "entry": {
+        "class": "request",
+        "retryable": false,
+        "args": {
+          "trial_id": {
+            "kind": "integer"
+          }
+        },
+        "templates": [
+          "FD6 producer status is unknown (trial_id={trial_id})"
+        ],
+        "since": "1.13.0"
+      }
+    }
+  ],
   "changed": [],
   "removed": [],
   "deprecated": []
