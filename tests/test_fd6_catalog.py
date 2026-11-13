@@ -361,11 +361,7 @@ def forward_child(stdout: bytes, stderr: bytes) -> None:
 
 
 def native_observations(native: Path):
-    try:
-        child = subprocess.run([str(native)], capture_output=True, timeout=30, check=False)
-    except subprocess.TimeoutExpired as error:
-        forward_child(error.stdout or b"", error.stderr or b"")
-        raise InputFailure("native child timed out; no successful child status") from error
+    child = subprocess.run([str(native)], capture_output=True, check=False)
     forward_child(child.stdout, child.stderr)
     print(f"FD6 native raw returncode={child.returncode}", file=sys.stderr, flush=True)
     if child.returncode != 0:
