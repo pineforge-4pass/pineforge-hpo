@@ -516,7 +516,7 @@ void test_final_flush_closes_holes_once_without_fabricated_rows() {
         projector.flush();
     } catch (const TypedHpoError<std::logic_error>& error) {
         nonfinal_refused = true;
-        require_equal(error.code(), "hpo_fd6_finalized", "wrong sealed-flush refusal code");
+        require_equal(error.code(), "hpo_fd6_flush_finalized", "wrong sealed-flush refusal code");
         require(error.args().empty(), "sealed-flush refusal carried unexpected arguments");
     }
     require(nonfinal_refused, "nonfinal flush after sealing was accepted");

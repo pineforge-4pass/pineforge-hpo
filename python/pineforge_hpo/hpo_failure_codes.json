@@ -19,6 +19,165 @@
       ],
       "since": "0.10.0"
     },
+    "hpo_fd6_below_floor": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 trial ID is below the projector floor (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_counter_overflow": {
+      "class": "resource",
+      "retryable": false,
+      "args": {},
+      "templates": [
+        "FD6 counter arithmetic would overflow"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_duplicate_issue": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 trial ID was issued more than once (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_duplicate_skip": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 trial ID was skipped more than once (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_duplicate_terminal": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 trial ID received a second terminal record (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_finalized": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 projector is finalized (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_flush_finalized": {
+      "class": "request",
+      "retryable": false,
+      "args": {},
+      "templates": [
+        "FD6 projector is finalized"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_internal": {
+      "class": "internal",
+      "retryable": false,
+      "args": {},
+      "templates": [
+        "FD6 terminal row was already pending",
+        "FD6 terminal ID was already recorded"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_pending_after_skip": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 pending record arrived after a skipped trial (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_pending_after_terminal": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 pending record arrived after a terminal record (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_skip_after_terminal": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 trial was skipped after a terminal record (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_unissued_trial": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 producer record names an unissued trial ID (trial_id={trial_id})",
+        "FD6 skipped record names an unissued trial ID (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
+    "hpo_fd6_unknown_status": {
+      "class": "request",
+      "retryable": false,
+      "args": {
+        "trial_id": {
+          "kind": "integer"
+        }
+      },
+      "templates": [
+        "FD6 producer status is unknown (trial_id={trial_id})"
+      ],
+      "since": "1.13.0"
+    },
     "hpo_generated_cpp_hash_mismatch": {
       "class": "request",
       "retryable": false,

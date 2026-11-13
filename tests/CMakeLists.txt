@@ -44,6 +44,17 @@ target_link_libraries(pineforge_hpo_test_fd6_emission PRIVATE PineForgeHPO::core
 target_compile_options(pineforge_hpo_test_fd6_emission PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME pineforge_hpo_fd6_emission COMMAND pineforge_hpo_test_fd6_emission)
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_executable(pineforge_hpo_test_fd6_catalog test_fd6_catalog.cpp)
+target_include_directories(pineforge_hpo_test_fd6_catalog PRIVATE
+    "${PROJECT_SOURCE_DIR}/include")
+target_compile_options(pineforge_hpo_test_fd6_catalog PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME pineforge_hpo_fd6_catalog
+    COMMAND "${Python3_EXECUTABLE}" -I
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_fd6_catalog.py"
+        --native $<TARGET_FILE:pineforge_hpo_test_fd6_catalog>
+        --catalog "${PROJECT_SOURCE_DIR}/python/pineforge_hpo/hpo_failure_codes.json")
+
 add_executable(pineforge_hpo_test_portable_math_canary test_portable_math_canary.cpp)
 target_link_libraries(pineforge_hpo_test_portable_math_canary PRIVATE PineForgeHPO::core)
 target_compile_options(pineforge_hpo_test_portable_math_canary PRIVATE

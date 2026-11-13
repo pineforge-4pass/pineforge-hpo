@@ -117,6 +117,36 @@ the original message. C++ callers can catch their existing
 standard exception family or inspect the `pineforge::hpo::HpoError` metadata mixin
 declared in `include/pineforge/hpo/error.hpp`.
 
+The FD6 emission projector's HPO-owned codes are cataloged from 1.13.0. All have
+`retryable: false`. ID-bearing entries declare an integer `trial_id`; the projector
+retains its unsigned 64-bit value.
+
+| Code | Class | Arguments |
+| --- | --- | --- |
+| `hpo_fd6_below_floor` | `request` | `trial_id` |
+| `hpo_fd6_counter_overflow` | `resource` | `{}` |
+| `hpo_fd6_duplicate_issue` | `request` | `trial_id` |
+| `hpo_fd6_duplicate_skip` | `request` | `trial_id` |
+| `hpo_fd6_duplicate_terminal` | `request` | `trial_id` |
+| `hpo_fd6_finalized` | `request` | `trial_id` |
+| `hpo_fd6_flush_finalized` | `request` | `{}` |
+| `hpo_fd6_internal` | `internal` | `{}` |
+| `hpo_fd6_pending_after_skip` | `request` | `trial_id` |
+| `hpo_fd6_pending_after_terminal` | `request` | `trial_id` |
+| `hpo_fd6_skip_after_terminal` | `request` | `trial_id` |
+| `hpo_fd6_unissued_trial` | `request` | `trial_id` |
+| `hpo_fd6_unknown_status` | `request` | `trial_id` |
+
+Finalized `issue`, `observe` and `skip` retain `hpo_fd6_finalized` with `trial_id`
+and the `std::invalid_argument` family. A sealed `flush(false)` instead reports
+`hpo_fd6_flush_finalized` with no arguments and the existing `std::logic_error`
+family. Internal guards retain `std::logic_error`; overflow retains
+`std::overflow_error`. Catalog templates for ID-bearing errors append
+` (trial_id={trial_id})` to the complete legacy diagnostic. Rendering the catalog
+therefore includes the typed ID while both exception `what()` views remain
+unchanged. The unissued-trial and internal entries each preserve both legacy
+message variants.
+
 The native CLI reports `hpo_seccomp_unavailable`, class `environment`,
 `retryable: false`, when the requested seccomp layer cannot be installed. Its one
 closed string argument, `reason`, is `architecture`, `filter`, `headers`, `kernel`,

@@ -299,7 +299,7 @@ private:
     [[noreturn]] void refuse_sealed_flush() {
         count_refusal(false);
         throw TypedHpoError<std::logic_error>(
-            "hpo_fd6_finalized", {}, "FD6 projector is finalized");
+            "hpo_fd6_flush_finalized", {}, "FD6 projector is finalized");
     }
 
     const std::uint64_t floor_;
