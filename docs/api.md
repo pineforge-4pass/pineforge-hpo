@@ -56,6 +56,24 @@ The `pineforge_hpo` package provides the control-plane API:
   used by the CLI, without starting a native child. Optional keyword-only
   `native`, `compiler`, and `eigen_include` select existing CLI overrides.
 
+`ArtifactBuilder` exposes these keyword-only execution budgets:
+
+| Parameter | Default | Positive explicit value limits |
+|---|---|---|
+| `lock_timeout_seconds: float \| None` | `None` (OFF) | Each wait to acquire an artifact request lock. |
+| `compile_timeout_seconds: float \| None` | `None` (OFF) | The strategy compilation subprocess. |
+| `compiler_probe_timeout_seconds: float \| None` | `None` (OFF) | Each compiler `--version` and `-dumpmachine` subprocess, separately. |
+
+OFF means no time limit. Supply a positive number of seconds to opt in.
+`compiler_probe_timeout_seconds` follows `compile_timeout_seconds` in the
+constructor. `build` and `build_cpp` refuse explicitly nonpositive budgets with
+an `ArtifactBuildError` at stage `configuration` (`build timeouts must be positive`).
+`validate_built_plugin` checks only the lock budget and runs no compiler probes.
+Explicit probe failures retain their configuration error or optional target
+fallback behavior. These budgets do not enter cache identities or metadata.
+They are builder-only parameters; the convenience builder and CLI inherit the
+defaults. Study and trial budgets retain their existing behavior.
+
 ### Checked C++ and wrapper preparation
 
 `ArtifactBuilder.build_cpp(generated_cpp, *, expected_sha256, inputs,

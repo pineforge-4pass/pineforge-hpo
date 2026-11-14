@@ -95,6 +95,15 @@ Per-key advisory locks serialize the first build. Artifact directories and
 request indexes are published atomically. Cache hits re-hash the plugin and
 generated C++ and verify their manifest/provenance identities.
 
+The keyword-only `ArtifactBuilder` parameters `lock_timeout_seconds`,
+`compiler_probe_timeout_seconds` and `compile_timeout_seconds` each default to
+`None` (OFF: no time limit). A positive explicit value opts into a budget for
+each lock acquisition, each compiler version/target probe subprocess, or
+compilation, respectively. The probe budget applies separately to both queries,
+not to their combined duration. Lock polling remains nonblocking with a 50-ms
+cadence. These builder-only budgets stay outside the cache identities; the
+convenience builder and CLI inherit the defaults.
+
 New builds with an engine planner companion record an additive top-level
 `window_plan` block in both version-1 metadata files: its absolute build path
 (audit only), expected SHA-256, planner ABI, engine version/ABI/header/archive
@@ -163,8 +172,10 @@ installation. The method returns the checked artifact. Calling it on an already
 validated entry checks the cache contents without loading or rewriting it.
 
 The plugin load runs user static initializers while the request lock is held.
-A hanging initializer makes other builders that need the same request lock time
-out after `lock_timeout_seconds` (120 seconds by default).
+A hanging initializer makes other builders that need the same request lock wait
+indefinitely by default. Set a positive `lock_timeout_seconds` to opt into an
+acquisition deadline; expiry reports the lock path and deadlock guidance. This
+budget limits waiting for the lock, not the work performed while holding it.
 
 A later default build that finds a pending cache entry validates it under the
 request lock before returning, without compiling again. If the request index is

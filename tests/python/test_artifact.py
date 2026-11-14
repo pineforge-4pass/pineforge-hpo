@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -11,8 +13,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from threading import Event
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
@@ -112,6 +116,161 @@ def validator(_path: Path, abi: int) -> dict:
     return {"abi_version": abi, "required_symbols": REQUIRED_SYMBOLS}
 
 
+@contextmanager
+def controlled_key_lock_backend(lock: _KeyLock, name: str):
+    """Control both API branches without importing the other platform's module."""
+    operation = Mock()
+    lock.path.parent.mkdir(parents=True, exist_ok=True)
+    with lock.path.open("a+b") as handle:
+        descriptor = handle.fileno()
+        if name == "nt":
+            module_name = "msvcrt"
+            backend = SimpleNamespace(locking=operation, LK_NBLCK=2, LK_UNLCK=0)
+            acquire = (descriptor, backend.LK_NBLCK, 1)
+            release = (descriptor, backend.LK_UNLCK, 1)
+        else:
+            module_name = "fcntl"
+            backend = SimpleNamespace(flock=operation, LOCK_EX=2, LOCK_NB=4, LOCK_UN=8)
+            acquire = (descriptor, backend.LOCK_EX | backend.LOCK_NB)
+            release = (descriptor, backend.LOCK_UN)
+        with (
+            patch.dict(sys.modules, {module_name: backend}),
+            patch(
+                "pineforge_hpo.artifact.os",
+                SimpleNamespace(name=name, SEEK_END=os.SEEK_END),
+            ),
+            patch.object(Path, "open", return_value=handle),
+        ):
+            yield operation, handle, acquire, release
+
+
+class KeyLockBackendTest(unittest.TestCase):
+    def test_noncontention_os_errors_stop_and_close_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unavailable.lock"
+            for backend in ("posix", "nt"):
+                for timeout in (None, 7.5):
+                    for error_number in (
+                        errno.ENOLCK,
+                        errno.ENOSYS,
+                        errno.EBADF,
+                        errno.EINVAL,
+                        errno.EIO,
+                        errno.EPERM,
+                        errno.EINTR,
+                        errno.EDEADLK,
+                        None,
+                    ):
+                        with self.subTest(
+                            backend=backend, timeout=timeout, errno=error_number
+                        ):
+                            lock = _KeyLock(path, timeout)
+                            error = OSError(error_number, "lock backend unavailable")
+                            retried = Event()
+
+                            def reject_retry(seconds):
+                                retried.set()
+                                self.fail(
+                                    "non-contention lock error was retried "
+                                    "instead of being reported"
+                                )
+
+                            with controlled_key_lock_backend(lock, backend) as (
+                                operation,
+                                handle,
+                                acquire,
+                                _release,
+                            ):
+                                operation.side_effect = error
+                                with (
+                                    patch(
+                                        "pineforge_hpo.artifact.time.monotonic",
+                                        return_value=0.0,
+                                    ),
+                                    patch(
+                                        "pineforge_hpo.artifact.time.sleep",
+                                        side_effect=reject_retry,
+                                    ) as poll,
+                                    self.assertRaises(ArtifactBuildError) as caught,
+                                ):
+                                    with lock:
+                                        self.fail("failed OS lock was acquired")
+
+                                operation.assert_called_once_with(*acquire)
+                                poll.assert_not_called()
+                                self.assertFalse(retried.is_set())
+                                self.assertTrue(handle.closed)
+                                self.assertIsNone(lock._handle)
+                                self.assertEqual(caught.exception.stage, "cache")
+                                self.assertEqual(
+                                    caught.exception.code, "hpo_output_io_failed"
+                                )
+                                self.assertEqual(caught.exception.failure_args, {})
+                                self.assertIs(caught.exception.__cause__, error)
+                                self.assertIn(str(path), str(caught.exception))
+                                self.assertIn(str(error), str(caught.exception))
+                                lock.__exit__(None, None, None)
+                                operation.assert_called_once_with(*acquire)
+
+    def test_contention_errnos_retry_then_acquire_and_unlock(self) -> None:
+        # These are controlled API contracts, not native Windows execution proof.
+        cases = (
+            ("posix", errno.EACCES),
+            ("posix", errno.EAGAIN),
+            ("posix", errno.EWOULDBLOCK),
+            ("nt", errno.EACCES),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contended.lock"
+            for backend, error_number in cases:
+                for timeout in (None, 7.5):
+                    with self.subTest(
+                        backend=backend, timeout=timeout, errno=error_number
+                    ):
+                        lock = _KeyLock(path, timeout)
+                        released = Event()
+
+                        def release_holder(seconds):
+                            self.assertEqual(seconds, 0.05)
+                            self.assertFalse(released.is_set(), "lock kept retrying")
+                            released.set()
+
+                        with controlled_key_lock_backend(lock, backend) as (
+                            operation,
+                            handle,
+                            acquire,
+                            release,
+                        ):
+                            operation.side_effect = [
+                                OSError(error_number, "lock held by another process"),
+                                None,
+                                None,
+                            ]
+                            with (
+                                patch(
+                                    "pineforge_hpo.artifact.time.monotonic",
+                                    return_value=0.0,
+                                ),
+                                patch(
+                                    "pineforge_hpo.artifact.time.sleep",
+                                    side_effect=release_holder,
+                                ) as poll,
+                            ):
+                                with lock as acquired:
+                                    self.assertIs(acquired, lock)
+                                    self.assertTrue(released.is_set())
+                                    self.assertIs(lock._handle, handle)
+                                    self.assertFalse(handle.closed)
+
+                            poll.assert_called_once_with(0.05)
+                            self.assertEqual(
+                                operation.call_args_list,
+                                [call(*acquire), call(*acquire), call(*release)],
+                            )
+                            self.assertTrue(handle.closed)
+                            self.assertIsNone(lock._handle)
+
+
 class ArtifactBuilderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -150,6 +309,183 @@ class ArtifactBuilderTest(unittest.TestCase):
             plugin_validator=validator,
             **kwargs,
         )
+
+    def build_checked_cpp(self, builder: ArtifactBuilder):
+        generated_cpp = self.transpiled.generated_cpp.encode("utf-8")
+        return builder.build_cpp(
+            generated_cpp,
+            expected_sha256=hashlib.sha256(generated_cpp).hexdigest(),
+            inputs=self.transpiled.inputs,
+            input_kind_schema=None,
+            strategy_params=self.transpiled.strategy_params,
+            request_feed_inventory=None,
+        )
+
+    def resolve_with_recorded_probe_timeouts(self, **kwargs) -> list[float | None]:
+        # Observe the real identity/probe path at the subprocess unit boundary.
+        outputs = {
+            (str(self.compiler.resolve()), "--version"): "fake-cxx 1.2.3\n",
+            (str(self.compiler.resolve()), "-dumpmachine"): "fake-target\n",
+        }
+        observations = []
+
+        def run(command, **options):
+            key = tuple(command)
+            self.assertIn(key, outputs, f"unexpected compiler command: {command}")
+            self.assertEqual(
+                set(options), {"check", "capture_output", "text", "timeout"}
+            )
+            self.assertFalse(options["check"])
+            self.assertTrue(options["capture_output"])
+            self.assertTrue(options["text"])
+            observations.append((key, options["timeout"]))
+            return subprocess.CompletedProcess(
+                command, 0, stdout=outputs[key], stderr=""
+            )
+
+        with patch("pineforge_hpo.artifact.subprocess.run", side_effect=run):
+            identity = self.builder(**kwargs)._resolve_compiler_identity()
+
+        self.assertEqual([command for command, _ in observations], list(outputs))
+        self.assertEqual(identity.path, self.compiler.resolve())
+        self.assertEqual(identity.version_output, "fake-cxx 1.2.3")
+        self.assertEqual(identity.target, "fake-target")
+        return [timeout for _, timeout in observations]
+
+    def test_default_compiler_probes_have_no_timeout(self) -> None:
+        # Parent-compatible RED: no new constructor keyword or fake running process.
+        self.assertEqual(
+            self.resolve_with_recorded_probe_timeouts(),
+            [None, None],
+            "default compiler version and target probes must have no timeout",
+        )
+
+    def test_explicit_compiler_probe_timeout_reaches_both_subprocesses(self) -> None:
+        for timeout in (None, 2.5, 9.0):
+            with self.subTest(timeout=timeout):
+                self.assertEqual(
+                    self.resolve_with_recorded_probe_timeouts(
+                        compiler_probe_timeout_seconds=timeout,
+                        compile_timeout_seconds=17.0,
+                    ),
+                    [timeout, timeout],
+                )
+
+    def test_compiler_version_probe_failures_keep_typed_errors(self) -> None:
+        command = [str(self.compiler.resolve()), "--version"]
+        # Inject subprocess outcomes; this does not measure wall-clock expiration.
+        for timeout in (None, 4.5):
+            for failure in ("os_error", "timeout", "nonzero"):
+                with self.subTest(timeout=timeout, failure=failure):
+                    error = (
+                        OSError("version probe unavailable")
+                        if failure == "os_error"
+                        else subprocess.TimeoutExpired(command, timeout)
+                    )
+
+                    def run(
+                        actual,
+                        expected_timeout=timeout,
+                        outcome=failure,
+                        outcome_error=error,
+                        **options,
+                    ):
+                        self.assertEqual(actual, command)
+                        self.assertEqual(
+                            options,
+                            {
+                                "check": False,
+                                "capture_output": True,
+                                "text": True,
+                                "timeout": expected_timeout,
+                            },
+                        )
+                        if outcome != "nonzero":
+                            raise outcome_error
+                        return subprocess.CompletedProcess(
+                            actual, 23, stdout="version output", stderr="version error"
+                        )
+
+                    with (
+                        patch(
+                            "pineforge_hpo.artifact.subprocess.run", side_effect=run
+                        ) as probe,
+                        self.assertRaises(ArtifactBuildError) as caught,
+                    ):
+                        self.builder(
+                            compiler_probe_timeout_seconds=timeout
+                        )._resolve_compiler_identity()
+
+                    probe.assert_called_once()
+                    self.assertEqual(caught.exception.stage, "configuration")
+                    self.assertEqual(caught.exception.code, "hpo_toolchain_unavailable")
+                    self.assertEqual(
+                        caught.exception.failure_args, {"reason": "configuration"}
+                    )
+                    self.assertEqual(caught.exception.command, tuple(command))
+                    self.assertIn(
+                        "failed to query compiler version", str(caught.exception)
+                    )
+                    if failure == "nonzero":
+                        self.assertEqual(caught.exception.stdout, "version output")
+                        self.assertEqual(caught.exception.stderr, "version error")
+                    else:
+                        self.assertIs(caught.exception.__cause__, error)
+
+    def test_compiler_target_probe_failures_keep_platform_fallback(self) -> None:
+        version_command = [str(self.compiler.resolve()), "--version"]
+        target_command = [str(self.compiler.resolve()), "-dumpmachine"]
+        for timeout in (None, 4.5):
+            for failure in ("os_error", "timeout", "nonzero", "empty"):
+                with self.subTest(timeout=timeout, failure=failure):
+                    commands = []
+
+                    def run(
+                        command, expected_timeout=timeout, outcome=failure, **options
+                    ):
+                        self.assertEqual(
+                            options,
+                            {
+                                "check": False,
+                                "capture_output": True,
+                                "text": True,
+                                "timeout": expected_timeout,
+                            },
+                        )
+                        commands.append(command)
+                        if command == version_command:
+                            return subprocess.CompletedProcess(
+                                command, 0, stdout="fake-cxx 1.2.3", stderr=""
+                            )
+                        self.assertEqual(command, target_command)
+                        if outcome == "os_error":
+                            raise OSError("target probe unavailable")
+                        if outcome == "timeout":
+                            raise subprocess.TimeoutExpired(command, expected_timeout)
+                        return subprocess.CompletedProcess(
+                            command,
+                            23 if outcome == "nonzero" else 0,
+                            stdout="ignored target" if outcome == "nonzero" else "",
+                            stderr="target error" if outcome == "nonzero" else "",
+                        )
+
+                    with (
+                        patch("pineforge_hpo.artifact.subprocess.run", side_effect=run),
+                        patch(
+                            "pineforge_hpo.artifact.platform.system", return_value="OS"
+                        ),
+                        patch(
+                            "pineforge_hpo.artifact.platform.machine", return_value="CPU"
+                        ),
+                    ):
+                        identity = self.builder(
+                            compiler_probe_timeout_seconds=timeout
+                        )._resolve_compiler_identity()
+
+                    self.assertEqual(commands, [version_command, target_command])
+                    self.assertEqual(identity.path, self.compiler.resolve())
+                    self.assertEqual(identity.version_output, "fake-cxx 1.2.3")
+                    self.assertEqual(identity.target, "OS-CPU")
 
     def build_with_recorded_compile_timeouts(self, **kwargs) -> list[float | None]:
         compile_timeouts = []
@@ -203,29 +539,175 @@ class ArtifactBuilderTest(unittest.TestCase):
                 self.assertEqual(caught.exception.stage, "configuration")
 
     def test_lock_timeout_reports_deadlock_and_path(self) -> None:
-        timeout = self.builder().lock_timeout_seconds
+        timeout = self.builder(lock_timeout_seconds=120.0).lock_timeout_seconds
         self.assertEqual(timeout, 120.0)
         lock_path = self.cache / "locks" / "stuck.lock"
-        lock = _KeyLock(lock_path, timeout)
-        locking = "msvcrt.locking" if os.name == "nt" else "fcntl.flock"
-        with (
-            patch(locking, side_effect=BlockingIOError),
-            patch("pineforge_hpo.artifact.time.monotonic", side_effect=[0.0, 120.0]),
-            patch(
-                "pineforge_hpo.artifact.time.sleep",
-                side_effect=AssertionError("expired lock wait must not sleep"),
-            ),
+        for backend, error_number in (
+            ("posix", errno.EACCES),
+            ("posix", errno.EAGAIN),
+            ("posix", errno.EWOULDBLOCK),
+            ("nt", errno.EACCES),
         ):
-            with self.assertRaises(ArtifactBuildError) as caught:
-                with lock:
-                    self.fail("unavailable lock was acquired")
+            with self.subTest(backend=backend, errno=error_number):
+                lock = _KeyLock(lock_path, timeout)
+                with controlled_key_lock_backend(lock, backend) as (
+                    operation,
+                    handle,
+                    acquire,
+                    _release,
+                ):
+                    operation.side_effect = OSError(error_number, "lock is busy")
+                    with (
+                        patch(
+                            "pineforge_hpo.artifact.time.monotonic",
+                            side_effect=[0.0, 120.0],
+                        ),
+                        patch(
+                            "pineforge_hpo.artifact.time.sleep",
+                            side_effect=AssertionError(
+                                "expired lock wait must not sleep"
+                            ),
+                        ),
+                    ):
+                        with self.assertRaises(ArtifactBuildError) as caught:
+                            with lock:
+                                self.fail("unavailable lock was acquired")
 
-        self.assertEqual(caught.exception.stage, "cache")
-        self.assertIn(str(lock_path), str(caught.exception))
-        self.assertIn(
-            "A lock that never frees is a deadlock to report.", str(caught.exception)
+                    self.assertEqual(caught.exception.stage, "cache")
+                    self.assertIn(str(lock_path), str(caught.exception))
+                    self.assertIn(
+                        "A lock that never frees is a deadlock to report.",
+                        str(caught.exception),
+                    )
+                    self.assertIsNone(lock._handle)
+                    self.assertTrue(handle.closed)
+                    operation.assert_called_once_with(*acquire)
+
+    def test_default_lock_wait_survives_former_deadline(self) -> None:
+        # Parent-compatible RED: real advisory contention, controlled clock/release.
+        lock_path = self.cache / "locks" / "contended.lock"
+        holder = _KeyLock(lock_path, 120.0)
+        waiter = _KeyLock(lock_path, self.builder().lock_timeout_seconds)
+        clock = [0.0]
+        polls = []
+        release = Event()
+
+        def poll(seconds):
+            self.assertEqual(seconds, 0.05)
+            polls.append(clock[0])
+            if len(polls) == 1:
+                clock[0] = 121.0
+            elif len(polls) == 2:
+                self.assertIsNotNone(holder._handle)
+                release.set()
+                holder.__exit__(None, None, None)
+            else:
+                self.fail("released advisory lock was not acquired on the next poll")
+
+        with (
+            holder,
+            patch("pineforge_hpo.artifact.time.monotonic", side_effect=lambda: clock[0]),
+            patch("pineforge_hpo.artifact.time.sleep", side_effect=poll),
+        ):
+            try:
+                with waiter:
+                    self.assertTrue(release.is_set(), "waiter bypassed a live lock")
+                    self.assertIsNotNone(waiter._handle)
+            except ArtifactBuildError as error:
+                self.fail(
+                    "default lock wait expired at the former 120-second deadline "
+                    f"while the holder was still live: {error}"
+                )
+
+        self.assertEqual(polls, [0.0, 121.0])
+        self.assertIsNone(holder._handle)
+        self.assertIsNone(waiter._handle)
+        with _KeyLock(lock_path, 0.0):
+            pass
+
+    def test_build_lock_budgets_reach_pine_and_checked_cpp_paths(self) -> None:
+        # Compiler output is the existing finite unit fixture, not a native proof.
+        for entry in ("pine", "checked_cpp"):
+            for index, options in enumerate(
+                ({}, {"lock_timeout_seconds": None}, {"lock_timeout_seconds": 7.5})
+            ):
+                with (
+                    self.subTest(entry=entry, options=options),
+                    patch("pineforge_hpo.artifact._KeyLock", wraps=_KeyLock) as lock,
+                    patch(
+                        "pineforge_hpo.artifact.codegen_identity",
+                        return_value=self.codegen,
+                    ),
+                    patch(
+                        "pineforge_hpo.artifact.transpile_source",
+                        return_value=self.transpiled,
+                    ),
+                ):
+                    builder = self.builder(**options)
+                    artifact = (
+                        builder.build(f"source {index}")
+                        if entry == "pine"
+                        else self.build_checked_cpp(builder)
+                    )
+                    lock.assert_called_once_with(
+                        self.cache.resolve() / "locks" / f"{artifact.request_key}.lock",
+                        options.get("lock_timeout_seconds"),
+                    )
+
+    def test_nonpositive_optional_timeouts_are_refused_before_build_work(self) -> None:
+        for name in ("lock_timeout_seconds", "compiler_probe_timeout_seconds"):
+            for timeout in (0.0, -1.0):
+                for entry in ("pine", "checked_cpp"):
+                    with (
+                        self.subTest(name=name, timeout=timeout, entry=entry),
+                        patch(
+                            "pineforge_hpo.artifact.subprocess.run",
+                            side_effect=AssertionError(
+                                "invalid timeout reached subprocess"
+                            ),
+                        ),
+                        patch(
+                            "pineforge_hpo.artifact.codegen_identity",
+                            side_effect=AssertionError("invalid timeout reached codegen"),
+                        ),
+                        self.assertRaisesRegex(
+                            ArtifactBuildError, "build timeouts must be positive"
+                        ) as caught,
+                    ):
+                        builder = self.builder(**{name: timeout})
+                        if entry == "pine":
+                            builder.build("source")
+                        else:
+                            self.build_checked_cpp(builder)
+                    self.assertEqual(caught.exception.stage, "configuration")
+                    self.assertEqual(caught.exception.code, "hpo_toolchain_unavailable")
+
+    def test_optional_budgets_preserve_request_cache_identity(self) -> None:
+        with (
+            patch("pineforge_hpo.artifact.codegen_identity", return_value=self.codegen),
+            patch(
+                "pineforge_hpo.artifact.transpile_source", return_value=self.transpiled
+            ) as transpile,
+        ):
+            first = self.builder().build("source")
+            before = (
+                first.manifest_path.read_bytes(),
+                first.provenance_path.read_bytes(),
+            )
+            hit = self.builder(
+                lock_timeout_seconds=7.5,
+                compiler_probe_timeout_seconds=2.5,
+                compile_timeout_seconds=17.0,
+            ).build("source")
+
+        self.assertTrue(hit.cache_hit)
+        self.assertEqual(hit.request_key, first.request_key)
+        self.assertEqual(hit.artifact_key, first.artifact_key)
+        self.assertEqual(
+            before, (hit.manifest_path.read_bytes(), hit.provenance_path.read_bytes())
         )
-        self.assertIsNone(lock._handle)
+        transpile.assert_called_once()
+        self.assertEqual(len(self.log.read_text(encoding="utf-8").splitlines()), 1)
 
     def test_content_cache_hit_skips_transpile_and_compile(self) -> None:
         with (
@@ -604,7 +1086,7 @@ class DeferredPluginValidationTests(unittest.TestCase):
         self.assertEqual(self.validate.call_count, 0)
         later_validator.assert_called_once_with(artifact.plugin_path, 2)
         lock.assert_called_once_with(
-            self.cache / "locks" / f"{artifact.request_key}.lock", 120.0
+            self.cache / "locks" / f"{artifact.request_key}.lock", None
         )
         self.assertEqual(validated, artifact)
         for original, document in zip(before, self.documents(validated)):
@@ -620,6 +1102,22 @@ class DeferredPluginValidationTests(unittest.TestCase):
         later_validator.assert_called_once()
         self.assertEqual(self.metadata_bytes(validated), after)
         self.assertEqual(len(self.compiles), 1)
+
+    def test_validation_forwards_optional_lock_timeout(self) -> None:
+        artifact = self.builder(plugin_load="deferred").build("source")
+        for timeout in (None, 7.5):
+            with (
+                self.subTest(timeout=timeout),
+                patch("pineforge_hpo.artifact._KeyLock", wraps=_KeyLock) as lock,
+            ):
+                validated = self.builder(
+                    lock_timeout_seconds=timeout
+                ).validate_built_plugin(artifact)
+                self.assertEqual(validated, artifact)
+                lock.assert_called_once_with(
+                    self.cache / "locks" / f"{artifact.request_key}.lock", timeout
+                )
+        self.validate.assert_called_once_with(artifact.plugin_path, 2)
 
     def test_validation_refuses_malformed_keys(self) -> None:
         artifact = self.builder(plugin_load="deferred").build("source")
@@ -1710,13 +2208,14 @@ class WindowPlanArtifactTests(unittest.TestCase):
         ).start()
         self.builder = self.make_builder(self.cache)
 
-    def make_builder(self, cache: Path) -> ArtifactBuilder:
+    def make_builder(self, cache: Path, **options) -> ArtifactBuilder:
         return ArtifactBuilder(
             engine_root=self.engine,
             cache_dir=cache,
             compiler=self.compiler,
             eigen_include=self.eigen,
             plugin_validator=validator,
+            **options,
         )
 
     def expected_block(self, helper: Path) -> dict:
@@ -2153,7 +2652,7 @@ class WindowPlanArtifactTests(unittest.TestCase):
                 call.args,
                 (
                     self.cache / "locks" / f"{artifact.request_key}.lock",
-                    120.0,
+                    None,
                 ),
             )
         self.assertEqual(
@@ -2168,6 +2667,23 @@ class WindowPlanArtifactTests(unittest.TestCase):
         self.assertEqual(plugin_bytes, b"fake strategy plugin")
         self.assertEqual(self.transpile.call_count, 1)
         self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_enrichment_forwards_optional_lock_timeout(self) -> None:
+        artifact = self.builder.build("source")
+        self.helper.write_bytes(b"abc")
+        for timeout in (None, 7.5):
+            with (
+                self.subTest(timeout=timeout),
+                patch("pineforge_hpo.artifact._KeyLock", wraps=_KeyLock) as lock,
+            ):
+                builder = self.make_builder(self.cache, lock_timeout_seconds=timeout)
+                self.assertEqual(
+                    builder.enrich_window_plan(artifact),
+                    self.expected_block(self.helper),
+                )
+                lock.assert_called_once_with(
+                    self.cache / "locks" / f"{artifact.request_key}.lock", timeout
+                )
 
     def test_second_metadata_write_failure_leaves_selected_execution_refused(
         self,
