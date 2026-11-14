@@ -962,10 +962,12 @@ class DeferredPluginValidationTests(unittest.TestCase):
                     later.validate_built_plugin(artifact)
                 self.assertEqual(caught.exception.stage, "plugin_validation")
                 self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
-                # Only the supplied validator's unconfirmed ABI has its own reason. Its
-                # untyped load error and its unconfirmed symbols stay "validation".
-                reason = "abi" if fault == "abi" else "validation"
-                self.assertEqual(caught.exception.failure_args, {"reason": reason})
+                # All three faults come from a supplied validator, so none has a
+                # step-specific reason: its untyped load error and its unconfirmed
+                # ABI and symbols results all keep the stage default "validation".
+                self.assertEqual(
+                    caught.exception.failure_args, {"reason": "validation"}
+                )
                 later_validator.assert_called_once_with(artifact.plugin_path, 2)
                 self.assertEqual(self.metadata_bytes(artifact), before)
         self.validate.assert_not_called()

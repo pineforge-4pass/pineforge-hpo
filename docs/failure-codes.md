@@ -318,8 +318,8 @@ three steps in order, load, then symbols, then ABI, and reports the first that f
 | --- | --- |
 | `load` | `ctypes.CDLL` raised `OSError` for the plugin file. That `OSError` is the exception's cause and the diagnostic keeps its text. |
 | `symbols` | The loaded library lacks one or more of the eight required exports; the diagnostic lists the missing names in required order. |
-| `abi` | `pf_abi_version()` differs from the engine ABI, or a supplied `plugin_validator` returned a result whose `abi_version` does not confirm the expected engine ABI. |
-| `validation` | Any other `plugin_validation` refusal, for example an untyped exception raised by a supplied validator, a validator result that is not a mapping, a validated plugin that differs from its cache metadata or lacks required-symbol confirmation, or enrichment of an artifact whose validation is still pending. |
+| `abi` | The default validator read `pf_abi_version()` from the loaded library and it differs from the engine ABI; the diagnostic carries both numbers. |
+| `validation` | Any other `plugin_validation` refusal, for example an untyped exception raised by a supplied validator, a result of a supplied validator that `dict()` rejects or whose `abi_version` does not confirm the expected engine ABI, a validated plugin that differs from its cache metadata or lacks required-symbol confirmation on revalidation, or enrichment of an artifact whose validation is still pending. |
 
 The default validator has no separate path or platform step and calls no setter: an
 absent, unreadable or non-library plugin file fails at the load step and reports `load`.
@@ -333,6 +333,20 @@ propagates and keeps its own code, origin, arguments, message and cause, includi
 catalog reason such as `path` or `setter_missing` that the validator itself set; nothing
 is reclassified from its type, stage or text. Any other exception becomes `validation`
 with the original as its cause, and its text is never parsed for a reason.
+
+What a supplied `plugin_validator` returns is only data it chose, not a step the builder
+observed. A result that `dict()` rejects (the conversion error is the cause), or whose
+`abi_version` is absent, `None` or not the expected engine ABI, is therefore refused as
+`validation`: the builder does not infer an `abi` mismatch from missing or differing
+data, and only the default validator's own ABI step reports `abi`.
+
+Required-symbol confirmation is not part of that result check; it belongs to the cache
+metadata check that follows. When a pending artifact is revalidated
+(`validate_built_plugin`, or a cache hit under `plugin_load="build"`), a result that
+confirms the ABI but does not list all eight required exports is refused as
+`validation`. A fresh `plugin_load="build"` compile publishes the artifact first and
+fails the existing publication check instead, at stage `cache` with
+`hpo_output_io_failed`, which has no plugin `reason`.
 
 ## Catalog and release diff
 

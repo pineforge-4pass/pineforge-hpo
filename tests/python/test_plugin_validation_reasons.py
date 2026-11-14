@@ -10,6 +10,10 @@ assertion failure, and it proves nothing about the validator.
 The supplied-validator rows use ``Mock`` objects only as external inputs: the
 exception or result that a caller's validator would raise or return. The code under
 test, ``ArtifactBuilder._run_plugin_validator``, is always the real method.
+
+Only the default validator's own steps report ``load``, ``symbols`` and ``abi``.
+What a supplied validator raises untyped, or returns without confirming the engine
+ABI, stays ``validation``.
 """
 
 from __future__ import annotations
@@ -46,6 +50,11 @@ REQUIRED_SYMBOLS = [
     "run_backtest_full",
     "report_free",
 ]
+# Diagnostics the default validator itself produces for its load, symbols and ABI
+# steps. The native rows assert that the real validator emits exactly these; the
+# untyped-exception row feeds the same text to a supplied validator.
+LOAD_PREFIX = "cannot load compiled strategy plugin: "
+SYMBOLS_PREFIX = "compiled strategy plugin is missing required symbols: "
 # The public failure document documented in docs/failure-codes.md for a load failure.
 LOAD_FAILURE_DOCUMENT = {
     "schema_version": 1,
@@ -57,6 +66,10 @@ LOAD_FAILURE_DOCUMENT = {
         "exit_code": 1,
     },
 }
+
+
+def abi_mismatch_message(actual: int, expected: int) -> str:
+    return f"strategy plugin ABI {actual} does not match engine ABI {expected}"
 
 
 def find_c_compiler() -> str:
@@ -214,7 +227,7 @@ class NativePluginValidationReasonTests(ReasonAssertions, unittest.TestCase):
                     error = self.refusal(entry, path, self.ENGINE_ABI)
                     cause = error.__cause__
                     self.assertIsInstance(cause, OSError)
-                    message = f"cannot load compiled strategy plugin: {cause}"
+                    message = f"{LOAD_PREFIX}{cause}"
                     self.assert_plugin_invalid(error, "load", message)
                     document = failure_document(error, 1)
                     self.assertEqual(document, LOAD_FAILURE_DOCUMENT)
@@ -225,7 +238,7 @@ class NativePluginValidationReasonTests(ReasonAssertions, unittest.TestCase):
         # the absent exports in required order.
         # False pass: one reason for every branch, or a check keyed to a single
         # symbol or to a fixed message.
-        prefix = "compiled strategy plugin is missing required symbols: "
+        prefix = SYMBOLS_PREFIX
         for symbol in REQUIRED_SYMBOLS:
             for name, entry in self.entries():
                 with self.subTest(symbol=symbol, entry=name):
@@ -255,7 +268,7 @@ class NativePluginValidationReasonTests(ReasonAssertions, unittest.TestCase):
         # the library's ABI or the expected one.
         pairs = ((2, 1), (2, 3), (2, 5), (5, 2), (5, 4), (5, 6), (0, 2), (2, 0))
         for lib, want in pairs:
-            message = f"strategy plugin ABI {lib} does not match engine ABI {want}"
+            message = abi_mismatch_message(lib, want)
             for name, entry in self.entries():
                 with self.subTest(library_abi=lib, expected=want, entry=name):
                     error = self.refusal(entry, self.complete[lib], want)
@@ -324,18 +337,32 @@ class SuppliedValidatorSeamTests(ReasonAssertions, unittest.TestCase):
 
     def test_untyped_exceptions_stay_validation(self) -> None:
         # Proves an exception without typed metadata is classified only as
-        # "validation", whatever its text says, and stays the cause. The texts below
-        # resemble load, platform, ABI and symbol diagnostics on purpose.
+        # "validation", whatever its type or text says, and stays the cause. The
+        # texts below resemble load, platform, ABI and symbol diagnostics on purpose.
+        # The production texts are exactly what the default validator itself
+        # produces for its load, symbols and ABI steps (the native rows pin them).
+        # A supplied validator that raises that text as a plain exception, of any of
+        # several types, has taken no such step, so it is still only "validation".
+        # A result that dict() rejects is refused the same way, with the conversion
+        # error as the cause.
         # False pass: parsing diagnostic text, or the exception type, into the
         # load, path, platform, abi or symbols reasons.
-        originals = (
+        originals = [
             RuntimeError("validator exploded"),
             ValueError("bad validator input"),
             OSError("cannot open shared object file: No such file or directory"),
             OSError("operation not supported on this platform"),
             OSError("plugin ABI 3 does not match engine ABI 2"),
             AttributeError("undefined symbol: report_free"),
+        ]
+        production_texts = (
+            LOAD_PREFIX + "/plugins/strategy.so: cannot open shared object file",
+            SYMBOLS_PREFIX + "run_backtest_full, report_free",
+            abi_mismatch_message(3, 2),
         )
+        for text in production_texts:
+            for kind in (RuntimeError, ValueError, OSError, AttributeError):
+                originals.append(kind(text))
         for original in originals:
             with self.subTest(original=repr(original)):
                 supplied = Mock(side_effect=original)
@@ -343,32 +370,36 @@ class SuppliedValidatorSeamTests(ReasonAssertions, unittest.TestCase):
                 self.assertIs(error.__cause__, original)
                 message = f"strategy plugin validation failed: {original}"
                 self.assert_plugin_invalid(error, "validation", message)
-        with self.subTest(returned="not a mapping"):
+        with self.subTest(returned="None, which dict() rejects"):
             error = self.refusal(self.run_validator, Mock(return_value=None))
             self.assertIsInstance(error.__cause__, TypeError)
             message = f"strategy plugin validation failed: {error.__cause__}"
             self.assert_plugin_invalid(error, "validation", message)
 
-    def test_unconfirmed_abi_reports_abi_reason(self) -> None:
-        # Proves a supplied validator whose result does not confirm the expected
-        # engine ABI is refused as "abi" for several expected and returned values,
-        # including a result with no ABI, and that a confirming result is returned
-        # unchanged.
-        # False pass: a constant reason, a check that ignores the expected ABI, or
-        # reporting this branch as the generic "validation".
+    def test_unconfirmed_abi_result_keeps_validation_reason(self) -> None:
+        # Proves a result that a supplied validator returns without confirming the
+        # expected engine ABI keeps the stage default "validation", whether the
+        # returned ABI differs from the expected one (several pairs) or is absent
+        # ({} or None). The builder observed no ABI step here, only what the callback
+        # chose to return, so it infers no "abi" mismatch from it, least of all from
+        # missing data; only the default validator's own ABI step does (native rows).
+        # A confirming result is returned unchanged.
+        # False pass: giving this branch a reason of its own, "abi" in particular,
+        # or a check that ignores the expected ABI.
         message = "strategy plugin validator did not confirm the expected engine ABI"
         for want, got in ((2, 1), (2, 3), (7, 2), (7, 8), (3, 30)):
             with self.subTest(want=want, got=got):
                 result = {"abi_version": got, "required_symbols": REQUIRED_SYMBOLS}
                 supplied = Mock(return_value=result)
                 error = self.refusal(self.run_validator, supplied, want)
-                self.assert_plugin_invalid(error, "abi", message)
+                self.assert_plugin_invalid(error, "validation", message)
                 self.assertIsNone(error.__cause__)
         for label, result in (("empty", {}), ("none", {"abi_version": None})):
             with self.subTest(result=label):
                 supplied = Mock(return_value=result)
                 error = self.refusal(self.run_validator, supplied)
-                self.assert_plugin_invalid(error, "abi", message)
+                self.assert_plugin_invalid(error, "validation", message)
+                self.assertIsNone(error.__cause__)
         for want in (2, 7):
             with self.subTest(confirmed=want):
                 result = {"abi_version": want, "required_symbols": REQUIRED_SYMBOLS}

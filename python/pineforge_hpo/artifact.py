@@ -1658,10 +1658,13 @@ class ArtifactBuilder:
                 "plugin_validation", f"strategy plugin validation failed: {error}"
             ) from error
         if plugin_validation.get("abi_version") != expected_abi:
+            # A supplied validator's result is data it returned, not an observed
+            # mismatch: it keeps the stage default "validation". Only the default
+            # validator's own ABI step reports "abi".
             raise ArtifactBuildError(
                 "plugin_validation",
                 "strategy plugin validator did not confirm the expected engine ABI",
-            ).with_failure("hpo_plugin_invalid", {"reason": "abi"})
+            )
         return plugin_validation
 
     def _validate_plugin(
