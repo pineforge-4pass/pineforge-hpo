@@ -7,6 +7,7 @@ import copy
 import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -378,7 +379,14 @@ class _KeyLock(AbstractContextManager["_KeyLock"]):
 
                     fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return self
-            except (BlockingIOError, OSError):
+            except OSError as error:
+                # POSIX flock may use any of these; Windows LK_NBLCK uses EACCES.
+                if error.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                    self._handle.close()
+                    self._handle = None
+                    raise ArtifactBuildError(
+                        "cache", f"cannot acquire artifact lock: {self.path}: {error}"
+                    ) from error
                 if deadline is not None and time.monotonic() >= deadline:
                     self._handle.close()
                     self._handle = None
