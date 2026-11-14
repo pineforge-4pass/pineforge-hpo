@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Default artifact lock waits and compiler identity probes to OFF (`None`).
+  Opt in with the builder-only `lock_timeout_seconds` and
+  `compiler_probe_timeout_seconds` parameters; explicit lock expiry and compiler
+  error/fallback behavior are retained. Compilation, study and trial budgets and
+  cache identities are unchanged.
+
 - Add progress-accounting components and reserved failure codes; not yet wired into the binary.
 
 - Add `--max-recorded-space-bytes N|unlimited` to native and Python `run`. Omission

@@ -348,7 +348,7 @@ def _default_cache_dir() -> Path:
 class _KeyLock(AbstractContextManager["_KeyLock"]):
     """Small cross-process advisory lock used only around one request key."""
 
-    def __init__(self, path: Path, timeout_seconds: float) -> None:
+    def __init__(self, path: Path, timeout_seconds: float | None) -> None:
         self.path = path
         self.timeout_seconds = timeout_seconds
         self._handle: Any = None
@@ -361,7 +361,11 @@ class _KeyLock(AbstractContextManager["_KeyLock"]):
             self._handle.write(b"\0")
             self._handle.flush()
 
-        deadline = time.monotonic() + self.timeout_seconds
+        deadline = (
+            None
+            if self.timeout_seconds is None
+            else time.monotonic() + self.timeout_seconds
+        )
         while True:
             try:
                 if os.name == "nt":
@@ -375,7 +379,7 @@ class _KeyLock(AbstractContextManager["_KeyLock"]):
                     fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return self
             except (BlockingIOError, OSError):
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     self._handle.close()
                     self._handle = None
                     raise ArtifactBuildError(
@@ -406,9 +410,12 @@ class _KeyLock(AbstractContextManager["_KeyLock"]):
 class ArtifactBuilder:
     """Transpile and compile a Pine strategy once per compatible request identity.
 
-    Compilation has no time limit by default. Set ``compile_timeout_seconds`` to
-    a positive number to limit it; ``None`` means no limit. Artifact lock waits
-    default to 120 seconds; a lock that never frees is a deadlock to report.
+    ``lock_timeout_seconds``, ``compile_timeout_seconds`` and
+    ``compiler_probe_timeout_seconds`` default to ``None`` (OFF: no time limit).
+    Set a positive number to opt into the corresponding limit. The probe budget
+    applies separately to each compiler version/target query. A lock that never
+    frees waits indefinitely with its budget OFF; explicit expiry reports the
+    lock path and deadlock guidance.
     ``plugin_load="deferred"`` skips loading the compiled plugin during a build;
     call ``validate_built_plugin`` later in the process chosen by the caller.
     ``wrapper_launched=True`` requires stable codegen >= 1.10.0 and refuses
@@ -424,8 +431,9 @@ class ArtifactBuilder:
         eigen_include: str | os.PathLike[str] | None = None,
         plugin_validator: Callable[[Path, int], Mapping[str, Any]] | None = None,
         plugin_load: Literal["build", "deferred"] = "build",
-        lock_timeout_seconds: float = 120.0,
+        lock_timeout_seconds: float | None = None,
         compile_timeout_seconds: float | None = None,
+        compiler_probe_timeout_seconds: float | None = None,
         wrapper_launched: bool = False,
     ) -> None:
         self.engine_root = Path(engine_root).expanduser().resolve()
@@ -444,14 +452,19 @@ class ArtifactBuilder:
         self.plugin_load = plugin_load
         self.lock_timeout_seconds = lock_timeout_seconds
         self.compile_timeout_seconds = compile_timeout_seconds
+        self.compiler_probe_timeout_seconds = compiler_probe_timeout_seconds
         if type(wrapper_launched) is not bool:
             raise ArtifactBuildError("configuration", "wrapper_launched must be a bool")
         self.wrapper_launched = wrapper_launched
 
     def _check_build_configuration(self) -> None:
-        if self.lock_timeout_seconds <= 0 or (
-            self.compile_timeout_seconds is not None
-            and self.compile_timeout_seconds <= 0
+        if any(
+            timeout is not None and timeout <= 0
+            for timeout in (
+                self.lock_timeout_seconds,
+                self.compile_timeout_seconds,
+                self.compiler_probe_timeout_seconds,
+            )
         ):
             raise ArtifactBuildError("configuration", "build timeouts must be positive")
         if self.plugin_load not in ("build", "deferred"):
@@ -801,7 +814,7 @@ class ArtifactBuilder:
         The caller supplies process isolation; this method does not install a jail.
         """
 
-        if self.lock_timeout_seconds <= 0:
+        if self.lock_timeout_seconds is not None and self.lock_timeout_seconds <= 0:
             raise ArtifactBuildError("configuration", "build timeouts must be positive")
         keys = (artifact.request_key, artifact.artifact_key)
         if any(
@@ -1241,7 +1254,7 @@ class ArtifactBuilder:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=self.compiler_probe_timeout_seconds,
             )
         except (OSError, subprocess.SubprocessError) as error:
             if allow_failure:
