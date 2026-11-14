@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "expected_cases": 113,
-  "expected_positive_cases": 83,
-  "expected_findings": 84,
-  "expected_clean_cases": 30,
+  "expected_cases": 162,
+  "expected_positive_cases": 109,
+  "expected_findings": 110,
+  "expected_clean_cases": 53,
   "policies": {
     "empty": {
       "version": 1,
@@ -715,6 +715,300 @@
       "name": "scripts/control.sh",
       "source": ["echo '$(timeout 5 ctest)'"],
       "expected": []
+    },
+    {
+      "id": "clean-path-join",
+      "name": "tests/control.py",
+      "source": ["import os", "path = os.path.join(directory, leaf)"],
+      "expected": []
+    },
+    {
+      "id": "clean-path-module-alias",
+      "name": "tests/control.py",
+      "source": ["import os.path as paths", "path = paths.join(directory, leaf)"],
+      "expected": []
+    },
+    {
+      "id": "clean-path-from-import",
+      "name": "tests/control.py",
+      "source": ["from os.path import join as concatenate", "path = concatenate(directory, leaf)"],
+      "expected": []
+    },
+    {
+      "id": "clean-path-call-alias",
+      "name": "tests/control.py",
+      "source": ["import os", "concatenate = os.path.join", "path = concatenate(directory, leaf)"],
+      "expected": []
+    },
+    {
+      "id": "clean-posixpath-join",
+      "name": "tests/control.py",
+      "source": ["import posixpath", "path = posixpath.join(directory, leaf)"],
+      "expected": []
+    },
+    {
+      "id": "clean-ntpath-join",
+      "name": "tests/control.py",
+      "source": ["import ntpath", "path = ntpath.join(directory, leaf)"],
+      "expected": []
+    },
+    {
+      "id": "clean-shlex-join",
+      "name": "tests/control.py",
+      "source": ["import shlex", "command = shlex.join(arguments)"],
+      "expected": []
+    },
+    {
+      "id": "clean-shlex-import-alias",
+      "name": "tests/control.py",
+      "source": ["from shlex import join as display", "command = display(arguments)"],
+      "expected": []
+    },
+    {
+      "id": "clean-shlex-call-alias",
+      "name": "tests/control.py",
+      "source": ["import shlex as words", "display = words.join", "forward = display", "command = forward(arguments)"],
+      "expected": []
+    },
+    {
+      "id": "clean-bytes-join",
+      "name": "tests/control.py",
+      "source": ["payload = b':'.join(chunks)"],
+      "expected": []
+    },
+    {
+      "id": "clean-bytes-join-alias",
+      "name": "tests/control.py",
+      "source": ["separator = b'|'", "combine = separator.join", "payload = combine(chunks)"],
+      "expected": []
+    },
+    {
+      "id": "clean-bytearray-join",
+      "name": "tests/control.py",
+      "source": ["payload = bytearray(b';').join(chunks)"],
+      "expected": []
+    },
+    {
+      "id": "clean-unbound-str-join",
+      "name": "tests/control.py",
+      "source": ["payload = str.join(separator, parts)"],
+      "expected": []
+    },
+    {
+      "id": "clean-unbound-bytes-join",
+      "name": "tests/control.py",
+      "source": ["payload = bytes.join(separator, chunks)"],
+      "expected": []
+    },
+    {
+      "id": "clean-constructed-text-join",
+      "name": "tests/control.py",
+      "source": ["payload = str(value).join(parts)"],
+      "expected": []
+    },
+    {
+      "id": "clean-formatted-text-join",
+      "name": "tests/control.py",
+      "source": ["payload = f'{prefix}:'.join(parts)"],
+      "expected": []
+    },
+    {
+      "id": "clean-loop-text-join",
+      "name": "tests/control.py",
+      "source": ["for separator in (';', '|'):", "    payload = separator.join(parts)"],
+      "expected": []
+    },
+    {
+      "id": "clean-enumerated-text-join",
+      "name": "tests/control.py",
+      "source": ["for index, separator in enumerate((';', '|')):", "    payload = separator.join(parts)"],
+      "expected": []
+    },
+    {
+      "id": "clean-join-result-alias",
+      "name": "tests/control.py",
+      "source": ["import shlex", "display = shlex.join", "separator = display(arguments)", "payload = separator.join(parts)"],
+      "expected": []
+    },
+    {
+      "id": "clean-imported-builtin-join",
+      "name": "tests/control.py",
+      "source": ["from builtins import bytes as octets", "combine = octets.join", "payload = combine(separator, chunks)"],
+      "expected": []
+    },
+    {
+      "id": "python-thread-join-keyword",
+      "name": "tests/control.py",
+      "source": ["import threading", "worker = threading.Thread()", "worker.join(timeout=budget)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-thread-join-import-alias",
+      "name": "tests/control.py",
+      "source": ["from threading import Thread as Task", "worker = Task()", "finish = worker.join", "finish(budget)"],
+      "expected": [[4, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-process-join-positional",
+      "name": "tests/control.py",
+      "source": ["import multiprocessing as mp", "worker = mp.Process()", "worker.join(budget)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-process-join-call-alias",
+      "name": "tests/control.py",
+      "source": ["from multiprocessing import Process as Job", "worker = Job()", "copy = worker", "finish = copy.join", "forward = finish", "forward(budget)"],
+      "expected": [[6, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-reassigned-data-join",
+      "name": "tests/control.py",
+      "source": ["import shlex", "finish = shlex.join", "finish = worker.join", "finish(budget)"],
+      "expected": [[4, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-conditional-data-join",
+      "name": "tests/control.py",
+      "source": ["import os", "finish = os.path.join", "if condition:", "    finish = worker.join", "finish(budget)"],
+      "expected": [[5, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-shadowed-path-import",
+      "name": "tests/control.py",
+      "source": ["import os", "def work(os):", "    os.path.join(budget)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-shadowed-shlex-import",
+      "name": "tests/control.py",
+      "source": ["import shlex", "def work(shlex):", "    shlex.join(budget)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-shadowed-str-symbol",
+      "name": "tests/control.py",
+      "source": ["str = worker", "str.join(budget)"],
+      "expected": [[2, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-shadowed-bytes-symbol",
+      "name": "tests/control.py",
+      "source": ["def work(bytes):", "    bytes.join(budget)"],
+      "expected": [[2, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-rebound-shlex-join",
+      "name": "tests/control.py",
+      "source": ["import shlex", "shlex.join = worker.join", "shlex.join(budget)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-rebound-path-module",
+      "name": "tests/control.py",
+      "source": ["import os", "os.path = worker", "os.path.join(budget)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-thread-join-dynamic-options",
+      "name": "tests/control.py",
+      "source": ["import threading", "finish = threading.Thread().join", "finish(**options)"],
+      "expected": [[3, "python-dynamic-options"]]
+    },
+    {
+      "id": "python-process-join-expanded-timeout",
+      "name": "tests/control.py",
+      "source": ["from multiprocessing import Process", "options = {'timeout': budget}", "finish = Process().join", "finish(**options)"],
+      "expected": [[4, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-unknown-join-positional",
+      "name": "tests/control.py",
+      "source": ["item.join(budget)"],
+      "expected": [[1, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-unknown-join-dynamic-options",
+      "name": "tests/control.py",
+      "source": ["item.join(**options)"],
+      "expected": [[1, "python-dynamic-options"]]
+    },
+    {
+      "id": "python-loop-mixed-join-receivers",
+      "name": "tests/control.py",
+      "source": ["import threading", "for separator in (b':', threading.Thread()):", "    separator.join(budget)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-loop-shadowed-data-alias",
+      "name": "tests/control.py",
+      "source": ["import shlex", "join = shlex.join", "for join in receivers:", "    join(budget)"],
+      "expected": [[4, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-data-join-timeout-keyword",
+      "name": "tests/control.py",
+      "source": ["import shlex", "shlex.join(parts, timeout=budget)"],
+      "expected": [[2, "python-timeout-option"]]
+    },
+    {
+      "id": "python-event-dynamic-options",
+      "name": "tests/control.py",
+      "source": ["from threading import Event as Flag", "ready = Flag()", "await_ready = ready.wait", "await_ready(**options)"],
+      "expected": [[4, "python-dynamic-options"]]
+    },
+    {
+      "id": "clean-module-assignment-join",
+      "name": "tests/control.py",
+      "source": ["import shlex", "helpers = shlex", "display = helpers.join", "command = display(arguments)"],
+      "expected": []
+    },
+    {
+      "id": "clean-saved-data-join-after-rebind",
+      "name": "tests/control.py",
+      "source": ["import shlex", "display = shlex.join", "shlex.join = worker.join", "command = display(arguments)"],
+      "expected": []
+    },
+    {
+      "id": "clean-conditional-text-receiver",
+      "name": "tests/control.py",
+      "source": ["separator = ';'", "if condition:", "    separator = '|'", "payload = separator.join(parts)"],
+      "expected": []
+    },
+    {
+      "id": "python-imported-nonstandard-join",
+      "name": "tests/control.py",
+      "source": ["import data", "data.join(budget)"],
+      "expected": [[2, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-rebound-unknown-join-alias",
+      "name": "tests/control.py",
+      "source": ["import shlex", "shlex.join = finish", "combine = shlex.join", "combine(budget)"],
+      "expected": [[4, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-relative-path-join",
+      "name": "tests/control.py",
+      "source": ["from .os.path import join as finish", "finish(budget)"],
+      "expected": [[2, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-shadowed-enumerate-join",
+      "name": "tests/control.py",
+      "source": ["def work(enumerate):", "    for index, separator in enumerate((';', '|')):", "        separator.join(budget)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-queue-dynamic-options",
+      "name": "tests/control.py",
+      "source": ["from queue import Queue", "messages = Queue()", "receive = messages.get", "receive(**options)"],
+      "expected": [[4, "python-dynamic-options"]]
+    },
+    {
+      "id": "python-unimported-path-join",
+      "name": "tests/control.py",
+      "source": ["os.path.join(budget)"],
+      "expected": [[1, "python-wait-timeout"]]
     }
   ]
 }

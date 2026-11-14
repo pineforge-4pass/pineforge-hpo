@@ -24,10 +24,10 @@ from _no_time_limits import (
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "tests/fixtures/no_time_limits/catalog.json"
-EXPECTED_CASES = 113
-EXPECTED_POSITIVE_CASES = 83
-EXPECTED_FINDINGS = 84
-EXPECTED_CLEAN_CASES = 30
+EXPECTED_CASES = 162
+EXPECTED_POSITIVE_CASES = 109
+EXPECTED_FINDINGS = 110
+EXPECTED_CLEAN_CASES = 53
 
 
 class NoTimeLimitsTest(unittest.TestCase):

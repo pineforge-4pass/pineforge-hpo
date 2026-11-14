@@ -53,6 +53,12 @@ TIME_OPTION = re.compile(
     r"^(?:max_wall|wall_grace|time_limit)(?:_|$)"
 )
 ELAPSED_NAME = re.compile(r"(?:elapsed|deadline|expires|duration|stop_at|end_time)")
+WAIT_METHODS = frozenset(
+    {
+        "wait", "wait_for", "join", "communicate", "get", "acquire",
+        "result", "exception",
+    }
+)
 UNKNOWN = object()
 
 
@@ -558,6 +564,12 @@ class _Scan:
 @dataclass(frozen=True)
 class _Ref:
     name: str
+    resolved: bool = False
+
+
+@dataclass(frozen=True)
+class _Text:
+    """A text/bytes receiver type, without constant source or command contents."""
 
 
 @dataclass(frozen=True)
@@ -618,30 +630,95 @@ class _PythonBindings(ast.NodeVisitor):
         for scope in reversed(self.scopes):
             if name in scope:
                 return scope[name]
+        if name in {"str", "bytes", "bytearray", "enumerate"}:
+            return _Ref("builtins." + name, resolved=True)
         return UNKNOWN
+
+    def attribute_name(self, node: ast.Attribute) -> str:
+        receiver = self.value(node.value)
+        prefix = receiver.name if isinstance(receiver, _Ref) else self.ref(node.value)
+        return prefix + "." + node.attr
 
     def ref(self, node: ast.AST) -> str:
         if isinstance(node, ast.Name):
             value = self.lookup(node.id)
             return value.name if isinstance(value, _Ref) else node.id
         if isinstance(node, ast.Attribute):
-            value = self.value(node.value)
-            prefix = value.name if isinstance(value, _Ref) else self.ref(node.value)
-            return prefix + "." + node.attr
+            value = self.value(node)
+            return value.name if isinstance(value, _Ref) else self.attribute_name(node)
         return ""
+
+    @staticmethod
+    def is_text(value: object) -> bool:
+        return isinstance(value, (str, bytes, bytearray, _Text))
+
+    @staticmethod
+    def data_join(value: object) -> bool:
+        # A spelling alone is insufficient: parameters, assignments and ambiguous
+        # branches can shadow an imported module or a builtin.
+        return isinstance(value, _Ref) and value.resolved and value.name in {
+            "os.path.join", "posixpath.join", "ntpath.join", "shlex.join",
+            "builtins.str.join", "builtins.bytes.join", "builtins.bytearray.join",
+            "<text>.join",
+        }
+
+    @classmethod
+    def merge_value(cls, left: object, right: object) -> object:
+        if left == right:
+            return left
+        if cls.is_text(left) and cls.is_text(right):
+            return _Text()
+        for value in (left, right):
+            if isinstance(value, _Ref):
+                method = value.name.rsplit(".", 1)[-1]
+                if method in WAIT_METHODS:
+                    # Preserve a possible wait through an uncertain alias merge;
+                    # never propagate a data exemption from just one branch.
+                    return _Ref("unknown." + method)
+        return UNKNOWN
+
+    def iteration_value(self, node: ast.AST) -> object:
+        if isinstance(node, ast.Call):
+            function = self.value(node.func)
+            if (
+                isinstance(function, _Ref) and function.resolved
+                and function.name == "builtins.enumerate" and node.args
+            ):
+                return [UNKNOWN, self.iteration_value(node.args[0])]
+        values = self.value(node)
+        if isinstance(values, list) and values:
+            result = values[0]
+            for value in values[1:]:
+                result = self.merge_value(result, value)
+            return result
+        return UNKNOWN
 
     def value(self, node: ast.AST) -> object:
         if isinstance(node, ast.Constant):
             return node.value
+        if isinstance(node, ast.JoinedStr):
+            return _Text()
         if isinstance(node, ast.Name):
             return self.lookup(node.id)
         if isinstance(node, ast.Attribute):
             receiver = self.value(node.value)
-            if node.attr == "join" and isinstance(receiver, str):
-                return _Ref("str.join")
+            if node.attr == "join" and self.is_text(receiver):
+                return _Ref("<text>.join", resolved=True)
             if node.attr == "get" and isinstance(receiver, dict):
                 return _Ref("dict.get")
-            return _Ref(self.ref(node))
+            name = self.attribute_name(node)
+            for scope in reversed(self.scopes):
+                if name in scope:
+                    value = scope[name]
+                    if node.attr in WAIT_METHODS and (
+                        not isinstance(value, _Ref)
+                        or value.name.rsplit(".", 1)[-1] not in WAIT_METHODS
+                    ):
+                        return _Ref("unknown." + node.attr)
+                    return value
+            return _Ref(
+                name, resolved=isinstance(receiver, _Ref) and receiver.resolved
+            )
         if isinstance(node, (ast.List, ast.Tuple)):
             return [self.value(item) for item in node.elts]
         if isinstance(node, ast.Dict):
@@ -670,18 +747,28 @@ class _PythonBindings(ast.NodeVisitor):
             if isinstance(node.op, ast.Add) and type(left) is type(right):
                 if isinstance(left, (str, list)):
                     return left + right
+            if isinstance(node.op, ast.Add) and self.is_text(left) and self.is_text(right):
+                return _Text()
             return UNKNOWN
         if isinstance(node, ast.Call):
             name = self.ref(node.func)
+            function = self.value(node.func)
+            if self.data_join(function):
+                return _Text()
+            if (
+                isinstance(function, _Ref) and function.resolved
+                and name in {"builtins.str", "builtins.bytes", "builtins.bytearray"}
+            ):
+                if name == "builtins.str" and node.args:
+                    value = self.value(node.args[0])
+                    if isinstance(value, (str, _File)):
+                        return value
+                return _Text()
             if name == "pathlib.Path" and node.args:
                 value = self.value(node.args[0])
                 return value if isinstance(value, _File) else _File(
                     value if isinstance(value, str) else ast.dump(node.args[0])
                 )
-            if name == "str" and node.args:
-                value = self.value(node.args[0])
-                if isinstance(value, (str, _File)):
-                    return value
             if self.is_clock(name):
                 return _Clock()
             if name in {
@@ -736,7 +823,8 @@ class _PythonBindings(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             self.scopes[-1][alias.asname or alias.name.split(".")[0]] = _Ref(
-                alias.name if alias.asname else alias.name.split(".")[0]
+                alias.name if alias.asname else alias.name.split(".")[0],
+                resolved=True,
             )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -746,12 +834,16 @@ class _PythonBindings(ast.NodeVisitor):
                 self.add(node, "python-dynamic-code")
             else:
                 self.scopes[-1][alias.asname or alias.name] = _Ref(
-                    (node.module + "." if node.module else "") + alias.name
+                    "." * node.level
+                    + (node.module + "." if node.module else "") + alias.name,
+                    resolved=True,
                 )
 
     def bind(self, target: ast.AST, value: object) -> None:
         if isinstance(target, ast.Name):
             self.scopes[-1][target.id] = value
+        elif isinstance(target, ast.Attribute):
+            self.scopes[-1][self.attribute_name(target)] = value
         elif isinstance(target, (ast.Tuple, ast.List)):
             for index, item in enumerate(target.elts):
                 self.bind(
@@ -835,8 +927,7 @@ class _PythonBindings(ast.NodeVisitor):
         right_generated = self.generated
         # A conditional None must never erase a finite value from another path.
         self.scopes[-1] = {
-            key: left.get(key, UNKNOWN)
-            if left.get(key, UNKNOWN) == right.get(key, UNKNOWN) else UNKNOWN
+            key: self.merge_value(left.get(key, UNKNOWN), right.get(key, UNKNOWN))
             for key in left.keys() | right.keys()
         }
         self.generated = {
@@ -846,7 +937,7 @@ class _PythonBindings(ast.NodeVisitor):
             for key in left_generated.keys() | right_generated.keys()
         }
 
-    def poll(self, node: ast.While | ast.For) -> None:
+    def poll(self, node: ast.While | ast.For | ast.AsyncFor) -> None:
         original = deepcopy(self.scopes[-1], {id(UNKNOWN): UNKNOWN})
         original_generated = self.generated.copy()
         if isinstance(node, ast.While) and self.clocky(node.test):
@@ -863,11 +954,20 @@ class _PythonBindings(ast.NodeVisitor):
                 ):
                     self.poll_tests.add(id(item.test))
                     self.add(item.test, "python-poll-deadline")
-        self.generic_visit(node)
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            self.visit(node.iter)
+            self.bind(
+                node.target,
+                self.iteration_value(node.iter) if isinstance(node, ast.For) else UNKNOWN,
+            )
+            self.visit(node.target)
+            for statement in (*node.body, *node.orelse):
+                self.visit(statement)
+        else:
+            self.generic_visit(node)
         after = self.scopes[-1]
         self.scopes[-1] = {
-            key: original.get(key, UNKNOWN)
-            if original.get(key, UNKNOWN) == after.get(key, UNKNOWN) else UNKNOWN
+            key: self.merge_value(original.get(key, UNKNOWN), after.get(key, UNKNOWN))
             for key in original.keys() | after.keys()
         }
         after_generated = self.generated
@@ -1392,19 +1492,17 @@ class _Python(_PythonBindings):
             ), True
         elif name == "pytest.mark.timeout":
             kind, position, zero_disables = "pytest-timeout", 0, True
-        elif method in {
-            "wait", "wait_for", "join", "communicate", "get", "acquire",
-            "result", "exception",
-        }:
+        elif method in WAIT_METHODS:
             receiver = (
                 self.value(node.func.value)
                 if isinstance(node.func, ast.Attribute) else UNKNOWN
             )
-            # str.join and dict.get are data operations, not bounded waits.
+            # Only proven data receivers/callees exclude join's positional
+            # arguments from wait handling. Unknown receivers remain possible waits.
             if not (
                 (
                     method == "join"
-                    and (isinstance(receiver, (str, list)) or name == "str.join")
+                    and self.data_join(self.value(node.func))
                 )
                 or (
                     method == "get"
