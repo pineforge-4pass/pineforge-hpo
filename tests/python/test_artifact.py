@@ -2647,9 +2647,9 @@ class WindowPlanArtifactTests(unittest.TestCase):
             )
         self.assertEqual(publish.call_count, 2)
         self.assertEqual(lock.call_count, 2)
-        for call in lock.call_args_list:
+        for lock_call in lock.call_args_list:
             self.assertEqual(
-                call.args,
+                lock_call.args,
                 (
                     self.cache / "locks" / f"{artifact.request_key}.lock",
                     None,
