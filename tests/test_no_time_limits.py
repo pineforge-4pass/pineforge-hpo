@@ -6,11 +6,21 @@ CTest still invokes both through this file, without an execution time cap.
 """
 
 from copy import deepcopy
+import importlib.util
 import json
 from pathlib import Path
+import sys
 import unittest
 
-from _no_time_limits import (
+# CTest runs this file with `python -I`, which leaves the script's directory
+# off sys.path, so load the sibling scanner module by its path.
+_SCANNER_SPEC = importlib.util.spec_from_file_location(
+    "_no_time_limits", Path(__file__).resolve().with_name("_no_time_limits.py"))
+_SCANNER = importlib.util.module_from_spec(_SCANNER_SPEC)
+sys.modules["_no_time_limits"] = _SCANNER
+_SCANNER_SPEC.loader.exec_module(_SCANNER)
+
+from _no_time_limits import (  # noqa: E402
     Finding,
     POLICY_PATH,
     parse_policy,
