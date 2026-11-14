@@ -16,7 +16,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, BinaryIO, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterator, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from .native_identity import ProducerValues
 
 from . import __version__
 from .artifact import (
@@ -1174,11 +1177,16 @@ def prepare_run(
     warm_start: str | Path | None = None,
     symbol_feeds: str | Path | None = None,
     wrapper_launched: bool = False,
+    producer_values_sink: Callable[[ProducerValues], None] | None = None,
+    producer_identity_sink: Callable[[bytes], None] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """Validate/build once and return native argv and artifact JSON without launching.
 
     Wrapper launches require the codegen floor and source compilation; prebuilt
     plugins and early builder cache returns are refused only in that mode.
+    Optional sinks receive local producer values or canonical producer evidence
+    bytes after native argv preparation. They share one observation and add no
+    fields to the artifact JSON or cache records.
     """
     if type(wrapper_launched) is not bool:
         raise CliError("wrapper_launched must be a bool")
@@ -1303,6 +1311,34 @@ def prepare_run(
         )
     if warm_start is not None:
         command.extend(("--warm-start", str(Path(warm_start).expanduser().resolve())))
+    if producer_values_sink is not None or producer_identity_sink is not None:
+        from .native_identity import (
+            prepare_producer_values,
+            serialize_producer_identity,
+        )
+
+        values = (
+            built.producer_values(
+                study,
+                compiled_source=source,
+                wrapper_launched=wrapper_launched,
+                native_command=command,
+            )
+            if study.strategy.source is not None
+            else prepare_producer_values(
+                study, wrapper_launched=wrapper_launched, native_command=command
+            )
+        )
+        identity_bytes = (
+            serialize_producer_identity(values)
+            if producer_identity_sink is not None
+            else None
+        )
+        if producer_values_sink is not None:
+            producer_values_sink(values)
+        if producer_identity_sink is not None:
+            assert identity_bytes is not None
+            producer_identity_sink(identity_bytes)
     return command, artifact
 
 

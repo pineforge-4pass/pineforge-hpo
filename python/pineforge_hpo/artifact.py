@@ -18,7 +18,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Callable, Literal, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from .native_identity import ProducerValues
+    from .study_spec import StudySpec
 
 from .error import HpoError
 
@@ -189,6 +193,25 @@ class StrategyArtifact:
         """Compatibility alias for callers that call plugins libraries."""
 
         return self.plugin_path
+
+    def producer_values(
+        self,
+        study: StudySpec,
+        *,
+        compiled_source: str,
+        wrapper_launched: bool = False,
+        native_command: Sequence[str] | None = None,
+    ) -> ProducerValues:
+        """Prepare local source/build values without altering cache metadata."""
+        from .native_identity import prepare_producer_values
+
+        return prepare_producer_values(
+            study,
+            self,
+            compiled_source=compiled_source,
+            wrapper_launched=wrapper_launched,
+            native_command=native_command,
+        )
 
 
 @dataclass(frozen=True)
