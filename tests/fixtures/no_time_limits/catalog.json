@@ -1,0 +1,720 @@
+{
+  "version": 1,
+  "expected_cases": 113,
+  "expected_positive_cases": 83,
+  "expected_findings": 84,
+  "expected_clean_cases": 30,
+  "policies": {
+    "empty": {
+      "version": 1,
+      "reviewed_on": "2026-11-14",
+      "authority": "owner 11-06 CI rule",
+      "data": "production",
+      "jobs": []
+    },
+    "cd": {
+      "version": 1,
+      "reviewed_on": "2026-11-14",
+      "authority": "owner 11-06 CI rule",
+      "data": "control",
+      "jobs": [{
+        "workflow": ".github/workflows/control.yml",
+        "job": "publish",
+        "purpose": "deploy",
+        "measured_on": "2026-11-13",
+        "measured_max_seconds": 120,
+        "margin_seconds": 60,
+        "timeout_minutes": 3,
+        "evidence": "CONTROL DATA ONLY: synthetic 120 second maximum plus 60 second margin"
+      }]
+    }
+  },
+  "cases": [
+    {
+      "id": "python-run-keyword",
+      "name": "tests/nested/control.py",
+      "source": ["import subprocess", "subprocess.run(command, timeout=5)"],
+      "expected": [[2, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-multiline",
+      "name": "scripts/control.py",
+      "source": ["import subprocess", "subprocess.check_call(", "    command,", "    timeout=limit,", ")"],
+      "expected": [[4, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-import-alias",
+      "name": "setup.py",
+      "source": ["from subprocess import check_output as capture", "capture(command, timeout=2)"],
+      "expected": [[2, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-call-alias",
+      "name": "tests/helpers/control.py",
+      "source": ["import subprocess as sp", "launch = sp.run", "launch(command, timeout=limit)"],
+      "expected": [[3, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-options-name",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "options = {'timeout': 7}", "subprocess.run(command, **options)"],
+      "expected": [[3, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-options-inline",
+      "name": "tests/control.py",
+      "source": ["from subprocess import run", "run(command, **{'timeout': budget})"],
+      "expected": [[2, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-options-update",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "options = {}", "options.update(timeout=7)", "subprocess.run(command, **options)"],
+      "expected": [[4, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-wait-keyword",
+      "name": "tests/control.py",
+      "source": ["child.wait(timeout=budget)"],
+      "expected": [[1, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-wait-positional",
+      "name": "tests/control.py",
+      "source": ["child.wait(3)"],
+      "expected": [[1, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-join-alias",
+      "name": "tests/control.py",
+      "source": ["finish = worker.join", "finish(4)"],
+      "expected": [[2, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-communicate-positional",
+      "name": "tests/control.py",
+      "source": ["child.communicate(None, budget)"],
+      "expected": [[1, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-queue-keyword",
+      "name": "tests/control.py",
+      "source": ["from queue import Queue", "messages = Queue()", "messages.get(timeout=4)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-queue-positional",
+      "name": "tests/control.py",
+      "source": ["import queue as q", "messages = q.Queue()", "receive = messages.get", "receive(True, 3)"],
+      "expected": [[4, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-event-alias",
+      "name": "tests/control.py",
+      "source": ["from threading import Event as Flag", "ready = Flag()", "await_ready = ready.wait", "await_ready(4)"],
+      "expected": [[4, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-asyncio-positional",
+      "name": "tests/control.py",
+      "source": ["import asyncio", "asyncio.wait_for(work(), 3)"],
+      "expected": [[2, "python-async-timeout"]]
+    },
+    {
+      "id": "python-asyncio-options",
+      "name": "tests/control.py",
+      "source": ["from asyncio import wait_for as bounded", "options = {'timeout': limit}", "bounded(work(), **options)"],
+      "expected": [[3, "python-async-timeout"]]
+    },
+    {
+      "id": "python-asyncio-context",
+      "name": "tests/control.py",
+      "source": ["import asyncio", "async def main():", "    async with asyncio.timeout(3):", "        await work()"],
+      "expected": [[3, "python-async-timeout"]]
+    },
+    {
+      "id": "python-alarm-alias",
+      "name": "tests/control.py",
+      "source": ["from signal import alarm as arm", "arm(3)"],
+      "expected": [[2, "python-alarm"]]
+    },
+    {
+      "id": "python-setitimer",
+      "name": "tests/control.py",
+      "source": ["import signal as signals", "signals.setitimer(signals.ITIMER_REAL, budget)"],
+      "expected": [[2, "python-alarm"]]
+    },
+    {
+      "id": "python-poll-condition",
+      "name": "tests/control.py",
+      "source": ["from time import monotonic as clock, sleep as pause", "stop = clock() + 5", "while clock() < stop:", "    pause(0.1)"],
+      "expected": [[3, "python-poll-deadline"]]
+    },
+    {
+      "id": "python-poll-internal",
+      "name": "tests/control.py",
+      "source": ["import time", "deadline = time.monotonic() + 3", "while not ready():", "    if time.monotonic() >= deadline:", "        raise RuntimeError('late')", "    time.sleep(0.1)"],
+      "expected": [[4, "python-poll-deadline"]]
+    },
+    {
+      "id": "python-elapsed-assert",
+      "name": "tests/control.py",
+      "source": ["from time import perf_counter as clock", "started = clock()", "assert clock() - started < 3"],
+      "expected": [[3, "python-elapsed-assertion"]]
+    },
+    {
+      "id": "python-elapsed-unittest",
+      "name": "tests/control.py",
+      "source": ["import time", "started = time.monotonic()", "elapsed = time.monotonic() - started", "self.assertLess(elapsed, budget)"],
+      "expected": [[4, "python-elapsed-assertion"]]
+    },
+    {
+      "id": "python-elapsed-require",
+      "name": "tests/control.py",
+      "source": ["require(elapsed < process_bound_seconds, 'late')"],
+      "expected": [[1, "python-elapsed-assertion"]]
+    },
+    {
+      "id": "pytest-marker",
+      "name": "tests/control.py",
+      "source": ["import pytest", "@pytest.mark.timeout(3)", "def test_work():", "    pass"],
+      "expected": [[2, "pytest-timeout"]]
+    },
+    {
+      "id": "pytest-marker-alias",
+      "name": "tests/control.py",
+      "source": ["from pytest import mark as marks", "bound = marks.timeout", "@bound(3)", "def test_work():", "    pass"],
+      "expected": [[3, "pytest-timeout"]]
+    },
+    {
+      "id": "pytest-module-marker",
+      "name": "tests/control.py",
+      "source": ["import pytest as pt", "pytestmark = [pt.mark.timeout(4)]"],
+      "expected": [[2, "pytest-timeout"]]
+    },
+    {
+      "id": "python-executed-string",
+      "name": "tests/control.py",
+      "source": ["code = 'import subprocess; subprocess.run(command, timeout=5)'", "exec(code)"],
+      "expected": [[2, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-shell-command",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "subprocess.run('timeout 3 cmake --version', shell=True)"],
+      "expected": [[2, "shell-timeout"]]
+    },
+    {
+      "id": "python-argv-option",
+      "name": "tests/control.py",
+      "source": ["from subprocess import run", "command = ['ctest', '--timeout', '4']", "run(command)"],
+      "expected": [[3, "shell-timeout"]]
+    },
+    {
+      "id": "python-unknown-options",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "subprocess.run(command, **unknown_options)"],
+      "expected": [[2, "python-dynamic-options"]]
+    },
+    {
+      "id": "python-setup-option",
+      "name": "setup.py",
+      "source": ["builder(compile_timeout_seconds=17)"],
+      "expected": [[1, "python-timeout-option"]]
+    },
+    {
+      "id": "python-two-limits-one-line",
+      "name": "tests/test_no_time_limits.py",
+      "source": ["child.wait(3); worker.join(4)"],
+      "expected": [[1, "python-wait-timeout"], [1, "python-wait-timeout"]]
+    },
+    {
+      "id": "pytest-ini",
+      "name": "pytest.ini",
+      "source": ["[pytest]", "timeout = 5"],
+      "expected": [[2, "pytest-timeout"]]
+    },
+    {
+      "id": "pytest-setup-cfg",
+      "name": "setup.cfg",
+      "source": ["[tool:pytest]", "timeout = 5"],
+      "expected": [[2, "pytest-timeout"]]
+    },
+    {
+      "id": "pytest-toml",
+      "name": "pyproject.toml",
+      "source": ["[tool.pytest.ini_options]", "timeout = 5"],
+      "expected": [[2, "pytest-timeout"]]
+    },
+    {
+      "id": "pytest-addopts",
+      "name": "tox.ini",
+      "source": ["[pytest]", "addopts = --timeout=7"],
+      "expected": [[2, "pytest-timeout"]]
+    },
+    {
+      "id": "shell-wrapper",
+      "name": "scripts/control.sh",
+      "source": ["#!/bin/sh", "timeout --signal=TERM 5 cmake --version"],
+      "expected": [[2, "shell-timeout"]]
+    },
+    {
+      "id": "shell-multiline",
+      "name": "scripts/control.sh",
+      "source": ["gtimeout \\", "  5 python3 task.py"],
+      "expected": [[1, "shell-timeout"]]
+    },
+    {
+      "id": "shell-env-wrapper",
+      "name": "scripts/control.sh",
+      "source": ["env MODE=proof timeout 8 cmake --version"],
+      "expected": [[1, "shell-timeout"]]
+    },
+    {
+      "id": "shell-ctest",
+      "name": "scripts/control.sh",
+      "source": ["ctest --output-on-failure --timeout 9"],
+      "expected": [[1, "shell-timeout"]]
+    },
+    {
+      "id": "shell-network-max-time",
+      "name": "scripts/control.sh",
+      "source": ["curl --max-time 9 https://example.invalid"],
+      "expected": [[1, "shell-timeout"]]
+    },
+    {
+      "id": "shell-executed-heredoc",
+      "name": "scripts/control.sh",
+      "source": ["python3 - <<'PY'", "import subprocess", "subprocess.run(command, timeout=8)", "PY"],
+      "expected": [[3, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "cmake-process-multiline",
+      "name": "cmake/nested/control.cmake",
+      "source": ["execute_process(", "  COMMAND cc --version", "  TIMEOUT ${budget}", ")"],
+      "expected": [[3, "cmake-timeout"]]
+    },
+    {
+      "id": "cmake-test-properties",
+      "name": "tests/nested/CMakeLists.txt",
+      "source": ["set_tests_properties(t PROPERTIES TIMEOUT \"${budget}\")"],
+      "expected": [[1, "cmake-timeout"]]
+    },
+    {
+      "id": "cmake-test-property",
+      "name": "tests/CMakeLists.txt",
+      "source": ["set_property(TEST t PROPERTY TIMEOUT 5)"],
+      "expected": [[1, "cmake-timeout"]]
+    },
+    {
+      "id": "cmake-ctest-default",
+      "name": "CMakeLists.txt",
+      "source": ["set(CTEST_TEST_TIMEOUT 5)"],
+      "expected": [[1, "cmake-timeout"]]
+    },
+    {
+      "id": "cmake-process-grace",
+      "name": "cmake/control.cmake",
+      "source": ["execute_process(COMMAND cc TIMEOUT_SIGNAL_GRACE_PERIOD 5)"],
+      "expected": [[1, "cmake-timeout"]]
+    },
+    {
+      "id": "cmake-timeout-after-match",
+      "name": "tests/CMakeLists.txt",
+      "source": ["set_tests_properties(t PROPERTIES TIMEOUT_AFTER_MATCH \"5;ready\")"],
+      "expected": [[1, "cmake-timeout"]]
+    },
+    {
+      "id": "cmake-presets",
+      "name": "CMakePresets.json",
+      "source": ["{", "  \"version\": 3,", "  \"testPresets\": [{\"name\": \"test\", \"execution\": {\"timeout\": 5}}]", "}"],
+      "expected": [[3, "cmake-timeout"]]
+    },
+    {
+      "id": "workflow-test-15-refuse",
+      "name": ".github/workflows/control.yml",
+      "source": ["jobs:", "  test:", "    runs-on: ubuntu-latest", "    timeout-minutes: 15", "    steps:", "      - run: python -m unittest"],
+      "expected": [[4, "workflow-job-timeout"]]
+    },
+    {
+      "id": "workflow-test-720-refuse",
+      "name": ".github/workflows/control.yaml",
+      "source": ["jobs:", "  test:", "    timeout-minutes: 720", "    steps:", "      - run: ctest"],
+      "expected": [[3, "workflow-job-timeout"]]
+    },
+    {
+      "id": "workflow-unlisted-cd-refuse",
+      "name": ".github/workflows/control.yml",
+      "source": ["jobs:", "  publish:", "    environment: production", "    timeout-minutes: 3", "    steps:", "      - uses: actions/deploy-pages@0123456789012345678901234567890123456789"],
+      "expected": [[4, "workflow-job-timeout"]]
+    },
+    {
+      "id": "workflow-cd-step-refuse",
+      "name": ".github/workflows/control.yml",
+      "policy": "cd",
+      "source": ["jobs:", "  publish:", "    environment: production", "    timeout-minutes: 3", "    steps:", "      - uses: actions/deploy-pages@0123456789012345678901234567890123456789", "        timeout-minutes: 1"],
+      "expected": [[7, "workflow-step-timeout"]]
+    },
+    {
+      "id": "workflow-flow-test-refuse",
+      "name": ".github/workflows/control.yml",
+      "source": ["jobs: {test: {timeout-minutes: 15, steps: [{run: ctest}]}}"],
+      "expected": [[1, "workflow-job-timeout"]]
+    },
+    {
+      "id": "workflow-flow-step-refuse",
+      "name": ".github/workflows/control.yml",
+      "policy": "cd",
+      "source": ["jobs: {publish: {environment: production, timeout-minutes: 3, steps: [{uses: 'actions/deploy-pages@0123456789012345678901234567890123456789', timeout-minutes: 1}]}}"],
+      "expected": [[1, "workflow-step-timeout"]]
+    },
+    {
+      "id": "workflow-allowlisted-test-refuse",
+      "name": ".github/workflows/control.yml",
+      "policy": "cd",
+      "source": ["jobs:", "  publish:", "    environment: production", "    timeout-minutes: 3", "    steps:", "      - uses: actions/deploy-pages@0123456789012345678901234567890123456789", "      - run: python -m unittest"],
+      "expected": [[4, "workflow-job-timeout"]]
+    },
+    {
+      "id": "workflow-alias-fail-closed",
+      "name": ".github/workflows/control.yml",
+      "source": ["jobs:", "  test: &job", "    timeout-minutes: 15"],
+      "expected": [[2, "syntax-error"]]
+    },
+    {
+      "id": "workflow-duplicate-fail-closed",
+      "name": ".github/workflows/control.yml",
+      "source": ["jobs:", "  test:", "    timeout-minutes: 15", "    timeout-minutes: 0"],
+      "expected": [[4, "syntax-error"]]
+    },
+    {
+      "id": "workflow-run-wrapper",
+      "name": ".github/workflows/control.yml",
+      "source": ["jobs:", "  test:", "    steps:", "      - run: |", "          timeout 3 ctest"],
+      "expected": [[5, "shell-timeout"]]
+    },
+    {
+      "id": "native-wait-for",
+      "name": "tests/control.cpp",
+      "source": ["ready.wait_for(lock, std::chrono::seconds(5), predicate);"],
+      "expected": [[1, "native-wait-timeout"]]
+    },
+    {
+      "id": "native-alarm",
+      "name": "tests/control.c",
+      "source": ["alarm(4);"],
+      "expected": [[1, "native-alarm"]]
+    },
+    {
+      "id": "native-elapsed-assert",
+      "name": "tests/control.cpp",
+      "source": ["assert(elapsed < std::chrono::seconds(5));"],
+      "expected": [[1, "native-elapsed-assertion"]]
+    },
+    {
+      "id": "python-syntax-fail-closed",
+      "name": "tests/control.py",
+      "source": ["subprocess.run("],
+      "expected": [[1, "syntax-error"]]
+    },
+    {
+      "id": "clean-inert-string",
+      "name": "tests/test_no_time_limits.py",
+      "source": ["text = 'subprocess.run(command, timeout=5)'"],
+      "expected": []
+    },
+    {
+      "id": "clean-inert-options",
+      "name": "tests/helpers/control.py",
+      "source": ["options = {'timeout': 4, 'max_wall_seconds': 2}"],
+      "expected": []
+    },
+    {
+      "id": "clean-unittest-diagnostic",
+      "name": "tests/control.py",
+      "source": ["with self.subTest(timeout=4):", "    self.assertEqual({'timeout': 5}, expected)"],
+      "expected": []
+    },
+    {
+      "id": "clean-subprocess-unbounded",
+      "name": "setup.py",
+      "source": ["import subprocess", "subprocess.run(command, check=True)"],
+      "expected": []
+    },
+    {
+      "id": "clean-none-waits",
+      "name": "tests/control.py",
+      "source": ["child.communicate(timeout=None)", "worker.join(None)"],
+      "expected": []
+    },
+    {
+      "id": "clean-nonblocking-queue",
+      "name": "tests/control.py",
+      "source": ["from queue import Queue", "messages = Queue()", "messages.get(block=False)"],
+      "expected": []
+    },
+    {
+      "id": "clean-string-join",
+      "name": "tests/control.py",
+      "source": ["joined = ','.join(values)"],
+      "expected": []
+    },
+    {
+      "id": "clean-unbounded-poll",
+      "name": "tests/control.py",
+      "source": ["from time import sleep", "while not ready():", "    sleep(0.1)"],
+      "expected": []
+    },
+    {
+      "id": "clean-pacing",
+      "name": "scripts/control.py",
+      "source": ["import time", "time.sleep(0.1)"],
+      "expected": []
+    },
+    {
+      "id": "clean-elapsed-observation",
+      "name": "tests/control.py",
+      "source": ["import time", "started = time.monotonic()", "print(time.monotonic() - started)"],
+      "expected": []
+    },
+    {
+      "id": "clean-disarm-alarm",
+      "name": "tests/control.py",
+      "source": ["import signal", "signal.alarm(0)"],
+      "expected": []
+    },
+    {
+      "id": "clean-disabled-pytest",
+      "name": "pytest.ini",
+      "source": ["[pytest]", "timeout = 0"],
+      "expected": []
+    },
+    {
+      "id": "clean-cmake-comment",
+      "name": "cmake/control.cmake",
+      "source": ["#[=[", "execute_process(COMMAND cc TIMEOUT 5)", "]=]", "project(control)"],
+      "expected": []
+    },
+    {
+      "id": "clean-cmake-data",
+      "name": "CMakeLists.txt",
+      "source": ["message(\"execute_process(COMMAND cc TIMEOUT 5)\")"],
+      "expected": []
+    },
+    {
+      "id": "clean-shell-quoted-data",
+      "name": "scripts/control.sh",
+      "source": ["echo 'timeout 5 ctest --timeout 3'"],
+      "expected": []
+    },
+    {
+      "id": "clean-shell-heredoc-data",
+      "name": "scripts/control.sh",
+      "source": ["cat <<'DATA'", "timeout 5 ctest", "DATA"],
+      "expected": []
+    },
+    {
+      "id": "clean-workflow-data",
+      "name": ".github/workflows/control.yml",
+      "source": ["jobs:", "  test:", "    env:", "      EXAMPLE: 'timeout-minutes: 15'", "    steps:", "      - run: echo 'timeout 3 ctest'"],
+      "expected": []
+    },
+    {
+      "id": "clean-allowlisted-cd",
+      "name": ".github/workflows/control.yml",
+      "policy": "cd",
+      "source": ["jobs:", "  publish:", "    environment: production", "    timeout-minutes: 3", "    steps:", "      - uses: actions/deploy-pages@0123456789012345678901234567890123456789"],
+      "expected": []
+    },
+    {
+      "id": "clean-flow-allowlisted-cd",
+      "name": ".github/workflows/control.yml",
+      "policy": "cd",
+      "source": ["jobs: {publish: {environment: production, timeout-minutes: 3, steps: [{uses: 'actions/deploy-pages@0123456789012345678901234567890123456789'}]}}"],
+      "expected": []
+    },
+    {
+      "id": "clean-native-string",
+      "name": "tests/control.cpp",
+      "source": ["const char* text = \"ready.wait_for(lock, seconds(5), predicate)\";"],
+      "expected": []
+    },
+    {
+      "id": "python-options-constructor",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "options = dict(timeout=5)", "subprocess.run(command, **options)"],
+      "expected": [[3, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-conditional-options-fail-closed",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "options = {'timeout': 5}", "if condition:", "    options['timeout'] = None", "subprocess.run(command, **options)"],
+      "expected": [[5, "python-dynamic-options"]]
+    },
+    {
+      "id": "python-argv-executed-source",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "code = 'import subprocess; subprocess.run(command, timeout=5)'", "subprocess.run(['python3', '-c', code])"],
+      "expected": [[3, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "workflow-same-job-wrong-path-refuse",
+      "name": ".github/workflows/elsewhere.yml",
+      "policy": "cd",
+      "source": ["jobs:", "  publish:", "    environment: production", "    timeout-minutes: 3", "    steps:", "      - uses: actions/deploy-pages@0123456789012345678901234567890123456789"],
+      "expected": [[4, "workflow-job-timeout"]]
+    },
+    {
+      "id": "workflow-bound-differs-from-measurement",
+      "name": ".github/workflows/control.yml",
+      "policy": "cd",
+      "source": ["jobs:", "  publish:", "    environment: production", "    timeout-minutes: 4", "    steps:", "      - uses: actions/deploy-pages@0123456789012345678901234567890123456789"],
+      "expected": [[4, "workflow-job-timeout"]]
+    },
+    {
+      "id": "workflow-nested-key-is-not-a-job-grant",
+      "name": ".github/workflows/control.yml",
+      "policy": "cd",
+      "source": ["jobs:", "  publish:", "    environment: production", "    env:", "      timeout-minutes: 3", "    steps:", "      - uses: actions/deploy-pages@0123456789012345678901234567890123456789"],
+      "expected": [[5, "workflow-timeout"]]
+    },
+    {
+      "id": "clean-dictionary-constructor",
+      "name": "tests/control.py",
+      "source": ["options = dict(timeout=5)"],
+      "expected": []
+    },
+    {
+      "id": "clean-inert-argv",
+      "name": "tests/control.py",
+      "source": ["command = ['timeout', '3', 'ctest', '--timeout', '5']"],
+      "expected": []
+    },
+    {
+      "id": "clean-disabled-pytest-marker",
+      "name": "tests/control.py",
+      "source": ["import pytest", "@pytest.mark.timeout(0)", "def test_work():", "    pass"],
+      "expected": []
+    },
+    {
+      "id": "clean-folded-shell-comment",
+      "name": ".github/workflows/control.yml",
+      "source": ["jobs:", "  test:", "    steps:", "      - run: >-", "          # this comment absorbs the folded continuation", "          timeout 3 ctest"],
+      "expected": []
+    },
+    {
+      "id": "python-command-keyword",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "subprocess.run(args=['timeout', '5', 'ctest'])"],
+      "expected": [[2, "shell-timeout"]]
+    },
+    {
+      "id": "python-asyncio-delay-keyword",
+      "name": "tests/control.py",
+      "source": ["import asyncio", "async def main():", "    async with asyncio.timeout(delay=3):", "        await work()"],
+      "expected": [[3, "python-async-timeout"]]
+    },
+    {
+      "id": "python-condition-wait-for-positional",
+      "name": "tests/control.py",
+      "source": ["import threading", "ready = threading.Condition()", "ready.wait_for(predicate, 3)"],
+      "expected": [[3, "python-wait-timeout"]]
+    },
+    {
+      "id": "shell-assigned-wrapper",
+      "name": "scripts/control.sh",
+      "source": ["limiter=timeout", "\"$limiter\" 5 ctest"],
+      "expected": [[2, "shell-timeout"]]
+    },
+    {
+      "id": "clean-string-join-alias",
+      "name": "tests/control.py",
+      "source": ["separator = ','", "join_values = separator.join", "join_values(values)"],
+      "expected": []
+    },
+    {
+      "id": "clean-none-options",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "options = dict(timeout=None)", "subprocess.run(command, **options)"],
+      "expected": []
+    },
+    {
+      "id": "python-written-code-executed",
+      "name": "tests/control.py",
+      "source": ["from pathlib import Path", "import subprocess", "script = Path('worker.py')", "script.write_text('import subprocess; subprocess.run(command, timeout=5)')", "subprocess.run(['python3', str(script)])"],
+      "expected": [[5, "python-subprocess-timeout"]]
+    },
+    {
+      "id": "python-written-dynamic-code-fail-closed",
+      "name": "tests/control.py",
+      "source": ["from pathlib import Path", "import subprocess", "script = Path('worker.py')", "script.write_text(unknown_source)", "subprocess.run(['python3', str(script)])"],
+      "expected": [[5, "python-dynamic-code"]]
+    },
+    {
+      "id": "clean-written-code-read-as-data",
+      "name": "tests/control.py",
+      "source": ["from pathlib import Path", "import subprocess", "script = Path('worker.py')", "script.write_text('import subprocess; subprocess.run(command, timeout=5)')", "subprocess.run(['cat', str(script)])"],
+      "expected": []
+    },
+    {
+      "id": "python-conditional-written-source-fail-closed",
+      "name": "tests/control.py",
+      "source": ["from pathlib import Path", "import subprocess", "script = Path('worker.py')", "script.write_text('import subprocess; subprocess.run(command, timeout=5)')", "if condition:", "    script.write_text('print(42)')", "subprocess.run(['python3', str(script)])"],
+      "expected": [[7, "python-dynamic-code"]]
+    },
+    {
+      "id": "python-select-positional",
+      "name": "tests/control.py",
+      "source": ["from select import select as receive", "receive([fd], [], [], budget)"],
+      "expected": [[2, "python-wait-timeout"]]
+    },
+    {
+      "id": "python-busy-deadline",
+      "name": "tests/control.py",
+      "source": ["import time", "deadline = time.monotonic() + 3", "while time.monotonic() < deadline:", "    pass"],
+      "expected": [[3, "python-poll-deadline"]]
+    },
+    {
+      "id": "clean-inert-dictionary-update",
+      "name": "tests/control.py",
+      "source": ["options = {}", "options.update(timeout=7)"],
+      "expected": []
+    },
+    {
+      "id": "python-local-command-helper",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "def launch(*arguments):", "    return subprocess.run(['program', *arguments])", "launch('--trial-timeout-seconds', '5')"],
+      "expected": [[4, "shell-timeout"]]
+    },
+    {
+      "id": "python-mutated-command",
+      "name": "tests/control.py",
+      "source": ["import subprocess", "command = ['program']", "command.extend(['--timeout', '5'])", "subprocess.run(command)"],
+      "expected": [[4, "shell-timeout"]]
+    },
+    {
+      "id": "clean-data-helper-arguments",
+      "name": "tests/control.py",
+      "source": ["def retain(*arguments):", "    return arguments", "retain('--trial-timeout-seconds', '5')"],
+      "expected": []
+    },
+    {
+      "id": "shell-double-quoted-substitution",
+      "name": "scripts/control.sh",
+      "source": ["echo \"$(timeout 5 ctest)\""],
+      "expected": [[1, "shell-timeout"]]
+    },
+    {
+      "id": "shell-unquoted-heredoc-substitution",
+      "name": "scripts/control.sh",
+      "source": ["cat <<DATA", "$(timeout 5 ctest)", "DATA"],
+      "expected": [[2, "shell-timeout"]]
+    },
+    {
+      "id": "clean-single-quoted-substitution-data",
+      "name": "scripts/control.sh",
+      "source": ["echo '$(timeout 5 ctest)'"],
+      "expected": []
+    }
+  ]
+}
