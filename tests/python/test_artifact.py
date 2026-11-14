@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -12,8 +14,9 @@ import subprocess
 import sys
 import tempfile
 from threading import Event
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
@@ -111,6 +114,161 @@ def make_compiler(root: Path, version: str = "fake-cxx 1.2.3") -> tuple[Path, Pa
 
 def validator(_path: Path, abi: int) -> dict:
     return {"abi_version": abi, "required_symbols": REQUIRED_SYMBOLS}
+
+
+@contextmanager
+def controlled_key_lock_backend(lock: _KeyLock, name: str):
+    """Control both API branches without importing the other platform's module."""
+    operation = Mock()
+    lock.path.parent.mkdir(parents=True, exist_ok=True)
+    with lock.path.open("a+b") as handle:
+        descriptor = handle.fileno()
+        if name == "nt":
+            module_name = "msvcrt"
+            backend = SimpleNamespace(locking=operation, LK_NBLCK=2, LK_UNLCK=0)
+            acquire = (descriptor, backend.LK_NBLCK, 1)
+            release = (descriptor, backend.LK_UNLCK, 1)
+        else:
+            module_name = "fcntl"
+            backend = SimpleNamespace(flock=operation, LOCK_EX=2, LOCK_NB=4, LOCK_UN=8)
+            acquire = (descriptor, backend.LOCK_EX | backend.LOCK_NB)
+            release = (descriptor, backend.LOCK_UN)
+        with (
+            patch.dict(sys.modules, {module_name: backend}),
+            patch(
+                "pineforge_hpo.artifact.os",
+                SimpleNamespace(name=name, SEEK_END=os.SEEK_END),
+            ),
+            patch.object(Path, "open", return_value=handle),
+        ):
+            yield operation, handle, acquire, release
+
+
+class KeyLockBackendTest(unittest.TestCase):
+    def test_noncontention_os_errors_stop_and_close_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unavailable.lock"
+            for backend in ("posix", "nt"):
+                for timeout in (None, 7.5):
+                    for error_number in (
+                        errno.ENOLCK,
+                        errno.ENOSYS,
+                        errno.EBADF,
+                        errno.EINVAL,
+                        errno.EIO,
+                        errno.EPERM,
+                        errno.EINTR,
+                        errno.EDEADLK,
+                        None,
+                    ):
+                        with self.subTest(
+                            backend=backend, timeout=timeout, errno=error_number
+                        ):
+                            lock = _KeyLock(path, timeout)
+                            error = OSError(error_number, "lock backend unavailable")
+                            retried = Event()
+
+                            def reject_retry(seconds):
+                                retried.set()
+                                self.fail(
+                                    "non-contention lock error was retried "
+                                    "instead of being reported"
+                                )
+
+                            with controlled_key_lock_backend(lock, backend) as (
+                                operation,
+                                handle,
+                                acquire,
+                                _release,
+                            ):
+                                operation.side_effect = error
+                                with (
+                                    patch(
+                                        "pineforge_hpo.artifact.time.monotonic",
+                                        return_value=0.0,
+                                    ),
+                                    patch(
+                                        "pineforge_hpo.artifact.time.sleep",
+                                        side_effect=reject_retry,
+                                    ) as poll,
+                                    self.assertRaises(ArtifactBuildError) as caught,
+                                ):
+                                    with lock:
+                                        self.fail("failed OS lock was acquired")
+
+                                operation.assert_called_once_with(*acquire)
+                                poll.assert_not_called()
+                                self.assertFalse(retried.is_set())
+                                self.assertTrue(handle.closed)
+                                self.assertIsNone(lock._handle)
+                                self.assertEqual(caught.exception.stage, "cache")
+                                self.assertEqual(
+                                    caught.exception.code, "hpo_output_io_failed"
+                                )
+                                self.assertEqual(caught.exception.failure_args, {})
+                                self.assertIs(caught.exception.__cause__, error)
+                                self.assertIn(str(path), str(caught.exception))
+                                self.assertIn(str(error), str(caught.exception))
+                                lock.__exit__(None, None, None)
+                                operation.assert_called_once_with(*acquire)
+
+    def test_contention_errnos_retry_then_acquire_and_unlock(self) -> None:
+        # These are controlled API contracts, not native Windows execution proof.
+        cases = (
+            ("posix", errno.EACCES),
+            ("posix", errno.EAGAIN),
+            ("posix", errno.EWOULDBLOCK),
+            ("nt", errno.EACCES),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "contended.lock"
+            for backend, error_number in cases:
+                for timeout in (None, 7.5):
+                    with self.subTest(
+                        backend=backend, timeout=timeout, errno=error_number
+                    ):
+                        lock = _KeyLock(path, timeout)
+                        released = Event()
+
+                        def release_holder(seconds):
+                            self.assertEqual(seconds, 0.05)
+                            self.assertFalse(released.is_set(), "lock kept retrying")
+                            released.set()
+
+                        with controlled_key_lock_backend(lock, backend) as (
+                            operation,
+                            handle,
+                            acquire,
+                            release,
+                        ):
+                            operation.side_effect = [
+                                OSError(error_number, "lock held by another process"),
+                                None,
+                                None,
+                            ]
+                            with (
+                                patch(
+                                    "pineforge_hpo.artifact.time.monotonic",
+                                    return_value=0.0,
+                                ),
+                                patch(
+                                    "pineforge_hpo.artifact.time.sleep",
+                                    side_effect=release_holder,
+                                ) as poll,
+                            ):
+                                with lock as acquired:
+                                    self.assertIs(acquired, lock)
+                                    self.assertTrue(released.is_set())
+                                    self.assertIs(lock._handle, handle)
+                                    self.assertFalse(handle.closed)
+
+                            poll.assert_called_once_with(0.05)
+                            self.assertEqual(
+                                operation.call_args_list,
+                                [call(*acquire), call(*acquire), call(*release)],
+                            )
+                            self.assertTrue(handle.closed)
+                            self.assertIsNone(lock._handle)
 
 
 class ArtifactBuilderTest(unittest.TestCase):
@@ -384,26 +542,46 @@ class ArtifactBuilderTest(unittest.TestCase):
         timeout = self.builder(lock_timeout_seconds=120.0).lock_timeout_seconds
         self.assertEqual(timeout, 120.0)
         lock_path = self.cache / "locks" / "stuck.lock"
-        lock = _KeyLock(lock_path, timeout)
-        locking = "msvcrt.locking" if os.name == "nt" else "fcntl.flock"
-        with (
-            patch(locking, side_effect=BlockingIOError),
-            patch("pineforge_hpo.artifact.time.monotonic", side_effect=[0.0, 120.0]),
-            patch(
-                "pineforge_hpo.artifact.time.sleep",
-                side_effect=AssertionError("expired lock wait must not sleep"),
-            ),
+        for backend, error_number in (
+            ("posix", errno.EACCES),
+            ("posix", errno.EAGAIN),
+            ("posix", errno.EWOULDBLOCK),
+            ("nt", errno.EACCES),
         ):
-            with self.assertRaises(ArtifactBuildError) as caught:
-                with lock:
-                    self.fail("unavailable lock was acquired")
+            with self.subTest(backend=backend, errno=error_number):
+                lock = _KeyLock(lock_path, timeout)
+                with controlled_key_lock_backend(lock, backend) as (
+                    operation,
+                    handle,
+                    acquire,
+                    _release,
+                ):
+                    operation.side_effect = OSError(error_number, "lock is busy")
+                    with (
+                        patch(
+                            "pineforge_hpo.artifact.time.monotonic",
+                            side_effect=[0.0, 120.0],
+                        ),
+                        patch(
+                            "pineforge_hpo.artifact.time.sleep",
+                            side_effect=AssertionError(
+                                "expired lock wait must not sleep"
+                            ),
+                        ),
+                    ):
+                        with self.assertRaises(ArtifactBuildError) as caught:
+                            with lock:
+                                self.fail("unavailable lock was acquired")
 
-        self.assertEqual(caught.exception.stage, "cache")
-        self.assertIn(str(lock_path), str(caught.exception))
-        self.assertIn(
-            "A lock that never frees is a deadlock to report.", str(caught.exception)
-        )
-        self.assertIsNone(lock._handle)
+                    self.assertEqual(caught.exception.stage, "cache")
+                    self.assertIn(str(lock_path), str(caught.exception))
+                    self.assertIn(
+                        "A lock that never frees is a deadlock to report.",
+                        str(caught.exception),
+                    )
+                    self.assertIsNone(lock._handle)
+                    self.assertTrue(handle.closed)
+                    operation.assert_called_once_with(*acquire)
 
     def test_default_lock_wait_survives_former_deadline(self) -> None:
         # Parent-compatible RED: real advisory contention, controlled clock/release.
