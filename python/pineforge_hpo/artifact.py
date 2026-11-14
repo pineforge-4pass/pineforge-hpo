@@ -1648,9 +1648,12 @@ class ArtifactBuilder:
     ) -> dict[str, Any]:
         try:
             plugin_validation = dict(self.plugin_validator(plugin_path, expected_abi))
-        except ArtifactBuildError:
+        except HpoError:
+            # A typed failure keeps its own instance, code, origin and arguments;
+            # ArtifactBuildError is one such type. Nothing is rebuilt from text.
             raise
         except Exception as error:
+            # An untyped exception carries no classification: it stays "validation".
             raise ArtifactBuildError(
                 "plugin_validation", f"strategy plugin validation failed: {error}"
             ) from error
@@ -1658,7 +1661,7 @@ class ArtifactBuilder:
             raise ArtifactBuildError(
                 "plugin_validation",
                 "strategy plugin validator did not confirm the expected engine ABI",
-            )
+            ).with_failure("hpo_plugin_invalid", {"reason": "abi"})
         return plugin_validation
 
     def _validate_plugin(
@@ -1670,7 +1673,7 @@ class ArtifactBuilder:
         except OSError as error:
             raise ArtifactBuildError(
                 "plugin_validation", f"cannot load compiled strategy plugin: {error}"
-            ) from error
+            ).with_failure("hpo_plugin_invalid", {"reason": "load"}) from error
 
         missing = [
             name for name in _REQUIRED_PLUGIN_SYMBOLS if not hasattr(library, name)
@@ -1680,7 +1683,7 @@ class ArtifactBuilder:
                 "plugin_validation",
                 "compiled strategy plugin is missing required symbols: "
                 + ", ".join(missing),
-            )
+            ).with_failure("hpo_plugin_invalid", {"reason": "symbols"})
         abi_function = library.pf_abi_version
         abi_function.argtypes = []
         abi_function.restype = ctypes.c_int
@@ -1689,7 +1692,7 @@ class ArtifactBuilder:
             raise ArtifactBuildError(
                 "plugin_validation",
                 f"strategy plugin ABI {actual_abi} does not match engine ABI {expected_abi}",
-            )
+            ).with_failure("hpo_plugin_invalid", {"reason": "abi"})
         return {
             "abi_version": actual_abi,
             "required_symbols": list(_REQUIRED_PLUGIN_SYMBOLS),

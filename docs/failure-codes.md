@@ -305,6 +305,35 @@ fail there. With that opt-in, missing compiler, engine archive, Eigen, codegen o
 native-runner inputs fail the relevant integration row. Run them on a full build
 when reviewing compiler custody or wrapper admission.
 
+### Python plugin validation
+
+`ArtifactBuilder` refuses an unusable compiled strategy plugin with `ArtifactBuildError`
+(stage `plugin_validation`, also `HpoError` and `RuntimeError`). A refusal that the
+builder or its default validator raises itself has the non-retryable code
+`hpo_plugin_invalid` and one closed string argument, `reason`. The reason is taken from
+the step that actually failed, never from diagnostic text. The default validator runs
+three steps in order, load, then symbols, then ABI, and reports the first that fails:
+
+| Reason | Where the Python code reports it |
+| --- | --- |
+| `load` | `ctypes.CDLL` raised `OSError` for the plugin file. That `OSError` is the exception's cause and the diagnostic keeps its text. |
+| `symbols` | The loaded library lacks one or more of the eight required exports; the diagnostic lists the missing names in required order. |
+| `abi` | `pf_abi_version()` differs from the engine ABI, or a supplied `plugin_validator` returned a result whose `abi_version` does not confirm the expected engine ABI. |
+| `validation` | Any other `plugin_validation` refusal, for example an untyped exception raised by a supplied validator, a validator result that is not a mapping, a validated plugin that differs from its cache metadata or lacks required-symbol confirmation, or enrichment of an artifact whose validation is still pending. |
+
+The default validator has no separate path or platform step and calls no setter: an
+absent, unreadable or non-library plugin file fails at the load step and reports `load`.
+The default validator itself never emits the catalog values `path`, `platform` or
+`setter_missing`. The native loader reports those: an empty plugin path, a platform
+without a Unix dynamic loader, and a requested setting for which the plugin has no
+setter.
+
+A supplied `plugin_validator` may raise any `HpoError`. That exact exception object
+propagates and keeps its own code, origin, arguments, message and cause, including a
+catalog reason such as `path` or `setter_missing` that the validator itself set; nothing
+is reclassified from its type, stage or text. Any other exception becomes `validation`
+with the original as its cause, and its text is never parsed for a reason.
+
 ## Catalog and release diff
 
 The package contains `hpo_failure_codes.json` (schema
