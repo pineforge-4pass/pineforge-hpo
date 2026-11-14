@@ -67,6 +67,11 @@
   through engine metadata after the lot grid and before mintick; absent or `null`
   leaves runs unchanged, and an engine without the run option ignores the key.
   C++ users get the same through the new `SymbolInfo::series_origin_ms` member.
+- The default Python plugin validator now reports the existing `hpo_plugin_invalid`
+  reasons `load`, `symbols` and `abi` from its own steps instead of `validation`, so
+  `compile` and `run` failure documents of a broken plugin name the failed step. A
+  supplied `plugin_validator`'s typed `HpoError` now propagates unchanged; its other
+  exceptions and unconfirmed results still report `validation`.
 
 ## 1.12.0 (2026-11-12)
 

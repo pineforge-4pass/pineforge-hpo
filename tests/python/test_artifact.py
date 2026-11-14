@@ -475,7 +475,8 @@ class ArtifactBuilderTest(unittest.TestCase):
                             "pineforge_hpo.artifact.platform.system", return_value="OS"
                         ),
                         patch(
-                            "pineforge_hpo.artifact.platform.machine", return_value="CPU"
+                            "pineforge_hpo.artifact.platform.machine",
+                            return_value="CPU",
                         ),
                     ):
                         identity = self.builder(
@@ -606,7 +607,9 @@ class ArtifactBuilderTest(unittest.TestCase):
 
         with (
             holder,
-            patch("pineforge_hpo.artifact.time.monotonic", side_effect=lambda: clock[0]),
+            patch(
+                "pineforge_hpo.artifact.time.monotonic", side_effect=lambda: clock[0]
+            ),
             patch("pineforge_hpo.artifact.time.sleep", side_effect=poll),
         ):
             try:
@@ -668,7 +671,9 @@ class ArtifactBuilderTest(unittest.TestCase):
                         ),
                         patch(
                             "pineforge_hpo.artifact.codegen_identity",
-                            side_effect=AssertionError("invalid timeout reached codegen"),
+                            side_effect=AssertionError(
+                                "invalid timeout reached codegen"
+                            ),
                         ),
                         self.assertRaisesRegex(
                             ArtifactBuildError, "build timeouts must be positive"
@@ -913,6 +918,10 @@ class ArtifactBuilderTest(unittest.TestCase):
             with self.assertRaises(ArtifactBuildError) as caught:
                 builder.build("source")
         self.assertEqual(caught.exception.stage, "plugin_validation")
+        # The default loader itself refused the file: the "load" branch.
+        self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
+        self.assertEqual(caught.exception.failure_args, {"reason": "load"})
+        self.assertIsInstance(caught.exception.__cause__, OSError)
 
 
 class DeferredPluginValidationTests(unittest.TestCase):
@@ -1456,6 +1465,12 @@ class DeferredPluginValidationTests(unittest.TestCase):
                     later.validate_built_plugin(artifact)
                 self.assertEqual(caught.exception.stage, "plugin_validation")
                 self.assertEqual(caught.exception.code, "hpo_plugin_invalid")
+                # All three faults come from a supplied validator, so none has a
+                # step-specific reason: its untyped load error and its unconfirmed
+                # ABI and symbols results all keep the stage default "validation".
+                self.assertEqual(
+                    caught.exception.failure_args, {"reason": "validation"}
+                )
                 later_validator.assert_called_once_with(artifact.plugin_path, 2)
                 self.assertEqual(self.metadata_bytes(artifact), before)
         self.validate.assert_not_called()
