@@ -62,7 +62,9 @@ class NativeIdentityTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.source_path = self.root / "strategy.pine"
-        self.source_path.write_text('//@version=6\nstrategy("測試")\n', encoding="utf-8")
+        self.source_path.write_text(
+            '//@version=6\nstrategy("測試")\n', encoding="utf-8"
+        )
         self.data_path = self.root / "bars.csv"
         self.data_path.write_bytes(
             b"time,open,high,low,close,volume\n1,10,12,9,11,100\n"

@@ -1312,7 +1312,10 @@ def prepare_run(
     if warm_start is not None:
         command.extend(("--warm-start", str(Path(warm_start).expanduser().resolve())))
     if producer_values_sink is not None or producer_identity_sink is not None:
-        from .native_identity import prepare_producer_values, serialize_producer_identity
+        from .native_identity import (
+            prepare_producer_values,
+            serialize_producer_identity,
+        )
 
         values = (
             built.producer_values(
