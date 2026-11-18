@@ -212,13 +212,11 @@ class RepositoryReleasePinTests(unittest.TestCase):
             self.assertEqual(error, "expected one top-entry pin, found 0")
 
     def test_missing_readme_sentence_is_rejected(self):
-        changed = replace(
-            self.pins,
-            readme=self.pins.readme.replace(
-                "The gitlinks pin the releases this HPO revision targets:",
-                "The dependencies target:",
-            ),
-        )
+        matches = list(README_PIN.finditer(self.pins.readme))
+        self.assertEqual(len(matches), 1, "control requires one valid pin sentence")
+        start, end = matches[0].span()
+        readme = self.pins.readme
+        changed = replace(self.pins, readme=readme[:start] + readme[end:])
         errors = self.assert_errors(changed, ("README.md pin sentence",))
         self.assertEqual(
             errors["README.md pin sentence"], "expected one pin sentence, found 0"

@@ -2,12 +2,11 @@
 
 ## Unreleased
 
-## 1.13.0 (2026-11-18)
+## 1.13.0 (2026-11-19)
 
-- Targets engine v1.13.0 and codegen v1.13.0. Rehearsal gitlinks point to the batch-2
-  candidate for `external/pineforge-engine` (`c81b898afde39b17ce6cdcda8ad38e0894d24137`)
-  and main for `external/pineforge-codegen-oss` (`b95add0b7ed777227ef5551d94e1bcb8c5311c50`).
-  Both report `1.12.0`; replace them with the v1.13.0 tag commits before release.
+- Targets engine v1.13.0 and codegen v1.13.0 (C ABI 5).
+  Pins: `external/pineforge-engine` (`438924f9b799f19eaee943ec68c2fd2879e899b7`)
+  and `external/pineforge-codegen-oss` (`9880b5138b7fcfac0ce634d5243e72baf64f747f`).
 
 - Default artifact lock waits and compiler identity probes to OFF (`None`).
   Opt in with the builder-only `lock_timeout_seconds` and

@@ -68,13 +68,9 @@ git submodule update --init \
 The Python distribution exported by `pineforge-codegen-oss` is named
 `pineforge-codegen`; its import module is `pineforge_codegen`.
 
-For this rehearsal, the SHAs in the pin sentence below are provisional, not v1.13.0
-tag commits. The engine batch-2 candidate and the codegen main commit both report
-`1.12.0`. Replace both with the v1.13.0 tag commits before release.
-
 The gitlinks pin the releases this HPO revision targets: engine v1.13.0
-(`c81b898afde39b17ce6cdcda8ad38e0894d24137`, C ABI 5) and codegen v1.13.0
-(`b95add0b7ed777227ef5551d94e1bcb8c5311c50`). Linux CI gates the nine-trial example, real
+(`438924f9b799f19eaee943ec68c2fd2879e899b7`, C ABI 5) and codegen v1.13.0
+(`9880b5138b7fcfac0ce634d5243e72baf64f747f`). Linux CI gates the nine-trial example, real
 multi-symbol C-ABI equality and real-artifact D7 refusal; both native CI runners require
 the independently pinned serial golden rather than silently skipping it. From 1.0.0 on,
 codegen X.Y.Z is supported only with engine vX.Y.Z: a mismatched pair may still compile,
