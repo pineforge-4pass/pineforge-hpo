@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.13.0 (2026-11-18)
+
+- Targets engine v1.13.0 and codegen v1.13.0. The optional submodules pin
+  `external/pineforge-engine` (`7a33ed7b8c4aba4af27ead8d82088f85ea4507ee`) and
+  `external/pineforge-codegen-oss` (`b95add0b7ed777227ef5551d94e1bcb8c5311c50`).
+
 - Default artifact lock waits and compiler identity probes to OFF (`None`).
   Opt in with the builder-only `lock_timeout_seconds` and
   `compiler_probe_timeout_seconds` parameters; explicit lock expiry and compiler
