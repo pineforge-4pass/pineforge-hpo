@@ -4,9 +4,10 @@
 
 ## 1.13.0 (2026-11-18)
 
-- Targets engine v1.13.0 and codegen v1.13.0. The optional submodules pin
-  `external/pineforge-engine` (`7a33ed7b8c4aba4af27ead8d82088f85ea4507ee`) and
-  `external/pineforge-codegen-oss` (`b95add0b7ed777227ef5551d94e1bcb8c5311c50`).
+- Targets engine v1.13.0 and codegen v1.13.0. Rehearsal gitlinks point to the batch-2
+  candidate for `external/pineforge-engine` (`c81b898afde39b17ce6cdcda8ad38e0894d24137`)
+  and main for `external/pineforge-codegen-oss` (`b95add0b7ed777227ef5551d94e1bcb8c5311c50`).
+  Both report `1.12.0`; replace them with the v1.13.0 tag commits before release.
 
 - Default artifact lock waits and compiler identity probes to OFF (`None`).
   Opt in with the builder-only `lock_timeout_seconds` and
