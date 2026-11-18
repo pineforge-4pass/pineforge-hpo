@@ -6,8 +6,7 @@
     "catalogSha256": "db143f09b7c4ee11b755fc943d9ebaf86f4cc217c85c5781f6fa8d48c6bcfc72"
   },
   "to": {
-    "version": null,
-    "unreleased": true,
+    "version": "1.13.0",
     "catalogSha256": "c667dc3627cef99bfdbaf3782beb07adfd110b2bbd2f175223a878fda313a7f3"
   },
   "catalogSchema": {
