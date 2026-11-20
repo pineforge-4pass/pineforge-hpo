@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.14.0 (2026-11-20)
+
+- Targets engine v1.14.0 and codegen v1.14.0 (C ABI 5).
+  Pins: `external/pineforge-engine` (`665fc4ddc024951dd1c911ad5de9839a5c91e2e4`)
+  and `external/pineforge-codegen-oss` (`de63a1b29215939466a32e07c3cca110b946fb87`).
+
 ## 1.13.0 (2026-11-19)
 
 - Targets engine v1.13.0 and codegen v1.13.0 (C ABI 5).
